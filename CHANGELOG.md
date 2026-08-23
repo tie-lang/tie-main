@@ -1,4 +1,25 @@
-## [新增] M5 动态库编译——tie 库 → .dll/.so + dllexport 导出面（dev33 批次 12）
+## Harbor-2026.1-preview.4（2026-08-23）
+
+> **preview.4 = tie 的「并发首版」**：原生 actor + 凭据门禁成型 + 自举性能 61× + 动态库打通 C 生态。
+> 自 Harbor-2026.1-preview.3 共 90 提交。发行亮详见 [NEW.md](NEW.md)。
+
+- **原生并发 actor 一期**：`actor`/`run` + 1:1 OS 线程（零运行时）；同步 RPC / async / 私有状态 /
+  方法 dispatch / 多参标量消息槽 / 处理器 panic → 调用方 raise。
+- **三期 A 组并发语法**：`guard<share>` 凭据闭环（`unsafe.get/use/with` + `#[unsafe.share]`）、
+  `guard<cap>.delegate` 同域派生（含 `guard<cap>` 类型语法）、通用 `#[unsafe.*]` 属性通道、goto/标签。
+- **M5 动态库编译**：tie 库 → `.dll`/`.so` + dllexport 导出面，C 语言可运行期加载。
+- **去 Rust 桥收尾**：表/字典/字符串码点/数字转串/parse_* 逐批 irgen 内联；`std/runtime.a` 退役，
+  纯程序可零运行时依赖。
+- **性能**：自举编译 1281s→21s（61×）；emit 提速 53%。
+- **语言补充**：i128/u128、volatile/slice_of/asm! 条件编译、闭包后置（嵌套捕获/fn×泛型/C 回调）、
+  `s.chars()` 码点迭代、错误处理增强（switch 解构/catch_panic/组合子）、宏三大方向落地。
+- **工程**：compiler 自举化解耦重构（irgen 分层 tig_*）、trm/concurrency-model 设计定稿、文档 infra
+  （tie-dev skill 随包分发、NEW.md 聚焦化、language.md 补全 Harbor 特性）。
+- **修复**：字符串字面量/缓冲 32 字节尾部填充（漏洞 B 宽读越界）、import 缺失优雅报错等。
+
+逐一细节见下方随提交累积的条目（本条为版本汇总）。
+
+---## [新增] M5 动态库编译——tie 库 → .dll/.so + dllexport 导出面（dev33 批次 12）
 
 tie 库（`type tie<class>`）可编译为**动态库**（Windows `.dll` / Linux `.so`），
 C/其他语言可在运行期 `LoadLibrary`/`dlopen` 加载调用——插件体系、跨语言模块
