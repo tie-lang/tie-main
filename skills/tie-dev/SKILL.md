@@ -45,7 +45,7 @@ compiler\tiec.exe repl\repl.tie          # 构建 REPL 外壳
 
 ## 3. 类型系统
 
-基本类型：`i8 i16 i32 i64 i128 u8 u16 u32 u64 f32 f64 bool trit char string void`。
+基本类型：`i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 bool trit char string void`。
 复合类型：`table<T>`（动态数组）、`map`（键值表）、元组 `(T1, T2)`、struct、enum、`fn(A)->R`（函数类型）、`code`（编译期代码片段，宏用）。
 
 ```tie
@@ -419,3 +419,17 @@ c.bump(3)             // async：不阻塞
   显式初值 `= N` 尚未捕获。
 - 指针/slice 宽类型共享消息属 unsafe 门禁（`#[unsafe.share]` 等，见 concurrency-model §7），
   安全路径限标量。
+## 16. unsafe、移动语义与三期限量语法（概览）
+
+不安全与三期并发的越界语法；细节以 docs/language.md §13/14 与
+docs/designs/concurrency-model.md §7 为准。
+
+- 所有权：`var b = move a` 转移所有权，转移后 `a` 不可再用（编译期报错）——smove pass（S1.5）。
+- `unsafe fn` / `unsafe { }`：解锁指针/切片 `ptr<T>` / `slice<T>`、`slice_of(表)`、
+  `atomic<T>`、`volatile_load` / `volatile_store`、`asm!("...")`、`repr(C)`、extern 调用。
+- 窄整数：`42i32` / `7u8` / `1.5f32` 后缀、`as_*` 转换、`checked_*` 溢出检查。
+- 属性 `#[...]`：`#[macro]`（过程宏）、`#[repr(C)]`、`#[unsafe.share/trm/mem/ext]` 凭据、
+  `#[tag.x]` 标签。
+- goto：`#[tag.x]` 标签 + `unsafe goto #x` 无条件跳转（三期，见 concurrency-model §7.1.5）。
+- guard 凭据：`unsafe.get(share)` / `unsafe use g { }` / `unsafe.with(share) { }`
+  （move-only `guard<share>`，破「状态私有」边界，见 concurrency-model §7.1.1）。

@@ -117,6 +117,7 @@ tie 采用**静态类型**（编译期类型检查），后端为 LLVM 强类型
 | ---------------------------- | ------------------------------------ | ---------------------------- |
 | `i8` / `i16` / `i32` / `i64` | 有符号整数                                | `i8` / `i16` / `i32` / `i64` |
 | `u8` / `u16` / `u32` / `u64` | 无符号整数                                | `i8` / `i16` / `i32` / `i64` |
+| `i128` / `u128`             | 有/无符号 128 位整数（S2）                    | `i128`                        |
 | `f32` / `f64`                | 浮点数                                  | `float` / `double`           |
 | `bool`                       | 布尔                                   | `i1`                         |
 | `trit`                       | 平衡三进制（三值逻辑 -1/0/+1，数论常用）             | `i8`                         |
@@ -658,7 +659,7 @@ func main() {                 // 程序入口（logic 文件）
 }
 ```
 
-- 一等函数：函数可赋值给变量、作为参数传递（后续版本）。
+- 一等函数：函数可赋值给变量、作为参数传递——**已实现**，见 §9（一等函数与闭包）。
 - 方法重载：后续版本。
 
 ### 6.1 默认值参数（M2.1 已实现）
@@ -1047,9 +1048,195 @@ namespace Dog {
 - 二者都是**字面结构体值类型**（LLVM `{...}`）；元组字段可匿名/数字/命名访问，struct 字段仅命名访问。
 - 元组字段访问对寄存器值开放（`divmod(9,2).q` 合法）；struct 字段访问要求可寻址对象。
 
-## 9. 语法速查表
+## 9. 一等函数与闭包（S2.2 已实现；后置项：嵌套捕获 + fn×泛型 + C 回调）
 
-### 9.1 所有关键词
+> 早期草案「一等函数……后续版本」已落地：`func` 字面量 = 闭包，`fn(A)->R` = 函数类型，
+> 支持高阶函数与环境捕获。设计见 [docs/plans/closure-model.md](plans/closure-model.md)。
+
+**函数字面量（闭包）**：`func(形参) -> ret { 体 }`，类型为 `fn(A)->R`：
+
+```c
+var d = func(x: i64) -> i64 { return x * 2 }   // 无捕获闭包
+var g: fn(i64) -> i64 = add1                    // 命名函数提升（函数名直接作函数值）
+```
+
+**函数类型 `fn(A)->R`**：可作参数 / 返回 / 变量 / struct 字段：
+
+```c
+func apply(f: fn(i64) -> i64, x: i64) -> i64 { return f(x) }   // 高阶函数
+func make() -> fn(i64) -> i64 { ... return func(x: i64) -> i64 { ... } }  // 闭包返回
+```
+
+- 闭包值 = `{env, entry}` 聚合：捕获变量 **move 进环境**（堆分配），调用走
+  `call_indirect`（opcode 70，间接调用 `br i1 ... label` 语法层级）；
+- **命名函数提升**：顶层/命名空间 `func` 名可直接作为函数值使用（自动生成适配器）；
+- 捕获规则：闭包内引用的外层局部变量 move 进 env；按值捕获、所有权转移；
+- 嵌套捕获：闭包内再闭包，内层可捕获外层闭包所捕获的变量（捕获沿父链传播）；
+- 泛型 × 闭包：`fn` 类型与泛型函数可组合；C 回调：函数值可传 extern C 边界。
+
+练习用例：`examples/oop.tie`、`tests/s22_probe/*.tie`（探针 1-8：无捕获/高阶/命名
+函数/返回闭包/组合/嵌套捕获/泛型闭包/C 回调）。
+
+## 10. 接口（port / impl，S2.4 已实现）
+
+tie 的 interface：方法签名集合 + 显式实现，**静态 / 动态双形态分发**（二分法 vtable）。
+设计见 [docs/plans/port-model.md](plans/port-model.md)。
+
+```c
+port Drawable {
+    pub func draw(self, ctx: i64) -> string
+    pub func bounds(self) -> i64
+}
+struct Button { var label: string; var w: i64; var h: i64 }
+impl Drawable for Button {
+    pub func draw(self, ctx: i64) -> string { return "Button(" + self.label + ")" }
+    pub func bounds(self) -> i64 { return self.w * self.h }
+}
+
+// 静态分发：泛型约束，单态化绑定具体实现，零开销
+func render_all<T: Drawable>(d: T, ctx: i64) {
+    println(d.draw(ctx))       // 单态化 → Button::draw / Text::draw
+}
+
+// 动态分发（unsafe 提升）：struct 装箱为 port 值（data + vtable）
+unsafe { var d: Drawable = button; d.draw(ctx) }   // 走 vtable 间接调用
+```
+
+- `port Name { pub func 签名; ... }`：只声明方法签名（`self` 为接收者占位），无实现；
+- `impl P for S { pub func ... }`：给 struct 实现接口；**漏方法 = 编译错误**
+  （「impl 'P for S' 缺少方法 'M'」）；
+- **静态分发**：`func f<T: Drawable>(d: T)` 以泛型约束限定；T 实参化时校验必须
+  `impl Drawable`，单态化绑定具体实现，零开销、无 vtable；
+- **动态分发**：`unsafe { var d: Drawable = struct_val }` 把 struct 装箱为 port 值
+  （data + 隐式 vtable 全局常量），`d.method()` 间接调用；支持 `table<Drawable>`
+  异构容器；
+- port 值（动态）持有时须 `unsafe`（借用语义、安全边界显式化）；`self` 作普通首参。
+
+## 11. 错误处理（S2.3 已实现；组合子 + 可捕获 panic 于 dev33 批次7 补齐）
+
+tie 无异常；错误显式表示为值（`Result` / `Option`），配合 `?` 提前解包与 `panic`。
+预置类型在 [std/result.tie](../std/result.tie)。
+
+```c
+import "../../std/result.tie"
+func div(a: i64, b: i64) -> Result<i64, string> {
+    if b == 0 { return Result.Err("divide by zero") }
+    return Result.Ok(a / b)
+}
+func main() {
+    var v = div(10, 2) ?    // ? 解包：Err 提前 return，Ok 解包 payload
+    panic("致命错误")          // 打印 + exit(1)
+}
+```
+
+- `Result<T, E>`：`Result.Ok(v)` / `Result.Err(e)`；`Option<T>`：`Some(v)` / `None`
+  （由预置枚举实现，见 §3.8）；
+- `?` 后缀：仅限**返回 `Result`/`Option` 的函数**内使用——Err/None 提前返回，
+  Ok/Some 解出 payload 继续；
+- `panic(msg)`：打印 + 非零退出；`catch_panic`（可捕获）：在 `unsafe` 上下文用
+  `setjmp/longjmp` 把 panic 转为可控结果（见 dev33 批次7、`tests/language/catch_panic_probe.tie`）；
+- **switch 解构**：`switch r { case Result.Ok(v): ... case Result.Err(e): ... }`
+  按变体载荷解构（`case Shape.Circle:` 的变体带值形态，§5.1 匹配扩展）；
+- 组合子机制：`unwrap` / `unwrap_or` / `map` / `and_then` 等（std/result，dev33 批次7）；
+- 目标类型引导：`?` 与函数返回类型互推，报错带类型信息。
+
+## 12. 宏与元编程（S3.3 已实现；过程/语句级/跨文件三大方向 dev33 批次8-10 落地）
+
+编译期 **AST→AST** 函数（宏），参数与返回都是 `code`（编译期代码值）。
+
+```c
+macro double(x: code) -> code {
+    return `( ($x) * 2 )        // 准引用 + 插值：编译期展开为 (3+4)*2
+}
+func main() {
+    println(double(3 + 4))      // 14
+}
+```
+
+- **code 三形态**：准引用 `` `(expr) ``（表达式）与 `` `{ stmts } ``（块）；插值
+  `$x` / `$(expr)`；`gensym("前缀")` 防命名冲突（词法卫生，展开不与用户码冲突）；
+- 函数式宏展开 pass `mexpand`（轮次上限 64 防死循环）；由 tie-interp 编译期执行；
+- **过程宏（#[macro] 声明，dev33 批次9）**：`#[macro] macro name(...) -> code`，
+  宏体可驱动 **token 流 API**（`tokenize`/`deparse`/`token_*`/`eval_expr`），
+  处理非语法结构；`compile_error` 内置在调用点报错（宏错误传播）；
+- **语句级宏（批次10 任务28）**：展开为语句/块，可定义自定义循环/守卫结构；
+- **跨文件宏（批次10 任务29）**：`pub macro` 可被其他文件 import 使用，未导入引用报错；
+- **编译期常量计算**：宏内 `eval_expr`/常量折叠（`tests/s33_probe/b9_ct_const.tie`）。
+
+## 13. 移动语义与所有权（S1.5 已实现；smove 独立 pass）
+
+变量默认可复制；可用 `move` 显式转移所有权，转移后源变量作废（不可再用）。
+
+```c
+var a = "hello"
+var b = move a        // 所有权移到 b；此后 a 不可用（编译期报「已移动」）
+// println(a)          // 错误：a 已移出
+```
+
+- **smove 独立 pass**（`smove` / `move` 检查）：`TIE_MOVE_CHECK=1` 用其自举整棵
+  compiler/，移动后使用报错；
+- 编译期所有权检查：move 后越界使用 / 双重 move → 编译期报错；
+- 作用域：所有权随作用域结束回收（表/闭包 env 等堆对象请用 move 显式转移所有权）。
+
+## 14. 不安全机制（S1.2 + dev33 批次6）
+
+安全子集之外的能力集中到 `unsafe`：指针/切片、原子与 MMIO、内联汇编、repr(C)、
+以及 2026-08-23 定稿的**凭据门禁**（`#[unsafe.*]` 属性 + `guard<share>`，见 §7 注与
+[docs/designs/concurrency-model.md](designs/concurrency-model.md) §7）。
+
+- **`unsafe fn` / `unsafe { }`**：进入不安全上下文；非 unsafe 路径引用下述能力 → 报错；
+- **指针与切片**：`ptr<T>` / `slice<T>` 类型；`slice_of(表)` 把动态表转连续内存切片
+  （dev33 批次6 任务16）；`*p` 解引 / 偏移；可捕获 panic + 边界防护见负例；
+- **原子与 MMIO**：`atomic<T>`、`atomic_load/atomic_store/atomicrmw/cmpxchg`
+  （`tests/language/atomic_asm.tie`、s21）；`volatile_load / volatile_store`
+  （MMIO 语义，禁止优化删除/合并，`tests/language/volatile_*.tie`）；
+- **内联汇编 asm!**：`asm!("...", 约束, 输入, 输出)`；平台条件编译
+  `asm!(target("arch")) { branch }` 按目标分支 + 无目标平台报错（dev33 批次6 任务17）；
+- **repr(C)**：`#[repr(C)] struct` 固定 ABI 布局（与 C 互操作）；
+- **extern 强制 unsafe**：`extern fn` 声明后需在 unsafe 上下文调用（S1.2）；
+- **角色扩展（S1.4）**：`type tie<logic> + unsafe` 等多角色叠加 / 参数化 / 与文件名
+  一致性校验；
+- **凭据门禁（2026-08-23 定稿，见 concurrency-model §7.1）**：`#[unsafe.share]` /
+  `#[unsafe.trm]` / `#[unsafe.mem]` / `#[unsafe.ext]` 声明属性 + `unsafe.get(share)` /
+  `unsafe use g { }` / `unsafe.with(share) { }` guard 凭据；`#[tag.x]` 标签 + `unsafe goto #x`
+  无条件跳转（§7.1.5）。这些面向打破「状态私有 / 消息串行 / 执行模型」三大边界的越界
+  逃生，属三期并发语法，详情以 concurrency-model §7 与 [unsafe-model.md](plans/unsafe-model.md) 为准。
+
+## 15. 并发：actor（一期并发语法层已实现；多参标量 dev33 批次 B 组落地）
+
+actor 是**原生并发**（零运行时）：`run Typed()` 启动 OS 工作线程，方法调用即跨线程
+**消息传递**，私有状态字段由单消费者串行消费（免锁）。执行层纯编译期降级到
+`CreateThread` + 互斥/条件变量。详见 [docs/designs/concurrency-model.md](designs/concurrency-model.md) §5。
+
+```c
+actor Counter {
+    var count: i64 = 0
+    pub func inc(by: i64) -> i64 { count = count + by; return count }   // 同步 RPC：阻塞等应答
+    pub async func bump(by: i64) { count = count + by }                // async：投递即返回，须 void
+}
+func main() {
+    var c = run Counter()
+    var v = c.inc(5)     // 同步：返回 5
+    c.bump(3)            // async：不阻塞
+}
+```
+
+- **`actor Name { ... }`**：声明 actor；私有状态基元为字段（`var name: Ty [= 默认]`）；
+- **`run Typed()`**：分配 per-actor record + 初始化 OS 锁/条件变量 + 启动工作线程，
+  返回句柄（可复制，Erlang PID 式；`move` 可收紧所有权）；
+- **消息方法**：`pub func m(...) -> R`（同步，阻塞等应答）与
+  `pub async func`（fire-and-forget，**必须 void**）；缺省同步；方法参数限**标量**
+  且支持**多参**（2-3 及更多，实参写 record 消息槽段 @80+k*8）、字段区起 @176；
+- **`?`** （消息方法可在方法体处理失败，处理器 panic → 调用方原地 raise）；
+- **私有状态字段**为 actor 独占（串行消费免锁）；字段初值暂用类型默认值
+  （如 i64=0，显式 `= N` 尚未捕获）；
+- **多参标量（B 组）**：同步 RPC + async 投递均支持多标量实参；宽类型（指针/slice）
+  共享消息属 unsafe 凭据门禁（§7.1.2），安全路径限标量；
+- 句柄 `c.method(...)` 经 dispatch（`actor_disp_<n>`）按 method_id 转给对应 handler。
+
+## 16. 语法速查表
+
+### 16.1 所有关键词
 
 | 关键词         | 用途                       | 示例                           |
 | ----------- | ------------------------ | ---------------------------- |
@@ -1080,10 +1267,33 @@ namespace Dog {
 | `true`      | 布尔真字面量                   | `var b = true`               |
 | `false`     | 布尔假字面量                   | `var b = false`              |
 
+| `code`      | 编译期代码片段（宏参/返回）         | `macro f(x: code) -> code`     |
+| `macro`     | 宏定义（S3.3；#[macro]=过程宏）     | `macro double(x: code) -> code` |
+| `enum`      | ADT 枚举定义（§3.8）              | `enum Color { Red Green }`    |
+| `trit`      | 平衡三进制类型（§3.2）              | `var p: trit = true`          |
+| `zero`      | trit 零字面量（三值 -1/0/+1 的 0）    | `var z: trit = zero`          |
+| `i128`      | 有符号 128 位整数（§16.2）           | `var x: i128 = 42`            |
+| `u128`      | 无符号 128 位整数（§16.2）           | `var x: u128 = 7`             |
+| `num`       | 宽类型：数（§3.3）                 | `var n: num = 42`             |
+| `text`      | 宽类型：文（§3.3）                 | `var s: text = "hi"`          |
+| `misc`      | 宽类型：兜底（§3.3）                | `var c: misc = true`          |
+| `map`       | 键值表类型（§3.4.1）               | `var m: map = ["a":1]`        |
+| `table`     | 表类型（§3.4）                   | `var t: table = [1,2]`        |
+| `actor`     | 并发 actor 声明（§15）             | `actor Counter { }`           |
+| `async`     | actor 异步投递方法（§15）            | `pub async func m() { }`      |
+| `port`      | 接口声明（§10）                   | `port Drawable { }`           |
+| `impl`      | 接口实现（§10）                   | `impl Drawable for Button`    |
+| `unsafe`    | 不安全上下文（§14）                | `unsafe { }` / `unsafe fn f()` |
+| `asm`       | 内联汇编（§14.3）                 | `asm!("mov rax, 0")`          |
+| `repr`      | 布局/ABI（repr(C)，§14.4）         | `#[repr(C)] struct S`         |
+| `goto`      | 无条件跳转（unsafe，#[tag.x] 标签，§14.7） | `unsafe goto #x`            |
+| `panic`     | 打印 + 非零退出（§11）              | `panic("fail")`               |
+| `move`      | 所有权转移（软关键字/上下文，§13）       | `var b = move a`              |
+
 > `let`/`fn` 为早期名称，已分别由 `var`/`const` 与 `func` 取代；`class`/`static`/`this`
 > 已随 M2.1.8 废弃（`struct` 取代 `class`，接收者改为显式首参），均不再作为关键字。
 
-### 9.2 所有类型
+### 16.2 所有类型
 
 | 类型         | 类别    | 说明                       | 对应 LLVM 类型              |
 | ---------- | ----- | ------------------------ | ----------------------- |
@@ -1110,10 +1320,18 @@ namespace Dog {
 | `(T1, T2)` | 复合类型  | 元组（固定长度、元素可异构，可命名）       | 字面结构体 `{T1, T2}`        |
 | `类名`       | 复合类型  | 类实例（值类型对象，P8）            | 字面结构体 `{字段…}`           |
 
+| `i128`     | 基本类型  | 有符号 128 位整数（S2）             | `i128`                  |
+| `u128`     | 基本类型  | 无符号 128 位整数（S2）             | `i128`                  |
+| `fn(A)->R` | 复合类型  | 函数类型（一等函数/闭包，§9）          | 闭包值 `{env,entry}` + 间接调用 |
+| `ptr<T>`   | 复合类型  | 指针（unsafe，§14.1）             | `ptr`                   |
+| `slice<T>` | 复合类型  | 连续内存切片（unsafe，§14.1）        | `{ptr,len}`              |
+| `atomic<T>`| 复合类型  | 原子类型（unsafe，§14.2）          | `i64` + 原子指令           |
+| `Result<T,E>` / `Option<T>` | 标准库 | 错误处理枚举（§11，std/result） | tag+payload 结构体   |
+| `guard<cap>` | 凭据   | move-only 并发凭据（§14.6）       | move-only guard          |
 > 宽类型与 `code`/`table` 均为编译期概念：语义分析阶段展开为具体类型或校验归类，
 > IR 生成阶段不出现。表字面量 `[col, col; row]` 语法见 §3.3；元组语法见 §3.4；类见 §8。
 
-### 9.3 所有符号
+### 16.3 所有符号
 
 | 符号                          | 名称/用途     | 说明                                               |
 | --------------------------- | --------- | ------------------------------------------------ |
@@ -1156,4 +1374,11 @@ namespace Dog {
 | `"..."`                     | 字符串字面量    | 支持转义 `\n` `\t` `\\` `\"` `\'` `\0`               |
 | `'...'`                     | 字符字面量     | 单字符                                              |
 | 数字字面量                       | 整数/浮点     | `42`（i64）、`3.14`（f64）、支持指数 `1.5e-3`              |
+| `?`                         | 错误解包     | `var v = expr ?`（Result/Option 解包，**仅返回 Result/Option 的函数内**，§11） |
+| `` ` ``                     | 准引用       | 宏中代码片段 `` `(expr) `` / `` `{ stmts } ``（§12） |
+| `$x` / `$(expr)`            | 宏插值       | 宏体内插值宏参数（§12）                              |
+| `#[...]`                    | 属性         | `#[macro]` / `#[unsafe.share]` / `#[repr(C)]` / `#[tag.x]`（§12 / §14） |
+| `#x`                        | 标签         | goto 目标：`unsafe goto #x` 配 `#[tag.x]`（§14.7）      |
+| `...`                       | 变参         | `func f(xs: ...i64)` 变参列表（§6）                   |
+| `::`                        | 命名空间路径分隔 | `ns::f`（符号名全名内用 `$` 取代）                      |
 | 标识符                         | 变量/函数名    | `[A-Za-z_][A-Za-z0-9_]*`                         |
