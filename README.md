@@ -92,3 +92,9 @@ tie/
 主入口 `tie`（四段式调度器）与包管理器子命令的完整用法见 [docs/cli.md](docs/cli.md)：
 主入口选项表、`tie init/add/install/publish` 等包管理命令、多文件并行编译、
 库编译（静态库 `.a`/`.lib`）、子工具与 REPL 自举构建。
+
+## License
+
+本仓库按 tie-lang 组织自创的宽松许可证 **TIE-LANG Open Source License v1.0** 授权发布（全文见 [LICENSE](LICENSE)）：你可自由使用、修改并分发本软件源码，包括用于商业产品，仅需保留版权声明并附本许可证；而用该语言开发的自有软件完全归你所有，不附带任何署名义务。
+
+This repository is released under the **TIE-LANG Open Source License v1.0** (full text in [LICENSE](LICENSE)): you may freely use, modify, and redistribute the source code, including in commercial products, provided you retain the copyright notice and a copy of the license; programs you write in the language are entirely your own, with no attribution obligation.

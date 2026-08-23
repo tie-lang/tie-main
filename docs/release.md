@@ -48,7 +48,7 @@
 - `docs/ai-guide.md`（AI 教学指南）
 - `docs/prompt-pack.md`（Prompt 包）
 - `CHANGELOG.md`（版本变更记录）
-- `LICENSE`（MIT）
+- `LICENSE`（自创通用宽松许可证 Open Source License v1.0，覆盖 tie 官方全部仓库）
 
 ### 3.3 示例（examples/）
 
