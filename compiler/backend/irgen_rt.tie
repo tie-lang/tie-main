@@ -436,10 +436,14 @@ func tig_actor_run(id: i64) -> i64 {
         return -1
     }
     var T64 = types.named(TK_I64)
-    // record 大小 = 固定头 112 + 字段区（空则至少 120）
-    var recsz = 112 + sstate.actor_field_bytes(aidx)
-    if recsz < 120 {
-        recsz = 120
+    // B 组固定头：@0 magic|@8 lock(40B)|@48 cv|@56 shutdown|@64 pending|
+    // @72 method_id|@80 args[0..8)（8 槽多参数消息槽）|@144 result|@152 done|
+    // @160 dispatch_addr|@168 fail|@176 字段区起（scollect FIELD_BASE 同步）。
+    var FIELD_BASE = 176
+    // record 大小 = 固定头 176 + 字段区（空则至少 184）
+    var recsz = FIELD_BASE + sstate.actor_field_bytes(aidx)
+    if recsz < 184 {
+        recsz = 184
     }
     var rec = s21_raw_alloc_str(tig_int_lit_ty(recsz, T64))
     if rec < 0 {
@@ -459,10 +463,10 @@ func tig_actor_run(id: i64) -> i64 {
         s21_store(s21_gep(rec, foff, true), dv, fty)
         fk = fk + 1
     }
-    // Step4b-2：pending @64=0、done @96=0、dispatch @104 = actor_disp_<aidx> 地址
+    // Step4b-2（B 组布局）：pending @64=0、done @152=0、dispatch @160 = actor_disp_<aidx> 地址
     s21_store(s21_gep(rec, 64, true), tig_int_lit_ty(0, T64), T64)
-    s21_store(s21_gep(rec, 96, true), tig_int_lit_ty(0, T64), T64)
-    s21_store(s21_gep(rec, 104, true), tig_func_addr("actor_disp_" + to_string(aidx)), T64)
+    s21_store(s21_gep(rec, 152, true), tig_int_lit_ty(0, T64), T64)
+    s21_store(s21_gep(rec, 160, true), tig_func_addr("actor_disp_" + to_string(aidx)), T64)
     // lock @8：InitializeCriticalSection(ptr)
     var lockp = s21_gep(rec, 8, true)  // A_OFF_LOCK = 8
     var ats1: table<i64> = table_new_i64()
@@ -537,11 +541,10 @@ func gen_actor_loop_eager() {
     var shutp = s21_gep(recp, 56, true)
     var pendp = s21_gep(recp, 64, true)
     var midp = s21_gep(recp, 72, true)
-    var argp = s21_gep(recp, 80, true)
-    var resp = s21_gep(recp, 88, true)
-    var donep = s21_gep(recp, 96, true)
-    var dispp = s21_gep(recp, 104, true)
-    var failp = s21_gep(recp, 112, true)
+    var resp = s21_gep(recp, 144, true)
+    var donep = s21_gep(recp, 152, true)
+    var dispp = s21_gep(recp, 160, true)
+    var failp = s21_gep(recp, 168, true)
     var loop = ir.new_block(fid, interner.intern("al.loop"))
     var check = ir.new_block(fid, interner.intern("al.chk"))
     var mb = ir.new_block(fid, interner.intern("al.mb"))
@@ -602,10 +605,9 @@ func gen_actor_loop_eager() {
     tig_ext_call_typed("LeaveCriticalSection", atsL, avsL, -1)
     var bw = ir.new_inst(g_cur_block, 30, -1)  // br loop
     ir.add_operand(bw, loop, 1)
-    // work：取 mid/arg0，清 pending，解锁，setjmp 捕获 handler panic
+    // work：取 mid，清 pending，解锁，setjmp 捕获 handler panic
     g_cur_block = work
     var mid_v = s21_load(midp, T64)
-    var arg_v = s21_load(argp, T64)
     s21_store(pendp, tig_int_lit_ty(0, T64), T64)
     var disp = s21_load(dispp, T64)
     var atsW2: table<i64> = table_new_i64()
@@ -659,8 +661,6 @@ func gen_actor_loop_eager() {
     ir.add_operand(ci, recp, 0)
     ir.add_operand(ci, T64, 2)
     ir.add_operand(ci, mid_v, 0)
-    ir.add_operand(ci, T64, 2)
-    ir.add_operand(ci, arg_v, 0)
     var res = ir.get_value(ci)
     var fA0 = tig_bool_lit(0)
     var stA2 = ir.new_inst(g_cur_block, 22, -1)  // active=0
@@ -747,14 +747,14 @@ func tig_actor_spawn(rec: i64) {
     // 对 TK_STR 返回的错误字符串扫描（strlen HANDLE → 崩溃）
     tig_ext_call_typed("CreateThread", atsC, avsC, types.ptr_of(types.named(TK_I8)))
 }
-// ==================== Step4b-2：actor 方法 dispatch + 同步 RPC ====================
-// per-actor dispatch 函数 `actor_disp_<aidx>`（fn(i64 rec, i64 mid, i64 arg0) -> i64）：
+// ==================== Step4b-2：actor 方法 dispatch + 同步 RPC（B 组多参数） ====================
+// per-actor dispatch 函数 `actor_disp_<aidx>`（fn(ptr env, i64 mid) -> i64）：
 // 按 method_id switch 调用对应 handler（actor_m_<aidx>_<mi>），缺省返回 0。
 // handler 签名 fn(i64 rec, 方法形参...) -> ret，内部把 actor 私有状态字段绑定到
 // record 槽（scope_put 字段 → gep(rec, foff)），再编译方法 body（tig_block_stmts）。
 // 二者于模块生成开始时急切生成（gen_actor_dispatch_eager），run 把 dispatch 地址
-// 存 record @104；@actor_loop 持锁等 pending → 置 0 → 解锁跑 dispatch → 存 result/
-// done → 唤醒调用方。
+// 存 record @160；@actor_loop 持锁等 pending → 置 0 → 解锁跑 dispatch → 存 result@144/
+// done@152 → 唤醒调用方。方法实参从 record 消息槽段 @80+k*8 读出（可变参数）。
 
 // 取 actor 节点的第 mi 个方法 FnDef 节点（children 中按 N_FN_DEF 声明序；字段在前）
 func actor_method_node(anode: i64, mi: i64) -> i64 {
@@ -875,7 +875,6 @@ func gen_actor_dispatch(aidx: i64, anode: i64) -> i64 {
     var params: table<i64> = table_new_i64()
     table_push(params, types.named(TK_STR))  // env（record ptr）
     table_push(params, T64)                  // mid
-    table_push(params, T64)                  // arg0
     var fid = ir.new_func(interner.intern(fname), T64, params)
     g_cur_func = fid
     var entry = ir.new_block(fid, interner.intern("entry"))
@@ -898,7 +897,9 @@ func gen_actor_dispatch(aidx: i64, anode: i64) -> i64 {
     ir.add_operand(recpi, env_p, 0)
     var rec_i64 = ir.get_value(recpi)
     // 生成比较链：rest = 入口块；对每个方法 i，rest 里 icmp eq(mid, i) →
-    // 命中块（调 handler+ret）/ 下一 rest；最后一个 rest = 缺省 ret 0
+    // 命中块（调 handler+ret）/ 下一 rest；最后一个 rest = 缺省 ret 0。
+    // B 组：方法实参从 record 消息槽段（@80 + k*8，k=0..npar-1）读出，
+    // 每参 load i64 后传给 handler（handler 形参 i64 槽）。
     var mi: i64 = 0
     while mi < nmeth {
         // 当前块 icmp eq mid, mi
@@ -922,6 +923,16 @@ func gen_actor_dispatch(aidx: i64, anode: i64) -> i64 {
         var hret = ac_mrets[ac_mret[aidx] + mi]
         var hnpar = ac_mnpars[ac_mpar[aidx] + mi]
         var is_void = (hret == types.named(TK_VOID))
+        // B 组多参数：先把每参从 record 消息槽段（env+80+k*8）load 为 SSA，
+        // 再建 call。call 必须排在所有 gep/load 之后——否则 llvmgen 发射 call
+        // 时实参 SSA 尚未定值，会误输出错误常量（如 @f(ptr 80)）。
+        var argvals: table<i64> = table_new_i64()
+        var ak0: i64 = 0
+        while ak0 < hnpar {
+            var argslot = s21_gep(env_p, 80 + ak0 * 8, true)
+            table_push(argvals, s21_load(argslot, T64))
+            ak0 = ak0 + 1
+        }
         var ty35: i64 = hret
         if is_void {
             ty35 = -1
@@ -931,10 +942,11 @@ func gen_actor_dispatch(aidx: i64, anode: i64) -> i64 {
         ir.add_operand(inst, hret, 2)  // 返回类型 IMM
         ir.add_operand(inst, T64, 2)
         ir.add_operand(inst, rec_i64, 0)  // rec（i64）
-        if hnpar >= 1 {
-            // 一期单参数（arg0 槽）
+        var ak1: i64 = 0
+        while ak1 < len(argvals) {
             ir.add_operand(inst, T64, 2)
-            ir.add_operand(inst, ir.param_val(fid, 2), 0)
+            ir.add_operand(inst, argvals[ak1], 0)
+            ak1 = ak1 + 1
         }
         if is_void {
             var dv = tig_int_lit_ty(0, T64)
@@ -989,12 +1001,13 @@ func gen_actor_dispatch_eager() {
     }
 }
 
-// 调用方同步 RPC 生成：`c.m(args)` → 入队（等 pending 空闲 → 写
-// method_id/arg0/done=0/pending=1 → 解锁唤醒）→ 等 done → 读 result 返回。
+// 调用方同步 RPC 生成：`c.m(args...)` → 入队（等 pending 空闲 → 写
+// method_id/args[k]/done=0/pending=1 → 解锁唤醒）→ 等 done → 读 result 返回。
 // 单条件变量 + 谓词检查免丢唤醒（等 done 时 SleepConditionVariableCS 释放锁，
 // actor 线程可持锁写 result+done+唤醒）。返回结果值 id（void → 0 哑值）。
 // 全部新块归 g_cur_func；result 在 done 块 load，调用方续在同一块追加。
-func gen_actor_sync_call(rech: i64, mi: i64, arg_v: i64, ret_ty: i64, is_async: bool) -> i64 {
+// B 组：args = 各实参 SSA 值表（按声明序），写入 record 消息槽段 @80+k*8。
+func gen_actor_sync_call(rech: i64, mi: i64, args: table<i64>, ret_ty: i64, is_async: bool) -> i64 {
     var T64 = types.named(TK_I64)
     var P = types.named(TK_STR)
     // rec_ptr = inttoptr(rech)
@@ -1005,9 +1018,8 @@ func gen_actor_sync_call(rech: i64, mi: i64, arg_v: i64, ret_ty: i64, is_async: 
     var cvp = s21_gep(rec_ptr, 48, true)
     var pendp = s21_gep(rec_ptr, 64, true)
     var midp = s21_gep(rec_ptr, 72, true)
-    var argp = s21_gep(rec_ptr, 80, true)
-    var resp = s21_gep(rec_ptr, 88, true)
-    var donep = s21_gep(rec_ptr, 96, true)
+    var resp = s21_gep(rec_ptr, 144, true)
+    var donep = s21_gep(rec_ptr, 152, true)
     var is_void = (ret_ty == types.named(TK_VOID))
     // ① 入队：Enter(lock)
     var atsE0: table<i64> = table_new_i64()
@@ -1042,10 +1054,15 @@ func gen_actor_sync_call(rech: i64, mi: i64, arg_v: i64, ret_ty: i64, is_async: 
     tig_ext_call_typed("SleepConditionVariableCS", atsW1, avsW1, types.named(TK_I8))
     var bw1 = ir.new_inst(g_cur_block, 30, -1)
     ir.add_operand(bw1, gate1, 1)
-    // p1：写槽 + 解锁 + 唤醒 + 再入锁
+    // p1：写槽（method_id + 多参数消息槽段 @80+k*8）+ 解锁 + 唤醒 + 再入锁
     g_cur_block = p1
     s21_store(midp, tig_int_lit_ty(mi, T64), T64)
-    s21_store(argp, arg_v, T64)
+    var nargs = len(args)
+    var argk: i64 = 0
+    while argk < nargs {
+        s21_store(s21_gep(rec_ptr, 80 + argk * 8, true), args[argk], T64)
+        argk = argk + 1
+    }
     s21_store(donep, zero64, T64)
     s21_store(pendp, tig_int_lit_ty(1, T64), T64)
     var atsL1: table<i64> = table_new_i64()
@@ -1096,7 +1113,7 @@ func gen_actor_sync_call(rech: i64, mi: i64, arg_v: i64, ret_ty: i64, is_async: 
     // done：读 result / fail；fail≠0 → raise（打印+退出）；否则解锁返回
     g_cur_block = doneb
     var res = s21_load(resp, T64)
-    var failp2 = s21_gep(rec_ptr, 112, true)
+    var failp2 = s21_gep(rec_ptr, 168, true)
     var fv = s21_load(failp2, T64)
     var fz = tig_int_lit_ty(0, T64)
     var isf = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp ne

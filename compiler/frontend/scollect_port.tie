@@ -1051,9 +1051,11 @@ pub func collect_actor_decl(s: i64) -> i64 {
     }
     var n = s_aux[s]   // items 总数
     var i: i64 = 0
-    // 私有状态字段：从记录固定头后（@112，见 irgen tig_actor_run 布局）开始，
-    // 每字段 8 字节槽（标量态统一 8 字节）
-    var field_base: i64 = 112
+    // 私有状态字段：从记录固定头后（B 组布局，见 irgen tig_actor_run）开始。
+    // B 组固定头扩大：@0 magic|@8 lock(40B)|@48 cv|@56 shutdown|@64 pending|
+    // @72 method_id|@80 args[0..8)（8 槽多参数消息槽）|@144 result|@152 done|
+    // @160 dispatch_addr|@168 fail|@176 字段区起 = FIELD_BASE。
+    var field_base: i64 = 176
     var field_off: i64 = field_base
     while i < n {
         var item = sstate.child(s, i)

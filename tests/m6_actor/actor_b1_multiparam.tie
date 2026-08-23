@@ -1,0 +1,48 @@
+type tie<logic>
+// B 组：actor 方法多参数标量消息槽（2-3 参，sync+async）端到端探针。
+// 验证：方法实参按声明序写入 record 消息槽段（@80+k*8），dispatch 读出后
+// 传入 handler。字段全部 0 初始化（待办：非零字段显式初值暂未捕获，见 tig_actor_run
+// 用 tig_default_val 即类型 0——本探针不依赖初值，专注多参数路径）。
+// 当前 actor 模型为单消息槽（pending 标志 + 共享实参槽，无队列），故 async 用
+// 「一发一同步 getter 屏障」保证确定性：get_*() 0 实参不覆盖槽，迫使 actor 先消费
+// 前面 async 的实参再返回（同步 add2/sum3 本就逐个阻塞，天然确定）。
+actor Math {
+    var acc: i64 = 0
+    var n2: i64 = 0
+    var n3: i64 = 0
+    // 2 参同步
+    pub func add2(a: i64, b: i64) -> i64 {
+        n2 = n2 + 1
+        return a + b
+    }
+    // 3 参同步
+    pub func sum3(a: i64, b: i64, c: i64) -> i64 {
+        n3 = n3 + 1
+        return a + b + c
+    }
+    // 2 参 async（fire-and-forget，不阻塞即返回）
+    pub async func mul_async(a: i64, b: i64) {
+        acc = acc + a * b
+    }
+    pub func get_acc() -> i64 {
+        return acc
+    }
+}
+func main() {
+    var m = run Math()
+    var r2 = m.add2(10, 20)
+    println("add2(10,20)=" + to_string(r2))
+    var r3 = m.sum3(1, 2, 3)
+    println("sum3(1,2,3)=" + to_string(r3))
+    m.mul_async(2, 3)        // async 2 参：acc 0+2*3=6
+    var v1 = m.get_acc()     // 0 参同步屏障
+    println("acc#1=" + to_string(v1))
+    m.mul_async(4, 5)        // async 2 参：acc 6+4*5=26
+    var v2 = m.get_acc()     // 0 参同步屏障
+    println("acc#2=" + to_string(v2))
+    if r2 == 30 && r3 == 6 && v1 == 6 && v2 == 26 {
+        println("B 组多参数标量（sync+async）通过")
+    } else {
+        println("B 组失败 r2=" + to_string(r2) + " r3=" + to_string(r3) + " acc=" + to_string(v2))
+    }
+}

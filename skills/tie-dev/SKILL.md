@@ -396,3 +396,26 @@ tie search <关键字> / tie info <包>  # 查询注册表
 - `examples/`：可运行示例（hello / lib_math / switch_pattern / pkg_demo…）
 - `tests/*_probe/`：真实可用代码样例（最新特性语法以此为准）
 - `NEW.md` / `CHANGELOG.md`：发行版新鲜事 / 版本变更记录
+## 15. 并发：actor（消息方法——多参标量 sync/async）
+
+actor 是原生并发原语（零运行时，编译期降到 OS 线程 + 互斥/条件变量）。`run Typed()`
+建句柄，方法调用即跨线程消息。
+
+```tie
+actor Counter {
+    var count: i64 = 0
+    pub func inc(by: i64) -> i64 { count = count + by; return count }   // 同步 RPC：阻塞等应答
+    pub async func bump(by: i64) { count = count + by }                // async：投递即返回，须 void
+}
+var c = run Counter()
+var v = c.inc(5)      // 同步：返回 5
+c.bump(3)             // async：不阻塞
+```
+
+- 消息方法支持**多个标量参数**（2-3 及更多，sync/async 均可）；实参按声明序写入 record
+  消息槽段（@80+k*8），dispatch 读出后传 handler。
+- 同步方法可有返回值；`async` 必须 `void`（无返回值）。
+- 私有状态字段为 actor 独占（串行消费免锁）；字段初值暂用**类型默认值**（如 i64=0），
+  显式初值 `= N` 尚未捕获。
+- 指针/slice 宽类型共享消息属 unsafe 门禁（`#[unsafe.share]` 等，见 concurrency-model §7），
+  安全路径限标量。

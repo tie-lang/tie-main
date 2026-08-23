@@ -208,19 +208,17 @@ func tig_method_call(id: i64) -> i64 {
                 var act_ret = sstate.actor_method_ret(ai2, mname)
                 var rech = s21_load(g_lookup_alloca, types.named(TK_I64))
                 var aoff2 = 1 + sstate.slot_off(id)
-                var a2v: i64 = tig_int_lit_ty(0, types.named(TK_I64))
+                var argtab2: table<i64> = table_new_i64()
                 var a2k = aoff2
                 while a2k < sstate.nchild(id) {
                     var avv = tig_expr(sstate.child(id, a2k))
                     if avv < 0 {
                         return -1
                     }
-                    if a2k == aoff2 {
-                        a2v = avv
-                    }
+                    table_push(argtab2, avv)
                     a2k = a2k + 1
                 }
-                return gen_actor_sync_call(rech, mi2, a2v, act_ret, ac_masync[ac_mret[ai2] + mi2] == 1)
+                return gen_actor_sync_call(rech, mi2, argtab2, act_ret, ac_masync[ac_mret[ai2] + mi2] == 1)
             }
             if types.kind(g_lookup_ty) == K_PORT {
                 // S2.4：port 对象方法调用（动态分发，vtable 间接调用）
@@ -249,19 +247,17 @@ func tig_method_call(id: i64) -> i64 {
             return -1
         }
         var aro = 1 + sstate.slot_off(id)
-        var arv: i64 = tig_int_lit_ty(0, types.named(TK_I64))
+        var argtabr: table<i64> = table_new_i64()
         var ark = aro
         while ark < sstate.nchild(id) {
             var avv = tig_expr(sstate.child(id, ark))
             if avv < 0 {
                 return -1
             }
-            if ark == aro {
-                arv = avv
-            }
+            table_push(argtabr, avv)
             ark = ark + 1
         }
-        return gen_actor_sync_call(rrec, rmi, arv, rret, ac_masync[ac_mret[rai] + rmi] == 1)
+        return gen_actor_sync_call(rrec, rmi, argtabr, rret, ac_masync[ac_mret[rai] + rmi] == 1)
     }
     var prefix = sinfer.recv_path_name(recv)
     if prefix == "" {

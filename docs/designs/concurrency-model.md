@@ -110,6 +110,9 @@ run Logger().log("start")                    // 语句位 run → fire-and-forge
 | `pub async func m(…)` | 异步投递：入队即返回（fire-and-forget）| 必须 `void` |
 
 - **缺省 = 同步（默认路径，不强制写关键字）**；需要 fire-and-forget 才显式 `async`。
+- 消息方法支持**多个标量参数**（2-3 及更多，sync/async 均支持）：实参按声明序写入
+  record 消息槽段（@80+k*8），dispatch 读出后传 handler。指针/slice 等宽类型的
+  共享消息仍属 unsafe 门禁（见 §7.1.2），安全路径限标量。
 
 ### 5.3 句柄：可复制 + 可选 move
 
@@ -251,7 +254,7 @@ var og = unsafe.get(share -> table_ptr) // 对象绑定：只能碰这张表，�
 }
 ```
 
-- 安全 actor 保持**单参标量**（一期）；unsafe 声明的方法开 **多参数 + `ptr<T>`/`slice<T>`**。
+- 安全 actor 消息方法已支持**多参标量**（sync/async，消息槽 @80+k*8）；unsafe 声明的方法开 **多参数 + `ptr<T>`/`slice<T>`**（宽类型共享消息，后续落地）。
 - **move 所有权**：指针/slice 参数 move 进消息队列（所有权转移），结果 move 回调用方，
   跨 actor 零拷贝共享缓冲（复用移动语义底座）。
 - 仅 `#[unsafe.share]` / unsafe 上下文方法可用指针参数；安全路径不暴露指针消息。
