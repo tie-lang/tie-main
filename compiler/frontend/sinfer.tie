@@ -1500,6 +1500,53 @@ pub func infer_generic_struct_construct(full_name: string, gti: i64, id: i64, ar
 }
 
 // 方法调用推断（命名空间函数 / struct 方法转发 / 枚举变体构造）
+// 三期 A 组 guard<cap> 委派（第1批同域派生）：`g.delegate(cap')` → guard<cap'>。
+// 同域规则：cap' == cap_of_g 才合法（跨域/衰减序留后续批次）。接收者 g 被 move
+// 消费（smove 标记 moved，见 smove.check_method_call）。能力实参 = 标识符，无运行时。
+func infer_guard_method(gty: i64, mname: string, args: table<i64>, id: i64) -> i64 {
+    if mname != "delegate" {
+        sm_err_line = s_lines[id]
+        sm_err_col = s_cols[id]
+        sm_err_msg = "guard<cap> 不支持方法 '" + mname + "'（支持: delegate）"
+        return -1
+    }
+    if len(args) != 1 {
+        sm_err_line = s_lines[id]
+        sm_err_col = s_cols[id]
+        sm_err_msg = "guard<cap>.delegate 期望 1 个能力名参数（share/mem/ext），实际 " + to_string(len(args)) + " 个"
+        return -1
+    }
+    var a0 = args[0]
+    var capn = ""
+    if s_tags[a0] == S_N_VAR {
+        capn = sstate.name_str(a0)
+    }
+    var capidx: i64 = -1
+    if capn == "share" {
+        capidx = 0
+    } else if capn == "mem" {
+        capidx = 1
+    } else if capn == "ext" {
+        capidx = 2
+    }
+    if capidx < 0 {
+        sm_err_line = s_lines[id]
+        sm_err_col = s_cols[id]
+        sm_err_msg = "guard.delegate 的能力域必须是 share/mem/ext，实际是 '" + capn + "'"
+        return -1
+    }
+    var src = types.guard_cap(gty)
+    if src != capidx {
+        sm_err_line = s_lines[id]
+        sm_err_col = s_cols[id]
+        sm_err_msg = "guard<" + types.guard_cap_name(gty) + "> 不能委派为 guard<" + capn + ">（delegate 第1批仅同域派生）"
+        return -1
+    }
+    var gt = types.guard_of(capidx)
+    node_types[id] = gt
+    g_typed = g_typed + 1
+    return gt
+}
 pub func infer_method_call(id: i64) -> i64 {
     // MethodCall 接收者 = children[slot_off]（新布局 children[0]=泛型槽→偏移 1；
     // 旧布局无槽→children[0]=接收者。slot_off 统一判定保证自举双兼容）
@@ -1551,6 +1598,9 @@ pub func infer_method_call(id: i64) -> i64 {
         } else if types.kind(rt2) == K_PORT {
             // S2.4：port 对象方法调用（动态分发，vtable 间接调用）
             return infer_port_method(rt2, mname, args, id)
+        } else if types.is_guard(rt2) {
+            // 三期 A 组：guard<cap>.delegate(cap') 同域派生（第1批，最小权限移交）
+            return infer_guard_method(rt2, mname, args, id)
         } else if rt2 == types.named(TK_STR) && mname == "chars" {
             // 字符串码点迭代器：`s.chars()` 是 for-in 专用（S2.1 后置语法糖，
             // dev33 批次4）。无实参；返回类型 = string（单字符元素，语义层

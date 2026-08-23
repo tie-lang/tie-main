@@ -1,9 +1,10 @@
 # guard<cap> 凭据委派（delegate）设计——第 1 批：同域派生
 
 - **日期**：2026-08-23
-- **状态**：设计定稿（待评审）
+- **状态**：已实现并验证通过（第1批，2026-08-23）
 - **范围**：仅实现 `g.delegate(cap')` 委派/衰减操作，**同域派生**；不做 branch/revoke/audit（后续批次）。
 - **依据**：concurrency-model §7.1.1 / unsafe-model §13.2 CommonOps（`var g2 = g.delegate(mem)`）。
+- **实现备注**：为使 `func h(…, g: guard<cap>)` 帮手参数可用，同步新增了 `guard<cap>` **表层类型语法**（sgen.parse_generic_type_node，cap=share/mem/ext 能力名），并按 crate 约定把 `types.guard_cap_name` 提升为 pub。
 
 ## 1. 背景与现状
 

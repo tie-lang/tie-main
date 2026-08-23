@@ -466,6 +466,16 @@ func check_method_call(e: i64) -> i64 {
         return 0
     }
     var sig = sstate.fn_sig(full)
+    // 三期 A 组 delegate（第1批同域）：guard 接收者被 move 消费（move 式派生）。
+    // 标记接收者变量已 move；同域/能力名校验在 sinfer。能力实参无运行时/无移动。
+    if fnm == "delegate" {
+        var recv_d = sstate.child(e, sstate.slot_off(e))
+        var dnid = var_nid(recv_d)
+        if dnid >= 0 && var_is_const(dnid) == 0 {
+            sstate.lv_moved_mark(dnid)
+        }
+        return 0
+    }
     // 接收者：按引用（不移动）——只做读取检查（方法内改动不属移动）
     // （recv 已在函数开头解析，供命名空间判断与借用特判共用）
     var r = check_expr_read(recv)

@@ -1,0 +1,8 @@
+type tie<logic>
+// guard.delegate 非法能力名负例：能力域必须是 share/mem/ext。
+func main() {
+    unsafe {
+        var g = unsafe.get(share)
+        var g2 = g.delegate(bogus)   // 期望：能力域必须是 share/mem/ext
+    }
+}

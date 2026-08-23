@@ -165,6 +165,16 @@ func tig_user_call_from(full: string, id: i64, arg_start: i64) -> i64 {
 // 方法调用（MethodCall，tag 18）：receiver + 方法名 → 命名空间函数全名。
 // receiver 是 Path/Var/FieldAccess 链（未绑定）→ ns 调用；绑定实例 → struct
 // 方法转发（obj.method() → StructName::method(obj, ...)，语义层已校验签名）。
+// 三期 A 组 guard<cap> 委派生成（第1批同域）：guard 无运行时表示（LLVM=i64 占位 0）。
+// delegate 只校验方法名并返回占位 0（能力实参为标识符，无运行时求值；同域/能力名由
+// sinfer 校验，smove 标记接收者 moved）。
+func tig_guard_method(recv: i64, gty: i64, mname: string, id: i64) -> i64 {
+    if mname != "delegate" {
+        sm_err_msg = "guard<cap> 不支持方法 '" + mname + "'（函数 " + g_cur_fn_name + "）"
+        return -1
+    }
+    return tig_int_lit(0)
+}
 func tig_method_call(id: i64) -> i64 {
     // MethodCall 接收者 = children[slot_off]（新布局 children[0]=泛型槽→偏移 1）
     var recv = sstate.child(id, sstate.slot_off(id))
@@ -188,6 +198,10 @@ func tig_method_call(id: i64) -> i64 {
             if types.kind(g_lookup_ty) == K_ATOMIC {
                 // S1.2 A1 atomic<T> 内置方法（c.load() / c.fetch_add(1, Relaxed)）
                 return tig_atomic_method(recv, g_lookup_ty, mname, id)
+            }
+            if types.is_guard(g_lookup_ty) {
+                // 三期 A 组：guard<cap>.delegate(cap') 同域派生（第1批，纯类型 + move）
+                return tig_guard_method(recv, g_lookup_ty, mname, id)
             }
             if types.kind(g_lookup_ty) == K_STRUCT {
                 var si = g_lookup_ty - BASE_STRUCT

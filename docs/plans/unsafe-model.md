@@ -376,4 +376,4 @@ func h(buf: ptr<i64>, g: guard<mem>)     // 参数最小权限：给多少用多
 
 - 先落 `guard<share>`（并发逃生，与一期 actor 咬合）：
   `unsafe.get(share)` / `unsafe use g {}` / `unsafe with(share) {}` / `#[unsafe.share]`。
-- mem/ext 及委派/对象绑定/层级回收/审计随三期推进，语法在 13.2 已定稿。
+- 委派已落地第1批（同域派生，`g.delegate(cap)` 需 cap 与源同域，move 消费源；含 `guard<cap>` 类型语法），跨域衰减/对象绑定/层级回收/审计仍随三期推进，语法在 13.2 已定稿。

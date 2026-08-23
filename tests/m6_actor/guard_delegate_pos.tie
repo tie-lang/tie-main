@@ -1,0 +1,27 @@
+type tie<logic>
+// tests/m6_actor/guard_delegate_pos.tie —— 三期 A 组 guard<cap>.delegate 第1批：同域派生。
+// 验证：g.delegate(share) 派生 guard<share>，move 消费源 g；派生凭据 move 交给
+// unsafe 帮手持证越界。guard 运行期无操作（编译期门禁），LLVM=i64 占位 0。
+// 预期：shared=2 / guard delegate 同域派生通过
+var shared: i64 = 0
+
+unsafe fn bump(by: i64, c: guard<share>) -> i64 {
+    unsafe use c {
+        shared = shared + by
+    }
+    return shared
+}
+
+func main() {
+    unsafe {
+        var g = unsafe.get(share)
+        var g2 = g.delegate(share)   // 同域派生，move 消费源 g（TIE_MOVE_CHECK 时 g 作废）
+        var v = bump(2, g2)          // 派生凭据交帮手持证越界
+        println("shared=" + to_string(v))
+    }
+    if shared == 2 {
+        println("guard delegate 同域派生通过")
+    } else {
+        println("guard delegate 失败 shared=" + to_string(shared))
+    }
+}

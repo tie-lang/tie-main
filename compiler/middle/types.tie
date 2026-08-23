@@ -386,6 +386,10 @@ pub func set_actor_name(idx: i64, nm: string) {
 pub func guard_of(cap: i64) -> i64 {
     return BASE_GUARD + cap
 }
+// guard 能力域索引（0=share 1=mem 2=ext，与 guard_of 编码一致）
+pub func guard_cap(t: i64) -> i64 {
+    return low(t)
+}
 // guard 判据：kind == K_GUARD（13<<40 段）。
 pub func is_guard(t: i64) -> bool {
     if kind(t) == K_GUARD {
@@ -394,7 +398,7 @@ pub func is_guard(t: i64) -> bool {
     return false
 }
 // guard 能力域名（type_name 用）：share / mem / ext
-func guard_cap_name(t: i64) -> string {
+pub func guard_cap_name(t: i64) -> string {
     var c = low(t)
     if c == 0 {
         return "share"

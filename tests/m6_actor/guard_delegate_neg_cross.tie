@@ -1,0 +1,8 @@
+type tie<logic>
+// guard.delegate 跨域负例：第1批仅同域派生，share → mem 应编译期报错。
+func main() {
+    unsafe {
+        var g = unsafe.get(share)
+        var g2 = g.delegate(mem)   // 期望：仅同域派生报错
+    }
+}
