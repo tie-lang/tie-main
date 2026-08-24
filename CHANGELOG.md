@@ -36,6 +36,22 @@
 - **验证**：正/负例均达期望；m5-dynlib 回归 6 项全绿（动态库链路不受影响）；
   自举（tiec 编译 driver → tiec2）通过。
 
+---## [修复] extern 声明无函数体越界读——深层/多导入假报「语句只能出现在文件顶层」（S10）
+
+`frontend/scheck.tie` `check_fn` 对**每个已登记函数**（含 `unsafe extern` 无函数体声明）求函数体时，
+`child(fn_node, slot_off+1+nparams)` 在下标 == `nchild` 处**越界读**。单/浅导入时越界落空（-1）
+侥幸通过；当跨文件 import 展开使节点表增长（如 trm 平台桥 `impl-win32` 的多层/多库导入）时，越界落入
+**其它文件顶层节点**（tag=namespace/struct/extern），被 `check_stmt` 误报「语句只能出现在文件顶层」。
+
+- **修复**：`check_fn` 在取函数体前加守卫 `slot_off+1+nparams >= nchild` → 无函数体声明（extern）
+  直接返回（goto 表为空，语义等价）。真实函数恒有 body 子节点，该分支绝不误伤。
+- **影响**：解锁 trm 平台桥经库里层传递导入接入 main 汇总（`lib/terminal → impl-win32`，深层多库）；
+  单文件/单层导入行为不变。
+- **验证**：trm `main.tie`（8 库 + platform 传递导入 + `trm_terminal.is_tty`）编译 rc=0 运行通过；
+  自举（driver → tiec）Stage-2 稳定；m5-dynlib 回归 8/8 全绿；language 正/负例无回归。
+- **遗留（默认关闭）**：`smove.check_fn_walk` 对 extern 有同类越界隐患，受 `TIE_MOVE_CHECK=1`
+  门控（默认关），未改动以免越界扩面。
+
 ---## [新增] 动态库边界扩展——slice<T> + repr(C) pod struct 跨库（S10 扩展链面）
 
 M5 动态库（`--shared`/`.dll`）的导出边界从「仅标量 + string」扩展为**标量 + string +

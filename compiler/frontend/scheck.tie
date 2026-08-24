@@ -1374,6 +1374,13 @@ pub func check_fn(fn_node: i64, full: string) -> i64 {
     }
     // 函数体：children[slot_off + 1 + nparams]
     var body = sstate.child(fn_node, sstate.slot_off(fn_node) + 1 + nparams)
+    // 无函数体声明（如 extern 声明）：body 子节点不存在（index == nchild），
+    // child() 越界读会把相邻/后续节点（import 多时常为其它文件顶层节点的 tag）
+    // 误当函数体成员扫到 → 假报「语句只能出现在文件顶层」。声明无需检查体，
+    // 直接返回（goto 表为空，check_goto_refs 亦为空操作，语义等价）。
+    if sstate.slot_off(fn_node) + 1 + nparams >= sstate.nchild(fn_node) {
+        return 0
+    }
     // S1.2：unsafe 函数体内开启 unsafe 上下文（safe 代码进 unsafe fn 已被调用
     // 检查拦截；unsafe fn 内部零标记触底）
     var saved_depth = g_unsafe_depth
