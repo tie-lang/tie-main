@@ -107,15 +107,29 @@ func tig_user_call_from(full: string, id: i64, arg_start: i64) -> i64 {
         var ek: i64 = 0
         while ek < len(argvals) {
             var ety: i64 = types.named(TK_I64)
+            var eav = argvals[ek]
             if ek < nparams {
                 if argisref[ek] == 1 {
                     ety = types.named(TK_STR)   // ref 实参：槽地址 → ptr
                 } else {
                     ety = ptys[ek]
+                    // S1.3 C2/C3：extern 形参（数字族）≠ 实参表达式类型 → 转换
+                    // （与 op35 普通调用同套逻辑；否则 i64 字面量传给 i32/BOOL 形参
+                    // 会在 opt 报 '%X' defined i64 but expected i32，如 CreateProcessW bInheritHandle）
+                    var an2 = sstate.child(id, arg_start + ek)
+                    var at3 = node_types[an2]
+                    if ety >= 0 && at3 >= 0 && (types.is_int(ety) || types.is_float(ety)) &&
+                        (types.is_int(at3) || types.is_float(at3)) && ety != at3 {
+                        var ac2 = tig_coerce(eav, at3, ety)
+                        if ac2 < 0 {
+                            return -1
+                        }
+                        eav = ac2
+                    }
                 }
             }
             table_push(etys, ety)
-            table_push(evs, argvals[ek])
+            table_push(evs, eav)
             ek = ek + 1
         }
         // extern 返回 void 时 ret_ty 恒为 TK_VOID，tig_ext_call_typed 建 void 指令

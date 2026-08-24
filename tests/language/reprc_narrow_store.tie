@@ -1,0 +1,16 @@
+type tie<logic>
+// repr(C) 窄字段 struct store 回归（S10）：默认/零值初始化的窄字段（u32/i16）store
+// 必须收窄到 i32/i16——修复前 `Pod()` 默认填充对各窄字段发 `store i32 %i64` 致
+// opt 类型不匹配（%X defined i64 but expected i32）。本文件编译通过即验收。
+repr(C) struct Pod {
+    var a: u32 = 0
+    var b: i16 = 0
+    var c: i64 = 0
+}
+func main() {
+    var q: Pod = Pod()          // 默认窄字段零值填充（曾崩 opt）
+    q.a = as_u32(300)
+    q.b = as_i16(7)
+    q.c = 42
+    println("narrow struct store ok")
+}

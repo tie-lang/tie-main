@@ -433,31 +433,55 @@ func tig_struct_construct(id: i64, nm: string) -> i64 {
     while i < nf {
         var fty = fld_tys[off + i]
         var v: i64 = -1
+        var vt: i64 = -1  // v 的来源类型：窄整数字段按 fty 收窄的依据
         if i < nc {
             v = tig_expr(sstate.child(id, soff + i))
             if v < 0 {
                 return -1
             }
-            // S1.3 窄整数字段：实参值按字段类型转换（i64 字面量 → i32 字段）
             var an = sstate.child(id, soff + i)
-            var at = node_types[an]
-            if at >= 0 && (types.is_int(at) || types.is_float(at)) &&
-                (types.is_int(fty) || types.is_float(fty)) && at != fty {
-                var cv = tig_coerce(v, at, fty)
-                if cv < 0 {
-                    return -1
-                }
-                v = cv
-            }
+            vt = node_types[an]
         } else if off + i < len(fld_defs) && fld_defs[off + i] >= 0 {
             // 字段默认值（`var y: i64 = 10` → Point(5) 缺省 y 用 10）
             v = tig_expr(fld_defs[off + i])
             if v < 0 {
                 return -1
             }
+            // 默认值多数字面量：语义已把字面量节点类型收窄为字段类型（node_types
+            // == fty），但 tig_expr 对整型字面量恒定产出 i64（浮点 f64）。故按
+            // 实际产出类型定 vt：int fty → i64，float fty → f64，其余与 fty 一致。
+            if types.is_int(fty) {
+                vt = types.named(TK_I64)
+            } else if types.is_float(fty) {
+                vt = types.named(TK_F64)
+            } else {
+                vt = fty
+            }
         } else {
             // 无默认值字段：零值（i64=0 / string 空串指针 / bool false）
             v = tig_default_val(fty)
+            // 零值来源类型：tig_default_val 对整数落 i64 零（仅 i8 特例直接用
+            // 字段类型），f32/f64 → f64 零；string/bool/聚合等与 fty 匹配。
+            if types.is_float(fty) {
+                vt = types.named(TK_F64)
+            } else if fty == types.named(TK_I8) {
+                vt = fty
+            } else if types.is_int(fty) {
+                vt = types.named(TK_I64)
+            } else {
+                vt = fty
+            }
+        }
+        // S1.3 窄整数字段：无论来源（实参/默认值/零值），store 前统一按字段
+        // 类型收窄。修复：tig_default_val / 默认字面量对 u32/u16 等返回 i64，
+        // 直接 store 到窄字段致 LLVM 类型不匹配（opt: '%X' defined i64 but expected i32）。
+        if vt >= 0 && (types.is_int(vt) || types.is_float(vt)) &&
+            (types.is_int(fty) || types.is_float(fty)) && vt != fty {
+            var cv = tig_coerce(v, vt, fty)
+            if cv < 0 {
+                return -1
+            }
+            v = cv
         }
         var gp = ir.new_inst(g_cur_block, 27, agg)  // agg_gep
         ir.add_operand(gp, ap, 0)

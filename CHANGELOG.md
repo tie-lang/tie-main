@@ -52,6 +52,22 @@
 - **遗留（默认关闭）**：`smove.check_fn_walk` 对 extern 有同类越界隐患，受 `TIE_MOVE_CHECK=1`
   门控（默认关），未改动以免越界扩面。
 
+---## [修复] repr(C) 窄字段 struct store 未收窄 + extern 实参未收窄（S10）
+
+两处 codegen 缺陷：窄整数字段/形参值未按目标类型截断，导致 `opt: '%X' defined i64 but
+expected i32`。
+
+- **struct 默认/零值字段 store**：`backend/irgen_agg.tie` `tig_struct_construct` 的窄整数收窄
+  （tig_coerce）原只作用于「构造实参」分支；「字段默认值」「零值」分支的 `v` 对 u32/u16 等
+  是 i64（`tig_default_val`/默认字面量恒产 i64 零），直接 `store i32 %i64` 类型不匹配。修复：
+  收窄提取为逐字段通用，按来源分支正确取 `vt`（实参→node_types；默认/零值→按 fty 产 i64/f64），
+  store 前统一 tig_coerce（含 i8 特例）。
+- **extern 实参收窄**：`backend/irgen_call.tie` extern 分支缺 op35 已具备的 S1.3 数字形参收窄，
+  i64 字面量传给 i32/BOOL 形参（如 `CreateProcessW(bInheritHandle: BOOL)`）崩 opt。修复：镜像
+  op35 的 tig_coerce(node 类型, 形参类型) 逻辑到 extern 分支。
+- **验证**：自举三次重建 + 二次自举（新 tiec 重编 driver 逐字节一致）；trm 平台桥 `StartupInfoW`
+  等窄字段 struct 均能干净编译（.a/.dll）；m5-dynlib 8/8；s21 无新增失败。
+
 ---## [新增] 动态库边界扩展——slice<T> + repr(C) pod struct 跨库（S10 扩展链面）
 
 M5 动态库（`--shared`/`.dll`）的导出边界从「仅标量 + string」扩展为**标量 + string +
