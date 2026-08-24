@@ -59,9 +59,29 @@ if (Test-Path $TmpDll) {
     Report $false "步骤3：无 .dll 可做 C 冒烟"
 }
 
-# ---- 4. 边界负例：--shared + 导出表参数/struct 返回应拒 ----
+# ---- 4. 边界负例：--shared + 导出 table 参数/非 pod struct 返回应拒 ----
 & $Tiec (Join-Path $Root 'tests\m5_dynlib\dynlib_boundary_neg.tie') --shared -o (Join-Path $Tmp 'bnd.dll') *> $null
-Report ($LASTEXITCODE -ne 0) "步骤4：边界负例（导出 table 参数/struct 返回）被拒绝"
+Report ($LASTEXITCODE -ne 0) "步骤4：边界负例（导出 table 参数/非 pod struct 返回）被拒绝"
+
+# ---- 4b. 边界正例（S10 扩展链面）：slice<T> + repr(C) pod struct 可跨库 ----
+$PosDll = Join-Path $Tmp 'dynbound_pos.dll'
+if (Test-Path $PosDll) { Remove-Item $PosDll }
+& $Tiec (Join-Path $Root 'tests\m5_dynlib\dynbound_pos.tie') --shared -o $PosDll *> $null
+if ($LASTEXITCODE -eq 0 -and (Test-Path $PosDll)) {
+    $psyms = & $ro --coff-exports $PosDll 2>&1 | Out-String
+    Report ($psyms.Contains('dynbound_pos$sum_slice') -and $psyms.Contains('dynbound_pos$pod_add')) "步骤4b：slice + pod struct 导出面（sum_slice/pod_add）"
+    $posExe = Join-Path $Tmp 'dynbound_c.exe'
+    if (Test-Path $posExe) { Remove-Item $posExe }
+    & clang (Join-Path $Root 'tests\m5_dynlib\dynbound_c.c') -o $posExe *> $null
+    if (Test-Path $posExe) {
+        $pout = & $posExe $PosDll 2>&1 | Out-String
+        Report ($LASTEXITCODE -eq 0 -and $pout.Contains('C 冒烟全部通过')) "步骤4c：slice/pod struct 跨库 C 冒烟（ABI 一致）"
+    } else {
+        Report $false "步骤4c：dynbound_c.c 编译失败（clang 不可用？）"
+    }
+} else {
+    Report $false "步骤4b：slice/pod struct 动态库编译失败"
+}
 
 # ---- 5. --shared + logic 角色应拒 ----
 & $Tiec (Join-Path $Root 'examples\hello.tie') --shared -o (Join-Path $Tmp 'x.dll') *> $null

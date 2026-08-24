@@ -1,0 +1,29 @@
+type tie<class>
+// tests/m5_dynlib/dynbound_pos.tie —— M5 动态库边界正例（S10 扩展链面）
+// 动态库模式下导出 slice<T> 形参与 repr(C) pod struct 形参：均允许跨边界，且
+// LLVM 签名 C ABI 兼容（slice → {ptr,len}，pod → %struct.xxx 按值）。
+// 由 scripts/regress-m5-dynlib.ps1 校验：`--shared` 编译成功 + 导出面核验。
+
+// pod struct：字段全为标量（布局确定、可序列化跨边界）
+repr(C) struct Pod {
+    var a: i64 = 0
+    var b: i64 = 0
+}
+
+namespace dynbound_pos {
+// slice<i64> 形参：{ptr,len}，跨边界读取元素
+pub unsafe func sum_slice(s: slice<i64>) -> i64 {
+    var total: i64 = 0
+    var i: i64 = 0
+    while i < slice_len(s) {
+        total = total + slice_index(s, i)
+        i = i + 1
+    }
+    return total
+}
+
+// repr(C) pod struct 值形参：按值传递
+pub func pod_add(p: Pod) -> i64 {
+    return p.a + p.b
+}
+}

@@ -36,6 +36,22 @@
 - **验证**：正/负例均达期望；m5-dynlib 回归 6 项全绿（动态库链路不受影响）；
   自举（tiec 编译 driver → tiec2）通过。
 
+---## [新增] 动态库边界扩展——slice<T> + repr(C) pod struct 跨库（S10 扩展链面）
+
+M5 动态库（`--shared`/`.dll`）的导出边界从「仅标量 + string」扩展为**标量 + string +
+`slice<T>` + repr(C) pod struct**，落实 trm 最终设计 §6.2「扩展链面」与 §9 的改点
+（把 M5 pipeline 序的边界负例升级为正例）。
+
+- **边界判定**：`backend/irgen.tie` `dynlib_ty_ok` 新增放行——`slice<T>`（`{ptr,len}`，
+  C ABI 良定义）与 strict pod struct；新增 `is_repr_c_pod`（字段全为标量 int/float/bool/
+  trit/char 的 K_STRUCT，布局确定、无指针/嵌套可序列化）；表/map/enum/非 pod struct 仍拒；
+- **ABI**：slice 签名发为 `{ ptr, i64 }`，pod struct 发为 `%struct.X`（按值），与
+  x64 Win64 C 调用约定一致；
+- **回归**：负例 `dynlib_boundary_neg.tie` 的 struct 改含 string 字段（非 pod，仍拒）；
+  新增正例 `dynbound_pos.tie`（sum_slice/pod_add）+ C 冒烟 `dynbound_c.c`（LoadLibrary
+  调用，验证 ABI 端到端）；
+- **验证**：m5-dynlib 回归 8 项全绿（新增 4b 导出面 / 4c C 冒烟）；自举通过。
+
 ---## [新增] M5 动态库编译——tie 库 → .dll/.so + dllexport 导出面（dev33 批次 12）
 
 tie 库（`type tie<class>`）可编译为**动态库**（Windows `.dll` / Linux `.so`），

@@ -636,10 +636,11 @@ pub func set_dynlib(v: bool) {
     g_dynlib = v
 }
 
-// 动态库边界类型检查（任务 36）：仅标量（整数/浮点/bool/trit/char）与 string
-// 可跨动态库边界；void 仅作返回类型。表/map/struct/enum/元组/函数值/port 的
-// 堆布局跨语言不可见（内部堆结构，见 docs/plans/dynamic-library.md）→ 违例
-// 返回错误消息（空串 = 允许）。
+// 动态库边界类型检查（任务 36 + S10 扩展）：标量 + string + slice<T> + repr(C) pod
+// struct 可跨动态库边界；void 仅作返回类型。
+//   - slice<T>：{ptr,len} 两 i64，C ABI 良定义（如 {uintptr_t, size_t}）；
+//   - repr(C) pod struct：仅标量/固定长数组/嵌套 pod，布局明确可序列化；
+// 表/map/enum/元组/函数值/port 的堆布局跨语言不可见 → 违例返回错误消息（空串 = 允许）。
 func dynlib_ty_ok(t: i64) -> string {
     if t == types.named(TK_VOID) {
         return ""
@@ -653,7 +654,49 @@ func dynlib_ty_ok(t: i64) -> string {
     if t == types.named(TK_BOOL) || t == types.named(TK_TRIT) || t == types.named(TK_CHAR) {
         return ""
     }
-    return "类型 '" + types.type_name(t) + "' 不能跨动态库边界（仅标量与 string 可跨库）"
+    // S10 扩展链面：slice<T> = {ptr,len}（指针+长度两个 i64，跨边界布局确定）
+    if types.kind(t) == K_SLICE {
+        return ""
+    }
+    // S10 扩展链面：repr(C) pod struct（固定 C 内存布局，字段仅标量）
+    if is_repr_c_pod(t) {
+        return ""
+    }
+    return "类型 '" + types.type_name(t) + "' 不能跨动态库边界（仅标量/string/slice/repr(C) pod struct 可跨库）"
+}
+
+// S10：strict pod struct 判定（跨动态库边界的 repr(C) pod）。
+// tie struct 后端即 C 布局；repr(C) 标记未传播到类型注册表，故此处按
+// 「全部字段为标量（int/float/bool/trit/char）」做保守 pod 校验——布局确定、
+// 无指针/slice/嵌套，可安全序列化跨边界。含任何非标量字段 → false。
+func is_repr_c_pod(t: i64) -> bool {
+    if types.kind(t) != K_STRUCT {
+        return false
+    }
+    var idx = t - BASE_STRUCT
+    if idx < 0 || idx >= len(cls_nfld) {
+        return false
+    }
+    var n = cls_nfld[idx]
+    if n <= 0 {
+        return false
+    }
+    var off = cls_fldoff[idx]
+    var k: i64 = 0
+    while k < n {
+        var ft = fld_tys[off + k]
+        var pod: bool = false
+        if types.is_int(ft) || types.is_float(ft) {
+            pod = true
+        } else if ft == types.named(TK_BOOL) || ft == types.named(TK_TRIT) || ft == types.named(TK_CHAR) {
+            pod = true
+        }
+        if !pod {
+            return false
+        }
+        k = k + 1
+    }
+    return true
 }
 
 // 平台名匹配：全等（三元组直写）或架构前缀（"x86_64" 匹配 "x86_64-*"）。
