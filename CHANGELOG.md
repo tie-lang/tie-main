@@ -19,6 +19,16 @@
 
 逐一细节见下方随提交累积的条目（本条为版本汇总）。
 
+---
+
+## Harbor-2026.1-preview.5（未发布，开发中）
+
+> **preview.5 开发中**：trm 平台桥与动态库扩展链面——extern 指针/切片桥接、动态库边界
+> （`slice<T>` + repr(C) pod struct 跨库）、深层/多导入越界读修复、repr(C) 窄字段 struct
+> store 修复等；详见下方随提交累积条目。
+
+---
+
 ---## [新增] extern 参数/返回扩展 ptr<T>/slice<T>——平台桥指针桥接解锁（S10）
 
 `unsafe extern fn` 的参数/返回边界从「仅标量 + string」扩展为**标量 + string + `ptr<T>` +
