@@ -1,0 +1,116 @@
+type tie<logic>
+// 结构化 CreateProcessW 管道（跑通验收）：repr(C) struct（STARTUPINFOW/
+// PROCESS_INFORMATION）经 addr_of 以 ptr 传给 Win32；CreatePipe 建管道，
+// SetHandleInformation 把写句柄置为可继承（现代推荐做法，避开 lpPipeAttributes
+// 继承路径）；父进程捕获子进程 stdout。
+// 命令行走 UTF-16 手拼：tie string 是 UTF-8 char*，CreateProcessW 的
+// LPCWSTR 需 UTF-16LE——用窄字段窄位 store（repr(C) 收窄，回归点）逐字节写
+// i16 word。可选指针形参按 i64 传 0（Win64 寄存器等宽 = 空指针）。
+repr(C) struct STARTUPINFOW {
+    var cb: u32 = 0
+    var lpReserved: i64 = 0
+    var lpDesktop: i64 = 0
+    var lpTitle: i64 = 0
+    var dwX: u32 = 0
+    var dwY: u32 = 0
+    var dwXSize: u32 = 0
+    var dwYSize: u32 = 0
+    var dwXCountChars: u32 = 0
+    var dwYCountChars: u32 = 0
+    var dwFillAttribute: u32 = 0
+    var dwFlags: u32 = 0
+    var wShowWindow: u16 = 0
+    var cbReserved2: u16 = 0
+    var lpReserved2: i64 = 0
+    var hStdInput: i64 = 0
+    var hStdOutput: i64 = 0
+    var hStdError: i64 = 0
+}
+repr(C) struct PROCESS_INFORMATION {
+    var hProcess: i64 = 0
+    var hThread: i64 = 0
+    var dwProcessId: u32 = 0
+    var dwThreadId: u32 = 0
+}
+
+unsafe extern fn CreatePipe(hr: ptr<i64>, hw: ptr<i64>, sa: i64, n: i32) -> i32
+unsafe extern fn SetHandleInformation(h: i64, mask: u32, flags: u32) -> i32
+unsafe extern fn GetStdHandle(n: i64) -> i64
+unsafe extern fn CreateProcessW(app: i64, cmd: ptr<u8>, pa: i64, ta: i64, inh: i32, flags: i32, env: i64, cwd: i64, si: ptr<STARTUPINFOW>, pi: ptr<PROCESS_INFORMATION>) -> i32
+unsafe extern fn ReadFile(h: i64, buf: ptr<u8>, n: u32, pread: ptr<u32>, ov: i64) -> i32
+unsafe extern fn WaitForSingleObject(h: i64, ms: u32) -> u32
+unsafe extern fn CloseHandle(h: i64) -> i32
+unsafe extern fn GetLastError() -> u32
+
+// ASCII 字符串 → UTF-16LE 字节缓冲（手拼：每码点写 u16 word 为两个 u8 字节）
+unsafe fn widebuf(s: string, out: ptr<u8>) {
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        var cp: i64 = char_code(str_char(s, i))   // ASCII 码点 = 字节值
+        deref_write(ptr_add(out, 2 * i), as_u8(cp & 0xFF))
+        deref_write(ptr_add(out, 2 * i + 1), as_u8(0))
+        i = i + 1
+    }
+    deref_write(ptr_add(out, 2 * n), as_u8(0))
+    deref_write(ptr_add(out, 2 * n + 1), as_u8(0))
+}
+
+func main() {
+    var hr: i64 = 0
+    var hw: i64 = 0
+    var si: STARTUPINFOW = STARTUPINFOW()
+    var pi: PROCESS_INFORMATION = PROCESS_INFORMATION()
+    var rcount: u32 = 0
+
+    unsafe {
+        var buf: ptr<u8> = alloc(4096)
+        var okp = CreatePipe(addr_of(hr), addr_of(hw), 0, 0)
+        if okp == 0 {
+            println("CreatePipe 失败 err=" + to_string(GetLastError()))
+            return
+        }
+        // 写端置可继承（子进程继承写端）；读端清继承位 → 子进程退出后 EOF
+        SetHandleInformation(hw, 1u32, 1u32)
+        SetHandleInformation(hr, 1u32, 0u32)
+        // 结构化 STARTUPINFOW：cb=sizeof(104)，附加 std 句柄到管道写端
+        si.cb = as_u32(104)
+        si.dwFlags = as_u32(0x100)          // STARTF_USESTDHANDLES
+        si.hStdInput = GetStdHandle(-10)     // STD_INPUT_HANDLE（子进程不读 stdin）
+        si.hStdOutput = hw
+        si.hStdError = hw
+        // 手拼 UTF-16 命令行（含文件（全模式名））
+        var nbytes: i64 = (str_len("cmd.exe /c echo hello") + 1) * 2
+        var wcmd: ptr<u8> = alloc(nbytes)
+        widebuf("cmd.exe /c echo hello", wcmd)
+        var okc = CreateProcessW(0, wcmd, 0, 0, 1i32, 0i32, 0, 0, addr_of(si), addr_of(pi))
+        if okc == 0 {
+            println("CreateProcessW 失败 err=" + to_string(GetLastError()))
+            return
+        }
+        // 父进程关闭写端 → 子进程独占写端，退出即 EOF
+        CloseHandle(hw)
+        // 从管道读子进程 stdout（"hello"）逐字节拼回字符串
+        var out: string = ""
+        while true {
+            rcount = as_u32(0)
+            var okr = ReadFile(hr, buf, 4096u32, addr_of(rcount), 0)
+            if okr == 0 {
+                break
+            }
+            var j: i64 = 0
+            while j < as_i64(rcount) {
+                out = out + str_from_code(as_i64(deref(ptr_add(buf, j))))
+                j = j + 1
+            }
+            if rcount == 0u32 {
+                break
+            }
+        }
+        CloseHandle(hr)
+        WaitForSingleObject(pi.hProcess, 0xFFFFFFFFu32)
+        CloseHandle(pi.hProcess)
+        CloseHandle(pi.hThread)
+        println("子进程输出=[" + out + "]")
+    }
+}

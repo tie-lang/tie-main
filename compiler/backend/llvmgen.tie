@@ -818,6 +818,11 @@ pub func emit() -> string {
     // 模块头
     line("; ModuleID = 'tie'")
     line("source_filename = \"input.tie\"")
+    // AB 数据布局（x86_64-pc-windows-msvc）：显式声明使 opt 用目标 ABI 对齐
+    //（i64 对齐 8），否则无 datalayout 时 opt 默认把字段按 4 字节对齐装箱，
+    // 导致 repr(C) 结构体（如 WIN32 STARTUPINFOW）字段偏移与 C 不兼容
+    //（dwFlags 落 56 而非 60）。对齐 clang 对该 triple 的默认 datalayout。
+    line("target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"")
     line("")
     // 无条件 declare
     line("declare i32 @printf(ptr, ...)")

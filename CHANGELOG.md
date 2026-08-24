@@ -29,6 +29,25 @@
 
 ---
 
+---## [修复] repr(C) struct 对齐缺陷——生成模块补 target datalayout，结构体与 C ABI 对齐
+
+生成的 LLVM 模块此前无 `target datalayout`，`opt` 优化默认把结构体字段按 4 字节对齐装箱
+（i64/指针字段对齐到 4），而链接阶段 clang 采用 x86-64 标准布局（i64 对齐 8），两者对
+同一结构体的偏移判定不一致。WIN32 结构体（如 STARTUPINFOW）字段偏移因此与 C 不兼容
+（`dwFlags` 落 56 而非 C 期望的 60），repr(C) struct 经 `addr_of` 传指针给 OS API 时读到
+错位字节——阻塞平台桥结构体进程管道场景（CreatePipe/CreateProcessW）。
+
+- **修复**：`backend/llvmgen.tie` 模块头发射目标 ABI 的 `target datalayout`
+  （`x86_64-pc-windows-msvc`，i64 对齐 8），令 `opt` 与链接阶段采用一致对齐；结构体现
+  直接与 C ABI 兼容，无需手工填充绕过。
+- **新增验收**：`tests/language/proc_createprocessw_pipe.tie`——结构化 CreateProcessW +
+  repr(C) STARTUPINFOW/PROCESS_INFORMATION 指针传参 + CreatePipe 管道 + 手拼 UTF-16 命令行，
+  父进程经管道捕获子进程 stdout。
+- **回归**：reprc_narrow_store 窄字段 store、语言测试集、编译器自举
+  （tiec→tiec2→tiec3）均通过。
+
+---
+
 ---## [新增] extern 参数/返回扩展 ptr<T>/slice<T>——平台桥指针桥接解锁（S10）
 
 `unsafe extern fn` 的参数/返回边界从「仅标量 + string」扩展为**标量 + string + `ptr<T>` +
