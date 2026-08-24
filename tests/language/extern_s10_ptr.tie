@@ -1,0 +1,19 @@
+type tie<logic>
+
+// S10（extern 指针扩展）正例：`unsafe extern` 允许 `ptr<T>`/`slice<T>` 形参。
+// 平台桥（raw terminal / CreatePipe / Win32-OS 桥）的指针出参前提。
+// 通过＝编译成功（链接 C-ABI 运行库）；运行结果为进程环境相关（有无 console），
+// 关键在编译链路打通——extern 不再拒绝 ptr 形参，`addr_of` 可作 ptr 实参。
+unsafe extern fn GetStdHandle(nStdHandle: i64) -> i64
+unsafe extern fn GetConsoleMode(hConsole: i64, lpMode: ptr<i64>) -> i32
+// 负数（非标量集合）与表/map/struct 仍被拒绝（见 extern_decl_neg.tie）。
+
+func main() {
+    unsafe {
+        var h = GetStdHandle(-11)     // STD_OUTPUT_HANDLE
+        var mode: i64 = 0
+        var rc = GetConsoleMode(h, addr_of(mode))
+        println(rc)                   // 0=重定向无 console（正常），非 0=模式位成功读出
+    }
+    println("extern ptr 正例通过")
+}

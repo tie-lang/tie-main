@@ -51,6 +51,17 @@ func is_scalar_t(t: i64) -> bool {
     return false
 }
 
+// S10：extern 边界合格类型 = 标量（is_scalar_t）或 ptr<T>/slice<T>。
+// 平台桥允许 unsafe extern 用指针传引用/出参（桥原生 Win32/OS API，如
+// GetConsoleMode 的指针形参、CreatePipe 的句柄出参）。表/map/struct 等堆布局仍拒绝。
+func is_extern_ok_t(t: i64) -> bool {
+    if is_scalar_t(t) {
+        return true
+    }
+    var k = types.kind(t)
+    return k == K_PTR || k == K_SLICE
+}
+
 // 顶层函数签名收集（含参数/返回类型解析 + 默认值/ref 校验）
 pub func collect_fn(fn_node: i64, full: string) -> i64 {
     // 泛型模板登记分派（2026-08-14 泛型语法）：children[0] == N_TYPE_PARAMS

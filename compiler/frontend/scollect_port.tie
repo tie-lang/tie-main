@@ -1214,17 +1214,15 @@ pub func collect_top() -> i64 {
             if ret_ty < 0 {
                 return -1
             }
-            // extern 返回类型必须是标量（i8..u64/f32/f64/bool/char/string）或 void
+            // extern 返回类型必须是标量/string/ptr/slice（is_extern_ok_t）或 void
             var ret_ok: bool = false
-            if types.kind(ret_ty) == K_NAMED {
-                if ret_ty == TK_VOID || is_scalar_t(ret_ty) {
-                    ret_ok = true
-                }
+            if ret_ty == TK_VOID || is_extern_ok_t(ret_ty) {
+                ret_ok = true
             }
             if !ret_ok {
                 sm_err_line = s_lines[s]
                 sm_err_col = s_cols[s]
-                sm_err_msg = "extern 函数 '" + full + "' 的返回类型必须是标量（i8..u64/f32/f64/bool/char/string）或 void，实际是 " + types.type_name(ret_ty)
+                sm_err_msg = "extern 函数 '" + full + "' 的返回类型必须是标量/string/ptr/slice 或 void，实际是 " + types.type_name(ret_ty)
                 return -1
             }
             var p_tys: table<i64> = table_new_i64()
@@ -1238,11 +1236,11 @@ pub func collect_top() -> i64 {
                 if pt < 0 {
                     return -1
                 }
-                // extern 参数必须是标量（对齐 Rust is_scalar_extern_ty）
-                if !is_scalar_t(pt) {
+                // extern 参数必须是标量/string/ptr/slice（对齐 + 扩展 is_scalar_extern_ty）
+                if !is_extern_ok_t(pt) {
                     sm_err_line = s_lines[s]
                     sm_err_col = s_cols[s]
-                    sm_err_msg = "extern 函数 '" + full + "' 的参数 '" + sstate.name_str(p) + "' 必须是标量类型（i8..u64/f32/f64/bool/char/string），实际是 " + types.type_name(pt)
+                    sm_err_msg = "extern 函数 '" + full + "' 的参数 '" + sstate.name_str(p) + "' 必须是标量/string/ptr/slice 类型，实际是 " + types.type_name(pt)
                     return -1
                 }
                 table_push(p_tys, pt)

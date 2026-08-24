@@ -19,6 +19,23 @@
 
 逐一细节见下方随提交累积的条目（本条为版本汇总）。
 
+---## [新增] extern 参数/返回扩展 ptr<T>/slice<T>——平台桥指针桥接解锁（S10）
+
+`unsafe extern fn` 的参数/返回边界从「仅标量 + string」扩展为**标量 + string + `ptr<T>` +
+`slice<T>`**，由编译期门禁放行（extern 本身即 unsafe 上下文，安全代码不可触达指针）。
+这解锁 trm 平台桥的指针类 OS 桥接（如 Win32 `GetConsoleMode` 指针出参、`CreatePipe`
+句柄数组），是 raw terminal / 进程管道的编译器前提。
+
+- **语义**：`frontend/scollect.tie` 新增 `is_extern_ok_t`（标量 ∥ K_PTR ∥ K_SLICE）；
+  `frontend/scollect_port.tie` 返回与参数检查改用之（表/map/struct/enum 等堆布局仍拒绝，
+  错误文案更新为「必须是标量/string/ptr/slice 类型」）；
+- **链路复用**：调用降级（op36）已直接把签名类型传给 declare/call，指针形参自动经
+  `addr_of(x)` 传引用；无需改 irgen/llvmgen；
+- **回归**：新增正例 `tests/language/extern_s10_ptr.tie`（GetConsoleMode + `addr_of` 端到端）；
+  负例 `extern_decl_neg.tie` 改 `unsafe extern fn` 以真正命中类型门禁并校验新文案；
+- **验证**：正/负例均达期望；m5-dynlib 回归 6 项全绿（动态库链路不受影响）；
+  自举（tiec 编译 driver → tiec2）通过。
+
 ---## [新增] M5 动态库编译——tie 库 → .dll/.so + dllexport 导出面（dev33 批次 12）
 
 tie 库（`type tie<class>`）可编译为**动态库**（Windows `.dll` / Linux `.so`），
