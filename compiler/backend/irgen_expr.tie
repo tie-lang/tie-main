@@ -701,13 +701,19 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return 0
     }
     if nm == "alloc" {
-        // alloc(n) → malloc（返回 ptr，LLVM ptr 直传）
+        // alloc(n) → 原始字节缓冲（ptr<u8>，LLVM ptr 直传）。
+        // 修复（漏洞 A 类隐患）：裸 malloc 若标 TK_STR，llvmgen op36 会对它做
+        // 字符串补头扫描（strlen + tie_sso_alloc + memcpy）——对**未初始化**
+        // 堆缓冲 strlen 读的是垃圾，返回缓冲实际容量 = 垃圾长度：小则 4096 字节
+        // 写入越界（SSO 静态池/堆损坏，多会话交错读写出现字节串线/丢失），
+        // 大则扫描越界读未映射内存崩溃。故走 s21_raw_alloc_str（K_PTR 返回绕开
+        // 扫描，ptrtoint+inttoptr 包回 TK_STR 值），与编译器内部原始分配同范式。
         g_used_interp = true
         var n = tig_expr(call_arg(id, 0))
         if n < 0 {
             return -1
         }
-        g_builtin_res = tig_ext_call1("malloc", n, types.named(TK_I64), types.named(TK_STR))
+        g_builtin_res = s21_raw_alloc_str(n)
         return 0
     }
     if nm == "free" {
@@ -820,7 +826,7 @@ func builtin_expr(nm: string, id: i64) -> i64 {
             var m = ir.new_inst(g_cur_block, 2, types.named(TK_I64))  // mul
             ir.add_operand(m, esz_v, 0)
             ir.add_operand(m, cnt, 0)
-            var buf = tig_ext_call1("malloc", ir.get_value(m), types.named(TK_I64), types.named(TK_STR))
+            var buf = s21_raw_alloc_str(ir.get_value(m))  // 原始缓冲：绕开 TK_STR 补头扫描（漏洞 A 类）
             // LLVM opaque ptr：malloc 结果 ptr 直接用于 gep（元素类型 = ins_ty，
             // 步长按 etab）；无需 bitcast。
             var bp = buf

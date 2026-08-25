@@ -1,0 +1,51 @@
+type tie<logic>
+// alloc(n) 原始缓冲回归（漏洞 A 类修复，S10e）：修复前 alloc 的 malloc 结果标 TK_STR，
+// llvmgen op36 对「返回 TK_STR 的 extern 调用」自动字符串补头扫描（strlen + tie_sso_alloc
+// + memcpy）——对**未初始化**堆缓冲 strlen 读的是垃圾，返回缓冲实际容量 = 垃圾长度：
+// n 字节整写越界（SSO 静态池/堆损坏，多会话交错读写出现字节串线/丢失）。修复后走
+// s21_raw_alloc_str（K_PTR 返回绕开扫描）。本测试编译通过 + 输出 marker 即验收。
+func main() {
+    unsafe {
+        // 1) alloc(1MB)：写满 0..255 循环字节，读取逐字节一致
+        //    （修复前垃圾长度几乎必然 < 1MB → 越界写 → 读回不一致或崩溃）
+        var n: i64 = 1048576
+        var buf = alloc(n)
+        var i: i64 = 0
+        while i < n {
+            deref_write(ptr_add(buf, i), as_u8((i & 255)))
+            i = i + 1
+        }
+        var ok = true
+        i = 0
+        while i < n {
+            var v = as_i64(deref(ptr_add(buf, i)))
+            if v != (i & 255) {
+                ok = false
+            }
+            i = i + 1
+        }
+        // 2) 双缓冲交错整写（多会话串线家族）：能互不串扰地写满读回
+        var n2: i64 = 65536
+        var buf2 = alloc(n2)
+        i = 0
+        while i < n2 {
+            deref_write(ptr_add(buf2, i), as_u8(((i * 3 + 7) & 255)))
+            i = i + 1
+        }
+        i = 0
+        while i < n2 {
+            var v2 = as_i64(deref(ptr_add(buf2, i)))
+            if v2 != ((i * 3 + 7) & 255) {
+                ok = false
+            }
+            i = i + 1
+        }
+        // 3) 缓冲区之外的新建字符串不受波及（SSO 池/堆完好）
+        var p = str_from_code(char_code(str_char("zi", 0)))
+        if ok && p == "z" {
+            println("alloc raw buffer ok")
+        } else {
+            println("alloc raw buffer FAIL")
+        }
+    }
+}

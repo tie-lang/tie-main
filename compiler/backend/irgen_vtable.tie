@@ -95,7 +95,7 @@ func tig_port_coerce(init: i64, port_ty: i64) -> i64 {
     }
     // malloc(16)：打包对象 {ptr, ptr}
     var size = tig_int_lit_ty(16, types.named(TK_I64))
-    var obj = tig_ext_call1("malloc", size, types.named(TK_I64), types.named(TK_STR))
+    var obj = s21_raw_alloc_str(size)  // 原始缓冲：绕开 TK_STR 补头扫描（漏洞 A 类）
     if obj < 0 {
         return -1
     }

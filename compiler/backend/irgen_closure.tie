@@ -190,7 +190,7 @@ func tig_closure_lit(id: i64) -> i64 {
     if ncap > 0 {
         // malloc(8 * ncap)：所有环境字段 8 字节（ptr/i64/聚合地址）
         var sz = tig_int_lit_ty(8 * ncap, types.named(TK_I64))
-        env_v = tig_ext_call1("malloc", sz, types.named(TK_I64), types.named(TK_STR))
+        env_v = s21_raw_alloc_str(sz)  // 原始缓冲：绕开 TK_STR 补头扫描（漏洞 A 类）
         // 逐字段 store 捕获值（load 外层槽 → store env 字段 j）
         var j: i64 = 0
         while j < ncap {

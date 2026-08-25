@@ -29,6 +29,29 @@
 
 ---
 
+---## [修复] alloc(n) 原始缓冲被误做字符串补头扫描——多会话字节串线/丢失根因（漏洞 A 类）
+
+`alloc(n)` 内置的 malloc 返回类型此前标 TK_STR，llvmgen op36 对「返回 TK_STR 的 extern
+调用」自动做字符串补头扫描（`strlen + tie_sso_alloc + memcpy`）。对**未初始化**堆缓冲
+strlen 读的是垃圾：返回缓冲实际容量 = 垃圾长度——小则 n 字节整写越界（SSO 静态池/堆
+损坏，多会话交错读写出现字节串线/丢失，临界崩溃 0xC0000005），大则扫描越界读未映射
+内存。编译器内部原始分配（`s21_raw_alloc_str`）早已用 K_PTR 返回绕开扫描，仅用户面
+`alloc`、动态表连续缓冲、闭包环境盒、port 打包对象四处裸 malloc 仍标 TK_STR——多会话
+会话泵交错 `run_avail`/`run_read`（各 alloc 一次 4KB 缓冲）即触发串线/丢失。
+
+- **修复**：四处统一改走 `s21_raw_alloc_str`（K_PTR 返回绕开扫描 + ptrtoint/inttoptr 包回
+  TK_STR 值，与编译器内部原始分配同范式）：`alloc` 内置（irgen_expr）、动态表连续缓冲
+  （irgen_expr）、闭包环境盒（irgen_closure）、port 打包对象（irgen_vtable）。
+- **新增验收**：`tests/language/alloc_raw_buf.tie`——alloc(1MB) 写满读回逐字节一致 + 双缓冲
+  交错写读无串扰 + 其后新建字符串不受 SSO 池/堆波及；修复前同一测试立即
+  0xC0000005 访问冲突，修复后通过。
+- **回归**：自举不动点 tiec→tiec2→tiec3 逐字节一致；m5-dynlib 8/8；语言测试集
+  （reprc_narrow_store / proc_createprocessw_pipe / unsafe_full / extern_s10_ptr /
+  ffi_recv_string / sso_probe / narrow_full / 闭包 s22 探针等）通过；trm 平台桥
+  regress-platform 7/7 全绿。
+
+---
+
 ---## [修复] repr(C) struct 对齐缺陷——生成模块补 target datalayout，结构体与 C ABI 对齐
 
 生成的 LLVM 模块此前无 `target datalayout`，`opt` 优化默认把结构体字段按 4 字节对齐装箱
