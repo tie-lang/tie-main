@@ -1649,6 +1649,13 @@ pub func infer_method_call(id: i64) -> i64 {
         sm_err_msg = "方法调用的对象必须是 struct 实例或 struct 名，实际是 " + types.type_name(infer_expr(recv))
         return -1
     }
+    // T3b 泛型扩展：命名空间路径的泛型模板函数调用（`ns.max<i64>(...)`）——
+    // fn_sig 未命中但 gt_* 模板表命中 → 泛型调用路径（调用点推断 + 单态化展开）。
+    // 与 sinfer_ret.resolve_call_name 裸调用通道的泛型扩展对称（sinfer_ret L488）。
+    var gti_ns = sstate.gt_find(full)
+    if gti_ns >= 0 && gty_is_struct[gti_ns] == 0 {
+        return infer_generic_fn_call(full, gti_ns, id, args)
+    }
     var sig = sstate.fn_sig(full)
     if sig < 0 {
         sm_err_line = s_lines[id]

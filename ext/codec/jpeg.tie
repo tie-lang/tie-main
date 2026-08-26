@@ -13,6 +13,12 @@ type tie<class>
 //     把逗号分隔字节序列字符串解析为 i64 字节表（供 byte_write 落盘等）。
 // 约束（tie 语言）：表参数元素类型静态未知 → 函数参数一律用逗号分隔字符串序列，
 // 函数内部 parse 到局部表；表只在函数内部局部使用，不跨函数传递。
+//
+// 调用示例：
+//   var px = "0,128,0,...,255"          // 逗号分隔灰度像素（width*height 个）
+//   var enc = jpeg.encode_pixels(px, 64, 8)
+//   var dec = jpeg.decode_pixels(enc, 64, 8)   // 有损还原，容差内
+//   var bt = jpeg.parse_bytes(enc)      // -> table<i64>，供字节落盘
 
 namespace jpeg {
 // =====================================================================
@@ -194,7 +200,7 @@ pub func decode_pixels(enc_s: string, width: i64, height: i64) -> string {
 // ---- 公开工具：字节序列 → 字节表（配合 byte_write 落盘） ----
 
 // 把逗号分隔的字节序列字符串解析为 i64 字节表（0..255），供 byte_write 等使用。
-pub func parse_bytes(seq_s: string) -> table {
+pub func parse_bytes(seq_s: string) -> table<i64> {
     return parse_i64(seq_s)
 }
 
@@ -204,7 +210,7 @@ pub func parse_bytes(seq_s: string) -> table {
 
 // 编码单个 8×8 块：DCT → 量化 → ZigZag → 128 字节表。
 // block_s 为 64 个电平移位后像素值（逗号分隔，可为负）。
-func encode_block(block_s: string, step: i64) -> table {
+func encode_block(block_s: string, step: i64) -> table<i64> {
     var dct = dct_forward(block_s)       // f64 系数表（行优先 u,v）
     var zz = zigzag_table()              // ZigZag 顺序表（64 个平铺下标）
     var out = table_new_i64()
@@ -223,7 +229,7 @@ func encode_block(block_s: string, step: i64) -> table {
 
 // 解码单个 8×8 块：系数（ZigZag 序，逗号分隔）→ 反量化 → IDCT → 去电平移位
 // → 夹取到 [0,255] → 64 个像素的 i64 表。
-func decode_block(coeff_s: string, step: i64) -> table {
+func decode_block(coeff_s: string, step: i64) -> table<i64> {
     var vals = dct_inverse(coeff_s, step) // f64 像素值（电平移位域）
     var out = table_new_i64()
     var i: i64 = 0
@@ -252,7 +258,7 @@ func decode_block(coeff_s: string, step: i64) -> table {
 // 其中 C(0) = 1/√2，C(n>0) = 1。这对变换为互逆正交对（无量化时精确重建）。
 
 // 前向 DCT：输入 64 个电平移位像素（逗号分隔 i64），返回 64 个 f64 系数表。
-func dct_forward(block_s: string) -> table {
+func dct_forward(block_s: string) -> table<f64> {
     var pix = parse_i64(block_s)
     // 电平移位值转 f64（i64 → f64 用 parse_float(to_string(v))）
     var f = table_new_f64()
@@ -293,7 +299,7 @@ func dct_forward(block_s: string) -> table {
 
 // 逆 DCT：输入 64 个量化系数（ZigZag 序，逗号分隔 i64）+ 量化步长，
 // 返回 64 个 f64 电平移位像素值表。
-func dct_inverse(coeff_s: string, step: i64) -> table {
+func dct_inverse(coeff_s: string, step: i64) -> table<f64> {
     var q = parse_i64(coeff_s)
     var zz = zigzag_table()
     var sf: f64 = parse_float(to_string(step))
@@ -416,7 +422,7 @@ func quant_step() -> i64 {
 
 // 8×8 标准 JPEG ZigZag 扫描顺序表（64 个平铺下标，行优先 index = y*8+x）。
 // 单独函数返回局部表，避免「返回 parse 调用」链导致元素类型推断失效。
-func zigzag_table() -> table {
+func zigzag_table() -> table<i64> {
     var zz = table_new_i64()
     table_push(zz, 0)
     table_push(zz, 1)
@@ -490,7 +496,7 @@ func zigzag_table() -> table {
 // =====================================================================
 
 // 解析逗号分隔 i64 序列 → 局部 i64 表（表参数元素类型静态未知，输入走字符串）。
-func parse_i64(s: string) -> table {
+func parse_i64(s: string) -> table<i64> {
     var result = table_new_i64()
     var n: i64 = len(s)
     if n == 0 {

@@ -12,7 +12,7 @@ import "../std/assert.tie"
 func main() {
     // 1. 批量登记（register_all：每行 "key|lang|text"；表字面量须单行，避免 ASI 截断）
     log.register_all(["greet|zh|你好，{}！", "greet|en|Hello, {}!", "file.not_found|zh|文件不存在", "file.not_found|en|File not found"])
-    assert.assert_eq_str(log.t("file.not_found"), "文件不存在")
+    assert.assert_eq<string>(log.t("file.not_found"), "文件不存在")
 
     // 2. 带参消息（error_f/warn_f/info_f：模板 {} 由 args 填充）
     log.info_f("greet", ["tie"])        // stdout：信息: 你好，tie！
@@ -35,6 +35,6 @@ func main() {
     // 5. 恢复默认并确认查询
     log.set_lang("zh")
     log.set_level(1)
-    assert.assert_eq_str(log.lang(), "zh")
+    assert.assert_eq<string>(log.lang(), "zh")
     println("log 增强演示全部通过")
 }

@@ -8,6 +8,7 @@ type tie<class>
 // 故以 flip() 命名（掷硬币语义：等概率返回 true/false）。
 // 闭区间语义：rand_range 为半开 [min, max)，int(min, max) 包装为 rand_range(min, max+1)
 // 得到闭区间 [min, max]。注意 max = i64::MAX 时 max+1 会溢出，本函数不处理该边界。
+// library-v2：shuffle 从「返回新表」改为「ref 原地洗牌无返回值」；pick/pick_str 类型化。
 
 namespace rnd {
 // 闭区间 [min, max] 内随机整数。int(5,5) 恒为 5（边界）；int(a,b) 要求 b >= a。
@@ -43,26 +44,18 @@ pub func pick_str(t: table<string>) -> string {
     return t[rand_range(0, n)]
 }
 
-// Fisher-Yates 洗牌：返回打乱后的新表，**不修改入参表 t**（先整体复制到新表，
-// 再在新表上反向洗牌）。空表/单元素表返回等长的新表（无交换发生）。
-pub func shuffle(t: table<i64>) -> table<i64> {
-    // 复制入参到新表 out（保证不修改调用方）
-    var out = table_new_i64()
+// Fisher-Yates 洗牌：**原地（ref）**打乱入参表 t，无返回值。空表/单元素表
+// 不变（无交换发生）。调用方式：rnd.shuffle(&t) / rnd.shuffle(t)（ref 形参）。
+pub func shuffle(t: ref table<i64>) {
     var n: i64 = len(t)
-    var i: i64 = 0
-    while i < n {
-        table_push(out, t[i])
-        i = i + 1
-    }
     // 反向 Fisher-Yates：i 从 n-1 到 1，随机取 [0, i] 内下标与当前位置交换
-    var i2: i64 = n - 1
-    while i2 > 0 {
-        var j: i64 = rand_range(0, i2 + 1)
-        var tmp: i64 = out[i2]
-        out[i2] = out[j]
-        out[j] = tmp
-        i2 = i2 - 1
+    var i: i64 = n - 1
+    while i > 0 {
+        var j: i64 = rand_range(0, i + 1)
+        var tmp: i64 = t[i]
+        t[i] = t[j]
+        t[j] = tmp
+        i = i - 1
     }
-    return out
 }
 }

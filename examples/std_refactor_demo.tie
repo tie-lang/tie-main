@@ -1,8 +1,9 @@
 type tie<logic>
 
 // std_refactor_demo.tie——Harbor M4 标准库重构演示
+// **library-v2 新接口：csv_read/csv_cells/csv_write → read/cells/write；assert 泛型合并**
 // 覆盖新增函数：str 大小写/join/repeat/trim_start/trim_end、
-// math gcd/lcm/pow_i、format sprintf 占位符、csv csv_write 往返、assert 泛化断言
+// math gcd/lcm/pow_i、format sprintf 占位符、csv write/read 往返、assert 泛化断言
 // 运行：tie examples/std_refactor_demo.tie
 
 // 注意：csv.tie 已随同展开 string.tie（import 不做去重），此处不重复导入 string.tie
@@ -41,15 +42,15 @@ func main() {
     var rows = table_new_string()
     table_push(rows, "name,age,city")
     table_push(rows, "张三,30,北京")
-    var ok = csv.csv_write("./std_refactor_tmp.csv", rows)
+    var ok = csv.write("./std_refactor_tmp.csv", rows)
     println(ok)                                 // true
-    var lines = csv.csv_read("./std_refactor_tmp.csv")
+    var lines = csv.read("./std_refactor_tmp.csv")
     println(len(lines))                         // 2
-    println(csv.csv_cells(lines[1], ",")[0])    // 张三
+    println(csv.cells(lines[1], ",")[0])        // 张三
     file_delete("./std_refactor_tmp.csv")
 
     // 5. assert 泛化断言
-    assert.assert_eq_f64(1.5, 1.5)
-    assert.assert_eq_str("hi", "hi")
+    assert.assert_eq<f64>(1.5, 1.5)
+    assert.assert_eq<string>("hi", "hi")
     println("全部通过")
 }

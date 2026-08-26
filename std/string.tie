@@ -340,7 +340,8 @@ pub func to_lower(s: string) -> string {
 
 // 把字符串表 items 的元素用 sep 连接成一个字符串；空表返回空串。
 // 约定：items 是字符串动态表（table<string>），与 split 的输出互逆。
-pub func join(items: table, sep: string) -> string {
+// library-v2：表参数标注元素类型 table<string>（类型化约定）。
+pub func join(items: table<string>, sep: string) -> string {
     // 性能重写（O(total)）：旧 out + items[i] 逐段全量拷贝是 O(n²)——
     // 万行文本 join 实测秒级。StringBuilder 原地追加替代。
     var n: i64 = len(items)
@@ -373,16 +374,12 @@ pub func repeat(s: string, n: i64) -> string {
 // 深拷贝字符串（S1.5 移动语义配套）：返回 s 的独立副本。
 // 实现复用字符串拼接 s + ""（irgen 生成 str_cat 指令 = malloc+memcpy 新缓冲），
 // 保证 clone 结果与源完全独立，后续修改互不影响（无需引用计数）。
-// 语义：clone/copy 调用处实参**借用**（smove 特判不移动源），
+// 语义：clone 调用处实参**借用**（smove 特判不移动源），
 // 与移动语义的"复制需显式 clone"配套（docs/plans/ui-framework.md §4.2 + roadmap §S1.5）。
 // 注：此为标准库过渡实现（纯 tie，零共享文件改动）；后续可升格为语言内置
 // （sbuiltin 注册 + irgen 直接生成），行为等价。
+// library-v2：删除 copy（与 clone 重复），一语义一名不保留别名。
 pub func clone(s: string) -> string {
     return s + ""
-}
-
-// copy = clone 的语义别名（显式复制，不移动源；语义与 clone 完全一致）。
-pub func copy(s: string) -> string {
-    return clone(s)
 }
 }

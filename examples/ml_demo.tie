@@ -8,26 +8,26 @@ import "../ext/ml.tie"
 func main() {
     // ---- 线性 SVM：AND 门（线性可分）----
     // 样本：(0,0)→-1, (0,1)→-1, (1,0)→-1, (1,1)→+1
-    var xs = "0.0,0.0,0.0,1.0,1.0,0.0,1.0,1.0"
-    var ys = "-1,-1,-1,1"
+    var xs: table<f64> = [0.0,0.0,0.0,1.0,1.0,0.0,1.0,1.0]
+    var ys: table<i64> = [-1,-1,-1,1]
     var model = ml.svm_train(xs, ys, 2, 4, 200, 0.5)
     println("svm model: " + model)
     // 预测
-    var p1 = ml.svm_predict(model, "1.0,1.0", 2)
-    var p2 = ml.svm_predict(model, "0.0,0.0", 2)
-    var p3 = ml.svm_predict(model, "0.0,1.0", 2)
+    var p1 = ml.svm_predict(model, [1.0,1.0], 2)
+    var p2 = ml.svm_predict(model, [0.0,0.0], 2)
+    var p3 = ml.svm_predict(model, [0.0,1.0], 2)
     println("svm(1,1)=" + to_string(p1) + " svm(0,0)=" + to_string(p2) + " svm(0,1)=" + to_string(p3))
 
     println("---")
 
     // ---- 决策树：x<0.5 归 -1，否则 +1（单特征阈值）----
     // 特征 x：0.1,0.2,0.8,0.9；标签：-1,-1,1,1
-    var tx = "0.1,0.2,0.8,0.9"
-    var ty = "-1,-1,1,1"
+    var tx: table<f64> = [0.1,0.2,0.8,0.9]
+    var ty: table<i64> = [-1,-1,1,1]
     var tree = ml.tree_train(tx, ty, 1, 4, 3)
     println("tree model: " + tree)
-    var tp1 = ml.tree_predict(tree, "0.1", 1)
-    var tp2 = ml.tree_predict(tree, "0.9", 1)
+    var tp1 = ml.tree_predict(tree, [0.1], 1)
+    var tp2 = ml.tree_predict(tree, [0.9], 1)
     println("tree(0.1)=" + to_string(tp1) + " tree(0.9)=" + to_string(tp2))
 
     println("---")

@@ -5,6 +5,11 @@ type tie<class>
 // byte_read/byte_write 使用）；输出为**压缩 token 序列**字符串：
 // "L,码点"（字面量）与 "M,dist,len"（匹配引用）交错。
 // 表参数元素类型静态未知 → 全部局部表 + 字符串序列（同 std/ext 库模式）。
+// 压缩字节流保持**字符串内嵌逗号分隔数字序列**格式不变（library-v2 §10）。
+//
+// 调用示例：
+//   var s = lz4.to_bytes("hello"); var c = lz4.compress(s)
+//   var back = lz4.decompress(c); var text = lz4.from_bytes(back)
 
 namespace lz4 {
 // LZ4 压缩：s 为字节序列字符串（逗号分隔 0..255），返回 token 序列字符串。
@@ -142,7 +147,7 @@ pub func from_bytes(seq_s: string) -> string {
 
 
 // 解析逗号分隔 i64 序列。
-func parse_i64(s: string) -> table {
+func parse_i64(s: string) -> table<i64> {
     var result = table_new_i64()
     var n: i64 = len(s)
     if n == 0 {

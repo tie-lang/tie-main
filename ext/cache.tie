@@ -4,6 +4,11 @@ type tie<class>
 // 首版用字面量根目录（"~/.tie" 的简化——tie 无主目录展开，默认 ".tie-cache"）；
 // 真网络/目录操作（file_exists 判断命中）在底座原语落地后接通。
 // 调用：import 后 cache.set_root(...) / cache.pkg_path("log", "1.0.0") / cache.hit(...)
+//
+// 调用示例：
+//   cache.set_root(".tie-cache")
+//   println(cache.pkg_path("log", "1.0.0"))   // ".tie-cache/packages/log/1.0.0"
+//   if cache.hit("log", "1.0.0") { /* 已缓存 */ }
 
 // 顶层持久变量：缓存根目录
 var cache_root: string = ".tie-cache"

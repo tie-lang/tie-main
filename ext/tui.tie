@@ -13,6 +13,12 @@ type tie<class>
 //
 // 调用：import 后 tui.hline(...) / tui.progress(...)；命名空间内互调为裸调用。
 // 命名规范：命名空间内函数不加 tui_ 前缀（统一 func 写法，Harbor M2.1.6）。
+//
+// 调用示例：
+//   println(tui.hline(20))
+//   println(tui.title("Hello", 10))            // "====Hello===="
+//   println(tui.progress(50, 10))              // "[#####-----] 50%"
+//   println(tui.box(["a", "bb"])); println(tui.pad_center("Hi", 8))
 
 namespace tui {
 // 重复 n 次字符 ch（n<=0 返回空串）。ch 约定为单字符字符串。

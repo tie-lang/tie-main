@@ -40,12 +40,12 @@ func main() {
     println("format.format_int_hex(-255) = " + h4)
     assert.assert(h4 == "-ff")
 
-    // ---- format.format(bool)：true / false ----
-    var b1: string = format.format(true)
-    println("format.format(true) = " + b1)
+    // ---- format.format_bool：true / false ----
+    var b1: string = format.format_bool(true)
+    println("format.format_bool(true) = " + b1)
     assert.assert(b1 == "true")
-    var b2: string = format.format(false)
-    println("format.format(false) = " + b2)
+    var b2: string = format.format_bool(false)
+    println("format.format_bool(false) = " + b2)
     assert.assert(b2 == "false")
 
     println("format 演示全部通过")

@@ -15,6 +15,11 @@ type tie<class>
 // 说明：教学实现，机制等价（LZ77 + 静态熵编码）可无损 roundtrip，
 // **非 Brotli 二进制格式兼容**（真实 Brotli 用上下文建模 + 多棵静态/动态码表
 // + 更复杂的 LZ77 变体：复制命令、距离编码、块分割等）。
+//
+// 调用示例：
+//   var c = brotli.compress("abracadabra")
+//   var back = brotli.decompress(c)      // 无损还原原文
+//   var bytes_s = brotli.to_bytes("hi"); var s = brotli.from_bytes(bytes_s)
 
 namespace brotli {
 // ================= 对外接口 =================
@@ -231,7 +236,7 @@ pub func from_bytes(seq_s: string) -> string {
 // ================= 内部：字节/字符工具 =================
 
 // 解析逗号分隔 i64 序列 → 局部表。
-func parse_i64(s: string) -> table {
+func parse_i64(s: string) -> table<i64> {
     var result = table_new_i64()
     var n: i64 = len(s)
     if n == 0 {
@@ -303,7 +308,7 @@ func slice(s: string, start: i64, end: i64) -> string {
 }
 
 // 2 的幂表（2^0..2^7 足够本模块使用，统一建 2^0..2^62）。
-func build_pow2() -> table {
+func build_pow2() -> table<i64> {
     var t = table_new_i64()
     var v: i64 = 1
     var i: i64 = 0

@@ -1,9 +1,23 @@
 type tie<class>
 // ml.tie：扩展库——机器学习（命名空间 ml，D6）
 // 内容：线性 SVM（感知机式，二分类）+ 决策树（ID3 简化版，二分类）。
-// 接口：训练数据用**逗号分隔字符串序列**传参（特征与标签），模型用局部
-// 表存储（感知机权重表 / 决策树节点表）。有状态应用层（训练产生模型）。
-// 表参数元素类型静态未知 → 全部局部表 + 字符串序列（同 std/ext 库模式）。
+// 接口（library-v2 破坏性改造）：训练样本由**真表**传入——
+//   svm_train(xs: table<f64>, ys: table<i64>, n, m, iters, lr) -> string
+//   svm_predict(model, x: table<f64>, n) -> i64
+//   tree_train(xs: table<f64>, ys: table<i64>, n, m, depth) -> string
+//   tree_predict(model, x: table<f64>, n) -> i64
+//   model（训练返回）仍为逗号分隔数字序列字符串（本地模型编码，非二进制格式）。
+// xs 为 m 行 × n 维特征展平表（行优先：xs[s*n .. s*n+n) 第 s 个样本）；
+// ys 为 m 个标签（±1）；x 为查询样本（n 个特征）。
+// 已删除原 parse_f64/parse_i64 字符串样本编码辅助函数。
+//
+// 调用示例：
+//   var xs: table<f64> = [1.0, 2.0, 3.0, 4.0]   // 2 样本 × 2 维
+//   var ys: table<i64> = [-1, 1]
+//   var model = ml.svm_train(xs, ys, 2, 2, 100, 0.1)
+//   println(ml.svm_predict(model, [1.0, 2.0], 2))   // -1 / +1
+//   var tree = ml.tree_train(xs, ys, 2, 2, 3)
+//   println(ml.tree_predict(tree, [1.0, 2.0], 2))
 
 namespace ml {
 // ================= 线性 SVM（感知机式，二分类） =================
@@ -12,12 +26,10 @@ namespace ml {
 // 特征 x 为 f64 序列；标签 y ∈ {-1, +1}。迭代 n 轮收敛。
 // 模型：返回权重序列字符串（w1,w2,...,wn,b）。
 
-// 感知机训练：xs（特征序列，每行 n 个特征逗号分隔，共 m 行）、
-// ys（标签序列，±1 共 m 个）、n（特征数）、m（样本数）、iters（迭代轮数）、
-// lr（学习率）。返回模型串 "w1,w2,...,wn,b"。
-pub func svm_train(xs_s: string, ys_s: string, n: i64, m: i64, iters: i64, lr: f64) -> string {
-    var xs = parse_f64(xs_s)
-    var ys = parse_i64(ys_s)
+// 感知机训练：xs（特征表，每行 n 个特征，共 m 行）、ys（标签表，±1 共 m 个）、
+// n（特征数）、m（样本数）、iters（迭代轮数）、lr（学习率）。
+// 返回模型串 "w1,w2,...,wn,b"。
+pub func svm_train(xs: table<f64>, ys: table<i64>, n: i64, m: i64, iters: i64, lr: f64) -> string {
     // 权重 w[0..n-1] + 偏置 b（索引 n）
     var w = table_new_f64()
     var i: i64 = 0
@@ -64,15 +76,14 @@ pub func svm_train(xs_s: string, ys_s: string, n: i64, m: i64, iters: i64, lr: f
     return res
 }
 
-// 感知机预测：model（svm_train 返回的模型串）、x（特征序列 n 个）。
+// 感知机预测：model（svm_train 返回的模型串）、x（特征表 n 个）。
 // 返回 +1 / -1。
-pub func svm_predict(model_s: string, x_s: string, n: i64) -> i64 {
-    var model = parse_f64(model_s)
-    var x = parse_f64(x_s)
-    var dot: f64 = model[n]
+pub func svm_predict(model: string, x: table<f64>, n: i64) -> i64 {
+    var mw = parse_model(model)
+    var dot: f64 = mw[n]
     var f: i64 = 0
     while f < n {
-        dot = dot + model[f] * x[f]
+        dot = dot + mw[f] * x[f]
         f = f + 1
     }
     if dot >= 0.0 {
@@ -91,9 +102,7 @@ pub func svm_predict(model_s: string, x_s: string, n: i64) -> i64 {
 
 // 决策树训练：返回模型串（节点表序列化）。
 // 格式："feat1,thresh1,left1,right1,label1,feat2,..." 每个节点 5 个数。
-pub func tree_train(xs_s: string, ys_s: string, n: i64, m: i64, depth: i64) -> string {
-    var xs = parse_f64(xs_s)
-    var ys = parse_i64(ys_s)
+pub func tree_train(xs: table<f64>, ys: table<i64>, n: i64, m: i64, depth: i64) -> string {
     // 节点表（并行）
     var node_feat = table_new_i64()
     var node_thresh = table_new_f64()
@@ -105,15 +114,9 @@ pub func tree_train(xs_s: string, ys_s: string, n: i64, m: i64, depth: i64) -> s
     table_push(node_thresh, 0.0)
     table_push(node_left, -1)
     table_push(node_right, -1)
-    table_push(node_label, majority_vote(ys_s, m))
-    // 迭代建树：队列（节点索引 + 样本范围 + 深度）——用「样本子集」近似：
-    // 简化实现：贪心单层分割（选信息增益最大特征），递归用节点表模拟。
-    // 首版：构建深度 1 的桩树（stump）+ 叶标签。
-    // —— 更实用：用「多数投票 + 单特征阈值」的简单决策桩，深度由调用方控制。
-    // 这里实现完整 ID3（递归用显式栈）：
+    table_push(node_label, majority_vote(ys, m))
+    // 迭代建树（用显式栈，深度限制控制）
     var stack = table_new_i64()
-    // 栈元素：节点索引（处理顺序），样本集合用「范围」表示（简化：全体样本）
-    // —— 简化：每次分裂用全部样本（非精确 ID3 子集），深度限制控制。
     table_push(stack, 0)
     var depth_map = table_new_i64()
     table_push(depth_map, 0)
@@ -167,18 +170,18 @@ pub func tree_train(xs_s: string, ys_s: string, n: i64, m: i64, depth: i64) -> s
                 node_thresh[node] = best_thresh
                 // 创建左右子节点
                 var l_idx = len(node_feat)
-        table_push(node_feat, 0)
-        table_push(node_thresh, 0.0)
-        table_push(node_left, -1)
-        table_push(node_right, -1)
-        table_push(node_label, 0)
-        var r_idx = len(node_feat)
-        table_push(node_feat, 0)
-        table_push(node_thresh, 0.0)
-        table_push(node_left, -1)
-        table_push(node_right, -1)
-        table_push(node_label, 0)
-        // 左右子节点 label = 各自多数类（按阈值划分样本）
+                table_push(node_feat, 0)
+                table_push(node_thresh, 0.0)
+                table_push(node_left, -1)
+                table_push(node_right, -1)
+                table_push(node_label, 0)
+                var r_idx = len(node_feat)
+                table_push(node_feat, 0)
+                table_push(node_thresh, 0.0)
+                table_push(node_left, -1)
+                table_push(node_right, -1)
+                table_push(node_label, 0)
+                // 左右子节点 label = 各自多数类（按阈值划分样本）
                 var lc: i64 = 0
                 var rc: i64 = 0
                 var s2: i64 = 0
@@ -223,20 +226,19 @@ pub func tree_train(xs_s: string, ys_s: string, n: i64, m: i64, depth: i64) -> s
     return res
 }
 
-// 决策树预测：model（tree_train 返回）、x（特征序列 n 个）。返回 ±1。
-pub func tree_predict(model_s: string, x_s: string, n: i64) -> i64 {
-    var model = parse_f64(model_s)
-    var x = parse_f64(x_s)
+// 决策树预测：model（tree_train 返回）、x（特征表 n 个）。返回 ±1。
+pub func tree_predict(model: string, x: table<f64>, n: i64) -> i64 {
+    var nodes = parse_model(model)
     // 从根（节点 0）沿树下降
     var node: i64 = 0
     var guard: i64 = 0
     while guard < 100 {
         var base = node * 5
-        var feat = to_i64(model[base])
-        var thresh = model[base + 1]
-        var left = to_i64(model[base + 2])
-        var right = to_i64(model[base + 3])
-        var label = to_i64(model[base + 4])
+        var feat = to_i64(nodes[base])
+        var thresh = nodes[base + 1]
+        var left = to_i64(nodes[base + 2])
+        var right = to_i64(nodes[base + 3])
+        var label = to_i64(nodes[base + 4])
         if left < 0 {
             // 叶节点
             return label
@@ -253,8 +255,6 @@ pub func tree_predict(model_s: string, x_s: string, n: i64) -> i64 {
 
 // ================= 内部工具 =================
 
-
-
 // 多数符号：lc 累加（+1 计 +1，-1 计 -1），正 → +1，否则 -1。
 func majority_sign(lc: i64) -> i64 {
     if lc >= 0 {
@@ -263,9 +263,8 @@ func majority_sign(lc: i64) -> i64 {
     return -1
 }
 
-// 多数类投票：ys_s 为 ±1 标签序列，返回多数类（+1 或 -1）。
-func majority_vote(ys_s: string, m: i64) -> i64 {
-    var ys = parse_i64(ys_s)
+// 多数类投票：ys 为 ±1 标签表（m 个），返回多数类（+1 或 -1）。
+func majority_vote(ys: table<i64>, m: i64) -> i64 {
     var acc: i64 = 0
     var i: i64 = 0
     while i < m {
@@ -275,8 +274,8 @@ func majority_vote(ys_s: string, m: i64) -> i64 {
     return majority_sign(acc)
 }
 
-// 解析逗号分隔 f64 序列。
-pub func parse_f64(s: string) -> table {
+// 解析逗号分隔 f64 序列（本地模型编码还原）。
+func parse_model(s: string) -> table<f64> {
     var result = table_new_f64()
     var n: i64 = len(s)
     if n == 0 {
@@ -291,30 +290,6 @@ pub func parse_f64(s: string) -> table {
             var seg = slice(s, start, i)
             if len(seg) > 0 {
                 table_push(result, parse_float(seg))
-            }
-            start = i + 1
-        }
-        i = i + 1
-    }
-    return result
-}
-
-// 解析逗号分隔 i64 序列。
-pub func parse_i64(s: string) -> table {
-    var result = table_new_i64()
-    var n: i64 = len(s)
-    if n == 0 {
-        return result
-    }
-    var start: i64 = 0
-    var i: i64 = 0
-    while i <= n {
-        var at_end: bool = (i == n)
-        var is_comma: bool = !at_end && str_char(s, i) == ","
-        if at_end || is_comma {
-            var seg = slice(s, start, i)
-            if len(seg) > 0 {
-                table_push(result, parse_int(seg))
             }
             start = i + 1
         }
@@ -359,5 +334,3 @@ func slice(s: string, start: i64, end: i64) -> string {
     return result
 }
 }
-
-

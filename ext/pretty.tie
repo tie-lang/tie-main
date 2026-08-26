@@ -11,6 +11,12 @@ type tie<class>
 //
 // 调用：import 后 本模块负责对齐(...) / pretty.simple(...)；命名空间内裸调用。
 // 命名规范：命名空间内函数不加 pretty_ 前缀（统一 func 写法，Harbor M2.1.6）。
+//
+// 调用示例：
+//   var headers: table<string> = ["Name", "Age"]
+//   var rows: table<string> = ["Alice|30", "Bob|25"]
+//   println(pretty.render(headers, rows))
+//   println(pretty.simple(headers, rows)); println(pretty.kv("Name", "Alice", 8))
 
 namespace pretty {
 // 本模块负责对齐。headers 为列标题；rows 每元素 = 单元格 '|' 分隔的文本行。

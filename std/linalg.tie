@@ -1,49 +1,21 @@
 type tie<class>
-// linalg.tie：标准库——线性代数（命名空间 linalg，D2）
+// linalg.tie：标准库——线性代数（命名空间 linalg）
 // 内容：矩阵乘法/转置/行列式/线性方程组/求逆/LU 分解/幂法特征值。
-// 接口约定：矩阵用**逗号分隔字符串序列**按行拼接传参（如 2×2 [[1,2],[3,4]]
-// 传 "1.0,2.0,3.0,4.0" + n=2），返回同样为序列字符串——tie 表参数元素类型
-// 静态未知（无法下标读取），序列字符串 + 局部表（parse 产物）是自洽接口。
-// 消元过程用**局部 f64 表 + 下标赋值**（M4 表下标赋值已支持 t[i]=v）。
+// 接口约定：矩阵用**真表**传参——n×n 矩阵按行展平为 table<f64>。table<f64>
+// 参数元素类型静态已知，函数内可直接下标读取。消元用**局部 f64 表 + 下标赋值**。
 // 数值用 f64 字面量（tie 二元运算两侧类型必须一致）。
+// 调用：import 后 linalg.mat_mul(a, b, n) / linalg.det(a, n) 等
 
 namespace linalg {
-// 解析逗号分隔 f64 序列 → 局部 f64 动态表（空串 → 空表）。
-func parse_series(s: string) -> table {
-    var result = table_new_f64()
-    var n: i64 = len(s)
-    if n == 0 {
-        return result
-    }
-    var start: i64 = 0
-    var i: i64 = 0
-    while i <= n {
-        var at_end: bool = (i == n)
-        var is_comma: bool = !at_end && str_char(s, i) == ","
-        if at_end || is_comma {
-            var seg = slice(s, start, i)
-            if len(seg) > 0 {
-                table_push(result, parse_float(seg))
-            }
-            start = i + 1
-        }
-        i = i + 1
-    }
-    return result
-}
-
 // i64 → f64（tie 无隐式转换）。
 func to_f64(v: i64) -> f64 {
     return parse_float(to_string(v))
 }
 
-// 矩阵乘法 C = A×B（n×n，f64）。A/B 为序列字符串，n 为阶数。
-// 返回**局部 f64 表**（table_ret_elems 记录元素类型，调用方下标读取合法）。
-pub func mat_mul(a_s: string, b_s: string, n: i64) -> table {
-    var a = parse_series(a_s)
-    var b = parse_series(b_s)
+// 矩阵乘法 C = A×B（n×n，f64）。A/B 为展平 table<f64>，n 为阶数。
+// c[i*n+j] = Σ_k a[i*n+k] * b[k*n+j]。返回局部 f64 表（table<f64>）。
+pub func mat_mul(a: table<f64>, b: table<f64>, n: i64) -> table<f64> {
     var c = table_new_f64()
-    // c[i*n+j] = Σ_k a[i*n+k] * b[k*n+j]
     var i: i64 = 0
     while i < n {
         var j: i64 = 0
@@ -62,9 +34,8 @@ pub func mat_mul(a_s: string, b_s: string, n: i64) -> table {
     return c
 }
 
-// 矩阵转置：B[i*n+j] = A[j*n+i]。返回局部 f64 表。
-pub func mat_trans(a_s: string, n: i64) -> table {
-    var a = parse_series(a_s)
+// 矩阵转置：b[i*n+j] = a[j*n+i]。返回局部 f64 表（table<f64>）。
+pub func mat_trans(a: table<f64>, n: i64) -> table<f64> {
     var b = table_new_f64()
     var i: i64 = 0
     while i < n {
@@ -79,9 +50,14 @@ pub func mat_trans(a_s: string, n: i64) -> table {
 }
 
 // 行列式（高斯消元，列主元）：把矩阵消成上三角，对角线乘积 × 行交换符号。
-pub func det(a_s: string, n: i64) -> f64 {
-    // 复制到局部表（消元破坏性修改）
-    var m = parse_series(a_s)
+pub func det(a: table<f64>, n: i64) -> f64 {
+    // 复制到局部表（消元破坏性修改，不写回调用方实参）
+    var m = table_new_f64()
+    var ii: i64 = 0
+    while ii < n * n {
+        table_push(m, a[ii])
+        ii = ii + 1
+    }
     var det_v: f64 = 1.0
     var sign: i64 = 1
     var col: i64 = 0
@@ -134,11 +110,9 @@ pub func det(a_s: string, n: i64) -> f64 {
 }
 
 // 解线性方程组 Ax=b（高斯消元 + 回代），返回解向量**局部 f64 表**（无解返回空表）。
-pub func gauss(a_s: string, b_s: string, n: i64) -> table {
+pub func gauss(a: table<f64>, b: table<f64>, n: i64) -> table<f64> {
     // 增广矩阵 [A | b]，复制到局部表（消元破坏性修改）
     var aug = table_new_f64()
-    var a = parse_series(a_s)
-    var b = parse_series(b_s)
     var i: i64 = 0
     while i < n {
         var j: i64 = 0
@@ -164,7 +138,7 @@ pub func gauss(a_s: string, b_s: string, n: i64) -> table {
             }
             r = r + 1
         }
-        // 主元为 0 → 无解/无穷解（返回空串标记）
+        // 主元为 0 → 无解/无穷解（返回空表标记）
         if aug[pivot * (n + 1) + col] == 0.0 {
             return table_new_f64()
         }
@@ -210,11 +184,10 @@ pub func gauss(a_s: string, b_s: string, n: i64) -> table {
     return x
 }
 
-// 矩阵求逆（高斯-约当消元）：[A | I] → [I | A⁻¹]。奇异返回空串。
-pub func mat_inv(a_s: string, n: i64) -> table {
+// 矩阵求逆（高斯-约当消元）：[A | I] → [I | A⁻¹]。奇异返回空表。
+pub func mat_inv(a: table<f64>, n: i64) -> table<f64> {
     // 增广 [A | I]
     var aug = table_new_f64()
-    var a = parse_series(a_s)
     var i: i64 = 0
     while i < n {
         var j: i64 = 0
@@ -296,10 +269,9 @@ pub func mat_inv(a_s: string, n: i64) -> table {
     return inv
 }
 
-// LU 分解（Doolittle）：A = L×U。返回扁平序列 [L 的 n*n 个, U 的 n*n 个]。
+// LU 分解（Doolittle）：A = L×U。返回扁平 table<f64> [L 的 n*n 个, U 的 n*n 个]。
 // 文档：调用方按「前 n*n 是 L（下三角，含单位对角 1），后 n*n 是 U（上三角）」解析。
-pub func lu_decompose(a_s: string, n: i64) -> table {
-    var a = parse_series(a_s)
+pub func lu_decompose(a: table<f64>, n: i64) -> table<f64> {
     // L（下三角）与 U（上三角）复制到局部表
     var l = table_new_f64()
     var u = table_new_f64()
@@ -363,8 +335,7 @@ pub func lu_decompose(a_s: string, n: i64) -> table {
 }
 
 // 幂法求最大特征值：迭代 v_{k+1} = A·v_k / ||A·v_k||，收敛到主特征值。
-pub func eigen_power(a_s: string, n: i64, iter: i64) -> f64 {
-    var a = parse_series(a_s)
+pub func eigen_power(a: table<f64>, n: i64, iter: i64) -> f64 {
     // 初始向量 v = [1,1,...,1]
     var v = table_new_f64()
     var i: i64 = 0
@@ -419,32 +390,4 @@ func abs_f(v: f64) -> f64 {
     }
     return v
 }
-
-// 截取 s 的 [start, end) 子串（越界收敛）。
-func slice(s: string, start: i64, end: i64) -> string {
-    var n: i64 = len(s)
-    var lo: i64 = start
-    if lo < 0 {
-        lo = 0
-    }
-    if lo > n {
-        lo = n
-    }
-    var hi: i64 = end
-    if hi < 0 {
-        hi = 0
-    }
-    if hi > n {
-        hi = n
-    }
-    var result: string = ""
-    var i: i64 = lo
-    while i < hi {
-        result = result + str_char(s, i)
-        i = i + 1
-    }
-    return result
 }
-}
-
-

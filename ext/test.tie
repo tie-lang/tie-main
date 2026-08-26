@@ -14,6 +14,13 @@ type tie<class>
 //
 // 分组说明：group() 仅设置当前分组名，参与 summary 文本与 [FAIL] 定位行前缀，
 // 不参与判定逻辑；done() 后如需复用可再 reset()。
+//
+// 调用示例：
+//   test.reset(); test.group("math")
+//   test.expect_eq(1 + 1, 2, "add")                 // 泛型：i64/f64/string 均可
+//   test.expect(str_len("ab") == 2, "ab len")
+//   test.expect_float_eq(0.1 + 0.2, 0.3, "fadd")
+//   if test.fail_count() > 0 { test.done() } else { test.done() }
 
 // ---- 测试状态（顶层持久变量，跨函数共享） ----
 // t_pass/t_fail：通过/失败计数；t_cur_group：当前分组名（仅影响显示）
@@ -62,13 +69,11 @@ namespace test {
         }
     }
 
-    // 整数相等断言
-    pub func expect_eq(a: i64, b: i64, name: string) {
-        expect(a == b, name)
-    }
-
-    // 字符串相等断言
-    pub func expect_str_eq(a: string, b: string, name: string) {
+    // 泛型相等断言（i64/f64/string 均可用）：调用点单态化。
+    // 已合并旧 expect_eq(整数)/expect_str_eq(字符串)；expect_float_eq 是
+    // 有容差的近似断言，语义不同，仍独立保留。
+    // 模板体只用比较运算符 a == b，不使用 to_string（T=string 时无法格式化）。
+    pub func expect_eq<T>(a: T, b: T, name: string) {
         expect(a == b, name)
     }
 

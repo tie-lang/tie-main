@@ -4,6 +4,11 @@ type tie<class>
 // 基址可 set/查询，跨函数共享。
 // 仅用字符串拼接/字面量/顶层 var（纯 tie，不依赖网络原语——首版只算路径）。
 // 调用：import 后 registry.set_registry(...) / registry.pkg_url("log", "1.0.0")
+//
+// 调用示例：
+//   registry.set_registry("https://example.com")
+//   println(registry.pkg_url("log", "1.0.0"))   // "https://example.com/packages/log/1.0.0.tar.gz"
+//   println(registry.index_url())               // "https://example.com/index.tie"
 
 // 顶层持久变量：注册表基址（字面量初始化；set_registry 改写）
 var registry_root: string = "https://pkg.tie-lang.org"

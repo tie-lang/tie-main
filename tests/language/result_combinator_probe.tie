@@ -67,7 +67,7 @@ func main() {
     var f2 = func(e: string) -> string { return "pre:" + e; };
     var m5 = r_map_err(r2, f2)
     switch m5 {
-        case Err(e): assert.assert_eq_str(e, "pre:bad")
+        case Err(e): assert.assert_eq(e, "pre:bad")
         case Ok(v): panic("map_err 不应 Ok")
     }
     // unwrap_or
@@ -79,7 +79,7 @@ func main() {
     }
     switch r2 {
         case Ok(v): panic("r2 不应 Ok")
-        case Err(e): assert.assert_eq_str(e, "bad")
+        case Err(e): assert.assert_eq(e, "bad")
     }
     println("组合子机制探针全过")
 }

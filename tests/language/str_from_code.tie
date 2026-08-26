@@ -14,28 +14,28 @@ using utf;
 
 func main() {
     // ---- 基础正例：码点 → 单字符（中文 / ASCII / emoji）----
-    assert.assert_eq_str(str_from_code(20013), "中")
-    assert.assert_eq_str(str_from_code(65), "A")
-    assert.assert_eq_str(str_from_code(97), "a")
-    assert.assert_eq_str(str_from_code(0x4E2D), "中")
+    assert.assert_eq(str_from_code(20013), "中")
+    assert.assert_eq(str_from_code(65), "A")
+    assert.assert_eq(str_from_code(97), "a")
+    assert.assert_eq(str_from_code(0x4E2D), "中")
     // emoji 😀 U+1F600 = 128512，UTF-8 4 字节（1 码点）
     assert.assert_eq(str_len(str_from_code(128512)), 1)
     assert.assert_eq(utf.byte_len(str_from_code(128512)), 4)
     // ---- 非法码点 → 空串：负值 / 超过 0x10FFFF / 代理区 ----
-    assert.assert_eq_str(str_from_code(-1), "")
-    assert.assert_eq_str(str_from_code(-128), "")
-    assert.assert_eq_str(str_from_code(0x110000), "")
-    assert.assert_eq_str(str_from_code(0x7FFFFFFF), "")
-    assert.assert_eq_str(str_from_code(0xD800), "")
-    assert.assert_eq_str(str_from_code(0xDBFF), "")
-    assert.assert_eq_str(str_from_code(0xDFFF), "")
+    assert.assert_eq(str_from_code(-1), "")
+    assert.assert_eq(str_from_code(-128), "")
+    assert.assert_eq(str_from_code(0x110000), "")
+    assert.assert_eq(str_from_code(0x7FFFFFFF), "")
+    assert.assert_eq(str_from_code(0xD800), "")
+    assert.assert_eq(str_from_code(0xDBFF), "")
+    assert.assert_eq(str_from_code(0xDFFF), "")
     // ---- 与 utf.codepoint / str_char 双向 roundtrip ----
     assert.assert_eq(utf.codepoint(str_from_code(utf.codepoint("中"))), utf.codepoint("中"))
-    assert.assert_eq_str(str_from_code(utf.codepoint("中")), "中")
+    assert.assert_eq(str_from_code(utf.codepoint("中")), "中")
     assert.assert_eq(utf.codepoint(str_from_code(utf.codepoint("😀"))), 128512)
     // str_char 取出的单字符可经 from_code 还原（码点 → 字符 → 码点闭环）
-    assert.assert_eq_str(str_from_code(char_code(str_char("中文", 0))), "中")
+    assert.assert_eq(str_from_code(char_code(str_char("中文", 0))), "中")
     assert.assert_eq(utf.codepoint("四"), 0x56DB)
-    assert.assert_eq_str(str_from_code(utf.codepoint("四")), "四")
+    assert.assert_eq(str_from_code(utf.codepoint("四")), "四")
     println("str_from_code 验收通过")
 }

@@ -13,6 +13,12 @@ type tie<class>
 //
 // 调用：import 后 cfg.parse_kv(...) / cfg.get(...)；命名空间内互调为裸调用。
 // 命名规范：命名空间内函数不加 cfg_ 前缀（统一 func 写法，Harbor M2.1.6）。
+//
+// 调用示例：
+//   var t = cfg.parse_kv("name=Alice\n[db]\nhost=localhost")
+//   cfg.get(t, "name", "")      // "Alice"
+//   cfg.get(t, "db.host", "")   // "localhost"
+//   cfg.get_int(t, "port", 80); cfg.get_bool(t, "verbose", false)
 
 namespace cfg {
 // 解析 KEY=VALUE 文本 → 交错表 [k1,v1,k2,v2...]。空输入返回空表。

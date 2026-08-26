@@ -1,5 +1,10 @@
 type tie<class>
 // assert.tie：标准库——基础断言函数（命名空间 assert），失败时打印错误信息并退出进程
+// 泛型化（library-v2 新特性）：assert_eq/assert_neq 用泛型统一整数/浮点/字符串，
+// 调用点单态化，签名 `assert_eq<T>(a: T, b: T)`（旧 assert_eq/assert_eq_f64/
+// assert_eq_str 已合并删除）。
+// 注：失败消息不嵌入值——to_string 只接受数字，泛型 T=string 时无法格式化；
+// 需要调试值时请自行 println 后调 assert(false)。
 // 调用：import 后 assert.assert(...) / assert.assert_eq(...) / assert.assert_neq(...)
 
 namespace assert {
@@ -11,34 +16,18 @@ pub func assert(cond: bool) {
     }
 }
 
-// 断言两个整数相等；不相等时打印两个值并退出（退出码 1）
-pub func assert_eq(a: i64, b: i64) {
+// 断言两值相等（泛型：i64/f64/string 均可用）；不相等时打印错误并退出（退出码 1）
+pub func assert_eq<T>(a: T, b: T) {
     if a != b {
-        println("assert_eq 失败：" + to_string(a) + " != " + to_string(b))
+        println("assert_eq 失败：两值不相等")
         exit(1)
     }
 }
 
-// 断言两个整数不相等；相等时打印两个值并退出（退出码 1）
-pub func assert_neq(a: i64, b: i64) {
+// 断言两值不相等（泛型）；相等时打印错误并退出（退出码 1）
+pub func assert_neq<T>(a: T, b: T) {
     if a == b {
-        println("assert_neq 失败：" + to_string(a) + " == " + to_string(b))
-        exit(1)
-    }
-}
-
-// 断言两个浮点相等；不相等时打印两个值并退出（退出码 1）
-pub func assert_eq_f64(a: f64, b: f64) {
-    if a != b {
-        println("assert_eq_f64 失败：" + to_string(a) + " != " + to_string(b))
-        exit(1)
-    }
-}
-
-// 断言两个字符串相等；不相等时打印两个值并退出（退出码 1）
-pub func assert_eq_str(a: string, b: string) {
-    if a != b {
-        println("assert_eq_str 失败：" + a + " != " + b)
+        println("assert_neq 失败：两值相等")
         exit(1)
     }
 }

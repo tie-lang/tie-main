@@ -13,6 +13,10 @@ type tie<class>
 // 同名重复 start 会覆盖起点（若上次未 end，起点被覆盖则该段计时丢失——注释
 // 说明：勿在同名未 end 时再次 start）；end 时无起点（未登记）则静默忽略。
 // tie 表无删除操作，本库不做清理；reset() 通过重建表清空全部状态。
+//
+// 调用示例：
+//   bench.reset(); bench.start("a"); bench.end("a")
+//   bench.lap("b"); println(bench.summary()); bench.reset()
 
 // ---- 基准状态（顶层持久变量，跨函数共享） ----
 // b_names：登记序名字表；b_starts：各名字当前起点（毫秒）；b_totals：累计毫秒

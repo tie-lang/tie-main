@@ -1,12 +1,12 @@
 type tie<logic>
 import "../std/linalg.tie"
 func main() {
-    var c = linalg.mat_mul("1.0,2.0,3.0,4.0", "5.0,6.0,7.0,8.0", 2)
-    var t = linalg.mat_trans("1.0,2.0,3.0,4.0", 2)
-    var d = linalg.det("2.0,1.0,1.0,3.0", 2)
-    var sol = linalg.gauss("1.0,1.0,1.0,0.0,2.0,5.0,2.0,5.0,-1.0", "6.0,-4.0,27.0", 3)
-    var inv = linalg.mat_inv("2.0,1.0,1.0,3.0", 2)
-    var eig = linalg.eigen_power("2.0,1.0,1.0,2.0", 2, 50)
+    var c = linalg.mat_mul([1.0,2.0,3.0,4.0], [5.0,6.0,7.0,8.0], 2)
+    var t = linalg.mat_trans([1.0,2.0,3.0,4.0], 2)
+    var d = linalg.det([2.0,1.0,1.0,3.0], 2)
+    var sol = linalg.gauss([1.0,1.0,1.0,0.0,2.0,5.0,2.0,5.0,-1.0], [6.0,-4.0,27.0], 3)
+    var inv = linalg.mat_inv([2.0,1.0,1.0,3.0], 2)
+    var eig = linalg.eigen_power([2.0,1.0,1.0,2.0], 2, 50)
     println("mat_mul: " + to_string(c[0]) + " " + to_string(c[1]) + " " + to_string(c[2]) + " " + to_string(c[3]))
     println("mat_trans: " + to_string(t[0]) + " " + to_string(t[1]) + " " + to_string(t[2]) + " " + to_string(t[3]))
     println("det: " + to_string(d))

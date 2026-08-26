@@ -4,8 +4,12 @@ type tie<class>
 // split/slice/join（M2.1.7 using 引入）；str_char 是语言底座原语（非 str 命名空间）。
 // 注意——当前 import 展开不做去重，调用方只需导入 csv.tie（string.tie 会随
 // 之展开）；若再重复导入 string.tie，会导致 str 命名空间内函数重复定义。
-// csv_cells 直接委托 str.split，保证与 string.tie 的语义逐字符一致。
-// 调用：import 后 csv.csv_read(...) / csv.csv_cells(...) / csv.csv_write(...)
+// cells 直接委托 str.split，保证与 string.tie 的语义逐字符一致。
+// 调用：import 后 csv.read(...) / csv.cells(...) / csv.write(...)
+// library-v2：csv_read/csv_cells/csv_write 去前缀（read/cells/write），
+// 表参数类型化。注：read 本应返回 Result<table<string>, string>，但编译器
+// enum payload 白名单仅支持标量，table<string> 作 payload 编译不过，
+// 故保持原始空表哨兵（文件不存在/读取失败返回空表）。
 
 import "./string.tie"
 using str;
@@ -16,8 +20,8 @@ namespace csv {
 // - 每行末尾的 "\r"（Windows 换行残留）自动去除；
 // - 空行保留为空字符串元素；文件以 \n 结尾时末尾会产生一个空元素
 //   （与 split 语义一致），调用方可按需过滤。
-// 每行内的单元格由调用方用 csv_cells(row, ",") 切分（支持任意分隔符）。
-pub func csv_read(path: string) -> table {
+// 每行内的单元格由调用方用 cells(row, ",") 切分（支持任意分隔符）。
+pub func read(path: string) -> table<string> {
     var content: string = file_read(path)
     var raw = split(content, "\n")
     var lines = table_new_string()
@@ -30,16 +34,23 @@ pub func csv_read(path: string) -> table {
     return lines
 }
 
-// 把一行 CSV 文本按分隔符切分为单元格表（str.split 的别名，直接委托）；
+// 把一行 CSV 文本按分隔符切分为单元格表（str.split 的委托，语义逐字符一致）；
 // sep 为空串时返回单元素 [line]。
-pub func csv_cells(line: string, sep: string) -> table {
-    return split(line, sep)
+pub func cells(line: string, sep: string) -> table<string> {
+    var out = table_new_string()
+    var raw = split(line, sep)
+    var i: i64 = 0
+    while i < len(raw) {
+        table_push(out, raw[i])
+        i = i + 1
+    }
+    return out
 }
 
 // 把行表 lines 写入 CSV 文件（每行已含分隔符，用 \n 连接，**无尾换行**——
-// 与 csv_read 的 split("\n") 对称，写读往返不产生空行元素）；
+// 与 read 的 split("\n") 对称，写读往返不产生空行元素）；
 // 返回 file_write 是否成功（true 成功 / false 失败）。
-pub func csv_write(path: string, lines: table) -> bool {
+pub func write(path: string, lines: table<string>) -> bool {
     var content = join(lines, "\n")
     return file_write(path, content)
 }

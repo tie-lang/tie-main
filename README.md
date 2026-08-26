@@ -23,7 +23,7 @@ tie 是一门**通用编程语言**：用一门语言写逻辑、写界面、写
 | [docs/ai-guide.md](docs/ai-guide.md)                       | AI 教学指南：语言用法 + 负例 + 编译器架构（教 AI 用/开发 tie）                                                          |
 | [docs/prompt-pack.md](docs/prompt-pack.md)                 | 可粘贴 Prompt 包：自包含简介，直接发给任何 AI                                                                      |
 | [NEW.md](NEW.md)                                           | 发行版新鲜事：本发行版的新功能与特色速览                                                                              |
-| [docs/plans/](docs/plans/)                                 | 后续里程碑设计规划（switch 模式匹配 / 单文件命名空间 / 统一 func 写法 / 动态库编译 / 包管理器 / 算法库分类 / 嵌入式基础层 rdu / **泛型系统（已实现**）） |
+| [docs/plans/](docs/plans/)                                 | 后续里程碑设计规划（switch 模式匹配 / 单文件命名空间 / 统一 func 写法 / 动态库编译 / 包管理器 / 算法库分类 / 嵌入式基础层 rdu / **泛型系统（已实现**） / **三层库重写 library-v2（已实现，[library-v2.md](docs/plans/library-v2.md)**） |
 | [CHANGELOG.md](CHANGELOG.md)                               | 版本变更记录（按里程碑）                                                                                      |
 
 ## 快速开始

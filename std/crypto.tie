@@ -109,8 +109,8 @@ pub func fnv1a(s: string) -> i64 {
     return h
 }
 
-// 暴露 CRC-32 查找表（调试用，可选）：返回模块级全局表 crc32_tab（256 项）。
-pub func crc32_table() -> table {
+// 暴露 CRC-32 查找表（调试用，可选）：返回模块级全局表 crc32_tab（256 项，i64 元素）。
+pub func crc32_table() -> table<i64> {
     ensure_crc32_table()
     return crc32_tab
 }

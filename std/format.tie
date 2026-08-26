@@ -2,7 +2,8 @@ type tie<class>
 // format.tie：标准库——格式化函数（命名空间 format）
 // 全部基于 to_string + str_char + len + 字符串拼接 + 循环/分支实现，不使用下标索引
 // 与字符转换；负数十六进制用「负号前缀 + 绝对值」表示（与常见语言一致）。
-// 调用：import 后 format.format_int(...) / format.format_pad(...)
+// 调用：import 后 format.format_int(...) / format.format_bool(...)
+// library-v2：format(b: bool) 改名 format_bool（与 format_int 前缀区分、消除裸名歧义）。
 
 namespace format {
 // 整数 → 十进制字符串（委托 to_string，与 Rust {} 默认格式一致）
@@ -50,7 +51,7 @@ pub func format_int_hex(v: i64) -> string {
 }
 
 // 布尔格式化：true / false
-pub func format(b: bool) -> string {
+pub func format_bool(b: bool) -> string {
     if b {
         return "true"
     }

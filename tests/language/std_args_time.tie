@@ -23,8 +23,8 @@ func main() {
     // 参数个数 >= 0（无参运行 = 0）
     assert.assert(args.count() >= 0)
     // 越界取值返回空串（负数下标与超大下标）
-    assert.assert_eq_str(args.get(-1), "")
-    assert.assert_eq_str(args.get(9999), "")
+    assert.assert_eq(args.get(-1), "")
+    assert.assert_eq(args.get(9999), "")
     // 带参运行（编译后 exe 带 "--flag abc"）：完整验证
     if args.count() >= 2 {
         // 用户参数个数 = 传入参数个数（不含程序名）
@@ -32,14 +32,14 @@ func main() {
         // has：精确匹配 "--flag" 存在
         assert.assert(args.has("--flag"))
         // value：形式一 "--flag=abc" 等价取值；形式二 "--flag abc" 取下一位
-        assert.assert_eq_str(args.value("--flag"), "abc")
+        assert.assert_eq(args.value("--flag"), "abc")
         // get：0 基取值与传入顺序一致
-        assert.assert_eq_str(args.get(0), "--flag")
-        assert.assert_eq_str(args.get(1), "abc")
+        assert.assert_eq(args.get(0), "--flag")
+        assert.assert_eq(args.get(1), "abc")
     } else {
         // 无参运行：空参数时 has 应为 false，value 应为空串
         assert.assert(!args.has("--flag"))
-        assert.assert_eq_str(args.value("--flag"), "")
+        assert.assert_eq(args.value("--flag"), "")
     }
     // ---- time：计时契约 ----
     // now() 为 Unix 纪元秒，远大于 0

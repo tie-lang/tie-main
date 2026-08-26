@@ -1,3 +1,35 @@
+## Harbor-2026.1-preview.5 开发中
+
+> 开发中主题见下方随提交累积条目。
+
+---
+
+---## [新增] 三层内置库重写 library-v2：新特性 + 统一风格 + 全新接口（2026-08-26）
+
+按 [docs/plans/library-v2.md](docs/plans/library-v2.md) 重写 std/rdu/ext 三层内置库（旧版
+v1 已归档至 github.com/tie-lang/lib_v1）。设计文档含三层逐模块新接口表与实施纪要。
+
+- **新特性**：std/rdu 的 `math` 泛型化（`abs<T>/max<T>/min<T>/clamp<T>` 替代成对
+  `max_i/max_f` 等，调用点单态化零开销）；rdu 的 `crc`（Crc8/Crc16/Crc32/Fnv1a）、`rnd`
+  （Rng）改为 **struct 状态封装**（值语义、无堆，保持无栈纪律）；std 表数据接口全面换成
+  真表参数（sort/graph/linalg/exmath/optsearch/ml 的逗号字符串编码表废弃）；
+  `fs.read_text`/`json.parse_file`/`http.get` 改为 `Result<string|i64, string>` 错误表达
+  （编译器 enum payload 白名单暂不支持 table/f64，read_bytes/read_lines/csv.read 保留
+  空表哨兵，见设计文档 §0）；ext/test `expect_eq<T>` 泛型合并。
+- **风格统一**：表参数/返回全部标注元素类型；一语义一名删重复别名（string.copy、
+  fs 的 read_to_string/write/append/remove_file/delete/remove_dir_all/mkdir_all/move、
+  http.url_encode/url_decode 等）；rdu/fixed 去前缀（mul/div/floor/frac）。
+- **编译器泛型修复**（支撑库泛型化的前置）：命名空间/跨文件泛型函数此前解析失败
+  （`命名空间函数 'ns::f' 未定义`）——sinfer 命名空间调用分支补 `gt_find` 模板查找、
+  irgen_call 对已 mangled 全名的调用不再二次加前缀；自举不动点 tiec→tiec2→tiec3 逐字节一致。
+- **已知限制（记录未修）**：① enum payload 白名单不支持 table/f64（Result<table> 不可
+  表达）；② `import result.tie` 须置于 `import assert.tie` 之前（泛型 enum 与断言模板
+  的扫描顺序敏感性）；③ bytes.write/concat 依赖的 byte_write/byte_concat 底座原语运行
+  崩溃（既有缺陷，与本次接口无关）；④ 泛型模板体内整数字面量单态化时类型固化
+  （`abs<T>` 用 `x - x` 取 T 型零值规避）。
+
+---
+
 ## Harbor-2026.1-preview.4（2026-08-23）
 
 > **preview.4 = tie 的「并发首版」**：原生 actor + 凭据门禁成型 + 自举性能 61× + 动态库打通 C 生态。

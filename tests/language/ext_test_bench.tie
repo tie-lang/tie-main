@@ -20,8 +20,8 @@ func main() {
     test.expect(true, "ok1")                 // pass=1
     test.expect(false, "bad")                // fail=1（立即打印 [FAIL]）
     test.expect_eq(42, 42, "eq")             // pass=2
-    test.expect_str_eq("a", "a", "str")      // pass=3
-    test.expect_str_eq("a", "b", "strbad")   // fail=2（立即打印 [FAIL]）
+    test.expect_eq("a", "a", "str")      // pass=3
+    test.expect_eq("a", "b", "strbad")   // fail=2（立即打印 [FAIL]）
     // 用 expect 验证框架自身计数与退出码（此刻 pass=3 / fail=2 / exit_code=1）
     test.expect(test.pass_count() == 3, "pass_count_3")
     test.expect(test.fail_count() == 2, "fail_count_2")

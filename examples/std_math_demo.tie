@@ -25,26 +25,26 @@ func main() {
     println("math.abs(5) = " + to_string(a2))
     assert.assert_eq(a2, 5)
 
-    // ---- 整数最大 / 最小 ----
-    var mx: i64 = math.max_i(3, 7)
+    // ---- 整数更大 / 更小（泛型显式实参）----
+    var mx: i64 = math.max<i64>(3, 7)
     println("math.max_i(3, 7) = " + to_string(mx))
     assert.assert_eq(mx, 7)
 
-    var mn: i64 = math.min_i(3, 7)
+    var mn: i64 = math.min<i64>(3, 7)
     println("math.min_i(3, 7) = " + to_string(mn))
     assert.assert_eq(mn, 3)
 
     // ---- 浮点绝对值 ----
-    var af: f64 = math.abs_f(-3.5)
+    var af: f64 = math.abs<f64>(-3.5)
     println("math.abs_f(-3.5) = " + to_string(af))
     assert.assert(af == 3.5)
 
-    // ---- 浮点最大 / 最小 ----
-    var mxf: f64 = math.max_f(1.5, 2.5)
+    // ---- 浮点更大 / 更小 ----
+    var mxf: f64 = math.max<f64>(1.5, 2.5)
     println("math.max_f(1.5, 2.5) = " + to_string(mxf))
     assert.assert(mxf == 2.5)
 
-    var mnf: f64 = math.min_f(1.5, 2.5)
+    var mnf: f64 = math.min<f64>(1.5, 2.5)
     println("math.min_f(1.5, 2.5) = " + to_string(mnf))
     assert.assert(mnf == 1.5)
 
@@ -62,7 +62,7 @@ func main() {
     assert.assert(c3 == 3.0)
 
     // ---- 整数夹取 ----
-    var ci: i64 = math.clamp_i(10, 0, 5)
+    var ci: i64 = math.clamp<i64>(10, 0, 5)
     println("math.clamp_i(10, 0, 5) = " + to_string(ci))
     assert.assert_eq(ci, 5)
 
@@ -96,16 +96,16 @@ func main() {
     // ---- 角度 / 弧度换算（浮点比较用容差）----
     var pi: f64 = math.deg_to_rad(180.0)
     println("math.deg_to_rad(180.0) = " + to_string(pi))
-    assert.assert(math.abs_f(pi - 3.141592653589793) < 0.000001)
+    assert.assert(math.abs<f64>(pi - 3.141592653589793) < 0.000001)
 
     var back: f64 = math.rad_to_deg(3.141592653589793)
     println("math.rad_to_deg(pi) = " + to_string(back))
-    assert.assert(math.abs_f(back - 180.0) < 0.000001)
+    assert.assert(math.abs<f64>(back - 180.0) < 0.000001)
 
     // ---- Rust 层数学原语直接演示（完整数学栈；sqrt/floor/ceil/round/pow/sin 为原语）----
     var sq: f64 = sqrt(16.0)
     println("sqrt(16.0) = " + to_string(sq))
-    assert.assert(math.abs_f(sq - 4.0) < 0.000001)
+    assert.assert(math.abs<f64>(sq - 4.0) < 0.000001)
 
     var fl: f64 = floor(3.7)
     println("floor(3.7) = " + to_string(fl))

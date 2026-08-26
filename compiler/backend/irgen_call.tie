@@ -292,7 +292,12 @@ func tig_method_call(id: i64) -> i64 {
         sm_err_msg = "方法调用接收者不可解析（方法 " + mname + "，函数 " + g_cur_fn_name + "）"
         return -1
     }
-    var full = prefix + "::" + mname
+    // 泛型单态化重写：语义层已把调用名重写为 mangled 全名（含 "::"，如
+    // rdu_math::max$i64）——再次拼 prefix 会双重加前缀，直接用全名。
+    var full = mname
+    if sstate.rfind_ns(mname) < 0 {
+        full = prefix + "::" + mname
+    }
     // 实参从 children[slot_off + 1] 开始（children[slot_off]=receiver）
     return tig_user_call_from(full, id, 1 + sstate.slot_off(id))
 }

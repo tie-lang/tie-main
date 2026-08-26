@@ -32,8 +32,8 @@ func main() {
     // ---- utf.hex_escape：LLVM \XX 风格大写字节转义 ----
     // "四"(0x56DB) UTF-8 编码 E5 9B 9B → "\E5\9B\9B"；"A"(0x41) → "\41"。
     // tie 源码中反斜杠需写成 \\（裸 \E5 属未知转义序列会报词法错误）。
-    assert.assert_eq_str(utf.hex_escape(0x56DB), "\\E5\\9B\\9B")
-    assert.assert_eq_str(utf.hex_escape(0x41), "\\41")
+    assert.assert_eq(utf.hex_escape(0x56DB), "\\E5\\9B\\9B")
+    assert.assert_eq(utf.hex_escape(0x41), "\\41")
     // ---- utf.codepoint：单字符 → Unicode 码点；非单字符/空串返回 -1 ----
     assert.assert_eq(utf.codepoint("四"), 0x56DB)
     // ---- utf.is_ascii / is_letter ----
@@ -42,9 +42,9 @@ func main() {
     assert.assert(utf.is_letter(65))
     assert.assert(!utf.is_letter(0x4E2D))
     // ---- utf.to_char：可打印 ASCII 码点 → 单字符；越界返回空串 ----
-    assert.assert_eq_str(utf.to_char(65), "A")
-    assert.assert_eq_str(utf.to_char(31), "")
-    assert.assert_eq_str(utf.to_char(0x4E2D), "")
+    assert.assert_eq(utf.to_char(65), "A")
+    assert.assert_eq(utf.to_char(31), "")
+    assert.assert_eq(utf.to_char(0x4E2D), "")
     // ---- ascii.is_digit ----
     assert.assert(ascii.is_digit(48))
     assert.assert(!ascii.is_digit(58))
@@ -69,6 +69,6 @@ func main() {
     // ---- ascii.to_code / to_char：字符 ↔ ASCII 码 ----
     assert.assert_eq(ascii.to_code("A"), 65)
     assert.assert_eq(ascii.to_code("四"), -1)
-    assert.assert_eq_str(ascii.to_char(65), "A")
+    assert.assert_eq(ascii.to_char(65), "A")
     println("utf+ascii 验收通过")
 }

@@ -13,6 +13,7 @@ type tie<logic>
 // 由编译器输出"运行时错误"并 exit(1)（tie 无可捕获异常，std 层无法转空串），
 // 故本测试不实际发起网络请求（会退出导致验收失败）；真实网络用例需在可访问
 // HTTP 服务的环境运行。http 段仅验证不联网的 url_encode/url_decode 纯函数。
+import "../../std/result.tie"
 import "../../std/assert.tie"
 import "../../std/http.tie"
 import "../../std/regex.tie"
@@ -51,7 +52,7 @@ func main() {
     assert.assert_eq(a[1], 66)
     assert.assert_eq(a[2], 67)
     // to_ascii 往返：字节表 → 字符串
-    assert.assert_eq_str(bytes.to_ascii(a), "ABC")
+    assert.assert_eq(bytes.to_ascii(a), "ABC")
     // concat([1,2],[3]) 长度 3
     var c = bytes.concat([1, 2], [3])
     assert.assert_eq(len(c), 3)
@@ -61,12 +62,12 @@ func main() {
     assert.assert(regex.is_match("hello123", "^[a-z]+[0-9]+$"))
     assert.assert(!regex.is_match("Hello123", "^[a-z]+[0-9]+$"))
     // find：第一个匹配片段
-    assert.assert_eq_str(regex.find("abc123", "[0-9]+"), "123")
+    assert.assert_eq(regex.find("abc123", "[0-9]+"), "123")
     // find_all：全部匹配片段，长度 2
     var all = regex.find_all("a1b2", "[0-9]")
     assert.assert_eq(len(all), 2)
     // replace：全部替换
-    assert.assert_eq_str(regex.replace("a1b2", "[0-9]", "x"), "axbx")
+    assert.assert_eq(regex.replace("a1b2", "[0-9]", "x"), "axbx")
 
     // ---- rnd：闭区间边界 / 类型语义 / pick ----
     // int(5,5)==5（闭区间边界：rand_range 半开区间包装为 [5,6)）

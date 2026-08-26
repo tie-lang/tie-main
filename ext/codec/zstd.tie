@@ -14,6 +14,10 @@ type tie<class>
 // 用嵌套 if / 布尔标志，避免越界读。
 // 说明：教学实现，机制等价（LZ77 + 熵编码）可无损 roundtrip，
 // **非 Zstd 二进制格式兼容**。
+//
+// 调用示例：
+//   var c = zstd.compress("abracadabra"); var back = zstd.decompress(c)
+//   var bs = zstd.to_bytes("hi"); var s = zstd.from_bytes(bs)
 
 namespace zstd {
 // ================= 对外接口 =================
@@ -610,7 +614,7 @@ func huff_decompress(seq_s: string) -> string {
 // ================= 内部：字节/字符工具 =================
 
 // 解析逗号分隔 i64 序列 → 局部表。
-func parse_i64(s: string) -> table {
+func parse_i64(s: string) -> table<i64> {
     var result = table_new_i64()
     var n: i64 = len(s)
     if n == 0 {
@@ -683,7 +687,7 @@ func slice(s: string, start: i64, end: i64) -> string {
 
 // 2 的幂表（2^0..2^62），用于位打包/拆包与规范码移位。
 // 教学实现：符号数 ≤ 62 时码长 ≤ 62，索引恒在界内。
-func build_pow2() -> table {
+func build_pow2() -> table<i64> {
     var t = table_new_i64()
     var v: i64 = 1
     var i: i64 = 0

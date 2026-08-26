@@ -18,6 +18,20 @@ func dump_table(t: table) -> string {
     return out
 }
 
+// i64 表转逗号分隔字符串（sieve 结果为 table<i64>，用于打印）
+func join_i64(t: table<i64>) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(t) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + to_string(t[i])
+        i = i + 1
+    }
+    return out
+}
+
 func main() {
     // ---- 霍夫曼编码：构建编码表 → 编码 → 解码还原 ----
     var msg = "hello huffman!"
@@ -41,7 +55,7 @@ func main() {
     println("---")
     println("is_prime(97): " + (exmath.is_prime(97) ? "true" : "false"))
     println("is_prime(91): " + (exmath.is_prime(91) ? "true" : "false"))
-    println("sieve(30): " + exmath.sieve_to_string(30))
+    println("sieve(30): " + join_i64(exmath.sieve(30)))
     println("pow_mod(2, 10, 1000): " + to_string(exmath.pow_mod(2, 10, 1000)))
     println("fib(10): " + to_string(exmath.fib(10)))
     println("factorial(6): " + to_string(exmath.factorial(6)))

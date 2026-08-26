@@ -3,17 +3,18 @@ type tie<class>
 // ============================================================
 // tie:data 是 tie 的声明式数据文件角色（type tie<data>，纯数据）。
 // 本库提供表数据 ↔ tie:data 文本的序列化/解析（v1 覆盖数字表）：
-//   - table_to_data 系列：表 → "var name = [e1, e2, ...]" 文本（可写 .data.tie 文件）；
+//   - to_data 系列：表 → "var name = [e1, e2, ...]" 文本（可写 .data.tie 文件）；
 //   - parse_data_f64：解析数字元素表文本 → table<f64>（供载入后建索引）。
 // 配合 tieDB（tieDB/）做持久化载体；二进制压缩载体见 tieDB/persist/zd.tie。
 // 约定：v1 支持 i64/f64/string 三类元素表；解析仅数字（i64/f64）。
+// library-v2：table_to_data_* 去前缀（to_data_i64/f64/str）。
 
 import "./string.tie"
 
 namespace db {
 
     // i64 表 → tie:data 文本："var name = [1, 2, 3]"
-    pub func table_to_data_i64(t: table<i64>, name: string) -> string {
+    pub func to_data_i64(t: table<i64>, name: string) -> string {
         var out = "var " + name + " = ["
         var i: i64 = 0
         while i < len(t) {
@@ -27,7 +28,7 @@ namespace db {
     }
 
     // f64 表 → tie:data 文本："var name = [0.5, 1.0]"
-    pub func table_to_data_f64(t: table<f64>, name: string) -> string {
+    pub func to_data_f64(t: table<f64>, name: string) -> string {
         var out = "var " + name + " = ["
         var i: i64 = 0
         while i < len(t) {
@@ -41,7 +42,7 @@ namespace db {
     }
 
     // string 表 → tie:data 文本："var name = ["a", "b"]"
-    pub func table_to_data_str(t: table<string>, name: string) -> string {
+    pub func to_data_str(t: table<string>, name: string) -> string {
         var out = "var " + name + " = ["
         var i: i64 = 0
         while i < len(t) {

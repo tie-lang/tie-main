@@ -1,41 +1,16 @@
 type tie<class>
-// graph.tie：标准库——图算法（命名空间 graph，D3）
+// graph.tie：标准库——图算法（命名空间 graph）
 // 内容：Dijkstra（单源最短路）、Floyd（全源最短路）、Prim（最小生成树）、
 // Bellman-Ford（负权最短路 + 负环检测）、最大流（Ford-Fulkerson）、二分匹配（匈牙利）。
-// 接口约定：图用**逗号分隔字符串序列**传参（邻接矩阵按行拼接，如 3×3 权矩阵
-// "0,1,5,1,0,2,5,2,0" + n=3；无边用一个大数如 999 表示）。返回距离/路径/匹配
-// 结果为**局部 i64/f64 表**（table_ret_elems 记录元素类型，调用方下标读取合法）。
-// 表参数元素类型静态未知 → 图数据一律序列字符串 + 局部表解析（与 linalg 同模式）。
+// 接口约定：图数据用**真表**传参——n×n 邻接/容量矩阵按行展平为 table<i64>，
+// 无边用 999 表示（与原字符串编码语义一致）。table<i64> 参数元素类型静态已知，
+// 函数内可直接下标读取。返回距离/路径/匹配结果为局部 i64 表（table<i64>）。
+// 调用：import 后 graph.dijkstra(adj, n, src) / graph.floyd(adj, n) 等
 
 namespace graph {
-// 解析逗号分隔 i64 序列 → 局部 i64 动态表。
-func parse_i64(s: string) -> table {
-    var result = table_new_i64()
-    var n: i64 = len(s)
-    if n == 0 {
-        return result
-    }
-    var start: i64 = 0
-    var i: i64 = 0
-    while i <= n {
-        var at_end: bool = (i == n)
-        var is_comma: bool = !at_end && str_char(s, i) == ","
-        if at_end || is_comma {
-            var seg = slice(s, start, i)
-            if len(seg) > 0 {
-                table_push(result, parse_int(seg))
-            }
-            start = i + 1
-        }
-        i = i + 1
-    }
-    return result
-}
-
 // Dijkstra 单源最短路：返回 dist 表（src 到各点最短距离，i64）。
-// adj_s：n×n 邻接矩阵序列（i64，无边用 999）；n：顶点数；src：源点。
-pub func dijkstra(adj_s: string, n: i64, src: i64) -> table {
-    var adj = parse_i64(adj_s)
+// adj：n×n 邻接矩阵展平 table<i64>（无边用 999）；n：顶点数；src：源点。
+pub func dijkstra(adj: table<i64>, n: i64, src: i64) -> table<i64> {
     // dist[i]：src 到 i 的距离；visited[i]：是否已确定
     var dist = table_new_i64()
     var visited = table_new_i64()
@@ -80,8 +55,14 @@ pub func dijkstra(adj_s: string, n: i64, src: i64) -> table {
 }
 
 // Floyd 全源最短路：返回扁平 dist 表（dist[i*n+j] = i 到 j 最短路，i64）。
-pub func floyd(adj_s: string, n: i64) -> table {
-    var dist = parse_i64(adj_s)
+pub func floyd(adj: table<i64>, n: i64) -> table<i64> {
+    // 复制到局部表（就地更新，不写回调用方实参）
+    var dist = table_new_i64()
+    var ii: i64 = 0
+    while ii < n * n {
+        table_push(dist, adj[ii])
+        ii = ii + 1
+    }
     var k: i64 = 0
     while k < n {
         var i: i64 = 0
@@ -101,9 +82,8 @@ pub func floyd(adj_s: string, n: i64) -> table {
     return dist
 }
 
-// Prim 最小生成树：返回 MST 总权重（i64）。adj_s：无向加权邻接矩阵。
-pub func prim_mst(adj_s: string, n: i64) -> i64 {
-    var adj = parse_i64(adj_s)
+// Prim 最小生成树：返回 MST 总权重（i64）。adj：无向加权邻接矩阵展平 table<i64>。
+pub func prim_mst(adj: table<i64>, n: i64) -> i64 {
     if n == 0 {
         return 0
     }
@@ -150,11 +130,10 @@ pub func prim_mst(adj_s: string, n: i64) -> i64 {
     return total
 }
 
-// Bellman-Ford：单源最短路（支持负权）。返回 (dist 表, 是否有负环的编码串)。
+// Bellman-Ford：单源最短路（支持负权）。返回 (dist 表, 是否负环) 编码。
+// adj：n×n 邻接矩阵展平 table<i64>（无边=999，负权边直接用其负权重）。
 // 返回格式：前 n 个是 dist，最后 1 个是标志（1 = 有负环，0 = 无）。
-pub func bellman_ford(edges_s: string, n: i64, src: i64) -> table {
-    // 边表：每 3 个数一条边 (u, v, w)，序列 "u,v,w,u,v,w,..."
-    var edges = parse_i64(edges_s)
+pub func bellman_ford(adj: table<i64>, n: i64, src: i64) -> table<i64> {
     var dist = table_new_i64()
     var i: i64 = 0
     while i < n {
@@ -162,49 +141,59 @@ pub func bellman_ford(edges_s: string, n: i64, src: i64) -> table {
         i = i + 1
     }
     dist[src] = 0
-    var e_count: i64 = len(edges) / 3
+    // n-1 轮松弛：对每条有向边 (u,v,w)（矩阵内 w<999 即存在边）
     var iter: i64 = 0
     while iter < n - 1 {
-        var e: i64 = 0
-        while e < e_count {
-            var u = edges[e * 3]
-            var v = edges[e * 3 + 1]
-            var w = edges[e * 3 + 2]
-            if dist[u] < 999999 && dist[u] + w < dist[v] {
-                dist[v] = dist[u] + w
+        var u: i64 = 0
+        while u < n {
+            var v: i64 = 0
+            while v < n {
+                var w = adj[u * n + v]
+                if w < 999 && dist[u] < 999999 && dist[u] + w < dist[v] {
+                    dist[v] = dist[u] + w
+                }
+                v = v + 1
             }
-            e = e + 1
+            u = u + 1
         }
         iter = iter + 1
     }
     // 第 n 次松弛检测负环
     var neg_cycle: i64 = 0
-    var e2: i64 = 0
-    while e2 < e_count {
-        var u = edges[e2 * 3]
-        var v = edges[e2 * 3 + 1]
-        var w = edges[e2 * 3 + 2]
-        if dist[u] < 999999 && dist[u] + w < dist[v] {
-            neg_cycle = 1
+    var u2: i64 = 0
+    while u2 < n {
+        var v2: i64 = 0
+        while v2 < n {
+            var w2 = adj[u2 * n + v2]
+            if w2 < 999 && dist[u2] < 999999 && dist[u2] + w2 < dist[v2] {
+                neg_cycle = 1
+            }
+            v2 = v2 + 1
         }
-        e2 = e2 + 1
+        u2 = u2 + 1
     }
     table_push(dist, neg_cycle)
     return dist
 }
 
-// 最大流（Ford-Fulkerson，DFS 增广）：返回最大流量（i64）。
-// cap_s：n×n 容量矩阵序列；s：源点；t：汇点。
-// 表参数元素类型未知 → 全程内联（不跨函数传表）：DFS 用局部表模拟栈。
-pub func max_flow(cap_s: string, n: i64, s: i64, t: i64) -> i64 {
-    var cap = parse_i64(cap_s)
+// 最大流（Ford-Fulkerson，BFS 增广）：返回最大流量（i64）。
+// cap：n×n 容量矩阵展平 table<i64>；s：源点；t：汇点。
+pub func max_flow(cap: table<i64>, n: i64, s: i64, t: i64) -> i64 {
+    // 复制到局部表（增广更新就地修改，不写回调用方实参）
+    var copy = table_new_i64()
+    var ii: i64 = 0
+    while ii < n * n {
+        table_push(copy, cap[ii])
+        ii = ii + 1
+    }
+    cap = copy
     var flow: i64 = 0
-    // 反复 DFS 找增广路（限制最多 n*n 轮防止无限循环）
+    // 反复 BFS 找增广路（限制最多 n*n 轮防止无限循环）
     var round: i64 = 0
     var augmented: bool = true
     while augmented && round < n * n {
         augmented = false
-        // 路径栈：stack_node 存路径顶点，回溯用 prev 数组
+        // prev 记录前驱
         var prev = table_new_i64()
         var i: i64 = 0
         while i < n {
@@ -217,7 +206,7 @@ pub func max_flow(cap_s: string, n: i64, s: i64, t: i64) -> i64 {
             table_push(visited, 0)
             i = i + 1
         }
-        // BFS 找增广路（队列 + head 指针只增，不重读；prev 记录前驱）
+        // BFS 找增广路（队列 + head 指针只增）
         var queue = table_new_i64()
         table_push(queue, s)
         visited[s] = 1
@@ -263,11 +252,9 @@ pub func max_flow(cap_s: string, n: i64, s: i64, t: i64) -> i64 {
 }
 
 // 二分匹配（匈牙利算法）：返回最大匹配数（i64）。
-// adj_s：n 个左顶点 × m 个右顶点的邻接（0/1，1 = 有边）；n：左点数；m：右点数。
+// adj：n 个左顶点 × m 个右顶点的邻接（0/1，1 = 有边）；n：左点数；m：右点数。
 // 序列长度 = n*m，行优先（左点 i 连右点 j 则 adj[i*m+j] = 1）。
-// 表参数元素类型未知 → 腾挪逻辑内联：右点被占时尝试为其原配找新右点（一轮腾挪）。
-pub func bipartite_match(adj_s: string, n: i64, m: i64) -> i64 {
-    var adj = parse_i64(adj_s)
+pub func bipartite_match(adj: table<i64>, n: i64, m: i64) -> i64 {
     // match_r[j]：右点 j 匹配的左点（-1 未匹配）
     var match_r = table_new_i64()
     var j: i64 = 0
@@ -308,32 +295,6 @@ pub func bipartite_match(adj_s: string, n: i64, m: i64) -> i64 {
             result = result + 1
         }
         u = u + 1
-    }
-    return result
-}
-
-// 截取 s 的 [start, end) 子串。
-func slice(s: string, start: i64, end: i64) -> string {
-    var n: i64 = len(s)
-    var lo: i64 = start
-    if lo < 0 {
-        lo = 0
-    }
-    if lo > n {
-        lo = n
-    }
-    var hi: i64 = end
-    if hi < 0 {
-        hi = 0
-    }
-    if hi > n {
-        hi = n
-    }
-    var result: string = ""
-    var i: i64 = lo
-    while i < hi {
-        result = result + str_char(s, i)
-        i = i + 1
     }
     return result
 }

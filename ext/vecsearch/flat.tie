@@ -9,6 +9,14 @@ type tie<class>
 // 检索语义：距离越小越相似（l2 欧氏 / cosine 余弦距离 1-sim）；
 // flat_search 返回按距离升序的 top-k id 表。
 // 参考验收：examples/vec_demo.tie。
+//
+// 调用示例：
+//   var ids: table<i64> = table_new_i64()
+//   var vecs: table<f64> = table_new_f64()
+//   vecsearch.flat_add(ids, vecs, 2, 1, [1.0, 2.0])
+//   vecsearch.flat_add(ids, vecs, 2, 2, [3.0, 4.0])
+//   println(vecsearch.l2([0.0, 0.0], [3.0, 4.0]))          // 5.0
+//   println(join(vecsearch.flat_search(ids, vecs, 2, [2.9,4.1], 1), ","))
 
 namespace vecsearch {
 

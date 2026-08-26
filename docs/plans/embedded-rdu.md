@@ -1,7 +1,18 @@
 # 规划：嵌入式基础层 rdu——无栈纯标量库（独立于 std/ext 的第三层内置库）
 
-> 状态：**规划**（模块约定与无栈纪律先行定稿；`rdu/*.tie` 六个模块代码由独立代理并行实现，
-> 本文档不依赖实现结果，若实现有细节偏差由主控后续修正）
+> 状态：**已实现**（2026-08-14 首版；2026-08-26 随 library-v2 全量重写，见 [library-v2.md](library-v2.md) §0/§5）
+> **library-v2 接口变更（2026-08-26，正文旧函数表作废，以本块为准）**：
+> - `rdu/math.tie`（rdu_math）：`abs<T>/max<T>/min<T>/clamp<T>` 泛型化（原 abs/abs_f、
+>   max_i/max_f、min_i/min_f、clamp/clamp_i 删除）；泛型体内整数字面量类型固化，
+>   `abs<T>` 用 `x - x` 取 T 型零值；avg_f/pow_i/sign_i/deg_to_rad/rad_to_deg 等保留。
+> - `rdu/crc.tie`（rdu_crc）：**struct 状态封装**——`Crc8/Crc16/Crc32/Fnv1a`（值类型 i64 字段），
+>   API 为 `crc8_new/crc8_update(s, byte)/crc8_value`（crc16/crc32/fnv1a 同构；
+>   crc32_final 语义并入 crc32_value；原 crc*_init/crc*_update 裸 i64 版删除）。
+> - `rdu/rnd.tie`（rdu_rnd）：**struct 状态封装**——`Rng`（i64 字段），
+>   API 为 `new(seed)/next(r)/value(r)`（原 xorshift64 裸函数删除）；lcg 保留。
+> - `rdu/fixed.tie`（rdu_fixed）：去前缀 `mul/div/floor/frac`（原 fixed_mul/fixed_div/
+>   fixed_floor/fixed_frac 删除）。
+> - bits/ascii/rdb：不变。验收（examples/rdu_demo.tie）全部期望值通过。
 > 所属：Harbor（2026.1）架构 M4 之后的库分层扩展（内置库第三层：嵌入式基础层 Rudimentary）
 > 背景：tie 已内置两层库——`std/` 标准库（无状态纯函数）与 `ext/` 扩展库（有状态/应用级）。
 > 但这两层都依赖 tie 语言底座原语，而字符串与表原语底层走**堆分配**

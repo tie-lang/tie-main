@@ -4,7 +4,13 @@ type tie<class>
 // LZW（动态字典）。压缩输出为**逗号分隔数字序列字符串**（ext 有状态应用层：
 // 压缩率依赖上下文，与 std 无状态纯函数定位区分）。
 // 接口：compress.lz77(s) -> 序列串；compress.lz77_decode(seq, n) -> 原文。
-// 表参数元素类型静态未知 → 全部局部表 + 字符串序列（同 std 库模式）。
+// 表格参数元素类型静态未知 → 全部局部表 + 字符串序列（同 std/ext 库模式）。
+// 注意：压缩字节流保持**字符串内嵌逗号分隔数字序列**格式不变（library-v2 §10）。
+//
+// 调用示例：
+//   var c = compress.lz77("ababbab")        // -> "0,97,1,3,..."
+//   var back = compress.lz77_decode(c, 7)   // -> "ababbab"
+//   var z = compress.lzw("wabba"); var s2 = compress.lzw_decode(z)
 
 namespace compress {
 // ================= LZ77（滑窗匹配 + 字面量） =================
@@ -216,7 +222,7 @@ pub func lzw_decode(seq_s: string) -> string {
 
 
 // 解析逗号分隔 i64 序列。
-func parse_i64(s: string) -> table {
+func parse_i64(s: string) -> table<i64> {
     var result = table_new_i64()
     var n: i64 = len(s)
     if n == 0 {
@@ -262,7 +268,7 @@ func from_code(cp: i64) -> string {
 }
 
 // 在 key 表中查找字符串的码点。
-func code_of(keys: table, target: string) -> i64 {
+func code_of(keys: table<string>, target: string) -> i64 {
     var i: i64 = 0
     while i < len(keys) {
         if keys[i] == target {

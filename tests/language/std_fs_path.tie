@@ -6,6 +6,7 @@ type tie<logic>
 // - path：路径处理——basename / dirname / ext / stem / join / abs / cwd
 //   （extern fn C ABI 桥 + 纯 tie 实现）。
 // 预期输出：std_fs_path 验收通过（全部断言通过，无 assert 失败退出）。
+import "../../std/result.tie"
 import "../../std/assert.tie"
 import "../../std/fs.tie"
 import "../../std/path.tie"
@@ -18,31 +19,39 @@ func main() {
     assert.assert(fs.exists("examples/hello.tie"))
     assert.assert(!fs.exists("不存在文件_xyz_2026"))
 
-    // ---- fs.read_lines：拆行（首行是文件头注释，第 8 行是 Hello 输出行）----
+    // ---- fs.read_lines：拆行（首行是文件头注释，Hello 输出行看内容）----
     var lines = fs.read_lines("examples/hello.tie")
     assert.assert(len(lines) >= 8)
-    assert.assert(fs.str_contains(lines[0], "tie:logic"))
-    assert.assert(fs.str_contains(lines[7], "Hello, tie!"))
+    assert.assert(fs.str_contains(lines[0], "tie<logic>"))
+    assert.assert(fs.str_contains(lines[6], "Hello, tie!"))
 
     // ---- fs 写读往返 + 追加 + 删除（临时文件）----
     var tmp = "C:/Users/Jiro/AppData/Local/Temp/opencode/t28_fs_test.txt"
     assert.assert(fs.write_text(tmp, "abc"))
-    assert.assert_eq_str(fs.read_text(tmp), "abc")
+    var rt1 = fs.read_text(tmp)
+    switch rt1 {
+        case Ok(v): assert.assert_eq(v, "abc")
+        case Err(e): panic("std_fs_path: read_text 失败")
+    }
     assert.assert(fs.append_text(tmp, "def"))
-    assert.assert_eq_str(fs.read_text(tmp), "abcdef")
-    assert.assert(fs.delete(tmp))
+    var rt2 = fs.read_text(tmp)
+    switch rt2 {
+        case Ok(v): assert.assert_eq(v, "abcdef")
+        case Err(e): panic("std_fs_path: read_text 失败")
+    }
+    assert.assert(fs.remove(tmp))
     assert.assert(!fs.exists(tmp))
 
     // ---- path.basename / dirname ----
     var full = "F:\\Projects\\tie\\examples\\hello.tie"
-    assert.assert_eq_str(path.basename(full), "hello.tie")
+    assert.assert_eq(path.basename(full), "hello.tie")
     assert.assert(path.str_contains(path.dirname(full), "examples"))
 
     // ---- path.ext / stem（纯 tie）----
-    assert.assert_eq_str(path.ext("hello.tie"), "tie")
-    assert.assert_eq_str(path.stem("hello.tie"), "hello")
-    assert.assert_eq_str(path.ext("noext"), "")
-    assert.assert_eq_str(path.ext(".gitignore"), "")
+    assert.assert_eq(path.ext("hello.tie"), "tie")
+    assert.assert_eq(path.stem("hello.tie"), "hello")
+    assert.assert_eq(path.ext("noext"), "")
+    assert.assert_eq(path.ext(".gitignore"), "")
 
     // ---- path.join / abs / cwd ----
     var j = path.join("a", "b")

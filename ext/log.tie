@@ -19,6 +19,11 @@ type tie<class>
 //
 // 注意——当前 import 展开不做去重，调用方只需导入 log.tie（string.tie / format.tie
 // 会随同展开）；重复导入会导致 str/format 命名空间函数与全局变量重复定义。
+//
+// 调用示例：
+//   log.set_lang("zh"); log.set_fallbacks(["en", "zh"])
+//   log.register("greet", "zh", "你好"); log.info("greet")
+//   log.error_f("err", ["file.txt", "打开失败"])   // 模板用 {} 占位
 
 import "../std/string.tie"
 import "../std/format.tie"
@@ -64,8 +69,8 @@ namespace log {
         print_err("错误: " + lookup(key))
     }
 
-    // 带参错误消息：模板（查字典）的 {} 由 args 依次填充（format.sprintf）
-    pub func error_f(key: string, args: table) {
+    // 带参错误消息：模板（查字典）的 {} 由 args 依次填充（format.sprintf，字符串表）
+    pub func error_f(key: string, args: table<string>) {
         print_err("错误: " + sprintf(lookup(key), args))
     }
 
@@ -75,7 +80,7 @@ namespace log {
     }
 
     // 带参警告消息
-    pub func warn_f(key: string, args: table) {
+    pub func warn_f(key: string, args: table<string>) {
         print_err("警告: " + sprintf(lookup(key), args))
     }
 
@@ -85,7 +90,7 @@ namespace log {
     }
 
     // 带参信息消息
-    pub func info_f(key: string, args: table) {
+    pub func info_f(key: string, args: table<string>) {
         println("信息: " + sprintf(lookup(key), args))
     }
 
@@ -97,7 +102,7 @@ namespace log {
     }
 
     // 带参调试消息
-    pub func debug_f(key: string, args: table) {
+    pub func debug_f(key: string, args: table<string>) {
         if allowed(0) {
             print_err("调试: " + sprintf(lookup(key), args))
         }
@@ -119,13 +124,13 @@ namespace log {
     }
 
     // 设置回退语言链（表元素按序；查询顺序：当前语言 → 回退链 → 键本身）
-    pub func set_fallbacks(langs: table) {
+    pub func set_fallbacks(langs: table<string>) {
         msg_fallbacks = join(langs, "|")
     }
 
     // 批量登记消息文本：entries 每个元素形如 "key|lang|text"（| 分隔三段）；
     // 格式不符的行静默跳过。
-    pub func register_all(entries: table) {
+    pub func register_all(entries: table<string>) {
         var n: i64 = len(entries)
         var i: i64 = 0
         while i < n {
@@ -159,7 +164,7 @@ namespace log {
         //   → 省略 texts，从字典查当前语言的 no_file 文本（需先 register 登记）
         // 调用形态 2（方案 A）：log::error.no_file(["zh-cn","en-us"], ["文件不存在","File not found"])
         //   → texts 按 langs 顺序给文本，直接返回当前语言对应文本，调用点自包含
-        pub func no_file(langs: table, texts: table = []) -> string {
+        pub func no_file(langs: table<string>, texts: table<string> = []) -> string {
             // 方案 A：调用方提供了文本表（非空）→ 按当前语言匹配 langs 取文本
             if len(texts) > 0 {
                 // langs 与 texts 按位置对应；langs[i] 是地区码（如 "zh-cn"），

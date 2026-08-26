@@ -25,7 +25,8 @@ namespace coll {
 
 // 向最小堆 t 插入值 v：追加到尾部后上浮，保持堆序（父 <= 子）。
 // 上浮：从新元素位置开始，与父节点比较，比父小则交换，逐级上移。
-pub func heap_push(t: table<i64>, v: i64) {
+// 修改类函数用 ref 表参数（T0.3）：内容写回调用方实参槽。
+pub func heap_push(t: ref table<i64>, v: i64) {
     table_push(t, v)
     var i: i64 = len(t) - 1
     var up: bool = true
@@ -121,8 +122,8 @@ pub func heap_size(t: table<i64>) -> i64 {
 
 // ---------- 栈 ----------
 
-// 入栈：追加到表尾（表尾即栈顶）。
-pub func stack_push(t: table<i64>, v: i64) {
+// 入栈：追加到表尾（表尾即栈顶）。修改类函数用 ref 表参数（T0.3）。
+pub func stack_push(t: ref table<i64>, v: i64) {
     table_push(t, v)
 }
 
@@ -158,7 +159,7 @@ pub func stack_peek(t: table<i64>) -> i64 {
 
 // 构建子串 sub 的 next 表（失配回退表），KMP 核心。next[i] = sub[0..i] 的
 // 最长相等真前后缀长度。约定 next[0] = 0。表元素为 i64，长度 = 码点数。
-func build_next(sub: string) -> table {
+func build_next(sub: string) -> table<i64> {
     var next = table_new_i64()
     var m: i64 = str_len(sub)
     table_push(next, 0)

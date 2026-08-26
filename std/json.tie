@@ -40,6 +40,10 @@ type tie<class>
 //
 // 调用：import 后 json.parse(...) / json.to_str(...)；命名空间内互调为裸调用。
 // 命名规范：命名空间内函数不加 json_ 前缀（统一 func 写法，Harbor M2.1.6）。
+// library-v2：parse_file 返回 Result<i64, string>（成功 Ok(根节点 id) /
+// 失败 Err(错误消息，含 j_err_msg)；parse(s) 及访问器保持句柄式不变）。
+
+import "./result.tie"
 
 // ==================== 节点存储（模块级全局，命名空间外） ====================
 var j_types: table<i64>;
@@ -107,14 +111,19 @@ pub func parse(s: string) -> i64 {
     return root
 }
 
-// 解析文件（file_read + parse）；失败返回 -1（j_err_msg 含文件/解析信息）。
-pub func parse_file(path: string) -> i64 {
+// 解析文件（file_read + parse）。成功 Ok(根节点 id)；失败 Err(错误消息，
+// 含文件/解析信息，j_err_msg 同步置位供 err_msg() 查询)。
+pub func parse_file(path: string) -> Result<i64, string> {
     var content = file_read(path)
     if str_len(content) == 0 {
         j_err_msg = "JSON 文件为空或读取失败: " + path
-        return -1
+        return Result.Err(j_err_msg)
     }
-    return parse(content)
+    var root = parse(content)
+    if root < 0 {
+        return Result.Err(j_err_msg)
+    }
+    return Result.Ok(root)
 }
 
 // 跳过空白（空格 32 / 制表 9 / 换行 10 / 回车 13），推进 g_pos。
