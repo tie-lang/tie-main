@@ -39,6 +39,8 @@ pub func fill_pending() {
     g_pending_lexemes = table_new_i64()
     g_pos = 0
     g_pending_idx = 0
+    g_last_tag = -1
+    g_last_line = -1
     // S2.2：清空延迟闭包登记（闭包函数体快照，见 defer_closure_*）
     g_defer_nodes = table_new_i64()
     g_defer_done = 0   // 已回填游标清零（嵌套闭包防重复回填）
@@ -115,6 +117,9 @@ pub func peek_lexeme() -> string {
 
 // 推进游标：优先消费 pending 队列，队列空时消费真实 token 流
 pub func advance() {
+    // 记录最近已消费 token 的 tag/行（expect_stmt_end 用：'}' 后换行补结束）
+    g_last_tag = peek_tag()
+    g_last_line = peek_line()
     if g_pending_idx < len(g_pending) {
         g_pending_idx = g_pending_idx + 1
     } else {
@@ -178,6 +183,30 @@ pub func expect(tag: i64, what: string) -> bool {
         return true
     }
     set_err(peek_line(), peek_col(), errors.syn_expect(what, describe(peek_tag())))
+    return false
+}
+
+// 期望语句结束符（分号）。ASI 不给块闭合 '}' 后补分号——当语句以闭包字面量
+// '}' 收尾（'}' 后换行无分号）或单行闭包体内语句紧跟 '}'（return … }）时，
+// '}' 即语句结束。规则：分号 / 当前 '}'（块闭合，Bug2）/ 上一 token 为 '}' 且
+// 当前在新行（闭包字面量收尾语句，Bug1）→ 语句结束。
+pub func expect_stmt_end() -> bool {
+    if peek_tag() == lex_semi {
+        advance()
+        return true
+    }
+    // 块闭合 '}' 即语句结束：单行闭包体内 `return … }` / `stmt }` 的 '}' 前无分号
+    if peek_tag() == lex_rbrace {
+        return true
+    }
+    // 新行即语句边界：两处 ASI 不给分号——① 语句以闭包字面量 '}' 收尾后换行；
+    // ② 闭包体 re-parse 时外层多行调用使 paren_depth>0，ASI 抑制了体内行尾分号
+    //（如 spawn(func() { spawn(..) 换行 return 0 }））。tie 的 ASI 除括号内不
+    // 支持跨行续行，表达式解析器已消费完续行，此处新行即真语句结束，接受安全。
+    if peek_line() > g_last_line {
+        return true
+    }
+    set_err(peek_line(), peek_col(), errors.syn_expect("语句结束符", describe(peek_tag())))
     return false
 }
 

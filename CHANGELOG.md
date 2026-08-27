@@ -26,6 +26,27 @@ actor 由 1:1 CreateThread + mailbox（CRITICAL_SECTION/CONDITION_VARIABLE）改
   panic 存活+panic raise+run_state/a5 属性+b1 多参数/guard delegate 正负例）；
   二阶自举通过（tiec 编译自身同尺寸）。
 
+## [修复] 闭包字面量解析器：语句结束符统一（2026-08-27）
+
+闭包字面量 `func(x: i64) -> i64 { ... }` 此前在 var 初始化 / 调用实参 / 多行嵌套
+位置全部无法解析（`期望 语句结束符，实际是 …`）。根因：语句结束符完全依赖词法器
+ASI 补出的 `lex_semi`，而 ASI 对两类边界不补分号——① 行尾 token 是块闭合 `}`
+（`no_semi_end` 排除，块语句自终止）；② 闭包体 re-parse 时外层多行调用使词法器
+`paren_depth>0`，ASI 抑制了体内行尾分号（如 `spawn(func() { spawn(..)
+ return 0 })`）。
+
+- 新增 `putil.expect_stmt_end()` 统一语句结束判定：分号 / 当前 `}`（块闭合，单行
+  闭包体 `return … }`）/ **新行即语句边界**（`'}'` 后换行无分号 + 闭包体 re-parse
+  时外层多行调用抑制分号）。tie 的 ASI 除括号内不支持跨行续行，表达式解析器已
+  消费完续行，新行即真语句结束，接受安全。
+- `putil.advance()` 记录最近已消费 token 的 tag/行（`g_last_tag`/`g_last_line`，
+  pst.tie 新增全局）；全部 14 处语句结束符 `expect(lex_semi, "语句结束符")`
+  （pstmt/pstmt_flow）改用 `expect_stmt_end()`。
+- 回归：m6_actor 全量、s22_probe 闭包探针 8/8、trm-lite demos、s15/s40/s31
+  config_smoke 48 项全过；二阶自举同尺寸。
+
+---
+
 ---
 
 ---

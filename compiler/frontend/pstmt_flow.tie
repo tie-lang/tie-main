@@ -189,7 +189,7 @@ func parse_panic() -> i64 {
     if !putil.expect(lex_rparen, "')'") {
         return -1
     }
-    if !putil.expect(lex_semi, "语句结束符") {
+    if !putil.expect_stmt_end() {
         return -1
     }
     var n = ast.new_node(N_PANIC, -1, -1, -1, line, col)
@@ -250,7 +250,7 @@ func parse_goto_stmt() -> i64 {
     if tname < 0 {
         return -1
     }
-    if !putil.expect(lex_semi, "语句结束符") {
+    if !putil.expect_stmt_end() {
         return -1
     }
     return ast.new_node(N_GOTO, tname, -1, -1, line, col)
@@ -588,7 +588,7 @@ func parse_loop_jump(is_continue: bool) -> i64 {
             putil.advance()
         }
     }
-    if !putil.expect(lex_semi, "语句结束符") {
+    if !putil.expect_stmt_end() {
         return -1
     }
     if is_continue {
@@ -800,7 +800,7 @@ func parse_return() -> i64 {
             return -1
         }
     }
-    if !putil.expect(lex_semi, "语句结束符") {
+    if !putil.expect_stmt_end() {
         return -1
     }
     var n = ast.new_node(N_RETURN, -1, -1, -1, line, col)

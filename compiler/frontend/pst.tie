@@ -15,6 +15,8 @@ var g_pending_idx: i64 = 0;   // 指向 g_pending 中下一个待消费位置
 var g_pending_lines: table<i64>;  // 虚拟 token 的旁路行号
 var g_pending_cols: table<i64>;   // 虚拟 token 的旁路列号
 var g_pending_lexemes: table<i64>; // 虚拟 token 的旁路 lexeme 池 id（split 分裂用）
+var g_last_tag: i64 = -1;      // 最近一次已消费 token 的 tag（expect_stmt_end 用）
+var g_last_line: i64 = -1;     // 最近一次已消费 token 的行号（'}' 后换行判定）
 
 // ---------- 泛型探测位置保存/恢复（try 回退，2026-08-14）----------
 // save_pos 快照 token 流（真实游标 + pending 队列完整内容 + 错误槽）到 g_save_*；
