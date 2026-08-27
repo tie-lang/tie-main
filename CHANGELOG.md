@@ -2,6 +2,32 @@
 
 > 开发中主题见下方随提交累积条目。
 
+## [接入] actor 消息处理改由 trm-lite 简单执行体承载（2026-08-27）
+
+actor 由 1:1 CreateThread + mailbox（CRITICAL_SECTION/CONDITION_VARIABLE）改为
+**trm-lite 简单执行体承载**（设计 §4.1 默认承载，trm-lite 阶段1块2）。单线程协作
+调度，天然无锁无竞态；`spawn_task` 消息任务 + `yield` 驱动调度器排空队列。
+
+- **执行模型**：`run<Actor>()` 分配 per-actor record（保留单消息槽
+  @64 pending/@72 mid/@80 args/@144 result/@152 done/@160 dispatch/@168 fail），
+  不再初始化 OS 锁/条件变量、不再起 1:1 线程；每条方法调用 = 一个 trm-lite 调度
+  任务（通用 `actor_task(ptr rec)`：setjmp 捕获 handler panic → 读 mid → 清
+  pending → 间接调 dispatch → 写 result/fail → 置 done）；
+- **调用方同步 RPC**：等 pending 空闲 / 等 done 由 `while … { yield() }` 驱动调度器
+  （共享 `tig_yield_drain` / 新增 `tig_actor_wait`）；async 投递即返回（fire-and-forget，
+  FIFO 由 spawn_task 队列序保证）；
+- **yield 内置重构**：排空逻辑抽为 `tig_yield_drain`，与 actor 等待循环共用；
+- **删除线程路径**：`gen_actor_loop_eager`（@actor_loop）→ `gen_actor_task_eager`
+  （actor_task）；`tig_actor_spawn`/`tig_null_ptr` 删除；kernel32 线程原语不再被
+  actor 使用（用户仍可自用 extern CreateThread，threadprobe/syncprobe 零回归）；
+- **依赖**：actor 程序现须静态链接 `trm_lite.a`（`TIE_TRM_LITE_LIB` 定位，与
+  tie_interp.lib 同范式）；actor 与 import trm-lite 为替代路径，混用编译期报错；
+- 回归：tests/m6_actor 全部通过（a1 语法/a2 run/a3 方法/a4 同步 RPC+async+FIFO+
+  panic 存活+panic raise+run_state/a5 属性+b1 多参数/guard delegate 正负例）；
+  二阶自举通过（tiec 编译自身同尺寸）。
+
+---
+
 ---
 
 ## [修复] 字节原语零 Rust 重写：byte_write/byte_concat 运行崩溃修复（2026-08-26）

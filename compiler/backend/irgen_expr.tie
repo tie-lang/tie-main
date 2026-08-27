@@ -2188,83 +2188,13 @@ func builtin_expr(nm: string, id: i64) -> i64 {
     if nm == "yield" {
         // yield() → 协作式让出：排空 trm-lite 就绪任务队列（每个轻量执行体经
         // call_indirect 一次跑完；无栈迁移，任务体运行期不续跑）。返回哑值 0。
+        // 与 actor 等待循环共用 tig_yield_drain。
         g_used_trmlite = true
         if sstate.fn_def_node("trm_lite_sched::queued_count") >= 0 {
             sm_err_msg = "yield 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
             return -1
         }
-        var T64 = types.named(TK_I64)
-        var loop = ir.new_block(g_cur_func, interner.intern("yld.l"))
-        var body = ir.new_block(g_cur_func, interner.intern("yld.b"))
-        var exit = ir.new_block(g_cur_func, interner.intern("yld.x"))
-        // n = queued_count()（跨块状态存 alloca；块分支前生成，llvmgen 提升到 entry）
-        var c0 = tig_trmlite_call("trm_lite_sched$queued_count", tig_empty_types(), tig_empty_vals(), T64)
-        var loop_n = ir.new_inst(g_cur_block, 20, T64)  // alloca i64
-        ir.add_operand(loop_n, T64, 2)
-        var loop_np = ir.get_value(loop_n)
-        s21_store(loop_np, c0, T64)
-        var br0 = ir.new_inst(g_cur_block, 30, -1)  // br loop
-        ir.add_operand(br0, loop, 1)
-        // loop：n > 0 → body / exit
-        g_cur_block = loop
-        var nv = s21_load(loop_np, T64)
-        var z0 = tig_int_lit_ty(0, T64)
-        var cnd = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp sgt
-        ir.add_operand(cnd, nv, 0)
-        ir.add_operand(cnd, z0, 0)
-        ir.add_operand(cnd, 3, 2)
-        var cb = ir.new_inst(g_cur_block, 31, -1)  // cond_br
-        ir.add_operand(cb, ir.get_value(cnd), 0)
-        ir.add_operand(cb, body, 1)
-        ir.add_operand(cb, exit, 1)
-        // body：取队头 entry/env/retcode → dequeue → 按 retcode 分派 call_indirect
-        g_cur_block = body
-        var en_i = tig_trmlite_call("trm_lite_sched$queued_entry", tig_empty_types(), tig_empty_vals(), T64)
-        var ev_i = tig_trmlite_call("trm_lite_sched$queued_env", tig_empty_types(), tig_empty_vals(), T64)
-        var rc_i = tig_trmlite_call("trm_lite_sched$queued_retcode", tig_empty_types(), tig_empty_vals(), T64)
-        tig_trmlite_call("trm_lite_sched$queued_dequeue", tig_empty_types(), tig_empty_vals(), -1)
-        var en_p = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr entry
-        ir.add_operand(en_p, en_i, 0)
-        var en_ptr = ir.get_value(en_p)
-        var ev_p = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr env
-        ir.add_operand(ev_p, ev_i, 0)
-        var ev_ptr = ir.get_value(ev_p)
-        var rt0 = tig_int_lit_ty(0, T64)
-        var is_i64 = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp eq(retcode,0)
-        ir.add_operand(is_i64, rc_i, 0)
-        ir.add_operand(is_i64, rt0, 0)
-        ir.add_operand(is_i64, 0, 2)
-        var b_i64 = ir.new_block(g_cur_func, interner.intern("yld.i"))
-        var b_void = ir.new_block(g_cur_func, interner.intern("yld.v"))
-        var b_join = ir.new_block(g_cur_func, interner.intern("yld.j"))
-        var cb2 = ir.new_inst(g_cur_block, 31, -1)  // cond_br
-        ir.add_operand(cb2, ir.get_value(is_i64), 0)
-        ir.add_operand(cb2, b_i64, 1)
-        ir.add_operand(cb2, b_void, 1)
-        // b_i64：call i64 entry(ptr env)
-        g_cur_block = b_i64
-        var ci1 = ir.new_inst(g_cur_block, 70, T64)  // call_indirect
-        ir.add_operand(ci1, en_ptr, 0)
-        ir.add_operand(ci1, T64, 2)
-        ir.add_operand(ci1, ev_ptr, 0)
-        var br1 = ir.new_inst(g_cur_block, 30, -1)  // br join
-        ir.add_operand(br1, b_join, 1)
-        // b_void：call void entry(ptr env)
-        g_cur_block = b_void
-        var ci2 = ir.new_inst(g_cur_block, 70, -1)  // call_indirect（void）
-        ir.add_operand(ci2, en_ptr, 0)
-        ir.add_operand(ci2, types.named(TK_VOID), 2)
-        ir.add_operand(ci2, ev_ptr, 0)
-        var br2 = ir.new_inst(g_cur_block, 30, -1)  // br join
-        ir.add_operand(br2, b_join, 1)
-        // join：n = queued_count() → br loop
-        g_cur_block = b_join
-        var cn = tig_trmlite_call("trm_lite_sched$queued_count", tig_empty_types(), tig_empty_vals(), T64)
-        s21_store(loop_np, cn, T64)
-        var br3 = ir.new_inst(g_cur_block, 30, -1)  // br loop
-        ir.add_operand(br3, loop, 1)
-        // exit
-        g_cur_block = exit
+        tig_yield_drain()
         g_builtin_res = tig_int_lit(0)
         return 0
     }
