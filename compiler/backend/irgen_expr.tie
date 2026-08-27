@@ -453,6 +453,10 @@ func is_builtin_name(nm: string) -> bool {
     if nm == "rand_range" {
         return true
     }
+    // ---------- trm-lite 轻量执行体原语（阶段1块2：spawn/yield/collect）----------
+    if nm == "spawn" || nm == "yield" || nm == "collect" {
+        return true
+    }
     return false
 }
 
@@ -2113,6 +2117,167 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         ir.add_operand(ok_slot, types.named(TK_I8), 2)
         var ok_addr = ir.get_value(ok_slot)
         g_builtin_res = s21_table_at(tb, ti, ok_addr, ret_ty)
+        return 0
+    }
+    // ---------- trm-lite 轻量执行体原语（阶段1块2：spawn/yield/collect）----------
+    if nm == "spawn" {
+        // spawn(f) → i64 任务 id。f 为 fn() -> i64 / fn() -> void 闭包：提取
+        // env(槽0)/entry(槽1)，调 trm_lite_sched$spawn_task 入队轻量执行体
+        //（trm_lite.a 静态链接，用户无需 import）。返回任务 id。
+        g_used_trmlite = true
+        // 替代路径检测：当前模块已 import trm-lite（同名运行时函数已定义）→ 报错。
+        // 内置与 import 是替代运行时路径，混用会导致 extern declare 与 define 冲突。
+        if sstate.fn_def_node("trm_lite_sched::spawn_task") >= 0 {
+            sm_err_msg = "spawn 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var fn_node = call_arg(id, 0)
+        var fv = tig_expr(fn_node)
+        if fv < 0 {
+            return -1
+        }
+        var fty = node_types[fn_node]
+        if fty < 0 || !types.is_fn(fty) {
+            sm_err_msg = "spawn 参数必须是函数值（fn() -> i64 / fn() -> void），函数 " + g_cur_fn_name
+            return -1
+        }
+        var fret = types.fn_ret_ty(fty)
+        var rcode: i64 = 0
+        if fret == types.named(TK_VOID) {
+            rcode = 1
+        } else if fret != types.named(TK_I64) {
+            sm_err_msg = "spawn 暂只支持返回 i64/void 的闭包（当前 " + types.type_name(fret) + "），函数 " + g_cur_fn_name
+            return -1
+        }
+        // f 落 alloca 聚合，提取 env（槽0）/ entry（槽1）
+        var fa = ir.new_inst(g_cur_block, 20, fty)
+        ir.add_operand(fa, fty, 2)
+        var fap = ir.get_value(fa)
+        var st0 = ir.new_inst(g_cur_block, 22, -1)
+        ir.add_operand(st0, fty, 2)
+        ir.add_operand(st0, fv, 0)
+        ir.add_operand(st0, fap, 0)
+        var g0 = ir.new_inst(g_cur_block, 27, fty)  // agg_gep 0（env）
+        ir.add_operand(g0, fap, 0)
+        ir.add_operand(g0, 0, 2)
+        var ld0 = ir.new_inst(g_cur_block, 21, types.named(TK_STR))
+        ir.add_operand(ld0, ir.get_value(g0), 0)
+        var env_v = ir.get_value(ld0)
+        var g1 = ir.new_inst(g_cur_block, 27, fty)  // agg_gep 1（entry）
+        ir.add_operand(g1, fap, 0)
+        ir.add_operand(g1, 1, 2)
+        var ld1 = ir.new_inst(g_cur_block, 21, types.named(TK_STR))
+        ir.add_operand(ld1, ir.get_value(g1), 0)
+        var entry_v = ir.get_value(ld1)
+        // env/entry → i64（ptrtoint；trm-lite 队列以 i64 承载指针）
+        var pe = ir.new_inst(g_cur_block, 24, types.named(TK_I64))
+        ir.add_operand(pe, env_v, 0)
+        var env_i = ir.get_value(pe)
+        var pn = ir.new_inst(g_cur_block, 24, types.named(TK_I64))
+        ir.add_operand(pn, entry_v, 0)
+        var entry_i = ir.get_value(pn)
+        var rc = tig_int_lit_ty(rcode, types.named(TK_I64))
+        var ats: table<i64> = table_new_i64()
+        var avs: table<i64> = table_new_i64()
+        table_push(ats, types.named(TK_I64)); table_push(avs, entry_i)
+        table_push(ats, types.named(TK_I64)); table_push(avs, env_i)
+        table_push(ats, types.named(TK_I64)); table_push(avs, rc)
+        g_builtin_res = tig_trmlite_call("trm_lite_sched$spawn_task", ats, avs, types.named(TK_I64))
+        return 0
+    }
+    if nm == "yield" {
+        // yield() → 协作式让出：排空 trm-lite 就绪任务队列（每个轻量执行体经
+        // call_indirect 一次跑完；无栈迁移，任务体运行期不续跑）。返回哑值 0。
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_sched::queued_count") >= 0 {
+            sm_err_msg = "yield 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var T64 = types.named(TK_I64)
+        var loop = ir.new_block(g_cur_func, interner.intern("yld.l"))
+        var body = ir.new_block(g_cur_func, interner.intern("yld.b"))
+        var exit = ir.new_block(g_cur_func, interner.intern("yld.x"))
+        // n = queued_count()（跨块状态存 alloca；块分支前生成，llvmgen 提升到 entry）
+        var c0 = tig_trmlite_call("trm_lite_sched$queued_count", tig_empty_types(), tig_empty_vals(), T64)
+        var loop_n = ir.new_inst(g_cur_block, 20, T64)  // alloca i64
+        ir.add_operand(loop_n, T64, 2)
+        var loop_np = ir.get_value(loop_n)
+        s21_store(loop_np, c0, T64)
+        var br0 = ir.new_inst(g_cur_block, 30, -1)  // br loop
+        ir.add_operand(br0, loop, 1)
+        // loop：n > 0 → body / exit
+        g_cur_block = loop
+        var nv = s21_load(loop_np, T64)
+        var z0 = tig_int_lit_ty(0, T64)
+        var cnd = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp sgt
+        ir.add_operand(cnd, nv, 0)
+        ir.add_operand(cnd, z0, 0)
+        ir.add_operand(cnd, 3, 2)
+        var cb = ir.new_inst(g_cur_block, 31, -1)  // cond_br
+        ir.add_operand(cb, ir.get_value(cnd), 0)
+        ir.add_operand(cb, body, 1)
+        ir.add_operand(cb, exit, 1)
+        // body：取队头 entry/env/retcode → dequeue → 按 retcode 分派 call_indirect
+        g_cur_block = body
+        var en_i = tig_trmlite_call("trm_lite_sched$queued_entry", tig_empty_types(), tig_empty_vals(), T64)
+        var ev_i = tig_trmlite_call("trm_lite_sched$queued_env", tig_empty_types(), tig_empty_vals(), T64)
+        var rc_i = tig_trmlite_call("trm_lite_sched$queued_retcode", tig_empty_types(), tig_empty_vals(), T64)
+        tig_trmlite_call("trm_lite_sched$queued_dequeue", tig_empty_types(), tig_empty_vals(), -1)
+        var en_p = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr entry
+        ir.add_operand(en_p, en_i, 0)
+        var en_ptr = ir.get_value(en_p)
+        var ev_p = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr env
+        ir.add_operand(ev_p, ev_i, 0)
+        var ev_ptr = ir.get_value(ev_p)
+        var rt0 = tig_int_lit_ty(0, T64)
+        var is_i64 = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp eq(retcode,0)
+        ir.add_operand(is_i64, rc_i, 0)
+        ir.add_operand(is_i64, rt0, 0)
+        ir.add_operand(is_i64, 0, 2)
+        var b_i64 = ir.new_block(g_cur_func, interner.intern("yld.i"))
+        var b_void = ir.new_block(g_cur_func, interner.intern("yld.v"))
+        var b_join = ir.new_block(g_cur_func, interner.intern("yld.j"))
+        var cb2 = ir.new_inst(g_cur_block, 31, -1)  // cond_br
+        ir.add_operand(cb2, ir.get_value(is_i64), 0)
+        ir.add_operand(cb2, b_i64, 1)
+        ir.add_operand(cb2, b_void, 1)
+        // b_i64：call i64 entry(ptr env)
+        g_cur_block = b_i64
+        var ci1 = ir.new_inst(g_cur_block, 70, T64)  // call_indirect
+        ir.add_operand(ci1, en_ptr, 0)
+        ir.add_operand(ci1, T64, 2)
+        ir.add_operand(ci1, ev_ptr, 0)
+        var br1 = ir.new_inst(g_cur_block, 30, -1)  // br join
+        ir.add_operand(br1, b_join, 1)
+        // b_void：call void entry(ptr env)
+        g_cur_block = b_void
+        var ci2 = ir.new_inst(g_cur_block, 70, -1)  // call_indirect（void）
+        ir.add_operand(ci2, en_ptr, 0)
+        ir.add_operand(ci2, types.named(TK_VOID), 2)
+        ir.add_operand(ci2, ev_ptr, 0)
+        var br2 = ir.new_inst(g_cur_block, 30, -1)  // br join
+        ir.add_operand(br2, b_join, 1)
+        // join：n = queued_count() → br loop
+        g_cur_block = b_join
+        var cn = tig_trmlite_call("trm_lite_sched$queued_count", tig_empty_types(), tig_empty_vals(), T64)
+        s21_store(loop_np, cn, T64)
+        var br3 = ir.new_inst(g_cur_block, 30, -1)  // br loop
+        ir.add_operand(br3, loop, 1)
+        // exit
+        g_cur_block = exit
+        g_builtin_res = tig_int_lit(0)
+        return 0
+    }
+    if nm == "collect" {
+        // collect() → i64（本轮回收对象数）：调 trm_lite_gc$collect
+        //（stop-the-world mark-sweep，trm_lite.a 静态链接）。
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_gc::collect") >= 0 {
+            sm_err_msg = "collect 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var T64 = types.named(TK_I64)
+        g_builtin_res = tig_trmlite_call("trm_lite_gc$collect", tig_empty_types(), tig_empty_vals(), T64)
         return 0
     }
     return -1  // 非内置

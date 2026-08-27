@@ -758,6 +758,37 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_BOOL)
     }
+    // ---------- trm-lite 轻量执行体原语（阶段1块2） ----------
+    // spawn(f) -> i64（任务 id）：f 为 fn() -> i64 / fn() -> void 闭包。
+    if fn_name == "spawn" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "spawn() 期望 1 个参数（函数值），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
+    // yield() -> void：协作式让出（排空就绪任务队列），0 参数。
+    if fn_name == "yield" {
+        if nargs != 0 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "yield() 期望 0 个参数，实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_VOID)
+    }
+    // collect() -> i64（本轮回收对象数）：简单 mark-sweep GC，0 参数。
+    if fn_name == "collect" {
+        if nargs != 0 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "collect() 期望 0 个参数，实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
     // 未识别：按用户函数处理（返回 -3 表示不是内置）
     return -3
 }

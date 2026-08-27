@@ -54,6 +54,9 @@ var g_params_done: bool = false;
 // 置位后 driver 链接 tie_interp.lib（Rust 桥）。exec_code/get_env/time_now 已
 // 内联到 libc（runtime.a 退役），不再置位本标志。
 var g_used_interp: bool = false;
+// trm-lite 阶段1块2：程序是否使用了轻量执行体内置（spawn/yield/collect）。
+// 置位后 driver 链接 trm_lite.a（Go 式静态内置运行时；TIE_TRM_LITE_LIB 定位）。
+var g_used_trmlite: bool = false;
 // M5 动态库模式（dev33 批次 12）：driver 在 tig_ast 前经 set_dynlib 注入。
 // 置位后 irgen 登记导出面（ir.func_exported）供 llvmgen 输出 dllexport，
 // 并对导出函数做边界检查（表/struct 不跨动态库边界）。

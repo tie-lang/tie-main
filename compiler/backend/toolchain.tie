@@ -147,7 +147,7 @@ pub func opt(input_ll: string, output_opt: string, level: i64) -> i64 {
 // need_interp 为 true 时链接 tie_interp.lib（Rust 桥）+ Rust std 依赖系统库。
 // std/runtime.a 已退役（exec_code/get_env/time_now 内联到 libc），不再有
 // prefer_interp 分支——凡需桥一律 tie_interp.lib。返回退出码。
-pub func link_exe(input_opt: string, output_exe: string, target: string, need_interp: bool) -> i64 {
+pub func link_exe(input_opt: string, output_exe: string, target: string, need_interp: bool, need_trmlite: bool) -> i64 {
     var tool = find_clang()
     if str_len(tool) == 0 {
         tc_err_msg = "未找到 clang，请确认 LLVM 已安装并在 PATH 中"
@@ -187,6 +187,16 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
             return -1
         }
         cmd = cmd + " " + lib + " -lws2_32 -luserenv -lntdll -lbcrypt -ladvapi32 -lole32 -lshell32"
+    }
+    // trm-lite 阶段1块2：程序用了轻量执行体内置（spawn/yield/collect）→ 链 trm_lite.a。
+    if need_trmlite {
+        var tlib = find_trmlite_lib()
+        if str_len(tlib) == 0 {
+            tc_err_msg = "程序使用了 trm-lite 轻量执行体内置（spawn/yield/collect），但未找到 trm-lite 静态库。" +
+                "请先构建 trm_lite.a（tiec core/runtime/tl_runtime.tie -o trm_lite.a），或设置环境变量 TIE_TRM_LITE_LIB"
+            return -1
+        }
+        cmd = cmd + " " + tlib
     }
     // 批次 2：i128/u128 除法/取余生成 __divti3/__umodti3 等 compiler-rt 辅助
     // 调用——clang 默认不链接 builtins，缺符号（undefined symbol: __divti3）。
@@ -309,6 +319,25 @@ func find_interp_lib() -> string {
     var cands = table_new_string()
     table_push(cands, "target\\release\\tie_interp.lib")
     table_push(cands, "target\\debug\\tie_interp.lib")
+    var n: i64 = len(cands)
+    var i: i64 = 0
+    while i < n {
+        if file_exists(cands[i]) {
+            return cands[i]
+        }
+        i = i + 1
+    }
+    return ""
+}
+// 定位 trm-lite 静态库：TIE_TRM_LITE_LIB 环境变量 → 相对默认路径。找不到返回空串。
+func find_trmlite_lib() -> string {
+    var env = get_env("TIE_TRM_LITE_LIB")
+    if str_len(env) > 0 && file_exists(env) {
+        return env
+    }
+    var cands = table_new_string()
+    table_push(cands, "..\\..\\trm-lite\\trm_lite.a")
+    table_push(cands, "trm_lite.a")
     var n: i64 = len(cands)
     var i: i64 = 0
     while i < n {

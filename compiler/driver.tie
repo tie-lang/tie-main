@@ -755,7 +755,7 @@ func compile_logic(ir_path: string, opt_path: string, target: string) -> i64 {
         exe_path = replace_ext(g_input, "exe")
     }
     // need_interp = g_used_interp：有 Rust 桥才链 tie_interp.lib
-    var bres = tc.link_exe(opt_path, exe_path, target, g_used_interp)
+    var bres = tc.link_exe(opt_path, exe_path, target, g_used_interp, g_used_trmlite)
     if bres != 0 {
         println("[后端] " + tc_err_msg)
         return 1

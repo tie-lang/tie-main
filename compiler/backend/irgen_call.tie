@@ -588,4 +588,32 @@ func tig_ext_call4(sym: string, v1: i64, ty1: i64, v2: i64, ty2: i64, v3: i64, t
     return tig_ext_call_typed(sym, ats, avs, types.named(TK_I64))
 }
 
+// trm-lite 静态链接库桥调用（extern_call 36 通用生成；**不置 g_used_interp**——
+// 符号由 trm_lite.a 解析，非 tie_interp Rust 桥）。argtys/argv 并行表；返回结果值 id
+//（void 桥返回 -1，指令 ty=-1 无结果寄存器）。
+func tig_trmlite_call(sym: string, argtys: table<i64>, argv: table<i64>, ret_ty: i64) -> i64 {
+    var sid = interner.intern(sym)
+    var inst = ir.new_inst(g_cur_block, 36, ret_ty)
+    ir.add_operand(inst, sid, 0)
+    ir.add_operand(inst, ret_ty, 2)
+    var k: i64 = 0
+    while k < len(argv) {
+        ir.add_operand(inst, argtys[k], 2)
+        ir.add_operand(inst, argv[k], 0)
+        k = k + 1
+    }
+    if ret_ty < 0 {
+        return -1
+    }
+    return ir.get_value(inst)
+}
+
+// 空类型/值表（trm-lite 无参桥调用便捷）。
+func tig_empty_types() -> table<i64> {
+    return table_new_i64()
+}
+func tig_empty_vals() -> table<i64> {
+    return table_new_i64()
+}
+
 }
