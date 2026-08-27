@@ -471,7 +471,8 @@ func is_libc_sym(sym: string) -> bool {
     if sym == "printf" || sym == "strlen" || sym == "strcmp" {
         return true
     }
-    if sym == "malloc" || sym == "free" || sym == "fopen" || sym == "fwrite" || sym == "fclose" || sym == "fflush" {
+    if sym == "malloc" || sym == "free" || sym == "fopen" || sym == "fwrite" ||
+        sym == "fread" || sym == "fseek" || sym == "ftell" || sym == "fclose" || sym == "fflush" {
         return true
     }
     // S2.1：libc memcpy（StringBuilder 数据拷贝；无需 tie_interp 链接）

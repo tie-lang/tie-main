@@ -1,0 +1,51 @@
+type tie<logic>
+// bytes 原语回归（byte_read/byte_write/byte_concat/bit_read/bit_write 原生实现，
+// 2026-08-26 起零 Rust 桥跨平台 libc/malloc 重写）：write→read 往返、concat、
+// 位操作、空表边界。失败路径 byte_read 打不开 → 打印路径并 exit(1)，不入正例如料。
+import "../../std/bytes.tie"
+using bytes;
+
+func main() {
+    var pass: bool = true
+    // ---- byte_write → byte_read 往返（二进制安全：字节值 0..255）----
+    var t = table_new_i64()
+    table_push(t, 72)   // 'H'
+    table_push(t, 0)    // 0 字节（二进制安全：非 NUL 截断字符串比较）
+    table_push(t, 255)
+    table_push(t, 33)   // '!'
+    var ok = bytes.write("tmp_bytes_rt.bin", t)
+    var d = bytes.read("tmp_bytes_rt.bin")
+    pass = pass && ok
+    pass = pass && len(d) == 4
+    pass = pass && d[0] == 72 && d[1] == 0 && d[2] == 255 && d[3] == 33
+    // 覆盖写（非追加）
+    var t2 = table_new_i64()
+    table_push(t2, 97)
+    ok = bytes.write("tmp_bytes_rt.bin", t2)
+    d = bytes.read("tmp_bytes_rt.bin")
+    pass = pass && ok && len(d) == 1 && d[0] == 97
+    // ---- byte_concat（不动入参）----
+    var c = bytes.concat(bytes.read("tmp_bytes_rt.bin"), t)
+    pass = pass && len(c) == 5
+    pass = pass && c[0] == 97 && c[3] == 255 && c[4] == 33
+    pass = pass && len(t) == 4 && t[0] == 72  // 入参未被修改
+    file_delete("tmp_bytes_rt.bin")
+    // ---- bit_read / bit_write（LSB 序）----
+    var b = table_new_i64()
+    table_push(b, 65)   // 0x41 = 0100 0001
+    pass = pass && bit_read(b, 0) == 1 && bit_read(b, 1) == 0 && bit_read(b, 6) == 1
+    pass = pass && bit_write(b, 6, 0) && bit_read(b, 6) == 0
+    pass = pass && bit_write(b, 1, 1) && bit_read(b, 1) == 1
+    // 越界（pos<0 / 超出表长）：read→0，write→false 且不改表
+    pass = pass && bit_read(b, -1) == 0 && bit_read(b, 64) == 0
+    var before = b[0]
+    pass = pass && !bit_write(b, 64, 1) && !bit_write(b, -1, 1) && b[0] == before
+    // ---- 空表边界 ----
+    var e = table_new_i64()
+    var oke = bytes.write("tmp_bytes_empty.bin", e)
+    var de = bytes.read("tmp_bytes_empty.bin")
+    pass = pass && oke && len(de) == 0
+    pass = pass && len(bytes.concat(e, e)) == 0
+    file_delete("tmp_bytes_empty.bin")
+    println("bytes_roundtrip " + (pass ? "PASS" : "FAIL"))
+}

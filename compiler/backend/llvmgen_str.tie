@@ -611,7 +611,9 @@ func user_extern_decl(sym: string) -> string {
     // redefinition；这些符号声明固定，绝不在此推导。
     if sym == "printf" || sym == "strlen" || sym == "strcmp" ||
         sym == "malloc" || sym == "free" || sym == "memcpy" || sym == "memmove" ||
-        sym == "fopen" || sym == "fwrite" || sym == "fclose" || sym == "fflush" ||
+        sym == "fopen" || sym == "fwrite" || sym == "fread" ||
+        sym == "fseek" || sym == "ftell" ||
+        sym == "fclose" || sym == "fflush" ||
         sym == "exit" || sym == "remove" {
         return ""
     }

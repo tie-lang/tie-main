@@ -4,6 +4,25 @@
 
 ---
 
+## [修复] 字节原语零 Rust 重写：byte_write/byte_concat 运行崩溃修复（2026-08-26）
+
+byte_read/byte_write/byte_concat/bit_read/bit_write 五底座原语原以 tie_interp Rust 桥
+实现（tie_byte_*），Rust 桥对**原生 32 字节表句柄**的 ABI 约定不匹配，任一调用运行即
+0xC0000005 崩溃（同 871d65f alloc 补头扫描漏洞族；std/bytes 的 write/concat 一并受影响）。
+本次改为 tie 内联 IR 全量重写，**跨 Unix/Windows、零 Rust 依赖**：
+
+- **字节表操作**（byte_concat/bit_read/bit_write）纯内存：原生 32 字节表句柄
+  {cap,len,data,esz} + malloc/memcpy + 位指令（shr/and/shl/or/xor），零外部依赖；
+- **文件 IO**（byte_read/byte_write）走 libc fopen/fread/fwrite/fseek/ftell/fclose（CRT
+  提供，无需任何系统头/链接库）——往返二进制安全（i64 元素低字节截断，0/255 字节不丢）；
+- **失败语义保持文档约定**：byte_read 打不开/读不全 → 打印路径并 exit(1)；byte_write 失败
+  → false；
+- 运行时循环由 irgen 手工块生成（k 存槽 + cond_br 回边），回避「后端 while 变量是 IR 值
+  id」的编译期数值比较陷阱；
+- 新增 tests/language/bytes_roundtrip.tie 回归（往返/覆盖写/concat 不动入参/位越界/空表）。
+
+---
+
 ---## [新增] 三层内置库重写 library-v2：新特性 + 统一风格 + 全新接口（2026-08-26）
 
 按 [docs/plans/library-v2.md](docs/plans/library-v2.md) 重写 std/rdu/ext 三层内置库（旧版
@@ -24,8 +43,7 @@ v1 已归档至 github.com/tie-lang/lib_v1）。设计文档含三层逐模块�
   irgen_call 对已 mangled 全名的调用不再二次加前缀；自举不动点 tiec→tiec2→tiec3 逐字节一致。
 - **已知限制（记录未修）**：① enum payload 白名单不支持 table/f64（Result<table> 不可
   表达）；② `import result.tie` 须置于 `import assert.tie` 之前（泛型 enum 与断言模板
-  的扫描顺序敏感性）；③ bytes.write/concat 依赖的 byte_write/byte_concat 底座原语运行
-  崩溃（既有缺陷，与本次接口无关）；④ 泛型模板体内整数字面量单态化时类型固化
+  的扫描顺序敏感性）；③ 泛型模板体内整数字面量单态化时类型固化
   （`abs<T>` 用 `x - x` 取 T 型零值规避）。
 
 ---
