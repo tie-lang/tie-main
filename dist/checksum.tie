@@ -1,0 +1,21 @@
+type tie<class>
+// checksum.tie —— 校验和（LLVM 发行格式 SHA256SUMS：`<hash>  <rel>`）
+import "./util.tie";
+import "../std/fs.tie";
+namespace checksum {
+
+pub func write_checksums(dir: string, out: string, rels: table<string>) -> bool {
+    var lines: table<string> = table_new_string()
+    var i: i64 = 0
+    while i < util.tlen(rels) {
+        var rel: string = rels[i]
+        var h: string = util.sha256_of(dir + "\\" + rel)
+        if str_len(h) == 64 {
+            table_push(lines, h + "  " + rel)
+        }
+        i = i + 1
+    }
+    if util.tlen(lines) == 0 { return false }
+    return fs.write_lines(out, lines)
+}
+}

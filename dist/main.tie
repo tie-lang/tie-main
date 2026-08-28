@@ -1,0 +1,191 @@
+type tie<logic>
+// main.tie —— tie-dist：tie 工具链发行工具（LLVM 式多档位 × 多平台 × 多形态）
+//
+// 档位：lite(精简运行时) / std(标准) / ext(扩展)
+// 平台：win-x64 win-x86 win-arm64 linux-x64 linux-arm64 macos-x64 macos-arm64
+// 形态：zip | tar.gz | installer(清单→tie-install-builder) | msi(WiX 骨架) | source
+//
+// 构建：compiler/tiec.exe dist/main.tie -o dist/tie-dist.exe
+import "../std/args.tie";
+import "./util.tie";
+import "./catalog.tie";
+import "./assemble.tie";
+import "./archive.tie";
+import "./checksum.tie";
+import "./installer.tie";
+import "./msi.tie";
+import "../std/format.tie";
+
+func usage() {
+    println("tie-dist —— tie 工具链发行工具")
+    println()
+    println("用法：")
+    println("  tie-dist build --version <v> [--platforms p1,p2] [--tiers lite,std,ext]")
+    println("        [--formats zip,tar.gz,installer,msi,source] [--repo <root>]")
+    println("        [--stage <dir>] [--out <dir>] [--builder <exe>] [--strict]")
+    println("  tie-dist list-platforms")
+    println("  tie-dist list-tiers")
+    println("  tie-dist version")
+    println()
+    println("档位：lite(精简运行时) / std(标准) / ext(扩展)")
+    println("平台：win-x64 win-x86 win-arm64 linux-x64 linux-arm64 macos-x64 macos-arm64")
+    println("形态：zip | tar.gz | installer(工具链安装清单) | msi(WiX 骨架) | source")
+    println("校验：所有产物生成 SHA256SUMS（certutil / sha256sum）")
+}
+
+func parse_list(flag: string, dflt: string) -> table<string> {
+    var v: string = args.value(flag)
+    if v == "" { v = dflt }
+    return util.split(v, ",")
+}
+
+func list_platforms() {
+    var t: table<string> = catalog.platform_names()
+    var i: i64 = 0
+    while i < util.tlen(t) {
+        println(t[i] + "  (归档: " + catalog.platform_ext(t[i]) + ")")
+        i = i + 1
+    }
+}
+
+func list_tiers() {
+    var t: table<string> = catalog.tier_names()
+    var i: i64 = 0
+    while i < util.tlen(t) {
+        println(t[i] + "  : " + catalog.tier_desc(t[i]))
+        i = i + 1
+    }
+}
+
+func wants(fmts: table<string>, name: string) -> bool {
+    return util.in_list(fmts, name)
+}
+
+func do_build() -> i64 {
+    var version: string = args.value("--version")
+    if version == "" {
+        println("[E_ARGS] 缺少 --version")
+        return 1
+    }
+    var repo: string = args.value("--repo")
+    if repo == "" { repo = ".." }
+    var stage: string = args.value("--stage")
+    if stage == "" { stage = "stage" }
+    var out: string = args.value("--out")
+    if out == "" { out = "out" }
+    var strict: bool = args.has("--strict")
+    var platforms: table<string> = parse_list("--platforms", "win-x64")
+    var tiers: table<string> = parse_list("--tiers", "lite")
+    var formats: table<string> = parse_list("--formats", "zip,tar.gz,source")
+
+    var all_checks: table<string> = table_new_string()
+    var pi: i64 = 0
+    while pi < util.tlen(platforms) {
+        var p: string = platforms[pi]
+        var family: string = catalog.platform_family(p)
+        var ti: i64 = 0
+        while ti < util.tlen(tiers) {
+            var tier: string = tiers[ti]
+            println("[build] " + p + " / " + tier)
+            var cnt: i64 = assemble.build(repo, stage, out, p, tier, version, strict)
+            if cnt < 0 {
+                println("[E_ASSEMBLE] " + p + " / " + tier)
+                return 1
+            }
+            var root: string = assemble.root_name(version, tier, p)
+            var root_dir: string = out + "\\" + root
+            if wants(formats, "zip") && family == "windows" {
+                var ext: string = out + "\\" + root + ".zip"
+                if archive.make_zip(root_dir, ext) {
+                    table_push(all_checks, root + ".zip")
+                } else {
+                    println("[E_ZIP] " + root + ".zip")
+                    return 1
+                }
+            }
+            if wants(formats, "tar.gz") && family != "windows" {
+                var ext2: string = out + "\\" + root + ".tar.gz"
+                if archive.make_targz(root_dir, ext2) {
+                    table_push(all_checks, root + ".tar.gz")
+                } else {
+                    println("[E_TAR] " + root + ".tar.gz")
+                    return 1
+                }
+            }
+            if wants(formats, "installer") {
+                var mf: string = out + "\\" + root + ".install.manifest.json"
+                var payload: string = root
+                if family == "windows" { payload = payload + ".zip" } else { payload = payload + ".tar.gz" }
+                installer.write_manifest(mf, version, tier, p, payload)
+                println("[gen] installer manifest " + mf)
+                var bld: string = args.value("--builder")
+                if bld != "" {
+                    var rc: i32 = util.run("\"" + bld + "\" build --manifest=\"" + mf + "\"")
+                    if rc != 0 {
+                        println("[E_INSTALLER] builder 失败: " + mf)
+                        return 1
+                    }
+                }
+            }
+            if wants(formats, "msi") {
+                var wf: string = out + "\\" + root + ".wxs"
+                msi.write_wxs(wf, version, tier, p)
+                println("[gen] wxs 骨架 " + wf + "  （用 candle/light 编译,或改接 tie-install-builder）")
+            }
+            ti = ti + 1
+        }
+        pi = pi + 1
+    }
+
+    if wants(formats, "source") {
+        var src_stage: string = out + "\\tie-" + version + "-src"
+        var ex: table<string> = table_new_string()
+        table_push(ex, ".git")
+        table_push(ex, "out")
+        table_push(ex, "stage")
+        table_push(ex, ".tie")
+        table_push(ex, "dist-out")
+        var c: i64 = archive.collect_source(repo, src_stage, ex)
+        if c < 0 {
+            println("[E_SRC] 源码收集失败")
+            return 1
+        }
+        var srcf: string = out + "\\tie-" + version + "-src.tar.gz"
+        if archive.make_targz(src_stage, srcf) {
+            table_push(all_checks, "tie-" + version + "-src.tar.gz")
+        } else {
+            println("[E_SRC] 源码归档失败")
+            return 1
+        }
+    }
+
+    if checksum.write_checksums(out, out + "\\SHA256SUMS", all_checks) {
+        println("[ok] SHA256SUMS 已生成，共 " + format.format_int(util.tlen(all_checks)) + " 个产物")
+    }
+    println("[done] tie " + version)
+    return 0
+}
+
+func main() {
+    var cmd: string = args.get(0)
+    if cmd == "build" {
+        var rc: i64 = do_build()
+        if rc != 0 {
+            panic("tie-dist: 构建失败")
+        }
+        return
+    }
+    if cmd == "list-platforms" {
+        list_platforms()
+        return
+    }
+    if cmd == "list-tiers" {
+        list_tiers()
+        return
+    }
+    if cmd == "version" {
+        println("tie-dist 0.1.0 (tie toolchain 发行工具)")
+        return
+    }
+    usage()
+}

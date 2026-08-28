@@ -1,0 +1,134 @@
+type tie<class>
+// catalog.tie —— tie-dist 发行目录（平台 × 档位 × 组件文件）
+// 纯静态描述；查询函数每次构造返回（顶层 const/varchar 全局表受限）。
+// 档位：lite(精简运行时) / std(标准) / ext(扩展)。
+import "./util.tie";
+namespace catalog {
+
+// ---------- 平台 ----------
+
+pub func platform_names() -> table<string> {
+    var t: table<string> = table_new_string()
+    table_push(t, "win-x64")
+    table_push(t, "win-x86")
+    table_push(t, "win-arm64")
+    table_push(t, "linux-x64")
+    table_push(t, "linux-arm64")
+    table_push(t, "macos-x64")
+    table_push(t, "macos-arm64")
+    return t
+}
+
+pub func platform_family(name: string) -> string {
+    if util.starts_with(name, "win") { return "windows" }
+    if util.starts_with(name, "linux") { return "linux" }
+    if util.starts_with(name, "macos") { return "macos" }
+    return "windows"
+}
+
+// 归档扩展：Windows 用 zip；其余 tar.gz（LLVM 发行惯例）。
+pub func platform_ext(name: string) -> string {
+    if util.starts_with(name, "win") { return "zip" }
+    return "tar.gz"
+}
+
+// ---------- 档位 ----------
+
+pub func tier_names() -> table<string> {
+    var t: table<string> = table_new_string()
+    table_push(t, "lite")
+    table_push(t, "std")
+    table_push(t, "ext")
+    return t
+}
+
+pub func tier_desc(tier: string) -> string {
+    if tier == "lite" { return "精简：trm 运行时 + tieir 工具 + REPL + 极简 LLVM" }
+    if tier == "std" { return "标准：lite + tiec 编译器 + pkg + std 库 + 文档" }
+    if tier == "ext" { return "扩展：std + tie-lsp + 编辑器 + examples + ext 库 + 完整 LLVM" }
+    return tier
+}
+
+// ---------- 组件 → bin 文件（基础名，扩展名由 bin_filename 定） ----------
+
+func lite_bins() -> table<string> {
+    var t: table<string> = table_new_string()
+    table_push(t, "repl")
+    table_push(t, "trm_platform")
+    table_push(t, "tieir-verify")
+    table_push(t, "tieir-dump")
+    table_push(t, "opt")
+    table_push(t, "clang")
+    table_push(t, "lld-link")
+    return t
+}
+
+func std_bins() -> table<string> {
+    var t: table<string> = table_new_string()
+    table_push(t, "repl")
+    table_push(t, "trm_platform")
+    table_push(t, "tieir-verify")
+    table_push(t, "tieir-dump")
+    table_push(t, "opt")
+    table_push(t, "clang")
+    table_push(t, "lld-link")
+    table_push(t, "tiec")
+    table_push(t, "pkg")
+    return t
+}
+
+func ext_bins() -> table<string> {
+    var t: table<string> = table_new_string()
+    table_push(t, "repl")
+    table_push(t, "trm_platform")
+    table_push(t, "tieir-verify")
+    table_push(t, "tieir-dump")
+    table_push(t, "opt")
+    table_push(t, "clang")
+    table_push(t, "lld-link")
+    table_push(t, "tiec")
+    table_push(t, "pkg")
+    table_push(t, "tie-lsp")
+    table_push(t, "llvm-ar")
+    table_push(t, "llvm-dis")
+    table_push(t, "llvm-objdump")
+    return t
+}
+
+pub func bin_files(tier: string) -> table<string> {
+    if tier == "lite" { return lite_bins() }
+    if tier == "ext" { return ext_bins() }
+    return std_bins()
+}
+
+// 平台化文件名：Windows .exe；trm_platform 为动态库（dll/so/dylib）。
+pub func bin_filename(name: string, family: string) -> string {
+    if name == "trm_platform" {
+        if family == "linux" { return "libtrm_platform.so" }
+        if family == "macos" { return "libtrm_platform.dylib" }
+        return "trm_platform.dll"
+    }
+    if family == "windows" { return name + ".exe" }
+    return name
+}
+
+// ---------- 仓库目录（源码/文档/示例，随档位复制） ----------
+
+pub func repo_copy_dirs(tier: string) -> table<string> {
+    var t: table<string> = table_new_string()
+    if tier == "std" {
+        table_push(t, "std")
+        table_push(t, "docs")
+        return t
+    }
+    if tier == "ext" {
+        table_push(t, "std")
+        table_push(t, "docs")
+        table_push(t, "examples")
+        table_push(t, "editor")
+        table_push(t, "ext")
+        return t
+    }
+    return t
+}
+}

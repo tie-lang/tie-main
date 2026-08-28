@@ -1,0 +1,234 @@
+type tie<class>
+// sha256.tie —— 纯 tie 实现的 SHA-256（FIPS 180-4），用于发行产物校验和。
+// 背景：std/crypto.tie 仅 crc32/fnv1a（非加密安全）；系统 certutil 在中文
+//   控制台输出 UTF-16（含 NUL 字节），exec_output 读回被截断 → 改为自实现。
+// 数值安全：全部 32 位运算用 i64 + & 0xFFFFFFFF 掩码（常量恒正无溢出，
+//   >> 为算术右移，对 < 2^32 的正数等价逻辑右移——与 std/crypto 同款论证）。
+import "../std/fs.tie";
+namespace sha256 {
+
+func k_constants() -> table<i64> {
+    var t: table<i64> = table_new_i64()
+    table_push(t, 0x428a2f98)
+    table_push(t, 0x71374491)
+    table_push(t, 0xb5c0fbcf)
+    table_push(t, 0xe9b5dba5)
+    table_push(t, 0x3956c25b)
+    table_push(t, 0x59f111f1)
+    table_push(t, 0x923f82a4)
+    table_push(t, 0xab1c5ed5)
+    table_push(t, 0xd807aa98)
+    table_push(t, 0x12835b01)
+    table_push(t, 0x243185be)
+    table_push(t, 0x550c7dc3)
+    table_push(t, 0x72be5d74)
+    table_push(t, 0x80deb1fe)
+    table_push(t, 0x9bdc06a7)
+    table_push(t, 0xc19bf174)
+    table_push(t, 0xe49b69c1)
+    table_push(t, 0xefbe4786)
+    table_push(t, 0x0fc19dc6)
+    table_push(t, 0x240ca1cc)
+    table_push(t, 0x2de92c6f)
+    table_push(t, 0x4a7484aa)
+    table_push(t, 0x5cb0a9dc)
+    table_push(t, 0x76f988da)
+    table_push(t, 0x983e5152)
+    table_push(t, 0xa831c66d)
+    table_push(t, 0xb00327c8)
+    table_push(t, 0xbf597fc7)
+    table_push(t, 0xc6e00bf3)
+    table_push(t, 0xd5a79147)
+    table_push(t, 0x06ca6351)
+    table_push(t, 0x14292967)
+    table_push(t, 0x27b70a85)
+    table_push(t, 0x2e1b2138)
+    table_push(t, 0x4d2c6dfc)
+    table_push(t, 0x53380d13)
+    table_push(t, 0x650a7354)
+    table_push(t, 0x766a0abb)
+    table_push(t, 0x81c2c92e)
+    table_push(t, 0x92722c85)
+    table_push(t, 0xa2bfe8a1)
+    table_push(t, 0xa81a664b)
+    table_push(t, 0xc24b8b70)
+    table_push(t, 0xc76c51a3)
+    table_push(t, 0xd192e819)
+    table_push(t, 0xd6990624)
+    table_push(t, 0xf40e3585)
+    table_push(t, 0x106aa070)
+    table_push(t, 0x19a4c116)
+    table_push(t, 0x1e376c08)
+    table_push(t, 0x2748774c)
+    table_push(t, 0x34b0bcb5)
+    table_push(t, 0x391c0cb3)
+    table_push(t, 0x4ed8aa4a)
+    table_push(t, 0x5b9cca4f)
+    table_push(t, 0x682e6ff3)
+    table_push(t, 0x748f82ee)
+    table_push(t, 0x78a5636f)
+    table_push(t, 0x84c87814)
+    table_push(t, 0x8cc70208)
+    table_push(t, 0x90befffa)
+    table_push(t, 0xa4506ceb)
+    table_push(t, 0xbef9a3f7)
+    table_push(t, 0xc67178f2)
+    return t
+}
+
+func h_init() -> table<i64> {
+    var t: table<i64> = table_new_i64()
+    table_push(t, 0x6a09e667)
+    table_push(t, 0xbb67ae85)
+    table_push(t, 0x3c6ef372)
+    table_push(t, 0xa54ff53a)
+    table_push(t, 0x510e527f)
+    table_push(t, 0x9b05688c)
+    table_push(t, 0x1f83d9ab)
+    table_push(t, 0x5be0cd19)
+    return t
+}
+
+func rot_r(x: i64, n: i64) -> i64 {
+    var v: i64 = x & 0xFFFFFFFF
+    if n == 0 {
+        return v
+    }
+    return ((v >> n) | (v << (32 - n))) & 0xFFFFFFFF
+}
+
+func be_word(bs: table<i64>, off: i64) -> i64 {
+    var b0: i64 = bs[off] & 0xFF
+    var b1: i64 = bs[off + 1] & 0xFF
+    var b2: i64 = bs[off + 2] & 0xFF
+    var b3: i64 = bs[off + 3] & 0xFF
+    return ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) & 0xFFFFFFFF
+}
+
+func nibble_char(n: i64) -> string {
+    var digs: string = "0123456789abcdef"
+    return str_char(digs, n)
+}
+
+func word_hex(w: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < 8 {
+        var nib: i64 = (w >> (28 - i * 4)) & 0xF
+        out = out + nibble_char(nib)
+        i = i + 1
+    }
+    return out
+}
+
+pub func sha256_bytes(bs: table<i64>) -> string {
+    var k: table<i64> = k_constants()
+    var h: table<i64> = h_init()
+    var n: i64 = table_len(bs)
+    // 填充：0x80 + 0×… + 8 字节大端位长
+    var ml: table<i64> = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(ml, bs[i] & 0xFF)
+        i = i + 1
+    }
+    table_push(ml, 0x80)
+    var bits: i64 = n * 8
+    var pad: i64 = 56 - ((n + 1) % 64)
+    if pad < 0 { pad = pad + 64 }
+    var j: i64 = 0
+    while j < pad {
+        table_push(ml, 0)
+        j = j + 1
+    }
+    var hi: i64 = (bits >> 32) & 0xFFFFFFFF
+    var lo: i64 = bits & 0xFFFFFFFF
+    var kk: i64 = 0
+    while kk < 4 {
+        table_push(ml, (hi >> (24 - kk * 8)) & 0xFF)
+        kk = kk + 1
+    }
+    kk = 0
+    while kk < 4 {
+        table_push(ml, (lo >> (24 - kk * 8)) & 0xFF)
+        kk = kk + 1
+    }
+    var mlen: i64 = table_len(ml)
+    var off: i64 = 0
+    while off < mlen {
+        var w: table<i64> = table_new_i64()
+        var wi: i64 = 0
+        while wi < 64 {
+            if wi < 16 {
+                table_push(w, be_word(ml, off + wi * 4))
+            } else {
+                table_push(w, 0)
+            }
+            wi = wi + 1
+        }
+        wi = 16
+        while wi < 64 {
+            var s0: i64 = rot_r(w[wi - 15], 7) ^ rot_r(w[wi - 15], 18) ^ (w[wi - 15] >> 3)
+            var s1: i64 = rot_r(w[wi - 2], 17) ^ rot_r(w[wi - 2], 19) ^ (w[wi - 2] >> 10)
+            w[wi] = (w[wi - 16] + s0 + w[wi - 7] + s1) & 0xFFFFFFFF
+            wi = wi + 1
+        }
+        var a: i64 = h[0]
+        var b: i64 = h[1]
+        var c: i64 = h[2]
+        var d: i64 = h[3]
+        var e: i64 = h[4]
+        var f: i64 = h[5]
+        var g: i64 = h[6]
+        var hh: i64 = h[7]
+        var rd: i64 = 0
+        while rd < 64 {
+            var s1b: i64 = rot_r(e, 6) ^ rot_r(e, 11) ^ rot_r(e, 25)
+            var ch: i64 = (e & f) ^ ((0xFFFFFFFF ^ e) & g)
+            var t1: i64 = (hh + s1b + ch + k[rd] + w[rd]) & 0xFFFFFFFF
+            var s0b: i64 = rot_r(a, 2) ^ rot_r(a, 13) ^ rot_r(a, 22)
+            var maj: i64 = (a & b) ^ (a & c) ^ (b & c)
+            var t2: i64 = (s0b + maj) & 0xFFFFFFFF
+            hh = g
+            g = f
+            f = e
+            e = (d + t1) & 0xFFFFFFFF
+            d = c
+            c = b
+            b = a
+            a = (t1 + t2) & 0xFFFFFFFF
+            rd = rd + 1
+        }
+        h[0] = (h[0] + a) & 0xFFFFFFFF
+        h[1] = (h[1] + b) & 0xFFFFFFFF
+        h[2] = (h[2] + c) & 0xFFFFFFFF
+        h[3] = (h[3] + d) & 0xFFFFFFFF
+        h[4] = (h[4] + e) & 0xFFFFFFFF
+        h[5] = (h[5] + f) & 0xFFFFFFFF
+        h[6] = (h[6] + g) & 0xFFFFFFFF
+        h[7] = (h[7] + hh) & 0xFFFFFFFF
+        off = off + 64
+    }
+    var out: string = ""
+    var hi2: i64 = 0
+    while hi2 < 8 {
+        out = out + word_hex(h[hi2])
+        hi2 = hi2 + 1
+    }
+    return out
+}
+
+func table_len(t: table<i64>) -> i64 {
+    var c: i64 = 0
+    for x in t {
+        c = c + 1
+    }
+    return c
+}
+
+pub func sha256_file(path: string) -> string {
+    if !fs.exists(path) { return "" }
+    var bs: table<i64> = fs.read_bytes(path)
+    return sha256_bytes(bs)
+}
+}

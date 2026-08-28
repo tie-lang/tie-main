@@ -1,0 +1,165 @@
+type tie<class>
+// util.tie —— tie-dist 通用工具（字符串 / 进程 / SHA-256）
+// SHA-256 外调 certutil / sha256sum：std/crypto.tie 仅有 crc32/fnv1a
+// （文件头注释明确"非加密安全"），完整性校验不得用它们。
+import "../std/process.tie";
+import "../std/fs.tie";
+import "./sha256.tie";
+namespace util {
+
+pub func sub(s: string, a: i64, b: i64) -> string {
+    var n: i64 = str_len(s)
+    var lo: i64 = a
+    if lo < 0 { lo = 0 }
+    if lo > n { lo = n }
+    var hi: i64 = b
+    if hi < 0 { hi = 0 }
+    if hi > n { hi = n }
+    var out: string = ""
+    var i: i64 = lo
+    while i < hi {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+pub func starts_with(s: string, pfx: string) -> bool {
+    var n: i64 = str_len(s)
+    var m: i64 = str_len(pfx)
+    if m > n { return false }
+    var i: i64 = 0
+    while i < m {
+        if str_char(s, i) != str_char(pfx, i) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+pub func ends_with(s: string, pfx: string) -> bool {
+    var n: i64 = str_len(s)
+    var m: i64 = str_len(pfx)
+    if m > n { return false }
+    var i: i64 = 0
+    while i < m {
+        if str_char(s, n - m + i) != str_char(pfx, i) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+pub func contains(s: string, sub_t: string) -> bool {
+    var n: i64 = str_len(s)
+    var m: i64 = str_len(sub_t)
+    if m == 0 { return true }
+    if m > n { return false }
+    var i: i64 = 0
+    while i <= n - m {
+        var j: i64 = 0
+        var ok: bool = true
+        while j < m && ok {
+            if str_char(s, i + j) != str_char(sub_t, j) { ok = false }
+            j = j + 1
+        }
+        if ok { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func is_space_c(c: string) -> bool {
+    if c == " " { return true }
+    if c == "\r" { return true }
+    if c == "\n" { return true }
+    if c == "\t" { return true }
+    return false
+}
+
+pub func trim(s: string) -> string {
+    var n: i64 = str_len(s)
+    var lo: i64 = 0
+    var go: bool = true
+    while go {
+        if lo >= n { go = false } else {
+            if is_space_c(str_char(s, lo)) { lo = lo + 1 } else { go = false }
+        }
+    }
+    var hi: i64 = n
+    go = true
+    while go {
+        if hi <= lo { go = false } else {
+            if is_space_c(str_char(s, hi - 1)) { hi = hi - 1 } else { go = false }
+        }
+    }
+    return sub(s, lo, hi)
+}
+
+pub func split(s: string, ch: string) -> table<string> {
+    var out: table<string> = table_new_string()
+    var n: i64 = str_len(s)
+    var start: i64 = 0
+    var i: i64 = 0
+    while i <= n {
+        var at_end: bool = i == n
+        var hit: bool = false
+        if !at_end {
+            if str_char(s, i) == str_char(ch, 0) { hit = true }
+        }
+        if hit || at_end {
+            table_push(out, sub(s, start, i))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+pub func tlen(t: table<string>) -> i64 {
+    var c: i64 = 0
+    for x in t {
+        c = c + 1
+    }
+    return c
+}
+
+pub func in_list(t: table<string>, s: string) -> bool {
+    var i: i64 = 0
+    while i < tlen(t) {
+        if t[i] == s { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func char_in_range(c: string, lo: i64, hi: i64) -> bool {
+    var cp: i64 = char_code(c)
+    return cp >= lo && cp <= hi
+}
+
+pub func is_hex(s: string) -> bool {
+    var n: i64 = str_len(s)
+    if n != 64 { return false }
+    var i: i64 = 0
+    while i < n {
+        var ok: bool = false
+        var c: string = str_char(s, i)
+        if char_in_range(c, 48, 57) { ok = true }
+        if char_in_range(c, 97, 102) { ok = true }
+        if char_in_range(c, 65, 70) { ok = true }
+        if !ok { return false }
+        i = i + 1
+    }
+    return true
+}
+
+pub func sha256_of(path: string) -> string {
+    return sha256.sha256_file(path)
+}
+pub func run(cmd: string) -> i32 {
+    return process.exec_code(cmd)
+}
+
+pub func file_exists(path: string) -> bool {
+    return fs.exists(path)
+}
+}

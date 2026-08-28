@@ -1,0 +1,25 @@
+type tie<class>
+// installer.tie —— 生成 tie-install-builder 安装清单（preset=runtime-toolchain）
+// 产物：`<root>.install.manifest.json`，供 builder 打成 setup 安装程序；
+// 若 --builder 传了 tie-install-builder 可执行文件，main 会直接调用。
+import "../std/fs.tie";
+namespace installer {
+
+pub func write_manifest(out: string, version: string, tier: string, platform: string, payload: string) -> bool {
+    var s: string = "{\n"
+    s = s + "  \"format\": 1,\n"
+    s = s + "  \"app\": {\n"
+    s = s + "    \"id\": \"org.tie.toolchain\",\n"
+    s = s + "    \"name\": \"tie toolchain (" + tier + ")\",\n"
+    s = s + "    \"version\": \"" + version + "\"\n"
+    s = s + "  },\n"
+    s = s + "  \"preset\": \"runtime-toolchain\",\n"
+    s = s + "  \"payload\": {\n"
+    s = s + "    \"format\": \"binary\",\n"
+    s = s + "    \"entry\": \"" + payload + "\"\n"
+    s = s + "  },\n"
+    s = s + "  \"toolchain\": {\"tier\": \"" + tier + "\", \"platform\": \"" + platform + "\"}\n"
+    s = s + "}\n"
+    return fs.write_text(out, s)
+}
+}

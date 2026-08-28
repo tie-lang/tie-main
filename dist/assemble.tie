@@ -1,0 +1,60 @@
+type tie<class>
+// assemble.tie —— 组装单个 (platform × tier) 发行树
+// bin 来自 stage/{platform}/（预编译产物）；目录来自仓库（std/docs/...）。
+import "./catalog.tie";
+import "./util.tie";
+import "../std/fs.tie";
+namespace assemble {
+
+pub func root_name(version: string, tier: string, platform: string) -> string {
+    return "tie-" + version + "-" + tier + "-" + platform
+}
+
+// 返回值：成功 = 拷贝件数；失败 = -1。
+pub func build(repo: string, stage: string, out: string, platform: string, tier: string, version: string, strict: bool) -> i64 {
+    var family: string = catalog.platform_family(platform)
+    var root: string = root_name(version, tier, platform)
+    var base: string = out + "\\" + root
+    if !fs.create_dir_all(base + "\\bin") { return -1 }
+    var stage_dir: string = stage + "\\" + platform
+    var count: i64 = 0
+    var missing: table<string> = table_new_string()
+    var bins: table<string> = catalog.bin_files(tier)
+    var i: i64 = 0
+    while i < util.tlen(bins) {
+        var fname: string = catalog.bin_filename(bins[i], family)
+        var src: string = stage_dir + "\\" + fname
+        if fs.exists(src) {
+            if fs.copy(src, base + "\\bin\\" + fname) { count = count + 1 } else {
+                table_push(missing, fname)
+            }
+        } else {
+            table_push(missing, fname)
+        }
+        i = i + 1
+    }
+    var dirs: table<string> = catalog.repo_copy_dirs(tier)
+    var d: i64 = 0
+    while d < util.tlen(dirs) {
+        var rel: string = dirs[d]
+        if fs.exists(repo + "\\" + rel) {
+            if fs.copy_dir(repo + "\\" + rel, base + "\\" + rel) { count = count + 1 } else {
+                table_push(missing, rel)
+            }
+        } else {
+            table_push(missing, rel)
+        }
+        d = d + 1
+    }
+    fs.write_text(base + "\\VERSION.txt", "tie " + version + "  tier=" + tier + "  platform=" + platform)
+    var j: i64 = 0
+    while j < util.tlen(missing) {
+        println("[warn] missing " + missing[j])
+        j = j + 1
+    }
+    if strict {
+        if util.tlen(missing) > 0 { return -1 }
+    }
+    return count
+}
+}

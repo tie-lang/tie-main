@@ -1,0 +1,24 @@
+type tie<class>
+// msi.tie —— MSI 安装包骨架（WiX .wxs）
+// 仅生成可被 WiX(candle/light)消费的 Product/Feature/Component 骨架；
+// 文件组绑定留待用户按需补 <File> 项。MSI 桥接正式化见 M4。
+import "../std/fs.tie";
+namespace msi {
+
+pub func write_wxs(out: string, version: string, tier: string, platform: string) -> bool {
+    var s: string = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    s = s + "<!-- tie-dist 生成的 WiX 骨架：tie-" + version + "-" + tier + "-" + platform + " -->\n"
+    s = s + "<Wix xmlns=\"http://schemas.microsoft.com/wix/2006/wi\">\n"
+    s = s + "  <Product Id=\"*\" Name=\"tie toolchain (" + tier + ")\" Language=\"1033\"\n"
+    s = s + "           Version=\"" + version + "\" Manufacturer=\"tie-lang\"\n"
+    s = s + "           UpgradeCode=\"00000000-0000-0000-0000-00000000TIE0\">\n"
+    s = s + "    <Package InstallerVersion=\"200\" Compressed=\"yes\" Platform=\"" + platform + "\"/>\n"
+    s = s + "    <Media Id=\"1\" Cabinet=\"tie.cab\" EmbedCab=\"yes\"/>\n"
+    s = s + "    <Feature Id=\"F" + tier + "\" Title=\"tie toolchain (" + tier + ")\" Level=\"1\">\n"
+    s = s + "      <!-- 在此补 <ComponentGroupRef> / <ComponentRef> 指向 bin/ 与目录文件 -->\n"
+    s = s + "    </Feature>\n"
+    s = s + "  </Product>\n"
+    s = s + "</Wix>\n"
+    return fs.write_text(out, s)
+}
+}

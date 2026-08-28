@@ -1,0 +1,69 @@
+type tie<class>
+// archive.tie —— 归档生成（zip / tar.gz）+ 源码收集
+// 复用 pkg/publish 的"系统 tar"范式：`tar -czf out -C stage .`
+import "./util.tie";
+import "../std/fs.tie";
+namespace archive {
+
+pub func make_targz(dir: string, out: string) -> bool {
+    var rc: i32 = util.run("tar -czf \"" + out + "\" -C \"" + dir + "\" .")
+    return rc == 0
+}
+
+// Windows bsdtar：--format zip（zip 归档经 -a 自动识别，显式声明更稳）。
+pub func make_zip(dir: string, out: string) -> bool {
+    var rc: i32 = util.run("tar -c -f \"" + out + "\" --format zip -C \"" + dir + "\" .")
+    return rc == 0
+}
+
+pub func rel_of(root: string, path: string) -> string {
+    var n: i64 = str_len(root)
+    var m: i64 = str_len(path)
+    if m < n { return "" }
+    if !util.starts_with(path, root) { return "" }
+    var rest: string = util.sub(path, n, m)
+    while str_len(rest) > 0 {
+        var c: string = str_char(rest, 0)
+        if c == "\\" { rest = util.sub(rest, 1, str_len(rest)) } else {
+            if c == "/" { rest = util.sub(rest, 1, str_len(rest)) } else { break }
+        }
+    }
+    return rest
+}
+
+func parent_of(rel: string) -> string {
+    var n: i64 = str_len(rel)
+    var i: i64 = n - 1
+    while i >= 0 {
+        var c: string = str_char(rel, i)
+        if c == "\\" { return util.sub(rel, 0, i) }
+        if c == "/" { return util.sub(rel, 0, i) }
+        i = i - 1
+    }
+    return ""
+}
+
+func skip_excluded(rel: string, excludes: table<string>) -> bool {
+    var i: i64 = 0
+    while i < util.tlen(excludes) {
+        if util.starts_with(rel, excludes[i]) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// 源码归档：外部 robocopy（/XD 排除目录；自身遍历在超大仓库上会爆栈 AV）
+// robocopy 退出码 0-7 成功族（1 = 有复制），>=8 失败；非 Windows 请换 rsync。
+pub func collect_source(repo: string, dest: string, excludes: table<string>) -> i64 {
+    if !fs.create_dir_all(dest) { return -1 }
+    var cmd: string = "robocopy \"" + repo + "\" \"" + dest + "\" /E /NFL /NDL /NJH /NJS /NP /XD "
+    var i: i64 = 0
+    while i < util.tlen(excludes) {
+        cmd = cmd + " " + excludes[i]
+        i = i + 1
+    }
+    cmd = cmd + " node_modules target /XF *.exe *.a *.zip *.tar.gz *.gz *.o"
+    var rc: i32 = util.run(cmd)
+    if rc >= 8 { return -1 }
+    return 1
+}}
