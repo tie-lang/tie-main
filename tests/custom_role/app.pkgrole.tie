@@ -1,0 +1,5 @@
+type tie<pkgrole>
+// 依赖包注册的角色 pkgrole（output=lib）→ 静态库
+pub func pkg_sign() -> string {
+    return "pkg-role"
+}

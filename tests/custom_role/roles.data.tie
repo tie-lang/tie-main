@@ -1,0 +1,10 @@
+// 自定义角色注册（项目级 roles.data.tie，顶层即角色表）
+// kind=base → 基础角色（唯一）；kind=mod → 修饰角色（可叠加）
+// base 可选：params（扩展参数）、output（lib/check/exe/pass，缺省 lib）
+// 安全边界：角色定义是纯数据，不携带任何钩子/代码，不扩展加载器。
+[
+    "myproto": [ "kind": "base", "params": ["v1", "v2"], "output": "check" ],
+    "mydoc":   [ "kind": "base", "output": "lib" ],
+    "myapp":   [ "kind": "base", "output": "exe" ],
+    "mymod":   [ "kind": "mod" ],
+]

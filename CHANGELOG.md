@@ -1,3 +1,13 @@
+## [自定义角色] 插件化（S3.4 v2，2026-08-28）
+
+角色体系彻底表驱动：内建默认表 + config roles（兼容）+ 项目 roles.data.tie
++ tie.pkg 依赖包角色定义（path/.tie/deps）依序合并；编译器只读表做校验与
+管线分派（lib/check/exe/pass）。安全模型：包可扩展编译器（纯数据声明），
+不可扩展加载器（字段白名单 kind/params/output），加载器安全模块审计未知
+字段并 [audit] 拦截。依赖发现由 tie.pkg 清单驱动（不列目录）。
+Docs: docs/plans/role-model.md。
+
+
 ## [自定义角色] config.data.tie roles 段注册（S3.4，2026-08-28）
 
 tiec（driver 编译路径）支持在构建配置 config.data.tie 的 roles 段注册自定义

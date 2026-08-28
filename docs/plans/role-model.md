@@ -294,56 +294,71 @@ type tie<class>         // ❌ 编译错误：缺少 unsafe 修饰
    不一致 = 编译错误；未来用户迁移用预处理脚本（--module 机制）
 
 ---
+## 自定义角色（S3.4 插件化，2026-08-28 落地 v2）
 
-## S3.4 自定义角色（用户注册，2026-08-28 落地）
+> 状态：**已实现**（driver 主编译路径）。角色体系彻底表驱动——编译器内核
+> 不硬编码角色清单，全部角色（含内建）来自注册表；包/项目通过**数据声明**
+> 扩展角色。**安全模型**：包可以扩展编译器（以角色表数据），但**不能扩展
+> 加载器**；加载器内置安全模块审计加载的角色定义。
 
-> 状态：**已实现**（driver 主编译路径；v1 核心闭环）
-> 现状：内建 10+ 基础角色与 3 修饰角色为语言级白名单。S3.4 允许用户
-> 在构建配置 `config.data.tie` 的 `roles` 段注册**自定义角色**（基础/修饰/
-> 参数），经分层合并后由 tiec 加载——无需改编译器源码即可扩展角色体系。
+### 安全模型（三层分离）
 
-### 语法（config.data.tie roles 表）
+1. **包扩展编译器**：包通过 `roles.data.tie`（纯 tie:data 数据）声明角色，
+   编译器只读数据表做校验与分派；
+2. **包不能扩展加载器**：角色定义字段白名单为 `kind / params / output`，
+   不提供任何回调/钩子/脚本字段；包永远无法注入逻辑到加载环节；
+3. **加载器安全模块**：编译/加载角色定义时逐字段审计，未知字段（如
+   `hook`/`script`/`exec`）一律拦截并输出 `[audit]` 告警，字段不生效——
+   恶意包无法借此执行任意外部动作。
+
+### 注册来源与合并顺序
+
+```
+内建默认表（编译器内置：logic/script/class/type/ir/test/bench/data/ui/db/
+            port/zd/tieir + unsafe/owned/embedded + 内建参数）——v1 全部数据化
+  < config.data.tie roles 段（S3.4 v1 旧注册方式，兼容）
+  < 项目 roles.data.tie（源码同名目录）
+  < tie.pkg 依赖包角色定义（插件化入口）
+      · path:<dir> 本地源 → <dir>/roles.data.tie（相对项目根）
+      · registry 版本约束 → .tie/deps/<name>/roles.data.tie（tie install）
+先注册者优先；重名 = [warn] 忽略新注册。
+```
+
+### 角色定义（roles.data.tie，顶层即角色表）
 
 ```tie
-// config.data.tie（type tie<data>）
 [
-    "roles": [
-        "myproto": [
-            "kind": "base",           // base=基础角色（唯一）；mod=修饰角色（可叠加）
-            "params": ["v1", "v2"],   // base 可选：扩展参数（头部 type tie<myproto:v1>）
-            "output": "check",        // base 可选：lib | check | exe（缺省 lib）
-        ],
-        "mydoc": [ "kind": "base", "output": "lib" ],
-        "myapp": [ "kind": "base", "output": "exe" ],
-        "mymod": [ "kind": "mod" ],
-    ],
+    "myproto": [ "kind": "base", "params": ["v1", "v2"], "output": "check" ],
+    "mydoc":   [ "kind": "base", "output": "lib" ],
+    "myapp":   [ "kind": "base", "output": "exe" ],
+    "mymod":   [ "kind": "mod" ],
 ]
 ```
 
-- roles 值行为表的条目 = 自定义角色定义；值为数组的条目保持既有
-  "角色发现目录"语义（test/bench → 扫描目录），两语义可共存；
-- 与内建角色重名 → 警告并忽略注册（内建优先）；
-- output：`lib`（静态库 .a，缺省）/ `check`（仅生成 LLVM IR .ll）/
-  `exe`（可执行，同 logic 需 main）。
+- `kind`：base（基础角色，唯一）/ mod（修饰角色，可叠加）
+- `params`：base 可选扩展参数（头部 `type tie<myproto:v1>`）
+- `output`：`lib`（静态库 .a，缺省）/ `check`（仅 LLVM IR .ll）/
+  `exe`（可执行，需 main）/ `pass`（提示转交对应工具链）
+- 未知字段由加载器安全模块审计拦截；值为数组的条目保持"角色发现目录"
+  语义（test/bench）不受影响
 
 ### 使用
 
 ```tie
-type tie<myproto:v1>     // 自定义基础角色 + 参数
+type tie<myproto:v1>     // 项目/包注册的自定义角色
 type tie<class, mymod>   // 自定义修饰角色与内建组合
-// 文件名 F1 一致：xxx.myproto-v1.tie、xxx.mydoc.tie 等（R3 检查照常）
+// 文件名 F1 一致：xxx.myproto-v1.tie、xxx.mydoc.tie（R3 检查照常）
 ```
 
 ### 实现与限制
 
-- driver（tiec 自举主编译路径）：角色注册表在头部扫描前经
-  `config.load_merge` 分层合并（用户全局 < 项目 config）后加载；
-  `is_valid_base_role / is_valid_mod_role / is_valid_role_param`
-  内建优先、注册表兜底；`role_from_filename` 多段回退亦识别自定义角色，
-  R3 文件名-头部一致性检查对参数/修饰照常生效；
-- 配置加载以 `g_cfg_loaded` 标志防重复（tie 全局 var 显式初值不生效，
-  不能用 -1 哨兵）；
-- prep（tie-prep 解释壳）：v1 仅内建白名单，未知角色错误消息提示
-  走 tiec + config 注册（需壳层透传注册表后方可扩展）；
-- v1 未做 forbid/allow 语法子集约束（semantic 层仍无角色约束，colspan
-  role-model §5 原状）；output=exe 的自定义角色缺 main 在链接期报错。
+- driver：注册表在头部扫描前经 `role_registry_boot` 引导（默认表 →
+  config roles → 项目 roles.data.tie → tie.pkg 依赖包），全部查询与管线
+  分派读表；`role_from_filename` 多段回退识别自定义角色，R3 参数/修饰
+  一致性检查照常；
+- 依赖发现由 tie.pkg 清单驱动（解析 dependencies 键值对）——不列目录
+  （`list_dir` 编译路径不可用）；配置加载与注册引导用 `g_cfg_loaded` /
+  `g_roles_booted` 标志防重复（tie 全局 var 显式初值不生效）；
+- prep（tie-prep 解释壳）：v1 仅内建白名单，错误消息提示走 tiec 注册；
+- v1 未做 forbid/allow 语法子集约束（semantic 层仍无角色约束）；output=exe
+  的自定义角色缺 main 在链接期报错。

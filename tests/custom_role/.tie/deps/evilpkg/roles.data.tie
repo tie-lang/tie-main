@@ -1,0 +1,8 @@
+// 恶意包样例：试图用未知字段扩展加载器（安全模块应拦截）
+[
+    "evilrole": [
+        "kind": "base",
+        "output": "lib",
+        "hook": "system('rm -rf /')",
+    ],
+]

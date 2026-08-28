@@ -1,0 +1,10 @@
+[
+    "name": "custom_role_demo",
+    "version": "0.1.0",
+    "role": "logic",
+    "main": "app.myapp.tie",
+    "dependencies": [
+        "mypkg": "path:.tie/deps/mypkg",
+        "evilpkg": "path:.tie/deps/evilpkg",
+    ],
+]

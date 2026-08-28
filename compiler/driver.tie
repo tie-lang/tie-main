@@ -251,110 +251,66 @@ var g_role_mods: table<string>;          // 修饰角色（unsafe/owned/embedded
 var g_role_base: string = "";            // 解析中间结果：基础角色
 var g_role_err: string = "";             // 解析错误消息（空 = 成功）
 
-// ---------- 修饰/参数/基础角色白名单（内建 + config roles 注册） ----------
+// ---------- 角色注册表（插件化：内建默认表 + config/项目/依赖包合并） ----------
+// 角色体系数据驱动：内建角色与"包定制角色"同一样式存于注册表，
+// 编译器只读表做校验与管线分派（output: lib|check|exe|pass）。
+// 合并顺序（先注册者优先，重名 = 警告并忽略）：
+//   内建默认表 → config.data.tie roles 段（S3.4 旧注册方式，兼容）
+//   → 项目 roles.data.tie → .tie/deps/*/roles.data.tie（安装依赖包）
 
-// 内建修饰角色白名单（注册冲突检测）
-func is_builtin_mod(name: string) -> bool {
-    if name == "unsafe" {
-        return true
+// 默认表填充：注册基础角色（params 逗号分隔 → 参数对）
+func reg_base(nm: string, out: string, params: string) {
+    table_push(t_cr_name, nm)
+    table_push(t_cr_kind, 1)
+    table_push(t_cr_out, out)
+    var ps = split_char(params, ",")
+    var i: i64 = 0
+    while i < len(ps) {
+        if str_len(ps[i]) > 0 {
+            table_push(t_cr_p_base, nm)
+            table_push(t_cr_p_val, ps[i])
+        }
+        i = i + 1
     }
-    if name == "owned" {
-        return true
-    }
-    if name == "embedded" {
-        return true
-    }
-    return false
 }
 
-// 内建基础角色白名单（注册冲突检测）
-func is_builtin_base(name: string) -> bool {
-    if name == "type" || name == "script" || name == "data" || name == "ui" ||
-        name == "class" || name == "logic" || name == "port" || name == "db" ||
-        name == "ir" || name == "zd" || name == "tieir" || name == "test" || name == "bench" {
-        return true
-    }
-    return false
+// 默认表填充：注册修饰角色
+func reg_mod(nm: string) {
+    table_push(t_cr_name, nm)
+    table_push(t_cr_kind, 0)
+    table_push(t_cr_out, "")
 }
 
-// 内建参数白名单（ui:window/web/embedded、db:schema/seed/vector、data:config/asset）
-func is_builtin_param(base: string, param: string) -> bool {
-    if base == "ui" {
-        if param == "window" || param == "web" || param == "embedded" {
-            return true
-        }
-    }
-    if base == "db" {
-        if param == "schema" || param == "seed" || param == "vector" {
-            return true
-        }
-    }
-    if base == "data" {
-        if param == "config" || param == "asset" {
-            return true
-        }
-    }
-    return false
-}
-
-// 修饰角色白名单：内建 + config roles 注册（kind=mod）
-func is_valid_mod_role(name: string) -> bool {
-    if is_builtin_mod(str.clone(name)) {
-        return true
-    }
-    var c: i64 = 0
-    while c < len(t_cr_name) {
-        if t_cr_kind[c] == 0 && t_cr_name[c] == name {
-            return true
-        }
-        c = c + 1
-    }
-    return false
-}
-
-// 参数白名单：内建 + config roles 注册参数对
-func is_valid_role_param(base: string, param: string) -> bool {
-    if is_builtin_param(str.clone(base), str.clone(param)) {
-        return true
-    }
-    var c: i64 = 0
-    while c < len(t_cr_p_base) {
-        if t_cr_p_base[c] == base && t_cr_p_val[c] == param {
-            return true
-        }
-        c = c + 1
-    }
-    return false
-}
-
-// 基础角色白名单：内建 + config roles 注册（kind=base）
-func is_valid_base_role(name: string) -> bool {
-    if is_builtin_base(str.clone(name)) {
-        return true
-    }
-    var c: i64 = 0
-    while c < len(t_cr_name) {
-        if t_cr_kind[c] == 1 && t_cr_name[c] == name {
-            return true
-        }
-        c = c + 1
-    }
-    return false
-}
-
-// ---------- S3.4 自定义角色注册表（config.data.tie roles 段） ----------
-
-// 从合并后 config 根提取 roles 注册表。roles 表中值为表的条目按定义注册
-//（kind/params/output）；值为数组的条目是既有"角色发现目录"语义
-//（例如 test: ["tests/"]），跳过。与内建角色重名 → 警告并忽略。
-// 注册需早于头部扫描（driver 在 scan_header 前调用 role_registry_load）。
-func role_registry_load(root: i64) {
+// 初始化内建默认角色表（编译器内建插件：语言核心 + 预留领域角色）
+func role_registry_init_default() {
     t_cr_name = table_new_string()
     t_cr_kind = table_new_i64()
     t_cr_out = table_new_string()
     t_cr_p_base = table_new_string()
     t_cr_p_val = table_new_string()
-    var roles = config.map_get(root, "roles")
+    // 基础角色：lib（静态库）/ exe（可执行）/ check（仅 LLVM IR）/ pass（提示转移）
+    reg_base("logic", "exe", "")
+    reg_base("script", "exe", "")
+    reg_base("class", "lib", "")
+    reg_base("type", "lib", "")
+    reg_base("ir", "check", "")
+    reg_base("test", "", "")
+    reg_base("bench", "", "")
+    reg_base("data", "pass", "config,asset")
+    reg_base("ui", "pass", "window,web,embedded")
+    reg_base("db", "pass", "schema,seed,vector")
+    reg_base("port", "pass", "")
+    reg_base("zd", "pass", "")
+    reg_base("tieir", "", "")
+    // 修饰角色
+    reg_mod("unsafe")
+    reg_mod("owned")
+    reg_mod("embedded")
+}
+
+// 把角色表（map：角色名 → 定义表）合并进注册表；type=6（表）的条目
+// 是角色定义；type=5（数组）的条目是"角色发现目录"（test/bench），跳过。
+func register_role_map(roles: i64) {
     if roles < 0 {
         return
     }
@@ -367,9 +323,21 @@ func role_registry_load(root: i64) {
         var nm = config.map_key(roles, r)
         var def = config.map_val(roles, r)
         if config.type_of(def) == 6 {
-            if is_builtin_base(str.clone(nm)) || is_builtin_mod(str.clone(nm)) {
-                println("[warn] roles: 角色 '" + nm + "' 与内建角色重名，忽略注册")
+            if role_registered(str.clone(nm)) {
+                println("[warn] roles: 角色 '" + nm + "' 已注册（内建或前置来源），忽略注册")
             } else {
+                // 加载器安全模块：角色定义仅接受 kind/params/output 三个字段，
+                // 其余任何字段（hook/exec/script 等）一律拦截并不生效——包可
+                // 扩展编译器角色表，但绝不能借此扩展加载器行为。
+                var defn: i64 = config.map_len(def)
+                var df: i64 = 0
+                while df < defn {
+                    var dk = config.map_key(def, df)
+                    if dk != "kind" && dk != "params" && dk != "output" {
+                        println("[audit] 拦截角色 " + nm + " 定义中的未知字段: " + dk + "（仅接受 kind/params/output）")
+                    }
+                    df = df + 1
+                }
                 var kv = config.get_str(def, "kind")
                 var is_base: i64 = 1
                 if kv == "mod" {
@@ -382,7 +350,7 @@ func role_registry_load(root: i64) {
                     if str_len(out) == 0 {
                         out = "lib"
                     }
-                    if out != "lib" && out != "check" && out != "exe" {
+                    if out != "lib" && out != "check" && out != "exe" && out != "pass" {
                         println("[warn] roles: 角色 '" + nm + "' 的 output 非法值 '" + out + "'，回退 lib")
                         out = "lib"
                     }
@@ -409,11 +377,188 @@ func role_registry_load(root: i64) {
     }
 }
 
-// 名称是否为已注册的自定义基础角色
-func custom_role_is_base(nm: string) -> bool {
+// 在 s 中查找子串 needle 首次出现位置（0 起字符索引）；未找到返回 -1。
+func find_str(s: string, needle: string) -> i64 {
+    var n = str_len(s)
+    var m = str_len(needle)
+    if m == 0 {
+        return 0
+    }
+    if m > n {
+        return -1
+    }
+    var i: i64 = 0
+    while i <= n - m {
+        var j: i64 = 0
+        var hit = true
+        while j < m {
+            if str_char(s, i + j) != str_char(needle, j) {
+                hit = false
+            }
+            j = j + 1
+        }
+        if hit {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// tie.pkg 的 "dependencies" 数组起始 '['（-1 = 无）
+func pkg_deps_start(src: string) -> i64 {
+    var p = find_str(src, "\"dependencies\"")
+    if p < 0 {
+        return -1
+    }
+    var rest = slice(str.clone(src), p, str_len(src))
+    var lb = find_char(rest, "[")
+    if lb < 0 {
+        return -1
+    }
+    return p + lb
+}
+
+// tie.pkg 的 "dependencies" 数组结束 ']'（-1 = 无）
+func pkg_deps_end(src: string) -> i64 {
+    var ds = pkg_deps_start(src)
+    if ds < 0 {
+        return -1
+    }
+    var rest = slice(str.clone(src), ds, str_len(src))
+    var rb = find_char(rest, "]")
+    if rb < 0 {
+        return -1
+    }
+    return ds + rb
+}
+
+// 解析 tie.pkg dependencies 段为逗号分隔 "name|spec" 片段序列。
+func pkg_dep_pairs(src: string) -> string {
+    var out: string = ""
+    var ds = pkg_deps_start(src)
+    var de = pkg_deps_end(src)
+    if ds < 0 || de < 0 {
+        return ""
+    }
+    var pos = ds + 1
+    while pos < de {
+        var tail = slice(str.clone(src), pos, de)
+        var q1 = find_char(tail, "\"")
+        if q1 < 0 {
+            return out
+        }
+        var t2 = slice(tail, q1 + 1, str_len(tail))
+        var q2 = find_char(t2, "\"")
+        if q2 < 0 {
+            return out
+        }
+        var name = slice(t2, 0, q2)
+        var t3 = slice(t2, q2 + 1, str_len(t2))
+        var q3 = find_char(t3, "\"")
+        if q3 < 0 {
+            return out
+        }
+        var t4 = slice(t3, q3 + 1, str_len(t3))
+        var q4 = find_char(t4, "\"")
+        if q4 < 0 {
+            return out
+        }
+        var spec = slice(t4, 0, q4)
+        if name != "" {
+            if out != "" {
+                out = out + ","
+            }
+            out = out + name + "|" + spec
+        }
+        pos = pos + (q1 + 1) + (q2 + 1) + (q3 + 1) + (q4 + 1)
+    }
+    return out
+}
+
+// 依赖包 roles.data.tie 路径：path: 本地源按 spec 相对项目根；
+// 其余（registry 安装）按 .tie/deps/<name>。
+func dep_roles_path(src_dir: string, name: string, spec: string) -> string {
+    if has_prefix(spec, "path:") {
+        var rel = trim(slice(spec, 5, str_len(spec)))
+        return src_dir + "\\" + rel + "\\roles.data.tie"
+    }
+    return src_dir + "\\.tie\\deps\\" + name + "\\roles.data.tie"
+}
+// 扫描项目/依赖包角色定义（一次）：<src_dir>/roles.data.tie 与
+// <src_dir>/.tie/deps/*/roles.data.tie（安装的依赖包，插件化入口）
+func role_registry_scan_project(src_dir: string) {
+    var proj = src_dir + "\\roles.data.tie"
+    if file_exists(proj) {
+        var r1 = config.parse_file(proj)
+        if r1 >= 0 {
+            register_role_map(r1)
+        } else {
+            println("[warn] roles.data.tie 解析失败: " + config.err_msg())
+        }
+    }
+    // 包级角色（插件化入口）：由 tie.pkg 依赖清单驱动（不列目录——
+    // list_dir 在编译路径不可用）。path: 本地源按 spec 定位；registry
+    // 依赖在 .tie/deps/<name>。
+    var pkg_file = src_dir + "\\tie.pkg"
+    if file_exists(pkg_file) {
+        var m = file_read(pkg_file)
+        var deps = pkg_dep_pairs(m)
+        var n = str_len(deps)
+        var start: i64 = 0
+        var p: i64 = 0
+        while p <= n {
+            var at_end: bool = (p == n)
+            var is_comma: bool = false
+            if !at_end {
+                if str_char(deps, p) == "," {
+                    is_comma = true
+                }
+            }
+            if at_end || is_comma {
+                var pair = slice(deps, start, p)
+                var bar = find_char(pair, "|")
+                if bar > 0 {
+                    var nm = slice(pair, 0, bar)
+                    var sp = slice(pair, bar + 1, str_len(pair))
+                    var dp = dep_roles_path(src_dir, nm, sp)
+                    if file_exists(dp) {
+                        var r2 = config.parse_file(dp)
+                        if r2 >= 0 {
+                            register_role_map(r2)
+                        } else {
+                            println("[warn] 依赖包角色定义解析失败: " + config.err_msg() + "（" + dp + "）")
+                        }
+                    }
+                }
+                start = p + 1
+            }
+            p = p + 1
+        }
+    }
+}
+
+// 角色注册引导：默认表 → config roles → 项目/依赖包。src_dir 为源码目录。
+var g_roles_booted: bool = false;   // 角色注册是否已完成（防重复引导）
+func role_registry_boot(src_dir: string) {
+    if g_roles_booted {
+        return
+    }
+    role_registry_init_default()
+    if g_cfg_root >= 0 {
+        register_role_map(config.map_get(g_cfg_root, "roles"))
+    }
+    role_registry_scan_project(src_dir)
+    g_roles_booted = true
+}
+
+// ---------------- 角色查询（全部查注册表） ----------------
+
+// 名称是否已在注册表（内建或包注册）
+func role_registered(nm: string) -> bool {
     var c: i64 = 0
     while c < len(t_cr_name) {
-        if t_cr_kind[c] == 1 && t_cr_name[c] == nm {
+        if t_cr_name[c] == nm {
             return true
         }
         c = c + 1
@@ -421,8 +566,44 @@ func custom_role_is_base(nm: string) -> bool {
     return false
 }
 
-// 已注册自定义基础角色的输出管线（未注册/修饰角色返回空串）
-func custom_role_output(nm: string) -> string {
+// 修饰角色白名单：注册表 kind=mod
+func is_valid_mod_role(name: string) -> bool {
+    var c: i64 = 0
+    while c < len(t_cr_name) {
+        if t_cr_kind[c] == 0 && t_cr_name[c] == name {
+            return true
+        }
+        c = c + 1
+    }
+    return false
+}
+
+// 参数白名单：注册表参数对
+func is_valid_role_param(base: string, param: string) -> bool {
+    var c: i64 = 0
+    while c < len(t_cr_p_base) {
+        if t_cr_p_base[c] == base && t_cr_p_val[c] == param {
+            return true
+        }
+        c = c + 1
+    }
+    return false
+}
+
+// 基础角色白名单：注册表 kind=base
+func is_valid_base_role(name: string) -> bool {
+    var c: i64 = 0
+    while c < len(t_cr_name) {
+        if t_cr_kind[c] == 1 && t_cr_name[c] == name {
+            return true
+        }
+        c = c + 1
+    }
+    return false
+}
+
+// 角色输出管线（lib/check/exe/pass；未注册或修饰角色返回空串）
+func role_output(nm: string) -> string {
     var c: i64 = 0
     while c < len(t_cr_name) {
         if t_cr_kind[c] == 1 && t_cr_name[c] == nm {
@@ -496,6 +677,19 @@ func parse_role_decl(sub: string) -> i64 {
 }
 
 // 按字符拆分（码点级；driver 自写工具）
+// 源码目录（不含文件名/扩展名）；无分隔符返回 "."
+func base_dir_of(p: string) -> string {
+    var n = str_len(p)
+    var i: i64 = n - 1
+    while i >= 0 {
+        var c = str_char(p, i)
+        if c == "/" || c == "\\" {
+            return slice(p, 0, i)
+        }
+        i = i - 1
+    }
+    return "."
+}
 func split_char(s: string, sep: string) -> table<string> {
     var out = table_new_string()
     var n = str_len(s)
@@ -653,9 +847,11 @@ func main() -> i64 {
             println("构建配置加载失败: " + config.err_msg())
             return 1
         }
-        role_registry_load(g_cfg_root)
         g_cfg_loaded = true
     }
+    // 角色注册引导：内建默认表 → config roles → 项目 roles.data.tie
+    // → .tie/deps/*/roles.data.tie（包定制角色 = 纯数据声明，不扩展加载器）
+    role_registry_boot(base_dir_of(str.clone(g_input)))
     // 头部扫描（文件类型声明 / 角色）
     if scan_header(str.clone(src)) < 0 {
         return 1
@@ -712,42 +908,29 @@ func main() -> i64 {
         println("[预处理] 识别为 " + g_role + " 文件（头: " + g_input + "）")
         return 0
     }
-    // 角色分派：data/ui/db/port → 未实现提示；logic/script → 编译可执行；
-    // class/type → 编译静态库
-    if g_role == "data" {
-        println("[预处理] 识别为 data 数据交换文件（头: " + g_input + "），已转交数据解析工具链 —— v0.1 数据交换工具链尚未实现")
-        return 0
-    }
-    if g_role == "ui" {
-        println("[预处理] 识别为 ui 界面文件（头: " + g_input + "），已转交 UI 工具链 —— v0.1 UI 工具链尚未实现")
-        return 0
-    }
-    if g_role == "db" {
-        println("[预处理] 识别为 db 数据库文件（头: " + g_input + "），已转交数据库工具链 —— v0.1 数据库工具链尚未实现")
-        return 0
-    }
-    if g_role == "port" {
-        println("[预处理] 识别为 port 端口文件（头: " + g_input + "），已转交端口工具链 —— v0.1 端口工具链尚未实现")
-        return 0
-    }
-    // zd 角色：压缩数据文件（tie:data 二进制变体），不编译。正常流程下已按
-    // 文件名 `.zd.tie` 预判短接（file_read 之前），此分支兜底头部
-    // `type tie<zd>` 声明（非 .zd.tie 文件名）的场景。
-    if g_role == "zd" {
-        println("[预处理] 识别为 zd 压缩数据文件（头: " + g_input + "），已转交 tiedb 压缩工具链 —— v0.1 尚未实现")
-        return 0
-    }
-    // ir 角色：直接生成 LLVM IR（.ll），不继续 opt/clang 链接（等价 --emit-ir，
-    // 但由角色触发而非 CLI 选项）。复用编译工具链 + g_emit_ir 短路。
-    if g_role == "ir" {
-        g_emit_ir = true
-    }
-    // S3.4 自定义基础角色分派：output=check → 仅生成 LLVM IR（.ll）；
-    // output=lib/exe 由后端输出判定处按角色落入静态库/可执行管线。
-    if custom_role_is_base(str.clone(g_role)) {
-        if custom_role_output(str.clone(g_role)) == "check" {
-            g_emit_ir = true
+    // 角色分派（表驱动，角色体系完全由注册表决定）：
+    //   pass → 提示转交对应工具链（内建 data/ui/db/port/zd 或包注册的 pass 角色）
+    //   check → 仅生成 LLVM IR（.ll，d覆 opt/clang 链接，等价 --emit-ir 由角色触发）
+    //   lib/exe/空 → 后端输出判定处按角色落入静态库/可执行管线
+    var disp = role_output(str.clone(g_role))
+    if disp == "pass" {
+        if g_role == "data" {
+            println("[预处理] 识别为 data 数据交换文件（头: " + g_input + "），已转交数据解析工具链 —— v0.1 数据交换工具链尚未实现")
+        } else if g_role == "ui" {
+            println("[预处理] 识别为 ui 界面文件（头: " + g_input + "），已转交 UI 工具链 —— v0.1 UI 工具链尚未实现")
+        } else if g_role == "db" {
+            println("[预处理] 识别为 db 数据库文件（头: " + g_input + "），已转交数据库工具链 —— v0.1 数据库工具链尚未实现")
+        } else if g_role == "port" {
+            println("[预处理] 识别为 port 端口文件（头: " + g_input + "），已转交端口工具链 —— v0.1 端口工具链尚未实现")
+        } else if g_role == "zd" {
+            println("[预处理] 识别为 zd 压缩数据文件（头: " + g_input + "），已转交 tiedb 压缩工具链 —— v0.1 尚未实现")
+        } else {
+            println("[预处理] 识别为 " + g_role + " 角色文件（头: " + g_input + "），已转交对应工具链 —— 由注册包提供，v0.1 尚未实现")
         }
+        return 0
+    }
+    if disp == "check" {
+        g_emit_ir = true
     }
     // M5 动态库模式（dev33 批次 12）：--shared 或输出扩展名 .dll/.so → 动态库。
     // 要求 library 角色（class/type，无 main）；通知 irgen 标记导出面（dllexport）
@@ -900,14 +1083,15 @@ func compile_program(src: string) -> i64 {
     if str_len(target) == 0 && g_cfg_root >= 0 {
         target = normalize_target(config.get_str(g_cfg_root, "target"))
     }
-    if g_role == "class" || g_role == "type" ||
-        (custom_role_is_base(str.clone(g_role)) && custom_role_output(str.clone(g_role)) != "exe") {
+    var disp2 = role_output(str.clone(g_role))
+    if disp2 == "lib" {
         // M5 动态库模式（--shared / 输出 .dll/.so）：走共享库链接（非静态库 .a）
         if g_shared {
             return compile_shared(ir_path, opt_path, target)
         }
         return compile_library(ir_path, opt_path, target)
     }
+    // lib 之外（check/pass 已提前 return）：exe / 空 = 可执行管线
     return compile_logic(ir_path, opt_path, target)
 }
 
