@@ -1,0 +1,23 @@
+// 自定义角色注册表（S3.4）：config.data.tie roles 段
+// kind=base → 基础角色（唯一）；kind=mod → 修饰角色（可叠加）
+// base 可选：params（扩展参数）、output（lib/check/exe，缺省 lib）
+[
+    "roles": [
+        "myproto": [
+            "kind": "base",
+            "params": ["v1", "v2"],
+            "output": "check",
+        ],
+        "mydoc": [
+            "kind": "base",
+            "output": "lib",
+        ],
+        "myapp": [
+            "kind": "base",
+            "output": "exe",
+        ],
+        "mymod": [
+            "kind": "mod",
+        ],
+    ],
+]

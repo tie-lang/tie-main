@@ -1,0 +1,5 @@
+type tie<myproto:v1>
+// 自定义基础角色 myproto（output=check）→ 仅生成 LLVM IR（.ll）
+pub func greet() -> string {
+    return "myproto"
+}

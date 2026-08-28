@@ -1,0 +1,5 @@
+type tie<class, mymod>
+// 自定义修饰角色 mymod 与内建基础角色组合
+pub func f() -> i64 {
+    return 1
+}

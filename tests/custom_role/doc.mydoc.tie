@@ -1,0 +1,5 @@
+type tie<mydoc>
+// 自定义基础角色 mydoc（output=lib）→ 静态库 .a
+pub func doc_len(s: string) -> i64 {
+    return str_len(s)
+}

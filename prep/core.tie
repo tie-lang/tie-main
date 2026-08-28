@@ -350,7 +350,7 @@ func parse_roles(inner: string) {
                 return
             }
             if !is_valid_subtype(base) {
-                g_role_err = "未知基础角色 \"" + base + "\"（合法: script/data/ui/class/logic/port/db/ir/zd/tieir/test/bench）"
+                g_role_err = "未知基础角色 \"" + base + "\"（合法: script/data/ui/class/logic/port/db/ir/zd/tieir/test/bench；自定义角色需 tiec 在 config.data.tie roles 段注册，tie-prep 仅识别内建）"
                 return
             }
             if !is_valid_param(base, param) {
@@ -379,7 +379,7 @@ func parse_roles(inner: string) {
             g_role_base = item
             base_set = true
         } else {
-            g_role_err = "未知角色 \"" + item + "\"（基础: script/data/ui/class/logic/port/db/ir/zd/tieir/test/bench；修饰: unsafe/owned/embedded）"
+            g_role_err = "未知角色 \"" + item + "\"（基础: script/data/ui/class/logic/port/db/ir/zd/tieir/test/bench；修饰: unsafe/owned/embedded；自定义角色需 tiec 在 config.data.tie roles 段注册，tie-prep 仅识别内建）"
             return
         }
         i = i + 1

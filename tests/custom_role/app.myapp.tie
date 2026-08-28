@@ -1,0 +1,5 @@
+type tie<myapp>
+// 自定义基础角色 myapp（output=exe）→ 可执行
+func main() {
+    println("hi from myapp")
+}

@@ -1,3 +1,11 @@
+## [自定义角色] config.data.tie roles 段注册（S3.4，2026-08-28）
+
+tiec（driver 编译路径）支持在构建配置 config.data.tie 的 roles 段注册自定义
+基础/修饰角色与扩展参数（kind/params/output=lib|check|exe）；注册表在头部扫描
+前经 config 分层合并加载，R3 文件名-头部一致性检查同步支持；与内建重名警告忽略。
+prep/tie-prep 仍仅内建白名单（错误消息已提示）。Docs: docs/plans/role-model.md。
+
+
 ## Harbor-2026.1-preview.5 开发中
 
 > 开发中主题见下方随提交累积条目。
