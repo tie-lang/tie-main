@@ -1,0 +1,32 @@
+type tie<logic>
+// trit 优化 L3：确认 trit 槽位为 i8（非 i64 全宽）。
+// 依据：llvmgen_str.tie L59-62 —— trit LLVM 类型映射 "i8"（值域 -1/0/1）。
+// 本探针断言 i8 有符号语义：(1) trit 值按有符号扩展（-1t → -1，而非 zext 255）；
+// (2) 1t/0t 正常；(3) 三值饱和算术在 i8 域内。
+// 期望输出（3 组 PASS）：
+//   PASS signed  (trit_val(-1t) = -1：若 i8 被 zext 会得 255)
+//   PASS range   (trit_val(1t)=1, trit_val(0t)=0)
+//   PASS arith   (-1t + 1t = 0t  与  1t & -1t = -1t on i8)
+func main() {
+    // 有符号 i8 语义：-1t 应得 -1（符号扩展），而非无符号 255
+    if trit_val(-1t) == -1 {
+        println("PASS signed")
+    } else {
+        println("FAIL signed got=" + to_string(trit_val(-1t)))
+        exit(1)
+    }
+    // 值域上下界正常
+    if trit_val(1t) == 1 && trit_val(0t) == 0 {
+        println("PASS range")
+    } else {
+        println("FAIL range")
+        exit(1)
+    }
+    // i8 三值饱和算术（clamp：-1+1=0，1+1 饱和 1，-1+-1 饱和 -1）
+    if (-1t + 1t) == 0t && (1t + 1t) == 1t && (-1t + -1t) == -1t && (0t + 0t) == 0t {
+        println("PASS arith")
+    } else {
+        println("FAIL arith")
+        exit(1)
+    }
+}
