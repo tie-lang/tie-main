@@ -1344,7 +1344,10 @@ func gen_unary(id: i64) -> i64 {
         return -1
     }
     if op == 0 {
-        // 一元负号：整数/浮点
+        // 一元负号：整数/浮点/trit（trit 平衡取反 -1↔1，0 保持）
+        if ivalue.type_of(v) == T_TRIT {
+            return ivalue.new_trit(0 - ivalue.int_val(v))
+        }
         if ivalue.type_of(v) == T_INT {
             return ivalue.new_int(0 - ivalue.int_val(v))
         }

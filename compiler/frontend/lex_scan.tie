@@ -302,7 +302,11 @@ pub func scan_number(pos: i64) -> i64 {
                     } else if r == 111 || r == 79 {   // o/O → 八进制
                         pos = scan_digit_range(pos + 1, 48, 55)
                     } else if r == 116 || r == 84 {   // t/T → 三进制
-                        pos = scan_digit_range(pos + 1, 48, 50)
+                        // 仅当后随 0-2 数字才作三进制前缀（否则让位给 trit 后缀
+                        // 0t —— 数字部分为纯十进制的 trit 字面量，见下 suffix 块）
+                        if pos + 1 < g_n && g_codes[pos + 1] >= 48 && g_codes[pos + 1] <= 50 {
+                            pos = scan_digit_range(pos + 1, 48, 50)
+                        }
                     }
                 }
             }
@@ -338,6 +342,26 @@ pub func scan_number(pos: i64) -> i64 {
             } else if suf == "f32" || suf == "f64" {
                 tag = lex_float
                 pos = j
+            } else if suf == "t" || suf == "T" {
+                // trit 字面量后缀：数字部分是纯十进制（-1t/0t/1t；-1 由一元
+                // 负号 + 1t 表达）。2t/99t 等越界值也吞并（值域检查在 pexpr
+                // 报「trit 字面量越界」）。进制前缀数字（0x1t / 0b1t）保留 +
+                // 独立 t——非纯十进制不吞。
+                var pre = cp_slice(start, pos)
+                var is_dec = str_len(pre) >= 1
+                var pi: i64 = 0
+                while pi < str_len(pre) {
+                    var pc = str_char(g_src, start + pi)
+                    if pc < "0" || pc > "9" {
+                        is_dec = false
+                        break
+                    }
+                    pi = pi + 1
+                }
+                if is_dec {
+                    tag = lex_int
+                    pos = j
+                }
             }
         }
     }

@@ -571,6 +571,17 @@ func parse_primary() -> i64 {
     }
     if tag == lex_int {
         var lex = putil.peek_lexeme()
+        // trit 字面量（trit 优化 L1）：整数后缀 't' 且值域 -1..1。
+        // 超出值域（2t/-2t）报「trit 字面量越界」；-1 由一元负号 + 1t 表达。
+        if putil.is_trit_lit(lex) {
+            var tv = putil.parse_int_lit(lex)
+            putil.advance()
+            if tv < -1 || tv > 1 {
+                putil.set_err(line, col, "trit 字面量越界: " + lex)
+                return -1
+            }
+            return ast.new_node(N_TRIT_LIT, -1, tv, -1, line, col)
+        }
         // 批次 2：字面量值域限于 i64 可表示范围（parse_int_lit 返回 i64，
         // i128/u128 常量经 add i128 0, i64 构造，超范围回绕符号扩展错误）
         if putil.int_lit_overflow(lex) {

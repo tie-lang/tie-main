@@ -1,0 +1,75 @@
+type tie<logic>
+// trit 优化 L1 正例：trit 字面量后缀 -1t/0t/1t
+// 覆盖：变量声明（显式标注/推导）、函数返回、函数参数、比较运算。
+// 期望输出（6 组 PASS）：
+//   PASS one   (var a: trit = 1t → 1)
+//   PASS mone  (var b: trit = -1t → -1)
+//   PASS zero  (var c: trit = 0t → 0)
+//   PASS inf   (var d = 1t 推导 trit → 1)
+//   PASS ret   (func ret() -> trit return 1t → 1)
+//   PASS cmp   (1t > 0t 与 -1t < 0t 均真)
+
+// 函数返回 trit
+func ret() -> trit { return 1t }
+
+// 函数参数/内部使用 trit 字面量
+func pick(t: trit) -> trit {
+    if t == 1t {
+        return 0t
+    }
+    return -1t
+}
+
+func main() {
+    // 显式标注
+    var a: trit = 1t
+    if to_string(a) == "1" {
+        println("PASS one")
+    } else {
+        println("FAIL one got=" + to_string(a))
+        exit(1)
+    }
+    var b: trit = -1t
+    if to_string(b) == "-1" {
+        println("PASS mone")
+    } else {
+        println("FAIL mone got=" + to_string(b))
+        exit(1)
+    }
+    var c: trit = 0t
+    if to_string(c) == "0" {
+        println("PASS zero")
+    } else {
+        println("FAIL zero got=" + to_string(c))
+        exit(1)
+    }
+    // 推导类型：1t 应为 trit
+    var d = 1t
+    if to_string(d) == "1" {
+        println("PASS inf")
+    } else {
+        println("FAIL inf got=" + to_string(d))
+        exit(1)
+    }
+    // 函数返回 trit 字面量
+    if to_string(ret()) == "1" {
+        println("PASS ret")
+    } else {
+        println("FAIL ret got=" + to_string(ret()))
+        exit(1)
+    }
+    // 比较（trit×trit 三值逻辑）
+    if ret() > 0t && b < 0t && ret() == 1t {
+        println("PASS cmp")
+    } else {
+        println("FAIL cmp")
+        exit(1)
+    }
+    // 参数 + 内部字面量（参数 1t → 返回 0t）
+    if to_string(pick(1t)) == "0" {
+        println("PASS arg")
+    } else {
+        println("FAIL arg got=" + to_string(pick(1t)))
+        exit(1)
+    }
+}

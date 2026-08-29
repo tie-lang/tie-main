@@ -415,8 +415,8 @@ pub func infer_expr(id: i64) -> i64 {
             return -1
         }
         if op == 0 {
-            // Neg：数字
-            if !types.is_number(operand) {
+            // Neg：数字；trit 也允许（平衡取反 -1t/-(trit)，-1↔1、0 保持）
+            if !types.is_number(operand) && operand != types.named(TK_TRIT) {
                 sm_err_line = s_lines[id]
                 sm_err_col = s_cols[id]
                 sm_err_msg = "取负运算的操作数必须是数字"

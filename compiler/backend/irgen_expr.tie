@@ -153,6 +153,14 @@ func tig_expr(id: i64) -> i64 {
         if op == 0 {
             // Neg：整数 → sub 0, x；浮点 → fsub 0.0, x（对齐 Rust fneg 语义）。
             // 立即数 0 在浮点上下文必须为 0.0（LLVM：fsub double 0, %x 非法）
+            if oty == types.named(TK_TRIT) {
+                // trit 取反（-1↔1，0 保持）：i8 width，sub i8 0, x（与 Not 同款
+                // 平衡三值；对齐 interp eval_unary op==0 的 T_TRIT 分支）
+                var tneg = ir.new_inst(g_cur_block, 1, types.named(TK_I8))  // sub i8
+                ir.add_operand(tneg, 0, 2)
+                ir.add_operand(tneg, ov, 0)
+                return ir.get_value(tneg)
+            }
             if oty == types.named(TK_F64) || oty == types.named(TK_F32) {
                 var zf = tig_float_lit(interner.intern("0.0"))
                 var fneg = ir.new_inst(g_cur_block, 14, types.named(TK_F64))  // fsub

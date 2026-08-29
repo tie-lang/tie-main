@@ -813,6 +813,28 @@ pub func strip_lit_suffix(lex: string) -> string {
     return lex
 }
 
+// trit 字面量判定（trit 优化 L1）：-1t/0t/1t，末尾为 t/T 后缀且数字部分为纯十进制。
+// 词法层已将后缀并入 lexeme（lex_int），此处复核并供 pexpr 分支用。
+pub func is_trit_lit(lex: string) -> bool {
+    var n = str_len(lex)
+    if n < 2 {
+        return false
+    }
+    var last = str_char(lex, n - 1)
+    if !(last == "t" || last == "T") {
+        return false
+    }
+    var i: i64 = 0
+    while i < n - 1 {
+        var c = str_char(lex, i)
+        if c < "0" || c > "9" {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
 // 子串辅助（码点级，越界裁剪）
 func slice_str(s: string, start: i64, end: i64) -> string {
     var n = str_len(s)

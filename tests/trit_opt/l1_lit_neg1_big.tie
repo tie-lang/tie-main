@@ -1,0 +1,6 @@
+type tie<logic>
+// trit 优化 L1 负例 1：2t 越界 → 应报「trit 字面量越界」。
+func main() {
+    var a: trit = 2t
+    println("UNEXPECTED pass")
+}
