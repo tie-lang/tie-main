@@ -1,0 +1,449 @@
+type tie<class>
+// ============================================================================
+// xxh3.tie：标准库——XXH3-64（快速非加密校验哈希，命名空间 xxh3）
+// 用途：高速校验 / 缓存键等**非加密**场景，与 crc32/fnv1a 并列。非安全哈希，
+//   勿用于密码 / 签名 / 防篡改。结果与官方 xxHash（xxh3_64，xxhash 包同源）二进制兼容。
+// 接口：
+//   xxh3.xxh3_64(s: string) -> i64    返回 64 位哈希值本身。i64 有符号，高位为 1
+//     时结果为负——按**位模式**解读；需无符号显示时用 xxh3_hex。
+//   xxh3.xxh3_hex(s: string) -> string 该 64 位值按无符号 16 位小写 hex（大端）。
+// 逐**字节**处理（str_byte + len）。
+//
+// 算法（xxHash XXH3 标量路径，短/中/长三档）：
+//   - 64 位字用两个恒 <2^32 的 32 位半分 (hi, lo) 表表示；64 位乘用 16 位分块
+//     schoolbook（中间积恒 <2^34 正）再进位，规避 i64 溢出带上符号位。
+//   - 长度分档：0..16→1to3/4to8/9to16/空；17..128、129..240→mix16B+mul128_fold；
+//     >240→8 累加器 cross-lane 交换 + PRIME32 乘 + secret scramble + mergeAccs。
+//   - 默认 secret（192 字节）存为字节值表，与消息共用小端字节读取语义。
+// == 数值安全 ==
+//   `>>` 恒作用于正操作数故 ashr==lshr（同 sha256 论证）；中间积 <2^32 不溢出。
+//
+// 标准向量（xxHash 官方 / xxhash 包，已核对）：
+//   xxh3_64("") == 0x2D06800538D394C2   （xxh3_hex → "2d06800538d394c2"）
+//   xxh3_64("abc") == 0x78AF5F94892F3950
+// 探针：tests/hash2_probe/xxh3_probe.tie。备注：命名空间内互调为裸调用。
+// ============================================================================
+
+var xx3_sec: table<i64>;   // 默认 secret 字节值表（192 项 0..255）
+
+namespace xxh3 {
+
+func w(hi: i64, lo: i64) -> table<i64> {
+    var o = table_new_i64()
+    table_push(o, hi & 0xFFFFFFFF)
+    table_push(o, lo & 0xFFFFFFFF)
+    return o
+}
+func P1() -> table<i64> { return w(0x9E3779B1, 0x85EBCA87) }
+func P2() -> table<i64> { return w(0xC2B2AE3D, 0x27D4EB4F) }
+func P3() -> table<i64> { return w(0x165667B1, 0x9E3779F9) }
+func P4() -> table<i64> { return w(0x85EBCA77, 0xC2B2AE63) }
+func P5() -> table<i64> { return w(0x27D4EB2F, 0x165667C5) }
+func MX1() -> table<i64> { return w(0x16566791, 0x9E3779F9) }
+func MX2() -> table<i64> { return w(0x9FB21C65, 0x1E98DF25) }
+
+// 惰性构建默认 secret 字节表（192 项）。
+func ensure_secret() {
+    if len(xx3_sec) > 0 {
+        return
+    }
+    var h = "b8fe6c3923a44bbe7c01812cf721ad1cded46de9839097db7240a4a4b7b3671f" +
+            "cb79e64eccc0e578825ad07dccff7221b8084674f743248ee03590e6813a264c" +
+            "3c2852bb91c300cb88d0658b1b532ea371644897a20df94e3819ef46a9deacd8" +
+            "a8fa763fe39c343ff9dcbbc7c70b4f1d8a51e04bcdb45931c89f7ec9d9787364" +
+            "eac5ac8334d3ebc3c581a0fffa1363eb170ddd51b7f0da49d316552629d4689e" +
+            "2b16be587d47a1fc8ff8b8d17ad031ce45cb3a8f95160428afd7fbcabb4b407e"
+    var i: i64 = 0
+    while i < 192 {
+        var v: i64 = nibble(str_char(h, i * 2)) * 16 + nibble(str_char(h, i * 2 + 1))
+        table_push(xx3_sec, v)
+        i = i + 1
+    }
+}
+func nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 读取字节串/字节表到 [hi,lo]。
+func s64s(msg: string, n: i64, off: i64) -> table<i64> {
+    var lo: i64 = 0
+    var hi: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var b: i64 = 0
+        if off + j < n {
+            b = str_byte(msg, off + j)
+        }
+        lo = (lo | (b << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        var b2: i64 = 0
+        if off + 4 + j < n {
+            b2 = str_byte(msg, off + 4 + j)
+        }
+        hi = (hi | (b2 << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return w(hi, lo)
+}
+func s32s(msg: string, n: i64, off: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var b: i64 = 0
+        if off + j < n {
+            b = str_byte(msg, off + j)
+        }
+        v = (v | (b << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+// secret 表读取为 [hi,lo]（8 字节小端）。
+func secw(off: i64) -> table<i64> {
+    var lo: i64 = 0
+    var hi: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        lo = (lo | (xx3_sec[off + j] << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        hi = (hi | (xx3_sec[off + 4 + j] << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return w(hi, lo)
+}
+func sec32(off: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        v = (v | (xx3_sec[off + j] << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+
+// ---- 64 位原语 ----
+func addv(a: table<i64>, b: table<i64>) -> table<i64> {
+    var s = (a[1] + b[1]) & 0xFFFFFFFF
+    var carry = (a[1] + b[1]) >> 32
+    return w((a[0] + b[0] + carry) & 0xFFFFFFFF, s)
+}
+func xorr(a: table<i64>, b: table<i64>) -> table<i64> {
+    return w(a[0] ^ b[0], a[1] ^ b[1])
+}
+func shl(a: table<i64>, r: i64) -> table<i64> {
+    if r == 0 {
+        return w(a[0], a[1])
+    }
+    if r < 32 {
+        return w(((a[0] << r) | (a[1] >> (32 - r))) & 0xFFFFFFFF, (a[1] << r) & 0xFFFFFFFF)
+    }
+    if r == 32 {
+        return w(a[1], 0)
+    }
+    return w((a[1] << (r - 32)) & 0xFFFFFFFF, 0)
+}
+func lsr(a: table<i64>, r: i64) -> table<i64> {
+    if r == 0 {
+        return w(a[0], a[1])
+    }
+    if r < 32 {
+        return w((a[0] >> r) & 0xFFFFFFFF, ((a[1] >> r) | (a[0] << (32 - r))) & 0xFFFFFFFF)
+    }
+    if r == 32 {
+        return w(0, a[0])
+    }
+    return w(0, (a[0] >> (r - 32)) & 0xFFFFFFFF)
+}
+func orr(a: table<i64>, b: table<i64>) -> table<i64> {
+    return w(a[0] | b[0], a[1] | b[1])
+}
+func rol(a: table<i64>, r: i64) -> table<i64> {
+    if r == 0 {
+        return w(a[0], a[1])
+    }
+    return orr(shl(a, r), lsr(a, 64 - r))
+}
+func xs(a: table<i64>, sch: i64) -> table<i64> {
+    return xorr(a, lsr(a, sch))
+}
+func swap32(v: i64) -> i64 {
+    return ((v & 0xFF) << 24) | (((v >> 8) & 0xFF) << 16) | (((v >> 16) & 0xFF) << 8) | ((v >> 24) & 0xFF)
+}
+func swap64(a: table<i64>) -> table<i64> {
+    return w(swap32(a[1]), swap32(a[0]))
+}
+func mul32to64(x: i64, y: i64) -> table<i64> {
+    var x0 = x & 0xFFFF; var x1 = (x >> 16) & 0xFFFF
+    var y0 = y & 0xFFFF; var y1 = (y >> 16) & 0xFFFF
+    var lo0 = x0 * y0
+    var mid = x1 * y0 + x0 * y1
+    var hi0 = x1 * y1
+    var t = lo0 + (mid << 16)
+    return w((hi0 + (t >> 32)) & 0xFFFFFFFF, t & 0xFFFFFFFF)
+}
+func mul128(a: table<i64>, b: table<i64>) -> table<i64> {
+    var al = a[1]; var ah = a[0]; var bl = b[1]; var bh = b[0]
+    var a0 = al & 0xFFFF; var a1 = (al >> 16) & 0xFFFF; var a2 = ah & 0xFFFF; var a3 = (ah >> 16) & 0xFFFF
+    var b0 = bl & 0xFFFF; var b1 = (bl >> 16) & 0xFFFF; var b2 = bh & 0xFFFF; var b3 = (bh >> 16) & 0xFFFF
+    var c0 = a0 * b0
+    var c1 = a0 * b1 + a1 * b0
+    var c2 = a0 * b2 + a1 * b1 + a2 * b0
+    var c3 = a0 * b3 + a1 * b2 + a2 * b1 + a3 * b0
+    var c4 = a1 * b3 + a2 * b2 + a3 * b1
+    var c5 = a2 * b3 + a3 * b2
+    var c6 = a3 * b3
+    var d0 = c0 & 0xFFFF; var carry = c0 >> 16
+    var v1 = c1 + carry; var d1 = v1 & 0xFFFF; carry = v1 >> 16
+    var v2 = c2 + carry; var d2 = v2 & 0xFFFF; carry = v2 >> 16
+    var v3 = c3 + carry; var d3 = v3 & 0xFFFF; carry = v3 >> 16
+    var v4 = c4 + carry; var d4 = v4 & 0xFFFF; carry = v4 >> 16
+    var v5 = c5 + carry; var d5 = v5 & 0xFFFF; carry = v5 >> 16
+    var v6 = c6 + carry; var d6 = v6 & 0xFFFF; carry = v6 >> 16
+    var d7 = carry
+    var o = table_new_i64()
+    table_push(o, (d2 | (d3 << 16)) & 0xFFFFFFFF)
+    table_push(o, (d0 | (d1 << 16)) & 0xFFFFFFFF)
+    table_push(o, (d6 | (d7 << 16)) & 0xFFFFFFFF)
+    table_push(o, (d4 | (d5 << 16)) & 0xFFFFFFFF)
+    return o
+}
+func mulv(a: table<i64>, b: table<i64>) -> table<i64> {
+    var m = mul128(a, b)
+    return w(m[0], m[1])
+}
+func mulfold(a: table<i64>, b: table<i64>) -> table<i64> {
+    var m = mul128(a, b)
+    return w(m[2] ^ m[0], m[3] ^ m[1])
+}
+
+// ---- 雪崩 ----
+func a64(v: table<i64>) -> table<i64> {
+    v = xorr(v, lsr(v, 33))
+    v = mulv(v, P2())
+    v = xorr(v, lsr(v, 29))
+    v = mulv(v, P3())
+    v = xorr(v, lsr(v, 32))
+    return v
+}
+func a3(v: table<i64>) -> table<i64> {
+    v = xs(v, 37)
+    v = mulv(v, MX1())
+    v = xs(v, 32)
+    return v
+}
+func rrmxmx(h: table<i64>, length: i64) -> table<i64> {
+    h = xorr(xorr(h, rol(h, 49)), rol(h, 24))
+    h = mulv(h, MX2())
+    h = xorr(h, addv(lsr(h, 35), w(0, length)))
+    h = mulv(h, MX2())
+    return xs(h, 28)
+}
+
+// ---- 短/中 ----
+func mix16(input: string, n: i64, off: i64, so: i64) -> table<i64> {
+    return mulfold(xorr(s64s(input, n, off), secw(so)), xorr(s64s(input, n, off + 8), secw(so + 8)))
+}
+func len9to16(input: string, n: i64, length: i64) -> table<i64> {
+    var il = s64s(input, n, 0)
+    var ih = s64s(input, n, length - 8)
+    il = xorr(il, xorr(secw(24), secw(32)))
+    ih = xorr(ih, xorr(secw(40), secw(48)))
+    var acc = addv(addv(addv(w(0, length), swap64(il)), ih), mulfold(il, ih))
+    return a3(acc)
+}
+func len4to8(input: string, n: i64, length: i64) -> table<i64> {
+    var i1 = s32s(input, n, 0)
+    var i2 = s32s(input, n, length - 4)
+    var bf = xorr(secw(8), secw(16))
+    return rrmxmx(xorr(w(i1, i2), bf), length)
+}
+func len1to3(input: string, n: i64, length: i64) -> table<i64> {
+    var c1 = str_byte(input, 0)
+    var c2 = str_byte(input, length >> 1)
+    var c3 = str_byte(input, length - 1)
+    var combined = ((c1 & 0xFF) << 16) | ((c2 & 0xFF) << 24) | (c3 & 0xFF) | (length << 8)
+    var bflo = (sec32(0) ^ sec32(4)) & 0xFFFFFFFF
+    return a64(xorr(w(0, combined & 0xFFFFFFFF), w(0, bflo)))
+}
+func len0to16(input: string, n: i64, length: i64) -> table<i64> {
+    if length > 8 {
+        return len9to16(input, n, length)
+    }
+    if length >= 4 {
+        return len4to8(input, n, length)
+    }
+    if length > 0 {
+        return len1to3(input, n, length)
+    }
+    return a64(xorr(secw(56), secw(64)))
+}
+func len17to128(input: string, n: i64, length: i64) -> table<i64> {
+    var acc = mulv(w(0, length), P1())
+    if length > 32 {
+        if length > 64 {
+            if length > 96 {
+                acc = addv(acc, mix16(input, n, 48, 96))
+                acc = addv(acc, mix16(input, n, length - 64, 112))
+            }
+            acc = addv(acc, mix16(input, n, 32, 64))
+            acc = addv(acc, mix16(input, n, length - 48, 80))
+        }
+        acc = addv(acc, mix16(input, n, 16, 32))
+        acc = addv(acc, mix16(input, n, length - 32, 48))
+    }
+    acc = addv(acc, mix16(input, n, 0, 0))
+    acc = addv(acc, mix16(input, n, length - 16, 16))
+    return a3(acc)
+}
+func len129to240(input: string, n: i64, length: i64) -> table<i64> {
+    var acc = mulv(w(0, length), P1())
+    var i: i64 = 0
+    while i < 8 {
+        acc = addv(acc, mix16(input, n, 16 * i, 16 * i))
+        i = i + 1
+    }
+    var acc_end = mix16(input, n, length - 16, 136 - 17)
+    acc = a3(acc)
+    var nb = length / 16
+    i = 8
+    while i < nb {
+        acc_end = addv(acc_end, mix16(input, n, 16 * i, 16 * (i - 8) + 3))
+        i = i + 1
+    }
+    return a3(addv(acc, acc_end))
+}
+
+// ---- 长 ----
+func acc512(acc: ref table<i64>, input: string, n: i64, inp: i64, sc: i64) {
+    var lane: i64 = 0
+    while lane < 8 {
+        var dv = s64s(input, n, inp + lane * 8)
+        var dk = xorr(dv, secw(sc + lane * 8))
+        var lx = lane ^ 1
+        // acc[lx] += dv（64 位，带进位）
+        var slo = (acc[2 * lx + 1] + dv[1]) & 0xFFFFFFFF
+        var carry = (acc[2 * lx + 1] + dv[1]) >> 32
+        acc[2 * lx + 1] = slo
+        acc[2 * lx] = ((acc[2 * lx] + dv[0] + carry) & 0xFFFFFFFF)
+        var p = mul32to64(dk[1], dk[0])
+        // acc[lane] += p（64 位，带进位）
+        var sl2 = (acc[2 * lane + 1] + p[1]) & 0xFFFFFFFF
+        var carry2 = (acc[2 * lane + 1] + p[1]) >> 32
+        acc[2 * lane + 1] = sl2
+        acc[2 * lane] = ((acc[2 * lane] + p[0] + carry2) & 0xFFFFFFFF)
+        lane = lane + 1
+    }
+}
+func scramble(a: ref table<i64>, sc: i64) {
+    var lane: i64 = 0
+    while lane < 8 {
+        var key = secw(sc + lane * 8)
+        var v = xorr(xs(w(a[2 * lane], a[2 * lane + 1]), 47), key)
+        v = mulv(v, w(0, 0x9E3779B1))
+        a[2 * lane] = v[0]
+        a[2 * lane + 1] = v[1]
+        lane = lane + 1
+    }
+}
+func mix2acc(acc: ref table<i64>, o: i64, sc: i64) -> table<i64> {
+    return mulfold(xorr(w(acc[2 * o], acc[2 * o + 1]), secw(sc)),
+                   xorr(w(acc[2 * o + 2], acc[2 * o + 3]), secw(sc + 8)))
+}
+func mergeAccs(acc: ref table<i64>, sc: i64, start: table<i64>) -> table<i64> {
+    var res = start
+    var i: i64 = 0
+    while i < 4 {
+        res = addv(res, mix2acc(acc, 2 * i, sc + 16 * i))
+        i = i + 1
+    }
+    return a3(res)
+}
+func hash_long(input: string, n: i64, length: i64) -> table<i64> {
+    var acc = table_new_i64()
+    table_push(acc, 0); table_push(acc, 0xC2B2AE3D)
+    table_push(acc, 0x9E3779B1); table_push(acc, 0x85EBCA87)
+    table_push(acc, 0xC2B2AE3D); table_push(acc, 0x27D4EB4F)
+    table_push(acc, 0x165667B1); table_push(acc, 0x9E3779F9)
+    table_push(acc, 0x85EBCA77); table_push(acc, 0xC2B2AE63)
+    table_push(acc, 0); table_push(acc, 0x85EBCA77)
+    table_push(acc, 0x27D4EB2F); table_push(acc, 0x165667C5)
+    table_push(acc, 0); table_push(acc, 0x9E3779B1)
+    var ss: i64 = 192
+    var nspb = (ss - 64) / 8
+    var bl = 64 * nspb
+    var nb = (length - 1) / bl
+    var b: i64 = 0
+    while b < nb {
+        var st: i64 = 0
+        while st < nspb {
+            acc512(acc, input, n, b * bl + st * 64, st * 8)
+            st = st + 1
+        }
+        scramble(acc, ss - 64)
+        b = b + 1
+    }
+    var nstr = ((length - 1) - (bl * nb)) / 64
+    var st2: i64 = 0
+    while st2 < nstr {
+        acc512(acc, input, n, nb * bl + st2 * 64, st2 * 8)
+        st2 = st2 + 1
+    }
+    acc512(acc, input, n, length - 64, ss - 64 - 7)
+    return mergeAccs(acc, 11, mulv(w(0, length), P1()))
+}
+
+func xxh3v(input: string) -> table<i64> {
+    ensure_secret()
+    var n: i64 = len(input)
+    if n <= 16 {
+        return len0to16(input, n, n)
+    }
+    if n <= 128 {
+        return len17to128(input, n, n)
+    }
+    if n <= 240 {
+        return len129to240(input, n, n)
+    }
+    return hash_long(input, n, n)
+}
+
+// 返回 64 位值（可负）。
+pub func xxh3_64(input: string) -> i64 {
+    var r = xxh3v(input)
+    return ((r[0] & 0xFFFFFFFF) << 32) | (r[1] & 0xFFFFFFFF)
+}
+func hex8(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var p: i64 = 0
+    while p < 8 {
+        var shift = 28 - p * 4
+        var nib = (v >> shift) & 0xF
+        out = out + str_char(hex, nib)
+        p = p + 1
+    }
+    return out
+}
+// 返回无符号 16 位小写 hex（大端）。
+pub func xxh3_hex(input: string) -> string {
+    var r = xxh3v(input)
+    return hex8(r[0]) + hex8(r[1])
+}
+
+}   // namespace xxh3
+
+

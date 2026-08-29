@@ -1,0 +1,44 @@
+type tie<logic>
+// xxh3-64 探针：空串/abc + 边界（单步 55/56/64、中长 65/128/129、长 256）。
+// 以 xxh3_hex（无符号 16 hex）比对，规避 i64 符号。向量来源：xxHash 官方 /
+// Python xxhash 包（xxh3_64），列表见 tests/hash2_probe/gen_vectors.py。
+import "../../std/xxh3.tie"
+using xxh3;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+func main() {
+    // 任务指定向量（空串）
+    check("x3 empty", xxh3.xxh3_hex(""), "2d06800538d394c2")
+    check("x3 abc", xxh3.xxh3_hex("abc"), "78af5f94892f3950")
+    check("x3 a55", xxh3.xxh3_hex(rep("a", 55)), "c0ec6f7459f5d1f7")
+    check("x3 a56", xxh3.xxh3_hex(rep("a", 56)), "07932126fa37e269")
+    check("x3 a64", xxh3.xxh3_hex(rep("a", 64)), "2dddcef07d26ee8c")
+    check("x3 a65", xxh3.xxh3_hex(rep("a", 65)), "fcf352f3db82a064")
+    check("x3 a128", xxh3.xxh3_hex(rep("a", 128)), "7a22200aadc3d36c")
+    check("x3 a129", xxh3.xxh3_hex(rep("a", 129)), "1586e7ed07cba75b")
+    check("x3 a256", xxh3.xxh3_hex(rep("a", 256)), "3fdb4ff1846c90f3")
+    // 跨 1024 块边界 + scramble 路径
+    check("x3 a2048", xxh3.xxh3_hex(rep("a", 2048)), "4e34225c09852dba")
+    check("x3 a4096", xxh3.xxh3_hex(rep("a", 4096)), "88a30670e919701e")
+    // 返回 i64 也正常（空串为负值 0xD39C943805...，见位模式）
+    println("xxh3 探针全部通过")
+}
+
+
