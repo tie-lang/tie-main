@@ -1,0 +1,40 @@
+type tie<logic>
+// ascon_mac 探针：Ascon-MAC-128 自建向量（用权威 pyascon 交叉生成）。
+// key 以 32 位 hex 传（16 字节）；msg 为原始字符串。
+// 期望输出：四组 PASS + "ascon_mac 探针全部通过"。
+import "../../std/ascon_mac.tie"
+using ascon_mac;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func reps(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    var k = "000102030405060708090a0b0c0d0e0f"
+    // 空消息
+    check("empty", ascon_mac.ascon_mac128(k, ""), "eb1af688825d66bf2d53e135f9323315")
+    // 短文本
+    check("abc", ascon_mac.ascon_mac128(k, "abc"), "7244ecb6734d17a090b20744045f9e38")
+    // 32 字节（恰一块）
+    check("a32", ascon_mac.ascon_mac128(k, reps("a", 32)), "64691821cafb75901ebe6dec49af8c49")
+    // 较长消息（跨多块 + 偏块）
+    check("long", ascon_mac.ascon_mac128(k, "Ascon-MAC-128 test message for robust verification."),
+        "98f689e6021161d9d49183f2fe403765")
+    println("ascon_mac 探针全部通过")
+}
