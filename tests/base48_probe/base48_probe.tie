@@ -1,0 +1,73 @@
+type tie<logic>
+// base48 无歧义编码原语探针：encode / decode / encode↔decode 往返一致 / 非法负例。
+// 向量来源：tests/base48_probe/gen_vectors.py（纯 Python 参考实现，已与 tie 对照；
+//   并在 50000 组随机字节串（含任意前导零字节）上核对 decode(encode(h))==h 成立）。
+// 覆盖：空串、1 字节（含 0x00/0x2f/0xff）、6 字节、22 字节（max）、33 字节（尾块 0）、
+//   非法负例（奇数 hex、非 hex 字符、非字符台字符 0/1/I/O/l/o、无可对应字节长的长度、
+//   值溢出 256^L）。期望输出全部 PASS。
+import "../../std/base48.tie"
+using b48;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+// 断言 f(hex) 的 encode==enc 且 decode==hex（正向一致 + 往返一致）。
+func assert_vec(name: string, hex: string, enc: string) {
+    check("enc " + name, b48.encode(hex), enc)
+    check("dec " + name, b48.decode(enc), hex)
+    check("rt  " + name, b48.decode(b48.encode(hex)), hex)
+}
+
+// 断言非法输入返回空串（kind 为 "enc" 走 encode，否则走 decode）。
+func assert_invalid(name: string, kind: string, s: string) {
+    if kind == "enc" {
+        check("enc invalid " + name, b48.encode(s), "")
+    } else {
+        check("dec invalid " + name, b48.decode(s), "")
+    }
+}
+
+func main() {
+    // 已知向量（encode 正例 + 往返一致）
+    assert_vec("empty", "", "")
+    assert_vec("one0x00", "00", "22")
+    assert_vec("one0x2f", "2f", "2z")
+    assert_vec("one0xff", "ff", "7H")
+    assert_vec("six mix", "010203040506", "23uf3rkJ8")
+    assert_vec("22byte max", rep("f", 44), "9Fyzt85JFmNkvissehz8F5i55xz5n97H")
+    assert_vec("33byte tail0", rep("f", 64) + "00",
+        "4sMH5eDrjxCbewRm9p8taQAR5eFcHxLEMn5aj4wHax7zf3i2")
+
+    // 非法负例：encode
+    assert_invalid("odd hex", "enc", "abc")
+    assert_invalid("non-hex g", "enc", "gg")
+    assert_invalid("odd len1", "enc", "2")
+    // 非法负例：decode
+    assert_invalid("bad char 0", "dec", "20")
+    assert_invalid("bad char 1", "dec", "21")
+    assert_invalid("bad char I", "dec", "2I")
+    assert_invalid("bad char O", "dec", "2O")
+    assert_invalid("bad char l", "dec", "2l")
+    assert_invalid("bad char o", "dec", "2o")
+    assert_invalid("no byte-length", "dec", "2")
+    assert_invalid("overflow 256^1", "dec", "82")
+
+    println("base48 探针全部通过")
+}

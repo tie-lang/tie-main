@@ -1,0 +1,213 @@
+type tie<class>
+// ============================================================================
+// base48.tie：标准库——Base48 无歧义编码原语（命名空间 b48）
+// 用途：把任意十六进制字节串（digest 指纹 / 密钥 / 任意二进制→hex）编码为
+//   短、无歧义、可手抄校验的 48 进制字符串；无需转义、无 0/1/I/O/l 视觉混淆，
+//   适合插件指纹、授权码、审计链 ID 等人类可抄读场景。
+//
+// 字符台（48 字符，文件头必列，保证 0/1/I/O/l 不出现）：
+//   数字   : 23456789                                  （去掉 0、1）
+//   大写   : ABCDEFGHJKLMNPQR                          （A-Z 去掉 I、O；共 16）
+//   小写   : abcdefghijkmnpqrstuvwxyz                  （a-z 去掉 l、o；共 24）
+//   合计   : 8 + 16 + 24 = 48
+//   消除易混淆对：0↔O、1↔l/I/o、O↔0、I↔l/1、l↔1/i、o↔0/6 等全部避开。
+//   b = "23456789ABCDEFGHJKLMNPQRabcdefghijkmnpqrstuvwxyz"
+//
+// == 换算与块切分策略 ==
+//   n 字节（8n 位）↔ m 个 base48 字符：
+//     m = ceil( 8n / log2(48) ) = ceil( 1.4324065 n )，即最小的 m 满足 48^m ≥ 256^n。
+//   取整用精确有理近似：m = (n * 1432407) / 1000000 + 1（L=0..199 已核对与精确一致。
+//   该 m 关于 n 单射（L=0..64 逐一验证：每个 m 恰对应唯一 n，解码由字符串长度反查
+//   字节长不会歧义）。常用长度对照：
+//      1 字节 ↔  2 字符；  6 字节 ↔ 9 字符； 16 字节 ↔ 23 字符；
+//     22 字节 ↔ 32 字符； 33 字节 ↔ 48 字符。
+//   定长（长度保留）设计：encode 把整值转 base48 后**左侧补零数字到精确 m 字符**，
+//   decode 由字符串长度反查唯一字节长并按 m 还原，因而 encode/decode 互为精确逆，
+//   任意前导零字节也完整往返（对 TSHA 固定长度摘要尤其关键：decode(b48)==hex 即
+//   字节级一致，满足"内部哈希字节不变"）。
+//
+// == 溢出规避（纯 tie，无 unsafe，i64 有符号 + 64 位乘法）==
+//   不做大整数，改走"字节数组长除法 / 乘法"：
+//   - encode：把 L 字节看作 base-256 大整数的字节数组，反复整体除以 48 取余
+//     （长除法）。每次进位的中间量为 rem*256 + 字节，rem < 48 ⇒ 其值 < 48*256+255
+//     = 12287 < 2^63，绝不溢出。
+//   - decode：把 base48 字符串反复"×48 + digit"累加回 base-256 字节数组。
+//     中间量 b[j]*48 + carry ≤ 255*48+48 = 12288 < 2^63，不溢出；顶部 carry 非零
+//     即值 ≥ 256^n，判为非法输入返回空串。
+//   无需 xxh3 的 16 位分块 schoolbook（此处除法/乘法进位天然被 48<256 约束住）。
+//
+// 错误约定（与 std/encoding.tie 一致）：encode/decode 遇非法输入（奇数长度 hex、
+//   非 hex 字符、非字符台字符、长度无对应字节长、值溢出不进位）一律返回空串；
+//   合法空输入返回空串（空 hex `` 与空 base48 `` 都是合法且互逆的空串）。
+// 纯函数，只依赖底座原语（str_len/str_char/len/str_byte 无——本模块读 hex/写 base48，
+//   均为可打印 ASCII，故用 str_char/str_len）+ 位运算 + table 数组，零外部依赖；
+//   命名空间内互调为裸调用，公共入口 encode/decode 标记 pub。
+// 备注：tie 字符串按 UTF-8 码点处理，一码点 == 一字节（ASCII 字符）。
+// ============================================================================
+
+// 无歧义字符台常量（索引 0..47 → 对应 base48 数字；索引 0 为零数字 '2'）。
+var b48_chars: string = "23456789ABCDEFGHJKLMNPQRabcdefghijkmnpqrstuvwxyz"
+
+namespace b48 {
+
+// 十六进制单字符 → 数值（0..15）；支持小写 a-f 与大写 A-F，其余返回 -1。
+// 供 hex 解析共用（与 enc.hex_val 同风格，内联保持零依赖）。
+func hex_val(c: string) -> i64 {
+    var lower = "0123456789abcdef"
+    var m: i64 = str_len(lower)
+    var j: i64 = 0
+    while j < m {
+        if str_char(lower, j) == c {
+            return j
+        }
+        j = j + 1
+    }
+    var upper = "ABCDEF"
+    m = str_len(upper)
+    j = 0
+    while j < m {
+        if str_char(upper, j) == c {
+            return 10 + j
+        }
+        j = j + 1
+    }
+    return -1
+}
+
+// base48 单字符 → 索引（0..47）；不在字符台 b 中返回 -1（非法字符）。
+func b48_idx(c: string) -> i64 {
+    var m: i64 = str_len(b48_chars)
+    var j: i64 = 0
+    while j < m {
+        if str_char(b48_chars, j) == c {
+            return j
+        }
+        j = j + 1
+    }
+    return -1
+}
+
+// n 字节 → base48 字符数 m（ceil(8n/log2(48))；n ≤ 0 返回 0）。有理近似见头文件。
+func charcount(L: i64) -> i64 {
+    if L <= 0 {
+        return 0
+    }
+    return (L * 1432407) / 1000000 + 1
+}
+
+// 十六进制字节串 → 定长 base48（长度保留，见头文件"换算与块切分策略"）。
+pub func encode(bytes_hex: string) -> string {
+    var n: i64 = len(bytes_hex)
+    if n == 0 {
+        return ""
+    }
+    if n % 2 != 0 {
+        return ""
+    }
+    var L: i64 = n / 2
+    // 解析为 base-256 字节数组 b（MSB 在前）
+    var b = table_new_i64()
+    var i: i64 = 0
+    while i < L {
+        var hi: i64 = hex_val(str_char(bytes_hex, i * 2))
+        var lo: i64 = hex_val(str_char(bytes_hex, i * 2 + 1))
+        if hi < 0 || lo < 0 {
+            return ""
+        }
+        table_push(b, (hi << 4) | lo)
+        i = i + 1
+    }
+    // 反复整体除以 48，得 base48 数字（先最不显著，digits[0]=LSB）。
+    // pos = 最高位（第一个非零字节）下标；值全零时 pos 推进到 L（终止）。
+    var digits = table_new_i64()
+    var pos: i64 = 0
+    while pos < L {
+        var rem: i64 = 0
+        i = 0
+        while i < L {
+            var cur: i64 = rem * 256 + b[i]
+            b[i] = cur / 48
+            rem = cur % 48
+            i = i + 1
+        }
+        // 跳过当前商的高位前导零字节，得到新的最高位下标（值变零则推进到 L）
+        while pos < L && b[pos] == 0 {
+            pos = pos + 1
+        }
+        table_push(digits, rem)
+    }
+    // 输出：左侧补零数字到定长 m，然后自高位向低位映射字符
+    var m: i64 = charcount(L)
+    var out: string = ""
+    var pad: i64 = m - len(digits)
+    i = 0
+    while i < pad {
+        out = out + str_char(b48_chars, 0)
+        i = i + 1
+    }
+    i = len(digits) - 1
+    while i >= 0 {
+        out = out + str_char(b48_chars, digits[i])
+        i = i - 1
+    }
+    return out
+}
+
+// base48 字符串 → 十六进制（定长还原；非法返回空串，见头文件错误约定）。
+pub func decode(s: string) -> string {
+    var n: i64 = len(s)
+    if n == 0 {
+        return ""
+    }
+    // 由字符串长度反查唯一字节长（charcount 关于 L 单射，L=0..64 已核对）
+    var L: i64 = -1
+    var cand: i64 = 0
+    while cand <= 64 {
+        if charcount(cand) == n {
+            if L >= 0 {
+                return ""   // 歧义：多个字节长对应同字符数（不应发生），判非法
+            }
+            L = cand
+        }
+        cand = cand + 1
+    }
+    if L < 0 {
+        return ""
+    }
+    // 逐字符 "×48 + digit" 累加回 base-256 字节数组（LSB 在数组尾）
+    var b = table_new_i64()
+    var j: i64 = 0
+    while j < L {
+        table_push(b, 0)
+        j = j + 1
+    }
+    var idx: i64 = 0
+    while idx < n {
+        var d: i64 = b48_idx(str_char(s, idx))
+        if d < 0 {
+            return ""   // 非法字符（不在字符台）
+        }
+        var carry: i64 = d
+        j = L - 1
+        while j >= 0 {
+            var cur: i64 = b[j] * 48 + carry
+            b[j] = cur & 0xFF
+            carry = cur >> 8
+            j = j - 1
+        }
+        if carry != 0 {
+            return ""   // 值 ≥ 256^L，溢出非法的长度/数值
+        }
+        idx = idx + 1
+    }
+    // 字节数组 → 小写 hex 输出
+    var digits = "0123456789abcdef"
+    var out: string = ""
+    j = 0
+    while j < L {
+        out = out + str_char(digits, (b[j] >> 4) & 0xF) + str_char(digits, b[j] & 0xF)
+        j = j + 1
+    }
+    return out
+}
+}   // namespace b48
