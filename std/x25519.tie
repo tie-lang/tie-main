@@ -1,0 +1,231 @@
+type tie<class>
+// ============================================================================
+// x25519.tie：标准库——纯 tie X25519 密钥协商（命名空间 x25519，无 extern / 无 Rust）
+// 用途：Curve25519 的 ECDH（RFC 7748）——蒙哥马利曲线 scalar-u，纯 bigint 底座。
+// 仅供演示/验证与内存受限嵌入式定制路径；不追求常数时间。
+//
+// 曲线（Curve25519，蒙哥马利）：v² = u³ + 486662·u² + u，p = 2^255 - 19。
+//   X25519 只计算 u 坐标（蒙哥马利阶梯），无需 v；域模数同 Ed25519。
+//   a24 = (486662 - 2)/4 = 121665。
+//
+// 接口（hex IO）：
+//   x25519.keygen(seed_hex)                   -> pubkey_hex（32 字节 u 坐标）
+//   x25519.dh(sk_hex, pk_hex)                 -> shared_hex（32 字节共享密钥）
+//
+// 算法（RFC 7748 §5）：标量 k 先 clamp（k[0]&=248；k[31]&=127；k[31]|=64），
+//   u 坐标接收端掩高位（u[31]&=127）；蒙哥马利阶梯从 254 位扫到 0：
+//     A=x2+z2; AA=A²; B=x2-z2; BB=B²; E=AA-BB; C=x3+z3; D=x3-z3;
+//     DA=D·A; CB=C·B; x3=(DA+CB)²; z3=x1·(DA-CB)²; x2=AA·BB;
+//     z2=E·(AA + a24·E)；循环后交换并输出 x2·z2⁻¹，小端 32 字节。
+//
+// == 常数时间注记（安全）==
+//   阶梯的每个 t 恒执行全部加减乘除，但对 x2/z2/x3/z3 的**条件交换按位分支**
+//   （RFC 7748 伪代码用标量 swap/kt 交换，本实现直接 if 分支）；tie/bigint 无
+//   硬件级常数时间保证。本模块面向功能正确性演示与向量验证，不提供侧信道隔离。
+//
+// 向量来源：RFC 7748 §5.2（vector 1/2）与 PyNaCl scmult 交叉生成，探针硬编码断言。
+// 依赖：std/bigint.tie。
+// ============================================================================
+
+// 顶层常量（懒构建）。
+var x_p: table<i64>;        // 域模数 p = 2^255 - 19
+var x_a24: table<i64>;      // a24 = 121665
+var x_one: table<i64>;      // 1
+var x_zero: table<i64>;     // 0（空表）
+
+import "./bigint.tie" as bigint
+
+namespace x25519 {
+
+func ensure() {
+    if len(x_p) > 0 {
+        return
+    }
+    x_p = bigint.from_hex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed")
+    x_a24 = bigint.from_hex("1db41")   // 121665
+    x_one = bigint.from_hex("1")
+    x_zero = table_new_i64()
+}
+
+// ---------------------------------------------------------------------------
+// 基础工具
+// ---------------------------------------------------------------------------
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    var up = "ABCDEF"
+    i = 0
+    while i < 6 {
+        if str_char(up, i) == c {
+            return 10 + i
+        }
+        i = i + 1
+    }
+    return 0
+}
+func hex_to_bytes(h: string) -> table<i64> {
+    var n: i64 = len(h) / 2
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i * 2))
+        var lo = hex_nibble(str_char(h, i * 2 + 1))
+        table_push(t, (hi << 4) | lo)
+        i = i + 1
+    }
+    return t
+}
+func hex2(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, (v >> 4) & 0xF) + str_char(hex, v & 0xF)
+}
+// 小端字节表 → bigint。
+func scalar_bytes(bt: table<i64>) -> table<i64> {
+    var hexbe: string = ""
+    var i: i64 = len(bt) - 1
+    while i >= 0 {
+        hexbe = hexbe + hex2(bt[i])
+        i = i - 1
+    }
+    return bigint.from_hex(hexbe)
+}
+// bigint → n 字节小端 hex。
+func int_le_hex(x: table<i64>, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        var b: i64 = 0
+        if (i / 4) < len(x) {
+            b = (x[i / 4] >> ((i % 4) * 8)) & 0xFF
+        }
+        out = out + hex2(b)
+        i = i + 1
+    }
+    return out
+}
+func scalar_bit(s: table<i64>, i: i64) -> i64 {
+    var limb = i / 32
+    if limb >= len(s) {
+        return 0
+    }
+    return (s[limb] >> (i % 32)) & 1
+}
+
+// ---------------------------------------------------------------------------
+// 域运算（mod p）
+// ---------------------------------------------------------------------------
+func fadd(a: table<i64>, b: table<i64>) -> table<i64> {
+    return bigint.mod(bigint.add(a, b), x_p)
+}
+func fsub(a: table<i64>, b: table<i64>) -> table<i64> {
+    if bigint.cmp(a, b) >= 0 {
+        return bigint.mod(bigint.sub(a, b), x_p)
+    }
+    return bigint.mod(bigint.sub(x_p, bigint.sub(b, a)), x_p)
+}
+func fmul(a: table<i64>, b: table<i64>) -> table<i64> {
+    return bigint.mod(bigint.mul(a, b), x_p)
+}
+func finv(a: table<i64>) -> table<i64> {
+    return bigint.invmod(a, x_p)
+}
+
+// ---------------------------------------------------------------------------
+// 蒙哥马利阶梯（仅 u 坐标）
+// ---------------------------------------------------------------------------
+
+// 条件交换：swap=1 时交换两对 (x,z)；返回四个新值。
+func cswap(swap: i64, xa: table<i64>, za: table<i64>, xb: table<i64>, zb: table<i64>) -> (table<i64>, table<i64>, table<i64>, table<i64>) {
+    if swap != 0 {
+        return (xb, zb, xa, za)
+    }
+    return (xa, za, xb, zb)
+}
+
+// 蒙哥马利阶梯：给定 clamp 后标量 k 与 u 坐标（域元素），得 u·G 的 u 坐标。
+func ladder(k: table<i64>, u: table<i64>) -> table<i64> {
+    var x1 = u
+    var x2 = x_one
+    var z2 = x_zero
+    var x3 = u
+    var z3 = x_one
+    var swap: i64 = 0
+    var t: i64 = 254
+    while t >= 0 {
+        var kt = scalar_bit(k, t)
+        var doswap = swap ^ kt
+        var (x2n, z2n, x3n, z3n) = cswap(doswap, x2, z2, x3, z3)
+        x2 = x2n; z2 = z2n; x3 = x3n; z3 = z3n
+        swap = kt
+        var A = fadd(x2, z2)
+        var AA = fmul(A, A)
+        var B = fsub(x2, z2)
+        var BB = fmul(B, B)
+        var E = fsub(AA, BB)
+        var C = fadd(x3, z3)
+        var D = fsub(x3, z3)
+        var DA = fmul(D, A)
+        var CB = fmul(C, B)
+        var dacb = fadd(DA, CB)
+        x3 = fmul(dacb, dacb)            // x3 = (DA+CB)²
+        var dasb = fsub(DA, CB)
+        var dtmp = fmul(x1, fmul(dasb, dasb))
+        z3 = dtmp                        // z3 = x1·(DA-CB)²
+        x2 = fmul(AA, BB)
+        var a24e = fmul(x_a24, E)
+        z2 = fmul(E, fadd(AA, a24e))     // z2 = E·(AA + a24·E)
+        t = t - 1
+    }
+    var (x2f, z2f, x3f, z3f) = cswap(swap, x2, z2, x3, z3)
+    var zi = finv(z2f)
+    return fmul(x2f, zi)
+}
+
+// 标量 clamp：RF 7748（k[0]&=248；k[31]&=127；k[31]|=64）→ bigint。
+func clamp_scalar(bt: table<i64>) -> table<i64> {
+    var c = table_new_i64()
+    var i: i64 = 0
+    while i < 32 {
+        table_push(c, bt[i])
+        i = i + 1
+    }
+    c[0] = c[0] & 248
+    c[31] = c[31] & 127
+    c[31] = c[31] | 64
+    return scalar_bytes(c)
+}
+
+// ---------------------------------------------------------------------------
+// 公开接口
+// ---------------------------------------------------------------------------
+
+// 密钥生成：seed(32B) 经 clamp 后乘基点 u=9，输出 u 坐标 32 字节。
+pub func keygen(seed_hex: string) -> string {
+    ensure()
+    var k = clamp_scalar(hex_to_bytes(seed_hex))
+    var base = bigint.from_hex("9")
+    var u = ladder(k, base)
+    return int_le_hex(u, 32)
+}
+
+// DH：sk 经 clamp、pk(u) 掩高位后做蒙哥马利阶梯，输出共享 u 坐标 32 字节。
+pub func dh(sk_hex: string, pk_hex: string) -> string {
+    ensure()
+    var k = clamp_scalar(hex_to_bytes(sk_hex))
+    var ub = hex_to_bytes(pk_hex)
+    if len(ub) < 32 {
+        return int_le_hex(x_zero, 32)
+    }
+    ub[31] = ub[31] & 0x7F           // 掩 u 最高位（RFC 7748）
+    var u = scalar_bytes(ub)
+    var shared = ladder(k, u)
+    return int_le_hex(shared, 32)
+}
+
+}   // namespace x25519

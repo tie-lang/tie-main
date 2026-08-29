@@ -1,0 +1,27 @@
+type tie<logic>
+// x25519_probe.tie：纯 tie X25519 探针（RFC 7748 + PyNaCl 交叉向量）。
+// 覆盖：RFC 7748 §5.2 vector 1/2（sk·u → shared）、keygen(sk)=pub（基点 u=9）、
+//   DH 对称性（sk1·pk2 == sk2·pk1）。向量由 gen_vectors.py（PyNaCl 的 scmult, 
+//   RFC 7748 独立实现）生成。
+import "../../std/x25519.tie"
+using x25519;
+
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("      want=" + want)
+        exit(1)
+    }
+}
+
+func main() {
+    chk("v1a_dh", x25519.dh("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"), "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742")
+    chk("v1a_keygen", x25519.keygen("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a"), "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a")
+    chk("v2_dh", x25519.dh("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742", "e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c"), "6317fac63f5d03aec38eee8b8fc8e96552a622dcbffbe3750aa04f67d1f3f304")
+    chk("v2_keygen", x25519.keygen("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"), "0980081d6a9c895ba1638ba919a91179259a37f3355f85a4ca19452e3f220d4c")
+    chk("sym12", x25519.dh("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "1c9fd88f45606d932a80c71824ae151d15d73e77de38e8e000852e614fae7019"), "2fb6190b99eb61d7d9b8347649269a1b923d1326d60a01340ba88fa9761bb665")
+    chk("sym21", x25519.dh("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4", "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"), "2fb6190b99eb61d7d9b8347649269a1b923d1326d60a01340ba88fa9761bb665")
+    println("x25519 探针全部通过")
+}

@@ -1,0 +1,101 @@
+type tie<logic>
+// ed25519_probe.tie：纯 tie Ed25519 探针（RFC 8032 + PyNaCl 交叉向量）。
+// 覆盖：RFC 8032 §7.1 向量 1~3（空串/1 字节/2 字节消息）+ abc/长消息向量 + 随机
+//   （seed,msg）宜；keygen→sign→verify 往返、签名/公钥篡改拒绝、verify 对篡改
+//   签名的 0 判定。向量由 gen_vectors.py（PyNaCl, libsodium, RFC 8032 独立实现）生成。
+import "../../std/ed25519.tie"
+using ed25519;
+
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("      want=" + want)
+        exit(1)
+    }
+}
+
+func main() {
+    var seed_rfc1 = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    var pub_rfc1  = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    var msg_rfc1  = ""
+    var sig_rfc1  = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    chk("rfc1_keygen", ed25519.keygen(seed_rfc1), pub_rfc1)
+    chk("rfc1_sign", ed25519.sign(msg_rfc1, pub_rfc1, seed_rfc1), sig_rfc1)
+    chk("rfc1_verify", to_string(ed25519.verify(pub_rfc1, msg_rfc1, sig_rfc1)), "1")
+    chk("rfc1_verify_roundtrip", to_string(ed25519.verify(pub_rfc1, msg_rfc1, ed25519.sign(msg_rfc1, pub_rfc1, seed_rfc1))), "1")
+    chk("rfc1_tamper_pub", to_string(ed25519.verify("e75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", msg_rfc1, sig_rfc1)), "0")
+    chk("rfc1_tamper_sig", to_string(ed25519.verify(pub_rfc1, msg_rfc1, "f5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")), "0")
+    var seed_rfc2 = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    var pub_rfc2  = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+    var msg_rfc2  = "72"
+    var sig_rfc2  = "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+    chk("rfc2_keygen", ed25519.keygen(seed_rfc2), pub_rfc2)
+    chk("rfc2_sign", ed25519.sign(msg_rfc2, pub_rfc2, seed_rfc2), sig_rfc2)
+    chk("rfc2_verify", to_string(ed25519.verify(pub_rfc2, msg_rfc2, sig_rfc2)), "1")
+    chk("rfc2_verify_roundtrip", to_string(ed25519.verify(pub_rfc2, msg_rfc2, ed25519.sign(msg_rfc2, pub_rfc2, seed_rfc2))), "1")
+    chk("rfc2_tamper_pub", to_string(ed25519.verify("4d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", msg_rfc2, sig_rfc2)), "0")
+    chk("rfc2_tamper_sig", to_string(ed25519.verify(pub_rfc2, msg_rfc2, "a2a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")), "0")
+    var seed_rfc3 = "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7"
+    var pub_rfc3  = "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"
+    var msg_rfc3  = "af82"
+    var sig_rfc3  = "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"
+    chk("rfc3_keygen", ed25519.keygen(seed_rfc3), pub_rfc3)
+    chk("rfc3_sign", ed25519.sign(msg_rfc3, pub_rfc3, seed_rfc3), sig_rfc3)
+    chk("rfc3_verify", to_string(ed25519.verify(pub_rfc3, msg_rfc3, sig_rfc3)), "1")
+    chk("rfc3_verify_roundtrip", to_string(ed25519.verify(pub_rfc3, msg_rfc3, ed25519.sign(msg_rfc3, pub_rfc3, seed_rfc3))), "1")
+    chk("rfc3_tamper_pub", to_string(ed25519.verify("0c51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", msg_rfc3, sig_rfc3)), "0")
+    chk("rfc3_tamper_sig", to_string(ed25519.verify(pub_rfc3, msg_rfc3, "7291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a")), "0")
+    var seed_rfc1abc = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    var pub_rfc1abc  = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    var msg_rfc1abc  = "616263"
+    var sig_rfc1abc  = "80d724b01e7ca260f4cc7f8de7c95f73cfac615bab1f762b6435b6ec26c8cf6d2c758dae2f87399a8eeda1cbcd2835ac5ba66d6ecaa3aba5e567a751053dc207"
+    chk("rfc1abc_keygen", ed25519.keygen(seed_rfc1abc), pub_rfc1abc)
+    chk("rfc1abc_sign", ed25519.sign(msg_rfc1abc, pub_rfc1abc, seed_rfc1abc), sig_rfc1abc)
+    chk("rfc1abc_verify", to_string(ed25519.verify(pub_rfc1abc, msg_rfc1abc, sig_rfc1abc)), "1")
+    chk("rfc1abc_verify_roundtrip", to_string(ed25519.verify(pub_rfc1abc, msg_rfc1abc, ed25519.sign(msg_rfc1abc, pub_rfc1abc, seed_rfc1abc))), "1")
+    chk("rfc1abc_tamper_pub", to_string(ed25519.verify("e75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", msg_rfc1abc, sig_rfc1abc)), "0")
+    chk("rfc1abc_tamper_sig", to_string(ed25519.verify(pub_rfc1abc, msg_rfc1abc, "90d724b01e7ca260f4cc7f8de7c95f73cfac615bab1f762b6435b6ec26c8cf6d2c758dae2f87399a8eeda1cbcd2835ac5ba66d6ecaa3aba5e567a751053dc207")), "0")
+    var seed_long = "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7"
+    var pub_long  = "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"
+    var msg_long  = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    var sig_long  = "5c6aa93acb60ec275b14f3bb03ac8a36327eb380cf75b7d5085f23de0aeee583e2a33c938adff02b8e773f1ac70d2ff639aa951c34e2809dd8b6e4728d15b10d"
+    chk("long_keygen", ed25519.keygen(seed_long), pub_long)
+    chk("long_sign", ed25519.sign(msg_long, pub_long, seed_long), sig_long)
+    chk("long_verify", to_string(ed25519.verify(pub_long, msg_long, sig_long)), "1")
+    chk("long_verify_roundtrip", to_string(ed25519.verify(pub_long, msg_long, ed25519.sign(msg_long, pub_long, seed_long))), "1")
+    chk("long_tamper_pub", to_string(ed25519.verify("0c51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", msg_long, sig_long)), "0")
+    chk("long_tamper_sig", to_string(ed25519.verify(pub_long, msg_long, "6c6aa93acb60ec275b14f3bb03ac8a36327eb380cf75b7d5085f23de0aeee583e2a33c938adff02b8e773f1ac70d2ff639aa951c34e2809dd8b6e4728d15b10d")), "0")
+    var seed_rand0 = "8d5c2179f092d40a34e416cc1c2fbd0f2a7a203b478e16e4d5cdea14c05f1d2d"
+    var pub_rand0  = "ae0d731afe2842e206c0b229bed02c6270b82e3daeed914b6400754bb58ee32c"
+    var msg_rand0  = ""
+    var sig_rand0  = "a682271e854f1e1e61ce1d6e96982ba9888aae1b1dfae7a5a05c43442d8c4870ab2eb2ee6f72545323fc40cd92f6c82e62b7260d04fbfee0208fe2ee6184c603"
+    chk("rand0_keygen", ed25519.keygen(seed_rand0), pub_rand0)
+    chk("rand0_sign", ed25519.sign(msg_rand0, pub_rand0, seed_rand0), sig_rand0)
+    chk("rand0_verify", to_string(ed25519.verify(pub_rand0, msg_rand0, sig_rand0)), "1")
+    chk("rand0_verify_roundtrip", to_string(ed25519.verify(pub_rand0, msg_rand0, ed25519.sign(msg_rand0, pub_rand0, seed_rand0))), "1")
+    chk("rand0_tamper_pub", to_string(ed25519.verify("be0d731afe2842e206c0b229bed02c6270b82e3daeed914b6400754bb58ee32c", msg_rand0, sig_rand0)), "0")
+    chk("rand0_tamper_sig", to_string(ed25519.verify(pub_rand0, msg_rand0, "b682271e854f1e1e61ce1d6e96982ba9888aae1b1dfae7a5a05c43442d8c4870ab2eb2ee6f72545323fc40cd92f6c82e62b7260d04fbfee0208fe2ee6184c603")), "0")
+    var seed_rand1 = "a10f18d0007eb7ef69a63f66123d061d10060b326fcd895a4af14fe82b6dbbb5"
+    var pub_rand1  = "e9ac86d009e5510c4619364a7b143f421db4cf20b896a4b3bf4e2485a4156927"
+    var msg_rand1  = "b3fc0701da763428fa8404f7365354dc60b668277b80f876de41839e0a49"
+    var sig_rand1  = "e9009a21d7d70d13e9842119b18532d4f5b7b24df1d6df4e1e6b5beb8cfd50fc32e075728e1af63866fc04e4e43341ceefdfa2c4cd95d6e3d76182fe15c52d06"
+    chk("rand1_keygen", ed25519.keygen(seed_rand1), pub_rand1)
+    chk("rand1_sign", ed25519.sign(msg_rand1, pub_rand1, seed_rand1), sig_rand1)
+    chk("rand1_verify", to_string(ed25519.verify(pub_rand1, msg_rand1, sig_rand1)), "1")
+    chk("rand1_verify_roundtrip", to_string(ed25519.verify(pub_rand1, msg_rand1, ed25519.sign(msg_rand1, pub_rand1, seed_rand1))), "1")
+    chk("rand1_tamper_pub", to_string(ed25519.verify("f9ac86d009e5510c4619364a7b143f421db4cf20b896a4b3bf4e2485a4156927", msg_rand1, sig_rand1)), "0")
+    chk("rand1_tamper_sig", to_string(ed25519.verify(pub_rand1, msg_rand1, "f9009a21d7d70d13e9842119b18532d4f5b7b24df1d6df4e1e6b5beb8cfd50fc32e075728e1af63866fc04e4e43341ceefdfa2c4cd95d6e3d76182fe15c52d06")), "0")
+    var seed_rand2 = "38047ee65619bf079377cbdea6840864305d40e24422312b9d90422eb74d6530"
+    var pub_rand2  = "ba8d90b6a7633b67ac3a319178ef5191ae5295b5e4c4795c0a180eda6e8c3074"
+    var msg_rand2  = "1db92bf0"
+    var sig_rand2  = "760e2fb8cc63591e76bce30de8cf6ab9c1fe165e3a3853cdcb0475b3e3ac06d6ea4303584b59f1f445c8cf022748849022574cc48efec7b4b7c70dd1f34a9e08"
+    chk("rand2_keygen", ed25519.keygen(seed_rand2), pub_rand2)
+    chk("rand2_sign", ed25519.sign(msg_rand2, pub_rand2, seed_rand2), sig_rand2)
+    chk("rand2_verify", to_string(ed25519.verify(pub_rand2, msg_rand2, sig_rand2)), "1")
+    chk("rand2_verify_roundtrip", to_string(ed25519.verify(pub_rand2, msg_rand2, ed25519.sign(msg_rand2, pub_rand2, seed_rand2))), "1")
+    chk("rand2_tamper_pub", to_string(ed25519.verify("ca8d90b6a7633b67ac3a319178ef5191ae5295b5e4c4795c0a180eda6e8c3074", msg_rand2, sig_rand2)), "0")
+    chk("rand2_tamper_sig", to_string(ed25519.verify(pub_rand2, msg_rand2, "860e2fb8cc63591e76bce30de8cf6ab9c1fe165e3a3853cdcb0475b3e3ac06d6ea4303584b59f1f445c8cf022748849022574cc48efec7b4b7c70dd1f34a9e08")), "0")
+    println("ed25519 探针全部通过")
+}

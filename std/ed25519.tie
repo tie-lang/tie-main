@@ -1,0 +1,428 @@
+type tie<class>
+// ============================================================================
+// ed25519.tie：标准库——纯 tie Ed25519 签名（命名空间 ed25519，无 extern / 无 Rust）
+// 用途：Edwards-curve 数字签名（RFC 8032）。纯 bigint 底座（std/bigint.tie）+
+//   std/sha512.tie 实现，仅供演示/验证与内存受限嵌入式定制路径；不追求常数时间。
+//
+// 曲线（Curve25519 爱德华曲线，Ed25519）：
+//   x² + y² = 1 + d·x²·y²        （a = -1）
+//   p = 2^255 - 19；基数/子群阶 l = 2^252 + 27742317777372353535851937790883648493
+//   d = 121665·121666⁻¹ mod p；基点 B = (21529/…, 4/5)（仿射给出 Bx, By）。
+//
+// 接口（hex IO，与既有 std 一致）：
+//   ed25519.keygen(seed_hex)                       -> pubkey_hex（32 字节压缩公钥）
+//   ed25519.sign(msg_hex, pubkey_hex, seed_hex)    -> sig_hex（64 字节 = R‖S）
+//   ed25519.verify(pubkey_hex, msg_hex, sig_hex)   -> 0/1
+//
+// RFC 8032 流程：
+//   keygen：seed(32B) ─sha512→ h(64B)；a = clamp(h[0..31])；A = a·B；输出压缩 A。
+//   sign  ：r = sha512(prefix(h[32..63]) ‖ msg) mod l；R = r·B；
+//           k = sha512(R ‖ A ‖ msg) mod l；S = (r + k·a) mod l；输出 R‖S。
+//   verify：解码 A、R；k = sha512(R‖A‖msg) mod l；校验 [S]B == R + [k]A。
+//   （hash 输入在 hex 层解码为原始字节后再拼接哈希；签名/公钥/消息均为 32/32/不定字节）
+//
+// == 坐标与标量乘 ==
+//   点用仿射 (x,y)（各为 bigint mod p）；点加法用**统一定式**（Ed25519 为 complete
+//   twisted Edwards：a 为平方、d 非平方 → 加法定式对 doubling/identity 亦成立）：
+//     x3 = (x1·y2 + y1·x2) / (1 + d·x1·x2·y1·y2)
+//     y3 = (y1·y2 - a·x1·x2) / (1 - d·x1·x2·y1·y2) = (y1·y2 + x1·x2) / (1 - d·x1·x2·y1·y2)   （a = -1）
+//   标量乘 = 简单双-and-add（按标量 256 位逐位："置位则加" + 恒定的翻倍）。
+//   压缩编码：y 的 255 位小端 32 字节 + bit255(x 符号)；解压经 sqrt(y²-1)/(d·y²+1)。
+//   mod p sqrt：p≡5 (mod 8)，x = (u/v)^((p+3)/8)，校验后用 sqrt(-1) 旋正、按符号位取负。
+//
+// == 常数时间注记（安全）==
+//   点乘/压缩/解压均含分支且依赖标量/公钥机密位；tie/bigint 无硬件级常数时间保证
+//   （bigint.powmod/divrem 迭代次数不依赖机密值，但点双-and-add 按位分支）。本模块
+//   面向功能正确性演示与向量验证，**不提供侧信道隔离**；生产部署须在调用层复核。
+//
+// 向量来源：RFC 8032 §7.1（vector 1~3）与 PyNaCl（libsodium，RFC 8032 独立实现）
+//   交叉生成，探针硬编码断言。
+// 依赖：bigint.tie（变长 32 位 limb 表，见其头部）；sha512.tie（FIPS 180-4）。
+// ============================================================================
+
+// 顶层常量（懒构建）：域模数、群阶、曲线参数、基点、sqrt 算法常数（均 bigint 表）。
+var ed_p: table<i64>;        // 域模数 p = 2^255 - 19
+var ed_l: table<i64>;        // 群阶 l
+var ed_d: table<i64>;        // 扭曲常数 d
+var ed_bx: table<i64>;       // 基点 B 的 x
+var ed_by: table<i64>;       // 基点 B 的 y
+var ed_exp: table<i64>;      // (p+3)/8 = 2^252 - 2（sqrt 指数）
+var ed_sqr: table<i64>;      // sqrt(-1) = 2^((p-1)/4)
+var ed_one: table<i64>;      // 常数 1
+var ed_zero: table<i64>;     // 常数 0（空表）
+
+import "./bigint.tie" as bigint
+import "./sha512.tie" as sha512
+
+namespace ed25519 {
+
+// 惰性构建全部常量。
+func ensure_consts() {
+    if len(ed_p) > 0 {
+        return
+    }
+    ed_p = bigint.from_hex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed")
+    ed_l = bigint.from_hex("1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed")
+    ed_d = bigint.from_hex("52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3")
+    ed_bx = bigint.from_hex("216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51a")
+    ed_by = bigint.from_hex("6666666666666666666666666666666666666666666666666666666666666658")
+    ed_exp = bigint.from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe")
+    ed_sqr = bigint.from_hex("2b8324804fc1df0b2b4d00993dfbd7a72f431806ad2fe478c4ee1b274a0ea0b0")
+    ed_one = bigint.from_hex("1")
+    ed_zero = table_new_i64()
+}
+
+// ---------------------------------------------------------------------------
+// 基础字节/hex/标量工具
+// ---------------------------------------------------------------------------
+
+// 单字符十六进制数字（0..15）；非十六进制返回 0。
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    var up = "ABCDEF"
+    i = 0
+    while i < 6 {
+        if str_char(up, i) == c {
+            return 10 + i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// hex 字符串 → 字节表（每 2 位 hex 一个字节 0..255）。
+func hex_to_bytes(h: string) -> table<i64> {
+    var n: i64 = len(h) / 2
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i * 2))
+        var lo = hex_nibble(str_char(h, i * 2 + 1))
+        table_push(t, (hi << 4) | lo)
+        i = i + 1
+    }
+    return t
+}
+
+// 字节 → 2 位小写 hex。
+func hex2(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, (v >> 4) & 0xF) + str_char(hex, v & 0xF)
+}
+
+// 字节表 → 连续小写 hex 字符串。
+func bytes_to_hex(t: table<i64>) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(t) {
+        out = out + hex2(t[i])
+        i = i + 1
+    }
+    return out
+}
+
+// 拼接两个字节表。
+func concat(a: table<i64>, b: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(a) {
+        table_push(r, a[i])
+        i = i + 1
+    }
+    i = 0
+    while i < len(b) {
+        table_push(r, b[i])
+        i = i + 1
+    }
+    return r
+}
+
+// 截取字节表 [from, to)。
+func bt_slice(t: table<i64>, from: i64, to: i64) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = from
+    while i < to {
+        table_push(r, t[i])
+        i = i + 1
+    }
+    return r
+}
+
+// 小端字节表 → bigint（bt[0] 为最低字节）。
+func scalar_bytes(bt: table<i64>) -> table<i64> {
+    var hexbe: string = ""
+    var i: i64 = len(bt) - 1
+    while i >= 0 {
+        hexbe = hexbe + hex2(bt[i])
+        i = i - 1
+    }
+    return bigint.from_hex(hexbe)
+}
+
+// 标量（bigint）→ n 字节小端 hex。
+func int_le_hex(x: table<i64>, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        var b: i64 = 0
+        if (i / 4) < len(x) {
+            b = (x[i / 4] >> ((i % 4) * 8)) & 0xFF
+        }
+        out = out + hex2(b)
+        i = i + 1
+    }
+    return out
+}
+
+// a 缩放（clamping）：c0&=248, b31&=127, b31|=64；输入 32 字节 → 标量 bigint。
+func clamp_bytes(bt: table<i64>) -> table<i64> {
+    var c = table_new_i64()
+    var i: i64 = 0
+    while i < 32 {
+        table_push(c, bt[i])
+        i = i + 1
+    }
+    c[0] = c[0] & 248
+    c[31] = c[31] & 127
+    c[31] = c[31] | 64
+    return scalar_bytes(c)
+}
+
+// 取标量第 i 位（0/1）；越位返回 0。
+func scalar_bit(s: table<i64>, i: i64) -> i64 {
+    var limb = i / 32
+    if limb >= len(s) {
+        return 0
+    }
+    return (s[limb] >> (i % 32)) & 1
+}
+
+// ---------------------------------------------------------------------------
+// 域运算（mod p）
+// ---------------------------------------------------------------------------
+func fadd(a: table<i64>, b: table<i64>) -> table<i64> {
+    return bigint.mod(bigint.add(a, b), ed_p)
+}
+func fsub(a: table<i64>, b: table<i64>) -> table<i64> {
+    if bigint.cmp(a, b) >= 0 {
+        return bigint.mod(bigint.sub(a, b), ed_p)
+    }
+    return bigint.mod(bigint.sub(ed_p, bigint.sub(b, a)), ed_p)
+}
+func fmul(a: table<i64>, b: table<i64>) -> table<i64> {
+    return bigint.mod(bigint.mul(a, b), ed_p)
+}
+func finv(a: table<i64>) -> table<i64> {
+    return bigint.invmod(a, ed_p)
+}
+func fneg(a: table<i64>) -> table<i64> {
+    if bigint.is_zero(a) {
+        return ed_zero
+    }
+    return bigint.sub(ed_p, a)
+}
+func feq(a: table<i64>, b: table<i64>) -> bool {
+    return bigint.cmp(a, b) == 0
+}
+
+// ---------------------------------------------------------------------------
+// 点运算（仿射，统一定式）
+// ---------------------------------------------------------------------------
+
+// 点加法（统一定式，涵盖 doubling 与 identity(0,1)）。
+func point_add(x1: table<i64>, y1: table<i64>, x2: table<i64>, y2: table<i64>) -> (table<i64>, table<i64>) {
+    var x1x2 = fmul(x1, x2)
+    var y1y2 = fmul(y1, y2)
+    var a1 = fmul(y1, x2)
+    var b1 = fmul(x1, y2)
+    var c1 = fmul(x1x2, y1y2)
+    var dcoef = fmul(ed_d, c1)              // d·x1·x2·y1·y2
+    var num_x = fadd(a1, b1)                // x1·y2 + y1·x2
+    var den_x = fadd(ed_one, dcoef)         // 1 + d·x1·x2·y1·y2
+    var x3 = fmul(num_x, finv(den_x))
+    var num_y = fadd(y1y2, x1x2)            // a=-1 → y1·y2 - (a)·x1·x2 = y1·y2 + x1·x2
+    var den_y = fsub(ed_one, dcoef)         // 1 - d·x1·x2·y1·y2
+    var y3 = fmul(num_y, finv(den_y))
+    return (x3, y3)
+}
+
+// 标量乘：逐位双-and-add（256 位上限，涵盖任意 256 位标量）。
+func point_mul(s: table<i64>, bx: table<i64>, by: table<i64>) -> (table<i64>, table<i64>) {
+    var rx = ed_zero
+    var ry = ed_one
+    var tx = bx
+    var ty = by
+    var i: i64 = 0
+    while i < 256 {
+        if scalar_bit(s, i) != 0 {
+            var (nx, ny) = point_add(rx, ry, tx, ty)
+            rx = nx
+            ry = ny
+        }
+        var (dx, dy) = point_add(tx, ty, tx, ty)
+        tx = dx
+        ty = dy
+        i = i + 1
+    }
+    return (rx, ry)
+}
+
+// ---------------------------------------------------------------------------
+// 点编码/解码
+// ---------------------------------------------------------------------------
+
+// 压缩编码：y 的 255 位小端 32 字节，bit255 = x 符号（x 为奇 → 1）。
+func point_encode(x: table<i64>, y: table<i64>) -> string {
+    var sign: i64 = 0
+    if len(x) > 0 && (x[0] & 1) != 0 {
+        sign = 0x80
+    }
+    var out: string = ""
+    var i: i64 = 0
+    while i < 32 {
+        var b: i64 = 0
+        if (i / 4) < len(y) {
+            b = (y[i / 4] >> ((i % 4) * 8)) & 0xFF
+        }
+        if i == 31 {
+            b = b | sign
+        }
+        out = out + hex2(b)
+        i = i + 1
+    }
+    return out
+}
+
+// 由 y 恢复 x（sqrt((y²-1)/(d·y²+1)) mod p），返回负载坐标；sign 为符号位期望。
+// 成功返回 (x, true)；无平方根/非规范 → (0, false)。
+func recover_x(y: table<i64>, sign: i64) -> (table<i64>, bool) {
+    var y2 = fmul(y, y)
+    var u = fsub(y2, ed_one)                 // y² - 1
+    var v = fadd(fmul(ed_d, y2), ed_one)     // d·y² + 1
+    var inv_v = finv(v)
+    if bigint.is_zero(inv_v) {
+        return (ed_zero, false)
+    }
+    var xs = fmul(u, inv_v)
+    var cand = bigint.powmod(xs, ed_exp, ed_p)   // xs^((p+3)/8)
+    var c2 = fmul(cand, cand)
+    if !feq(c2, xs) {
+        var cand2 = fmul(cand, ed_sqr)           // 乘 sqrt(-1)
+        var c3 = fmul(cand2, cand2)
+        if !feq(c3, xs) {
+            return (ed_zero, false)
+        }
+        cand = cand2
+    }
+    // 符号位校正：x 奇偶与 sign 期望不符 → 取负
+    var xodd: i64 = 0
+    if len(cand) > 0 && (cand[0] & 1) != 0 {
+        xodd = 1
+    }
+    if xodd != sign {
+        cand = fneg(cand)
+    }
+    return (cand, true)
+}
+
+// 解码压缩点（enc 为 64 hex 字符）→ (x, y, ok)。
+func point_decode(enc: string) -> (table<i64>, table<i64>, bool) {
+    var bt = hex_to_bytes(enc)
+    if len(bt) < 32 {
+        return (ed_zero, ed_zero, false)
+    }
+    var sign: i64 = (bt[31] >> 7) & 1
+    bt[31] = bt[31] & 0x7F
+    var y = scalar_bytes(bt)
+    if bigint.cmp(y, ed_p) >= 0 {
+        return (ed_zero, ed_zero, false)     // 非规范 y 拒绝
+    }
+    var (x, ok) = recover_x(y, sign)
+    if !ok {
+        return (ed_zero, ed_zero, false)
+    }
+    return (x, y, true)
+}
+
+// ---------------------------------------------------------------------------
+// 公开接口
+// ---------------------------------------------------------------------------
+
+// 密钥生成：seed(32B) → 压缩公钥。
+pub func keygen(seed_hex: string) -> string {
+    ensure_consts()
+    var seed = hex_to_bytes(seed_hex)
+    var hh = hex_to_bytes(sha512.sha512_bytes(seed))
+    var a = clamp_bytes(bt_slice(hh, 0, 32))
+    var (ax, ay) = point_mul(a, ed_bx, ed_by)
+    return point_encode(ax, ay)
+}
+
+// 签名：R‖S（RFC 8032）。
+pub func sign(msg_hex: string, pubkey_hex: string, seed_hex: string) -> string {
+    ensure_consts()
+    var seed = hex_to_bytes(seed_hex)
+    var hh = hex_to_bytes(sha512.sha512_bytes(seed))
+    var a = clamp_bytes(bt_slice(hh, 0, 32))
+    var prefix = bt_slice(hh, 32, 64)
+    var msg = hex_to_bytes(msg_hex)
+    // r = sha512(prefix ‖ msg) mod l
+    var r64 = hex_to_bytes(sha512.sha512_bytes(concat(prefix, msg)))
+    var r = bigint.mod(scalar_bytes(r64), ed_l)
+    var (rx, ry) = point_mul(r, ed_bx, ed_by)
+    var renc = point_encode(rx, ry)
+    // k = sha512(R ‖ A ‖ msg) mod l
+    var pubk = hex_to_bytes(pubkey_hex)
+    var k64 = hex_to_bytes(sha512.sha512_bytes(concat(concat(hex_to_bytes(renc), pubk), msg)))
+    var k = bigint.mod(scalar_bytes(k64), ed_l)
+    // S = (r + k·a) mod l
+    var ka = bigint.mod(bigint.mul(k, a), ed_l)
+    var S = bigint.mod(bigint.add(r, ka), ed_l)
+    return renc + int_le_hex(S, 32)
+}
+
+// 验证：返回 0（拒绝）或 1（接受）。
+pub func verify(pubkey_hex: string, msg_hex: string, sig_hex: string) -> i64 {
+    ensure_consts()
+    var pubk = hex_to_bytes(pubkey_hex)
+    var msg = hex_to_bytes(msg_hex)
+    var sig = hex_to_bytes(sig_hex)
+    if len(sig) < 64 {
+        return 0
+    }
+    var renc = bytes_to_hex(bt_slice(sig, 0, 32))
+    var S_bytes = bt_slice(sig, 32, 64)
+    var S = scalar_bytes(S_bytes)
+    if bigint.cmp(S, ed_l) >= 0 {
+        return 0
+    }
+    var (Ax, Ay, aok) = point_decode(pubkey_hex)
+    if !aok {
+        return 0
+    }
+    var (Rx, Ry, rok) = point_decode(renc)
+    if !rok {
+        return 0
+    }
+    var k64 = hex_to_bytes(sha512.sha512_bytes(concat(concat(hex_to_bytes(renc), pubk), msg)))
+    var k = bigint.mod(scalar_bytes(k64), ed_l)
+    // [S]B == R + [k]A
+    var (lx, ly) = point_mul(S, ed_bx, ed_by)
+    var (kAx, kAy) = point_mul(k, Ax, Ay)
+    var (r2x, r2y) = point_add(kAx, kAy, Rx, Ry)
+    var lenc = point_encode(lx, ly)
+    var renc2 = point_encode(r2x, r2y)
+    if lenc == renc2 {
+        return 1
+    }
+    return 0
+}
+
+}   // namespace ed25519
