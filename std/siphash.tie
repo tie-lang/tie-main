@@ -1,0 +1,178 @@
+type tie<class>
+// ============================================================================
+// siphash.tie：标准库——SipHash-2-4（非加密快速哈希，命名空间 siph）
+// 用途：哈希表 / 防哈希洪泛（随机化键值）等非加密场景；短输入快且抗简单碰撞。
+//   与 SipHash-2-4 参考实现（siphashc）二进制兼容。
+// 接口：
+//   siph.sip24(key0: i64, key1: i64, s: string) -> string
+//     返回 64 位结果按**无符号 8 字节大端 hex**（16 位 hex，高位在前）。
+//     默认无密钥：sip24(0, 0, s)。key0/key1 为 128 位密钥的两个 64 位半分（位模式）。
+// 逐**字节**处理（str_byte + len）。
+//
+// 算法（SipHash-2-4）：4 字状态 v0..v3＝常量^key；按 8 字节小端分块 v3^=m、2 轮、v0^=m；
+//   末块把 (长度<<56|剩余字节小端) 浓缩为 b：v3^=b、2 轮、v0^=b；v2^=0xff；4 轮；返回 v0^v1^v2^v3。
+//   64 位用 [hi,lo] 半分表表示；加法进位、循环左移经原语实现。
+// == 数值安全 == 操作数恒 <2^32 正；`>>` 对正操作数即逻辑右移（同 sha256 论证）。
+//
+// 标准向量（SipHash-2-4 参考 / siphashc，key=0，已核对）：
+//   sip24(0,0,"")        = 1e924b9d737700d7
+//   sip24(0,0,"12345678")= 5de7ecc4ba81e998
+// 探针：tests/hash2_probe/siphash_probe.tie。命名空间内互调为裸调用。
+// ============================================================================
+
+namespace siph {
+
+func w(hi: i64, lo: i64) -> table<i64> {
+    var o = table_new_i64()
+    table_push(o, hi & 0xFFFFFFFF)
+    table_push(o, lo & 0xFFFFFFFF)
+    return o
+}
+func addv(a: table<i64>, b: table<i64>) -> table<i64> {
+    var s = (a[1] + b[1]) & 0xFFFFFFFF
+    var carry = (a[1] + b[1]) >> 32
+    return w((a[0] + b[0] + carry) & 0xFFFFFFFF, s)
+}
+func xorr(a: table<i64>, b: table<i64>) -> table<i64> {
+    return w(a[0] ^ b[0], a[1] ^ b[1])
+}
+func shl(a: table<i64>, r: i64) -> table<i64> {
+    if r == 0 {
+        return w(a[0], a[1])
+    }
+    if r < 32 {
+        return w(((a[0] << r) | (a[1] >> (32 - r))) & 0xFFFFFFFF, (a[1] << r) & 0xFFFFFFFF)
+    }
+    if r == 32 {
+        return w(a[1], 0)
+    }
+    return w((a[1] << (r - 32)) & 0xFFFFFFFF, 0)
+}
+func lsr(a: table<i64>, r: i64) -> table<i64> {
+    if r == 0 {
+        return w(a[0], a[1])
+    }
+    if r < 32 {
+        return w((a[0] >> r) & 0xFFFFFFFF, ((a[1] >> r) | (a[0] << (32 - r))) & 0xFFFFFFFF)
+    }
+    if r == 32 {
+        return w(0, a[0])
+    }
+    return w(0, (a[0] >> (r - 32)) & 0xFFFFFFFF)
+}
+func orr(a: table<i64>, b: table<i64>) -> table<i64> {
+    return w(a[0] | b[0], a[1] | b[1])
+}
+func rol(a: table<i64>, r: i64) -> table<i64> {
+    if r == 0 {
+        return w(a[0], a[1])
+    }
+    return orr(shl(a, r), lsr(a, 64 - r))
+}
+func rd64(s: string, n: i64, off: i64) -> table<i64> {
+    var lo: i64 = 0
+    var hi: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var b: i64 = 0
+        if off + j < n {
+            b = str_byte(s, off + j)
+        }
+        lo = (lo | (b << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        var b2: i64 = 0
+        if off + 4 + j < n {
+            b2 = str_byte(s, off + 4 + j)
+        }
+        hi = (hi | (b2 << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return w(hi, lo)
+}
+
+// 状态 s 为 8 项：[v0hi,v0lo, v1hi,v1lo, v2hi,v2lo, v3hi,v3lo]。跑 n 轮 SIPROUND。
+func sip_do(s: ref table<i64>, rounds: i64) {
+    var i: i64 = 0
+    while i < rounds {
+        var v0 = w(s[0], s[1]); var v1 = w(s[2], s[3]); var v2 = w(s[4], s[5]); var v3 = w(s[6], s[7])
+        v0 = addv(v0, v1)
+        v1 = rol(v1, 13); v1 = xorr(v1, v0)
+        v0 = rol(v0, 32)
+        v2 = addv(v2, v3)
+        v3 = rol(v3, 16); v3 = xorr(v3, v2)
+        v0 = addv(v0, v3)
+        v3 = rol(v3, 21); v3 = xorr(v3, v0)
+        v2 = addv(v2, v1)
+        v1 = rol(v1, 17); v1 = xorr(v1, v2)
+        v2 = rol(v2, 32)
+        s[0] = v0[0]; s[1] = v0[1]
+        s[2] = v1[0]; s[3] = v1[1]
+        s[4] = v2[0]; s[5] = v2[1]
+        s[6] = v3[0]; s[7] = v3[1]
+        i = i + 1
+    }
+}
+
+func hex8(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var p: i64 = 0
+    while p < 8 {
+        var shift = 28 - p * 4
+        var nib = (v >> shift) & 0xF
+        out = out + str_char(hex, nib)
+        p = p + 1
+    }
+    return out
+}
+
+// SipHash-2-4：key0/key1 128 位密钥（默认 0），返回 16 位小写 hex。
+pub func sip24(key0: i64, key1: i64, s: string) -> string {
+    var kh = w((key0 >> 32) & 0xFFFFFFFF, key0 & 0xFFFFFFFF)
+    var k1 = w((key1 >> 32) & 0xFFFFFFFF, key1 & 0xFFFFFFFF)
+    var st = table_new_i64()
+    var v0 = xorr(w(0x736F6D65, 0x70736575), kh)
+    var v1 = xorr(w(0x646F7261, 0x6E646F6D), k1)
+    var v2 = xorr(w(0x6C796765, 0x6E657261), kh)
+    var v3 = xorr(w(0x74656462, 0x79746573), k1)
+    table_push(st, v0[0]); table_push(st, v0[1])
+    table_push(st, v1[0]); table_push(st, v1[1])
+    table_push(st, v2[0]); table_push(st, v2[1])
+    table_push(st, v3[0]); table_push(st, v3[1])
+    var n: i64 = len(s)
+    var pos: i64 = 0
+    while pos + 8 <= n {
+        var m = rd64(s, n, pos)
+        st[6] = st[6] ^ m[0]; st[7] = st[7] ^ m[1]   // v3 ^= m
+        sip_do(st, 2)
+        st[0] = st[0] ^ m[0]; st[1] = st[1] ^ m[1]   // v0 ^= m
+        pos = pos + 8
+    }
+    // 末块：长度<<56 | 剩余字节按小端高位
+    var b = w((n << 24) & 0xFFFFFFFF, 0)
+    var rem = n - pos
+    var j: i64 = 0
+    while j < rem {
+        var byte = str_byte(s, pos + j)
+        if 8 * j < 32 {
+            b = w(b[0], (b[1] | (byte << (8 * j))) & 0xFFFFFFFF)
+        } else {
+            b = w((b[0] | (byte << (8 * j - 32))) & 0xFFFFFFFF, b[1])
+        }
+        j = j + 1
+    }
+    st[6] = st[6] ^ b[0]; st[7] = st[7] ^ b[1]   // v3 ^= b
+    sip_do(st, 2)
+    st[0] = st[0] ^ b[0]; st[1] = st[1] ^ b[1]   // v0 ^= b
+    st[4] = st[4] ^ 0; st[5] = st[5] ^ 0xFF      // v2 ^= 0xff
+    sip_do(st, 4)
+    var rh = (st[0] ^ st[2] ^ st[4] ^ st[6]) & 0xFFFFFFFF
+    var rl = (st[1] ^ st[3] ^ st[5] ^ st[7]) & 0xFFFFFFFF
+    return hex8(rh) + hex8(rl)
+}
+
+}   // namespace siph
+

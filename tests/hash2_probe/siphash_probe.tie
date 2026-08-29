@@ -1,0 +1,28 @@
+type tie<logic>
+// siphash（SipHash-2-4）探针：key=0 多向量 + 块边界（0/3/55/56/64/65/128/129）。
+// 向量来源：参考 siphashc（SipHash-2-4）交叉核对，列表见 gen_vectors.py。
+import "../../std/siphash.tie"
+using siph;
+func check(name: string, got: string, want: string) {
+    if got == want { println("PASS " + name) }
+    else { println("FAIL " + name + " got=" + got); println("     want=" + want); exit(1) }
+}
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n { out = out + c; i = i + 1 }
+    return out
+}
+func main() {
+    // 任务指定向量（key=0，空串）
+    check("sip empty", siph.sip24(0, 0, ""), "1e924b9d737700d7")
+    check("sip abc", siph.sip24(0, 0, "abc"), "3fc884964770eede")
+    check("sip b8", siph.sip24(0, 0, "12345678"), "5de7ecc4ba81e998")
+    check("sip a55", siph.sip24(0, 0, rep("a", 55)), "d961e297294483e1")
+    check("sip a56", siph.sip24(0, 0, rep("a", 56)), "ff418af1af77a1fe")
+    check("sip a64", siph.sip24(0, 0, rep("a", 64)), "7005fd4ff4e327a1")
+    check("sip a65", siph.sip24(0, 0, rep("a", 65)), "90aa7de89897b1f8")
+    check("sip a128", siph.sip24(0, 0, rep("a", 128)), "a49092dc436408e2")
+    check("sip a129", siph.sip24(0, 0, rep("a", 129)), "f885735d28133994")
+    println("siphash 探针全部通过")
+}
