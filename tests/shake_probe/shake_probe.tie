@@ -1,0 +1,94 @@
+type tie<logic>
+// shake 探针：SHAKE128/256 XOF 向量（NIST FIPS 202 官方前 32B）+
+//   非 32 倍 / 非 8 倍 / 跨 rate 边界（Python hashlib.shake_128/_256 交叉）。
+// 输入约定：hex 小写字符串（字节级），"abc" 传 "616263"；outlen 为输出字节数。
+import "../../std/shake.tie"
+using shake;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func main() {
+    // ---- 任务指定 NIST 官方向量（空串 / abc，前 32B）----
+    check("s128 empty 32", shake.shake128("", 32),
+        "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26")
+    check("s128 abc   32", shake.shake128("616263", 32),
+        "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8")
+    check("s256 empty 32", shake.shake256("", 32),
+        "46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f")
+    check("s256 abc   32", shake.shake256("616263", 32),
+        "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739")
+
+    // ---- Python 交叉：outlen 非 32 倍（48/64 字节）----
+    check("s128 empty 48", shake.shake128("", 48),
+        "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26" +
+        "3cb1eea988004b93103cfb0aeefd2a68")
+    check("s128 empty 64", shake.shake128("", 64),
+        "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26" +
+        "3cb1eea988004b93103cfb0aeefd2a686e01fa4a58e8a3639ca8a1e3f9ae57e2")
+    check("s128 abc   48", shake.shake128("616263", 48),
+        "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8" +
+        "44c50af32acd3f2cdd066568706f509b")
+    check("s128 abc   64", shake.shake128("616263", 64),
+        "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8" +
+        "44c50af32acd3f2cdd066568706f509bc1bdde58295dae3f891a9a0fca578378")
+    check("s256 empty 48", shake.shake256("", 48),
+        "46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f" +
+        "d75dc4ddd8c0f200cb05019d67b592f6")
+    check("s256 empty 64", shake.shake256("", 64),
+        "46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f" +
+        "d75dc4ddd8c0f200cb05019d67b592f6fc821c49479ab48640292eacb3b7c4be")
+    check("s256 abc   48", shake.shake256("616263", 48),
+        "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739" +
+        "d5a15bef186a5386c75744c0527e1faa")
+    check("s256 abc   64", shake.shake256("616263", 64),
+        "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739" +
+        "d5a15bef186a5386c75744c0527e1faa9f8726e462a12a4feb06bd8801e751e4")
+
+    // ---- 非 8 倍边界（XOF 任意字节长度）----
+    check("s128 empty 17", shake.shake128("", 17),
+        "7f9c2ba4e88f827d616045507605853ed7")
+    check("s256 empty 17", shake.shake256("", 17),
+        "46b9dd2b0ba88d13233b3feb743eeb243f")
+
+    // ---- 跨 rate 块的多段挤压（squeezed-off 区不吸收异或）----
+    // SHAKE128 rate=168：恰满一个性能块（168 字节）……
+    check("s128 abc  168", shake.shake128("616263", 168),
+        "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8" +
+        "44c50af32acd3f2cdd066568706f509bc1bdde58295dae3f891a9a0fca578378" +
+        "9a41f8611214ce612394df286a62d1a2252aa94db9c538956c717dc2bed4f232" +
+        "a0294c857c730aa16067ac1062f1201fb0d377cfb9cde4c63599b27f3462bba4" +
+        "a0ed296c801f9ff7f57302bb3076ee145f97a32ae68e76ab66c48d51675bd49a" +
+        "cc29082f5647584e")
+    // ……再挤 1 字节触发第二次置换（169 字节，验证多段挤压输出只来自率区）。
+    check("s128 abc  169", shake.shake128("616263", 169),
+        "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8" +
+        "44c50af32acd3f2cdd066568706f509bc1bdde58295dae3f891a9a0fca578378" +
+        "9a41f8611214ce612394df286a62d1a2252aa94db9c538956c717dc2bed4f232" +
+        "a0294c857c730aa16067ac1062f1201fb0d377cfb9cde4c63599b27f3462bba4" +
+        "a0ed296c801f9ff7f57302bb3076ee145f97a32ae68e76ab66c48d51675bd49a" +
+        "cc29082f5647584e6a")
+    // SHAKE256 rate=136：恰满率块（136 字节）。
+    check("s256 abc  136", shake.shake256("616263", 136),
+        "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739" +
+        "d5a15bef186a5386c75744c0527e1faa9f8726e462a12a4feb06bd8801e751e4" +
+        "1385141204f329979fd3047a13c5657724ada64d2470157b3cdc288620944d78" +
+        "dbcddbd912993f0913f164fb2ce95131a2d09a3e6d51cbfc622720d7a75c6334" +
+        "e8a2d7ec71a7cc29")
+    // SHAKE256 abc 169 字节：rate=136 → 第二次置换后再取 33 字节。
+    check("s256 abc  169", shake.shake256("616263", 169),
+        "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739" +
+        "d5a15bef186a5386c75744c0527e1faa9f8726e462a12a4feb06bd8801e751e4" +
+        "1385141204f329979fd3047a13c5657724ada64d2470157b3cdc288620944d78" +
+        "dbcddbd912993f0913f164fb2ce95131a2d09a3e6d51cbfc622720d7a75c6334" +
+        "e8a2d7ec71a7cc29cf0ea610eeff1a588290a53000faa79932becec0bd3cd0b3" +
+        "3a7e5d397fed1ada94")
+    println("shake 探针全部通过")
+}
