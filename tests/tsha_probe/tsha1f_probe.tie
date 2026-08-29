@@ -1,0 +1,55 @@
+type tie<logic>
+// tsha1f-256 探针：正例多向量 + 长消息/块边界（空串/abc/1000x'a'/55/56/63/64/65/
+// 127/128/129/256 字节，触及纯零末块、满块、跨块分支）。哈希为确定性函数，负例即
+// "改变输入输出必变"，此处以边界长度充分覆盖填充分支。期望输出全部 PASS。
+// 向量来源：tests/tsha_probe/gen_vectors.py（私有种子扩展参考生成器，已核对）。
+import "../../std/tsha1.tie"
+using tsha;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    check("f empty", tsha.tsha1f(""),
+        "049a7e459a4558bced881efef7b15a0f29a306bd95cd898645df15d9895fcd9e")
+    check("f abc", tsha.tsha1f("abc"),
+        "2c3fe6f973eb8ea150c24d8c5a20ea38f0a4d5590c58b868806dacd32eda3cd4")
+    check("f a1000", tsha.tsha1f(rep("a", 1000)),
+        "9f74677d24005bc307237035d0ebacad5ca178b8378938f7b40c7976f1611336")
+    check("f b55", tsha.tsha1f(rep("a", 55)),
+        "76d2b4e936ff645c0236892ad9871ecf5f36cf7e42319a2c31043659a0caf68a")
+    check("f b56", tsha.tsha1f(rep("a", 56)),
+        "4bf3d38aeac9db1135b302387c0b8e0fc75cfac321f09f7eddb07e64fe991b6d")
+    check("f b63", tsha.tsha1f(rep("a", 63)),
+        "256aa8c064490ac5803067d8a979ec6f49521a05f410ed23891a2238315f5f7e")
+    check("f b64", tsha.tsha1f(rep("a", 64)),
+        "61d24c5db1b2697021db71261e4b4c0d53b65851fabfafb489cea6d5910976b7")
+    check("f b65", tsha.tsha1f(rep("a", 65)),
+        "e88b6b13b9ae0f0f6d19821784805d0d1d43efec194dcb59ea090d8911610f62")
+    check("f b127", tsha.tsha1f(rep("a", 127)),
+        "3f686db05da9cc56c7a9fce744753a6f2d6c517ced4553202c9e135ac6fae824")
+    check("f b128", tsha.tsha1f(rep("a", 128)),
+        "a676a707c3e6a21cab96f033617ef5bf77bef7f7814fa357e410e2ab6ae42c9d")
+    check("f b129", tsha.tsha1f(rep("a", 129)),
+        "1a65838bdc779d2f19c278d393caea5c11507eca23535232cf63e7ffc93761d8")
+    check("f b256", tsha.tsha1f(rep("a", 256)),
+        "6dd037f01f5d1f8fdc35e14b1b4cc9e2af75b832557bbc988bcb974e3f5f0ee8")
+    println("tsha1f 探针全部通过")
+}
