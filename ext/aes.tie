@@ -1,0 +1,491 @@
+type tie<class>
+// ============================================================================
+// aes.tie：ext——AES-128 / AES-256 对称加密（命名空间 aes）
+// 用途：块加密底座（ECB/CBC），面向通用平台与文档/存档加密场景。
+// 接口（IO 统一为 **小写 hex 字符串**，因 tie 字符串不能承载 ≥0x80 原始字节）：
+//   aes.encrypt_ecb(key: string, block: string) -> string   密钥 32 或 64 hex（16/32 字节），块 32 hex（16 字节）→ 32 hex
+//   aes.decrypt_ecb(key: string, block: string) -> string   同上，逆运算
+//   aes.encrypt_cbc(key: string, iv: string, msg: string) -> string   iv 32 hex（16 字节）；msg hex，PKCS7 填充；返回加密后 hex（16 字节倍数）
+//   aes.decrypt_cbc(key: string, iv: string, ct: string) -> string    逆运算，去 PKCS7，返回原始消息 hex
+//   密钥长度按 hex 长度判定：32 hex → AES-128，64 hex → AES-256。
+//
+// == 算法（FIPS 197）==
+//   - S 盒：GF(2^8) 生成——乘法逆元（x^254）后仿射变换（b ^= rol(b,4)…. ^ 0x63），
+//     逐字节建表（懒构建到全局 aes_sbox/aes_isbox），逆 S 盒为正向表反查。
+//   - 轮密钥扩展：big-endian 32 位字；Nk=4/8（AES-128/256），Nr=Nk+6=10/14；
+//     RotWord+SubWord+Rcon（Nk=8 时 i%Nk==4 分支做 SubWord）。
+//   - 内态 16 字节列为主（byte idx = col*4+row）：SubBytes / ShiftRows(左移 r) /
+//     MixColumns(xtime) / AddRoundKey。
+//   - 解密用标准逆置换：InvShiftRows / InvSubBytes / AddRoundKey / InvMixColumns
+//     （GF 常数 9/11/13/14 × 列向量），预白化末/首轮 AddRoundKey。
+//   - CBC：PKCS7 填充（pad=16-(n%16)，pad==0 时补一整块），链式 XOR，解密去填充。
+//
+// == 验证（FIPS 197 + pycryptodome 交叉，已核对）==
+//   key=000102…0f, pt=001122…ff → 69c4e0d86a7b0430d8cdb78070b4c55a（AES-128）
+//   key=000102…1f, pt=001122…ff → 8ea2b7ca516745bfeafc49904b496089（AES-256）
+//   CBC 向量见 tests/cipher_probe/aes_probe.tie（与 pycryptodome AES-CBC-PKCS7 逐一相等）。
+// 备注：命名空间内互调为裸调用，内部函数不加 aes_ 前缀（同 sha/blake/ascon_mac）。
+// ============================================================================
+
+var aes_sbox: table<i64>;     // S 盒（256 项）
+var aes_isbox: table<i64>;    // 逆 S 盒（256 项）
+
+namespace aes {
+
+// ---- 通用 hex / 字节表 ----
+
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// hex 字符串 → 字节表（每两位 hex 一个 0..255 字节；输入须偶数长度）。
+func hex_to_bytes(h: string) -> table<i64> {
+    var out = table_new_i64()
+    var n: i64 = len(h)
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i))
+        var lo = hex_nibble(str_char(h, i + 1))
+        table_push(out, (hi << 4) | lo)
+        i = i + 2
+    }
+    return out
+}
+
+// 字节表 → 小写 hex 字符串。
+func bytes_to_hex(bs: table<i64>) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(bs) {
+        out = out + str_char(hex, (bs[i] >> 4) & 0xF) + str_char(hex, bs[i] & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+// ---- GF(2^8) 与 S 盒 ----
+
+// GF(2^8) 乘法（不可约多项式 x^8+x^4+x^3+x+1 = 0x11b，xtime 式）。
+func gf_mul(a: i64, b: i64) -> i64 {
+    var p: i64 = 0
+    var aa = a
+    var bb = b
+    while aa > 0 {
+        if (aa & 1) != 0 {
+            p = p ^ bb
+        }
+        aa = aa >> 1
+        var hi = bb & 0x80
+        bb = (bb << 1) & 0xFF
+        if hi != 0 {
+            bb = bb ^ 0x1B
+        }
+    }
+    return p & 0xFF
+}
+
+// GF(2^8) 幂乘；x^254 = x^-1（非零元）。
+func gf_pow(a: i64, e: i64) -> i64 {
+    var r: i64 = 1
+    var aa = a
+    var ee = e
+    while ee > 0 {
+        if (ee & 1) != 0 {
+            r = gf_mul(r, aa)
+        }
+        aa = gf_mul(aa, aa)
+        ee = ee >> 1
+    }
+    return r
+}
+
+// 8 位循环左移。
+func rol8(v: i64, n: i64) -> i64 {
+    return ((v << n) | (v >> (8 - n))) & 0xFF
+}
+
+// 单个 S 盒值：乘法逆元 → 仿射变换（b ^ rol(b,1) ^ rol(b,2) ^ rol(b,3) ^ rol(b,4) ^ 0x63）。
+func sbox_byte(x: i64) -> i64 {
+    var inv: i64 = 0
+    if x != 0 {
+        inv = gf_pow(x, 254)
+    }
+    var s = inv ^ rol8(inv, 1) ^ rol8(inv, 2) ^ rol8(inv, 3) ^ rol8(inv, 4) ^ 0x63
+    return s & 0xFF
+}
+
+// 懒构建正/逆 S 盒。
+func build_sboxes() {
+    if len(aes_sbox) > 0 {
+        return
+    }
+    var i: i64 = 0
+    while i < 256 {
+        table_push(aes_sbox, sbox_byte(i))
+        table_push(aes_isbox, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < 256 {
+        aes_isbox[aes_sbox[i]] = i
+        i = i + 1
+    }
+}
+
+// ---- 字节操作 ----
+
+func sub_bytes(st: ref table<i64>) {
+    var i: i64 = 0
+    while i < 16 {
+        st[i] = aes_sbox[st[i]]
+        i = i + 1
+    }
+}
+
+func inv_sub_bytes(st: ref table<i64>) {
+    var i: i64 = 0
+    while i < 16 {
+        st[i] = aes_isbox[st[i]]
+        i = i + 1
+    }
+}
+
+// ShiftRows：行 r 循环左移 r（内态列为主 index = col*4+row）。
+func shift_rows(st: ref table<i64>) {
+    var t = table_new_i64()
+    var c: i64 = 0
+    while c < 4 {
+        var r: i64 = 0
+        while r < 4 {
+            var oldc = (c + r) % 4
+            table_push(t, st[oldc * 4 + r])
+            r = r + 1
+        }
+        c = c + 1
+    }
+    var i: i64 = 0
+    while i < 16 {
+        st[i] = t[i]
+        i = i + 1
+    }
+}
+
+// InvShiftRows：行 r 循环右移 r。
+func inv_shift_rows(st: ref table<i64>) {
+    var t = table_new_i64()
+    var c: i64 = 0
+    while c < 4 {
+        var r: i64 = 0
+        while r < 4 {
+            var oldc = (c - r + 4) % 4
+            table_push(t, st[oldc * 4 + r])
+            r = r + 1
+        }
+        c = c + 1
+    }
+    var i: i64 = 0
+    while i < 16 {
+        st[i] = t[i]
+        i = i + 1
+    }
+}
+
+// xtime：GF(2^8) 乘 2。
+func xtime(x: i64) -> i64 {
+    var v = (x << 1) & 0xFF
+    if (x & 0x80) != 0 {
+        v = v ^ 0x1B
+    }
+    return v
+}
+
+// MixColumns：每列 [b0,b1,b2,b3] × 01/02/03 加重。
+func mix_columns(st: ref table<i64>) {
+    var c: i64 = 0
+    while c < 4 {
+        var b0 = st[c * 4 + 0]
+        var b1 = st[c * 4 + 1]
+        var b2 = st[c * 4 + 2]
+        var b3 = st[c * 4 + 3]
+        var nb0 = xtime(b0) ^ (xtime(b1) ^ b1) ^ b2 ^ b3
+        var nb1 = b0 ^ xtime(b1) ^ (xtime(b2) ^ b2) ^ b3
+        var nb2 = b0 ^ b1 ^ xtime(b2) ^ (xtime(b3) ^ b3)
+        var nb3 = (xtime(b0) ^ b0) ^ b1 ^ b2 ^ xtime(b3)
+        st[c * 4 + 0] = nb0
+        st[c * 4 + 1] = nb1
+        st[c * 4 + 2] = nb2
+        st[c * 4 + 3] = nb3
+        c = c + 1
+    }
+}
+
+// InvMixColumns：每列 × 0e/0b/0d/09（GF 常数乘）。
+func inv_mix_columns(st: ref table<i64>) {
+    var c: i64 = 0
+    while c < 4 {
+        var b0 = st[c * 4 + 0]
+        var b1 = st[c * 4 + 1]
+        var b2 = st[c * 4 + 2]
+        var b3 = st[c * 4 + 3]
+        var nb0 = gf_mul(14, b0) ^ gf_mul(11, b1) ^ gf_mul(13, b2) ^ gf_mul(9, b3)
+        var nb1 = gf_mul(9, b0) ^ gf_mul(14, b1) ^ gf_mul(11, b2) ^ gf_mul(13, b3)
+        var nb2 = gf_mul(13, b0) ^ gf_mul(9, b1) ^ gf_mul(14, b2) ^ gf_mul(11, b3)
+        var nb3 = gf_mul(11, b0) ^ gf_mul(13, b1) ^ gf_mul(9, b2) ^ gf_mul(14, b3)
+        st[c * 4 + 0] = nb0
+        st[c * 4 + 1] = nb1
+        st[c * 4 + 2] = nb2
+        st[c * 4 + 3] = nb3
+        c = c + 1
+    }
+}
+
+// AddRoundKey：round 轮密钥（4 个 big-endian 32 位字）异或进内态。
+func add_round_key(st: ref table<i64>, rk: table<i64>, round: i64) {
+    var c: i64 = 0
+    while c < 4 {
+        var word = rk[round * 4 + c]
+        var r: i64 = 0
+        while r < 4 {
+            st[c * 4 + r] = st[c * 4 + r] ^ ((word >> (8 * (3 - r))) & 0xFF)
+            r = r + 1
+        }
+        c = c + 1
+    }
+}
+
+// ---- 密钥扩展 ----
+
+// 轮字 SubWord（对 4 个 big-endian 字节分别过 S 盒）。
+func sub_word(w: i64) -> i64 {
+    var out: i64 = 0
+    var k: i64 = 0
+    while k < 4 {
+        var bytev = (w >> (8 * (3 - k))) & 0xFF
+        out = out | (aes_sbox[bytev] << (8 * (3 - k)))
+        k = k + 1
+    }
+    return out & 0xFFFFFFFF
+}
+
+// 轮字 RotWord：[a,b,c,d] → [b,c,d,a]。
+func rot_word(w: i64) -> i64 {
+    return ((w << 8) | ((w >> 24) & 0xFF)) & 0xFFFFFFFF
+}
+
+// 密钥扩展：keybytes（Nk*4 字节 big-endian）→ 4*(Nr+1) 个 32 位轮密钥字。
+func expand_key(keyb: table<i64>, Nk: i64) -> table<i64> {
+    var Nr = Nk + 6
+    var total = 4 * (Nr + 1)
+    var rk = table_new_i64()
+    var i: i64 = 0
+    while i < Nk {
+        var w: i64 = 0
+        var j: i64 = 0
+        while j < 4 {
+            w = ((w << 8) | keyb[i * 4 + j]) & 0xFFFFFFFF
+            j = j + 1
+        }
+        table_push(rk, w)
+        i = i + 1
+    }
+    var rcon: i64 = 1
+    i = Nk
+    while i < total {
+        var temp = rk[i - 1]
+        if i % Nk == 0 {
+            // Rcon 异或入**最高字节**（rcon << 24），非低字节
+            temp = sub_word(rot_word(temp)) ^ (rcon << 24)
+            rcon = xtime(rcon)
+        } else if Nk > 6 && i % Nk == 4 {
+            temp = sub_word(temp)
+        }
+        table_push(rk, (rk[i - Nk] ^ temp) & 0xFFFFFFFF)
+        i = i + 1
+    }
+    return rk
+}
+
+// ---- 块加/解密 ----
+
+func encrypt_block(st: ref table<i64>, rk: table<i64>, Nr: i64) {
+    add_round_key(st, rk, 0)
+    var round: i64 = 1
+    while round < Nr {
+        sub_bytes(st)
+        shift_rows(st)
+        mix_columns(st)
+        add_round_key(st, rk, round)
+        round = round + 1
+    }
+    sub_bytes(st)
+    shift_rows(st)
+    add_round_key(st, rk, Nr)
+}
+
+func decrypt_block(st: ref table<i64>, rk: table<i64>, Nr: i64) {
+    add_round_key(st, rk, Nr)
+    var round: i64 = Nr - 1
+    while round >= 1 {
+        inv_shift_rows(st)
+        inv_sub_bytes(st)
+        add_round_key(st, rk, round)
+        inv_mix_columns(st)
+        round = round - 1
+    }
+    inv_shift_rows(st)
+    inv_sub_bytes(st)
+    add_round_key(st, rk, 0)
+}
+
+// ---- 公有接口 ----
+
+pub func encrypt_ecb(key: string, block: string) -> string {
+    build_sboxes()
+    var kb = hex_to_bytes(key)
+    var Nk: i64 = len(kb) / 4
+    var Nr: i64 = Nk + 6
+    var rk = expand_key(kb, Nk)
+    var st = hex_to_bytes(block)
+    encrypt_block(st, rk, Nr)
+    return bytes_to_hex(st)
+}
+
+pub func decrypt_ecb(key: string, block: string) -> string {
+    build_sboxes()
+    var kb = hex_to_bytes(key)
+    var Nk: i64 = len(kb) / 4
+    var Nr: i64 = Nk + 6
+    var rk = expand_key(kb, Nk)
+    var st = hex_to_bytes(block)
+    decrypt_block(st, rk, Nr)
+    return bytes_to_hex(st)
+}
+
+// PKCS7 填充：16 字节块；pad = 16 - (n%16)，pad==0 时补一整块。
+func pkcs7_pad(msgb: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var n: i64 = len(msgb)
+    var i: i64 = 0
+    while i < n {
+        table_push(out, msgb[i])
+        i = i + 1
+    }
+    var padlen = 16 - (n % 16)
+    if padlen == 0 {
+        padlen = 16
+    }
+    i = 0
+    while i < padlen {
+        table_push(out, padlen)
+        i = i + 1
+    }
+    return out
+}
+
+// PKCS7 去填充：末字节为 padlen，校验后 16 字节块边界内填充正确并去除。
+func pkcs7_unpad(pb: table<i64>) -> table<i64> {
+    var n: i64 = len(pb)
+    var padlen = pb[n - 1]
+    // 校验填充
+    var i: i64 = 0
+    while i < padlen {
+        if pb[n - 1 - i] != padlen {
+            padlen = 0   // 非法填充 → 截断为 0（探针不会触发）
+        }
+        i = i + 1
+    }
+    var out = table_new_i64()
+    i = 0
+    while i < n - padlen {
+        table_push(out, pb[i])
+        i = i + 1
+    }
+    return out
+}
+
+pub func encrypt_cbc(key: string, iv: string, msg: string) -> string {
+    build_sboxes()
+    var kb = hex_to_bytes(key)
+    var Nk: i64 = len(kb) / 4
+    var Nr: i64 = Nk + 6
+    var rk = expand_key(kb, Nk)
+    var ivb = hex_to_bytes(iv)
+    var padded = pkcs7_pad(hex_to_bytes(msg))
+    var prev = table_new_i64()
+    var j: i64 = 0
+    while j < 16 {
+        table_push(prev, ivb[j])
+        j = j + 1
+    }
+    var ct = table_new_i64()
+    var pos: i64 = 0
+    while pos < len(padded) {
+        var st = table_new_i64()
+        var k: i64 = 0
+        while k < 16 {
+            table_push(st, padded[pos + k] ^ prev[k])
+            k = k + 1
+        }
+        encrypt_block(st, rk, Nr)
+        var c2: i64 = 0
+        while c2 < 16 {
+            table_push(ct, st[c2])
+            prev[c2] = st[c2]
+            c2 = c2 + 1
+        }
+        pos = pos + 16
+    }
+    return bytes_to_hex(ct)
+}
+
+pub func decrypt_cbc(key: string, iv: string, ct: string) -> string {
+    build_sboxes()
+    var kb = hex_to_bytes(key)
+    var Nk: i64 = len(kb) / 4
+    var Nr: i64 = Nk + 6
+    var rk = expand_key(kb, Nk)
+    var ivb = hex_to_bytes(iv)
+    var ctb = hex_to_bytes(ct)
+    var prev = table_new_i64()
+    var j: i64 = 0
+    while j < 16 {
+        table_push(prev, ivb[j])
+        j = j + 1
+    }
+    var plain = table_new_i64()
+    var pos: i64 = 0
+    while pos < len(ctb) {
+        var blk = table_new_i64()
+        var k: i64 = 0
+        while k < 16 {
+            table_push(blk, ctb[pos + k])
+            k = k + 1
+        }
+        var st = table_new_i64()
+        k = 0
+        while k < 16 {
+            table_push(st, blk[k])
+            k = k + 1
+        }
+        decrypt_block(st, rk, Nr)
+        var c2: i64 = 0
+        while c2 < 16 {
+            table_push(plain, st[c2] ^ prev[c2])
+            prev[c2] = blk[c2]
+            c2 = c2 + 1
+        }
+        pos = pos + 16
+    }
+    return bytes_to_hex(pkcs7_unpad(plain))
+}
+
+}   // namespace aes

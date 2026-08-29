@@ -1,0 +1,299 @@
+type tie<class>
+// ============================================================================
+// scrypt.tie：外部库——scrypt（内存硬口令 KDF，RFC 7914，命名空间 scrypt）
+// 用途：抵抗大规模定制的口令破解 ASIC/FPGA。内存硬特性（需约 128·N·r 字节 RAM）
+//   使暴力破解成本随参数显著上升。常用于区块链钱包、LUKS/luks 与各类口令加密。
+// 接口（输入输出为**小写十六进制字符串**，字节级，逐字节参与计算）：
+//   scrypt.scrypt(passwd_hex, salt_hex, n:i64, r:i64, p:i64, dklen:i64) -> string
+//     n = 内存-时间代价参数（必须为 2 的正整数幂）；r = 块大小参数；p = 并行度；
+//     dklen = 派生长度（字节）。
+// 输入 hex 约定同 hmac/pbkdf2：tie 字符串按 UTF-8 存储，无法承载 ≥0x80 原始字节，
+//   故所有字节序列以 hex 传入（如空口令/空盐直接传 ""）。
+//
+// 算法（RFC 7914）：
+//   1. B = PBKDF2-HMAC-SHA256(P, S, 1, 128·r·p)                       // 初始块
+//   2. 把 B 分成 p 条 lane，每条 128·r 字节；对每条执行 ROMix(·,N)，得 B'。
+//      ROMix(B_i,N)：
+//        X = B_i
+//        for i in 0..N-1: V[i] = X; X = BlockMix(X)
+//        for i in 0..N-1: j = Integerify(X) mod N; X = BlockMix(X XOR V[j])
+//        return X
+//      BlockMix(B[0..2r-1],r)：X 自末块累积 salsa 步；Y[0..2r-1]；
+//        输出 = Y[0],Y[2],..,Y[2r-2],Y[1],Y[3],..,Y[2r-1]
+//      Salsa20/8：64 字节块 → 16 个小端 32 位字，4 次{列轮+行轮}，字加原字反写。
+//      Integerify：取 X 末 64 字节块按小端整数 mod N（N 为 2 的幂 → 取末字低 log2N 位）。
+//   3. DK = PBKDF2-HMAC-SHA256(P, B', 1, dklen)
+//
+// == 内存模型说明 ==
+//   全程用 table<i64>（字节表）+ hex 字符串承载。V 表一次持 N·128·r 个字节元素，
+//   即与标准实现同量级内存占用。探针用 N=16（需 2 KiB）保守参数确保可跑；
+//   生产建议 N ≥ 2^14（约 16 MiB）。纯 tie、无 unsafe。
+//
+// 验证向量（RFC 7914 Test Vector 1，已核对；含 RFC 权威 + 一组 p>1/r>1 交叉向量）：
+//   scrypt("", "", n=16, r=1, p=1, dklen=64)
+//     = 77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede21442fcd
+//       0069ded0948f8326a753a0fc81f17e8d3e0fb2e0d3628cf35e20c38d18906
+//   scrypt("p","s", n=16, r=2, p=2, dklen=48)   （Python hashlib.scrypt 交叉）
+//     = b65305108403b4244386b61693dbfe90cb5f712ccc718efc2100fbcb990a7fa611263294eee868097e92058838b55959
+// 探针：tests/kdf_probe/scrypt_probe.tie。
+// ============================================================================
+
+import "../std/pbkdf2.tie"
+using pbkdf2;
+
+namespace scrypt {
+
+// ---- 基础 hex/字节工具（内联，不依赖 string.tie）----
+
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+func nib_char(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, v & 0xF)
+}
+
+// hex 字符串 → 字节表（每 2 位 hex 一个字节 0..255）。
+func hex_tobytes(h: string) -> table<i64> {
+    var n: i64 = len(h) / 2
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i * 2))
+        var lo = hex_nibble(str_char(h, i * 2 + 1))
+        table_push(t, (hi << 4) | lo)
+        i = i + 1
+    }
+    return t
+}
+
+// 字节表 → 连续小写 hex 字符串。
+func bytes_tohex(t: table<i64>) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(t) {
+        out = out + nib_char(t[i] >> 4) + nib_char(t[i] & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+// 32 位循环左移 n 位（n 1..31）。
+func rol(v: i64, n: i64) -> i64 {
+    return ((v << n) | (v >> (32 - n))) & 0xFFFFFFFF
+}
+
+// ---- Salsa20/8 核心：对 64 字节工作块 x 就地做 8 轮（4 次 列轮+行轮）----
+func salsa8v(x: ref table<i64>) {
+    // 读 16 个小端 32 位字
+    var w = table_new_i64()
+    var i: i64 = 0
+    while i < 16 {
+        var v: i64 = 0
+        var j: i64 = 0
+        while j < 4 {
+            v = (v | (x[i * 4 + j] << (8 * j))) & 0xFFFFFFFF
+            j = j + 1
+        }
+        table_push(w, v)
+        i = i + 1
+    }
+    var q = table_new_i64()
+    i = 0
+    while i < 16 {
+        table_push(q, w[i])
+        i = i + 1
+    }
+    var k: i64 = 0
+    while k < 8 {
+        // 列轮（ordered 更新）
+        w[4] = w[4] ^ rol((w[0] + w[12]) & 0xFFFFFFFF, 7)
+        w[8] = w[8] ^ rol((w[4] + w[0]) & 0xFFFFFFFF, 9)
+        w[12] = w[12] ^ rol((w[8] + w[4]) & 0xFFFFFFFF, 13)
+        w[0] = w[0] ^ rol((w[12] + w[8]) & 0xFFFFFFFF, 18)
+        w[9] = w[9] ^ rol((w[5] + w[1]) & 0xFFFFFFFF, 7)
+        w[13] = w[13] ^ rol((w[9] + w[5]) & 0xFFFFFFFF, 9)
+        w[1] = w[1] ^ rol((w[13] + w[9]) & 0xFFFFFFFF, 13)
+        w[5] = w[5] ^ rol((w[1] + w[13]) & 0xFFFFFFFF, 18)
+        w[14] = w[14] ^ rol((w[10] + w[6]) & 0xFFFFFFFF, 7)
+        w[2] = w[2] ^ rol((w[14] + w[10]) & 0xFFFFFFFF, 9)
+        w[6] = w[6] ^ rol((w[2] + w[14]) & 0xFFFFFFFF, 13)
+        w[10] = w[10] ^ rol((w[6] + w[2]) & 0xFFFFFFFF, 18)
+        w[3] = w[3] ^ rol((w[15] + w[11]) & 0xFFFFFFFF, 7)
+        w[7] = w[7] ^ rol((w[3] + w[15]) & 0xFFFFFFFF, 9)
+        w[11] = w[11] ^ rol((w[7] + w[3]) & 0xFFFFFFFF, 13)
+        w[15] = w[15] ^ rol((w[11] + w[7]) & 0xFFFFFFFF, 18)
+        // 行轮（ordered 更新）
+        w[1] = w[1] ^ rol((w[0] + w[3]) & 0xFFFFFFFF, 7)
+        w[2] = w[2] ^ rol((w[1] + w[0]) & 0xFFFFFFFF, 9)
+        w[3] = w[3] ^ rol((w[2] + w[1]) & 0xFFFFFFFF, 13)
+        w[0] = w[0] ^ rol((w[3] + w[2]) & 0xFFFFFFFF, 18)
+        w[6] = w[6] ^ rol((w[5] + w[4]) & 0xFFFFFFFF, 7)
+        w[7] = w[7] ^ rol((w[6] + w[5]) & 0xFFFFFFFF, 9)
+        w[4] = w[4] ^ rol((w[7] + w[6]) & 0xFFFFFFFF, 13)
+        w[5] = w[5] ^ rol((w[4] + w[7]) & 0xFFFFFFFF, 18)
+        w[11] = w[11] ^ rol((w[10] + w[9]) & 0xFFFFFFFF, 7)
+        w[8] = w[8] ^ rol((w[11] + w[10]) & 0xFFFFFFFF, 9)
+        w[9] = w[9] ^ rol((w[8] + w[11]) & 0xFFFFFFFF, 13)
+        w[10] = w[10] ^ rol((w[9] + w[8]) & 0xFFFFFFFF, 18)
+        w[12] = w[12] ^ rol((w[15] + w[14]) & 0xFFFFFFFF, 7)
+        w[13] = w[13] ^ rol((w[12] + w[15]) & 0xFFFFFFFF, 9)
+        w[14] = w[14] ^ rol((w[13] + w[12]) & 0xFFFFFFFF, 13)
+        w[15] = w[15] ^ rol((w[14] + w[13]) & 0xFFFFFFFF, 18)
+        k = k + 2
+    }
+    // 字加原字（mod 2^32）后按小端写回
+    i = 0
+    while i < 16 {
+        var val = (w[i] + q[i]) & 0xFFFFFFFF
+        var j: i64 = 0
+        while j < 4 {
+            x[i * 4 + j] = (val >> (8 * j)) & 0xFF
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+// ---- BlockMix：a（128·r 字节，只读）→ 归并 Y 后的 128·r 字节块 ----
+func block_mix(a: table<i64>, r: i64) -> table<i64> {
+    var x = table_new_i64()
+    var i: i64 = 0
+    while i < 64 {
+        table_push(x, a[(2 * r - 1) * 64 + i])
+        i = i + 1
+    }
+    var y = table_new_i64()
+    var k: i64 = 0
+    while k < 2 * r {
+        var t: i64 = 0
+        while t < 64 {
+            x[t] = x[t] ^ a[k * 64 + t]
+            t = t + 1
+        }
+        salsa8v(x)
+        t = 0
+        while t < 64 {
+            table_push(y, x[t])
+            t = t + 1
+        }
+        k = k + 1
+    }
+    // 输出 = 偶数下标的 Y 块 + 奇数下标的 Y 块
+    var out = table_new_i64()
+    var h: i64 = 0
+    while h < r {
+        var t2: i64 = 0
+        while t2 < 64 {
+            table_push(out, y[(2 * h) * 64 + t2])
+            t2 = t2 + 1
+        }
+        h = h + 1
+    }
+    h = 0
+    while h < r {
+        var t3: i64 = 0
+        while t3 < 64 {
+            table_push(out, y[(2 * h + 1) * 64 + t3])
+            t3 = t3 + 1
+        }
+        h = h + 1
+    }
+    return out
+}
+
+// Integerify mod N：取 x（128·r 字节）**末 64 字节块**按小端正整数，mod N。
+// N 须为 2 的幂：低 log2N 位即该整数低字（块首 4 字节小端）的低 log2N 位。
+func integerify(x: table<i64>, r: i64, n: i64) -> i64 {
+    var base = (2 * r - 1) * 64      // 末 64 字节块起点
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        v = (v | (x[base + j] << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v & (n - 1)
+}
+
+// ---- ROMix：B（128·r 字节）→ 经 N 块 V 表的两轮 BlockMix ----
+func romix(b: table<i64>, n: i64, r: i64) -> table<i64> {
+    var lane_len = 128 * r
+    var v = table_new_i64()
+    // X = B（复制）
+    var x = table_new_i64()
+    var t: i64 = 0
+    while t < lane_len {
+        table_push(x, b[t])
+        t = t + 1
+    }
+    var i: i64 = 0
+    while i < n {
+        // V[i] = X
+        var t2: i64 = 0
+        while t2 < lane_len {
+            table_push(v, x[t2])
+            t2 = t2 + 1
+        }
+        x = block_mix(x, r)
+        i = i + 1
+    }
+    i = 0
+    while i < n {
+        var idx = integerify(x, r, n)
+        // X = X ^ V[idx]
+        var t3: i64 = 0
+        while t3 < lane_len {
+            x[t3] = x[t3] ^ v[idx * lane_len + t3]
+            t3 = t3 + 1
+        }
+        x = block_mix(x, r)
+        i = i + 1
+    }
+    return x
+}
+
+// ---- scrypt 主入口 ----
+pub func scrypt(passwd_hex: string, salt_hex: string, n: i64, r: i64, p: i64, dklen: i64) -> string {
+    var blen = 128 * r * p
+    var b = hex_tobytes(pbkdf2.pbkdf2_hmac_sha256(passwd_hex, salt_hex, 1, blen))
+    var lane_len = 128 * r
+    var bt = table_new_i64()
+    var lane: i64 = 0
+    while lane < p {
+        var lane_bytes = table_new_i64()
+        var t: i64 = 0
+        while t < lane_len {
+            table_push(lane_bytes, b[lane * lane_len + t])
+            t = t + 1
+        }
+        var rl = romix(lane_bytes, n, r)
+        var t2: i64 = 0
+        while t2 < lane_len {
+            table_push(bt, rl[t2])
+            t2 = t2 + 1
+        }
+        lane = lane + 1
+    }
+    return pbkdf2.pbkdf2_hmac_sha256(passwd_hex, bytes_tohex(bt), 1, dklen)
+}
+
+}   // namespace scrypt

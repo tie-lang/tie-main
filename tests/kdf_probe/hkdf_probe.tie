@@ -1,0 +1,59 @@
+type tie<logic>
+// hkdf 探针：RFC 5869 Test Case 1 权威向量 + extract/expand 边界。
+// 输入约定：全部 hex 小写字符串（字节级）。
+import "../../std/hkdf.tie"
+using hkdf;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+// 十六进制字节对重复 n 次（拼成连续 hex 串）。
+func rep2(pair: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + pair
+        i = i + 1
+    }
+    return out
+}
+
+// 递增字节 hex 串 b[0],b[0]+1,... 共 n 字节。
+func run_bytes(start: i64, n: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        var v = start + i
+        out = out + str_char(hex, (v >> 4) & 0xF) + str_char(hex, v & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // RFC 5869 TC1：IKM=0x0b×22, salt=000102..0c, info=f0..f9
+    var ikm = rep2("0b", 22)
+    var salt = run_bytes(0x00, 13)
+    var info = run_bytes(0xf0, 10)
+    // PRK（extract 单项）
+    check("extract_prk", hkdf.extract(salt, ikm),
+        "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5")
+    // OKM（derive 一步，L=42 字节，跨 2 个 T 块 —— 验证 counter>1 迭代与截断）
+    check("derive_okm42", hkdf.derive(salt, ikm, info, 42),
+        "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")
+    // 前 32 字节截断（任务指定比对值）
+    check("derive_okm32", hkdf.derive(salt, ikm, info, 32),
+        "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf")
+    // 空 salt -> 32 字节全 0 作 key（RFC "文字"(salt 可省)；与 python hkdf(salt=b"\x00"*32) 一致）
+    check("empty_salt", hkdf.derive("", ikm, info, 32),
+        "abbafb13f5c1bc489d4203135817956dd521b39e3bd61d1cc85cef884d1f8e2e")
+    println("hkdf 探针全部通过")
+}

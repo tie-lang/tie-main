@@ -1,0 +1,107 @@
+type tie<class>
+// ============================================================================
+// pbkdf2.tie：标准库——PBKDF2（基于口令的密钥派生函数，RFC 2898 / PKCS#5 v2.0）
+//   命名空间 pbkdf2，PRF 固定为 HMAC-SHA256。
+// 用途：给口令/低熵密码加盐 + 迭代拉伸，抵抗字典与暴力破解。常用于密码存储、
+//   磁盘加密（如 LUKS/TrueCrypt）与许多上层 KDF（scrypt 内部两阶段也复用本实现）。
+// 接口（输入输出为**小写十六进制字符串**，字节级）：
+//   pbkdf2.pbkdf2_hmac_sha256(p_hex, s_hex, iter:i64, dklen:i64) -> string
+//     p_hex  = 口令字节的 hex；s_hex = 盐字节的 hex；
+//     iter   = 迭代次数（≥1）；dklen = 期望派生长度（字节）。
+// 逐字节处理（str_byte + len），与 hmac.tie 同约定：tie 无法承载 ≥0x80 原始字节，
+//   故"password" 传其 hex "70617373776f7264"。
+//
+// 算法（RFC 2898 §5.2，PRF = HMAC-SHA256，hlen=32）：
+//   DK = T_1 || T_2 || ... || T_l   （l = ceil(dklen/hlen)，取前 dklen 字节）
+//   T_i = U1 ^ U2 ^ ... ^ Uc        （c = iter）
+//   U1  = PRF(P, S || INT_32_BE(i))
+//   U_j = PRF(P, U_{j-1})           （j=2..c）
+//   INT_32_BE(i) 为块索引 i 的 4 字节大端编码。
+//
+// 验证向量（SHA-256 版；用 Python hashlib.pbkdf2_hmac('sha256',…) 交叉生成）：
+//   password="password"(hex=70617373776f7264), salt="salt"(hex=73616c74), dklen=32：
+//     iter=1    = 120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b
+//     iter=2    = ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43
+//     iter=4096 = c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a
+// 探针：tests/kdf_probe/pbkdf2_probe.tie。
+// 备注：命名空间内互调为裸调用；本文件只 import 同目录 hmac.tie 的公有入口。
+// ============================================================================
+
+import "./hmac.tie"
+using hmac;
+
+namespace pbkdf2 {
+
+// 截取字符串 [a, b)（码点区间）——内联实现（不依赖 string.tie）。
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 单字符十六进制数字（0..15）；非十六进制返回 0。
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 半字节（0..15）→ 单字符 hex。
+func nib_char(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, v & 0xF)
+}
+
+// 两条等长 hex 字符串逐字节异或（返回等长）。
+func xor_hex(a: string, b: string) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(a) / 2 {
+        var x = hex_nibble(str_char(a, i * 2))
+        var y = hex_nibble(str_char(a, i * 2 + 1))
+        var u = hex_nibble(str_char(b, i * 2))
+        var v = hex_nibble(str_char(b, i * 2 + 1))
+        var byte = ((x << 4) | y) ^ ((u << 4) | v)
+        out = out + nib_char(byte >> 4) + nib_char(byte & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+// 块索引 n → 4 字节大端 hex（INT_32_BE(n)，8 位 hex 字符）。
+func int_be(n: i64) -> string {
+    return nib_char(n >> 28) + nib_char(n >> 24) + nib_char(n >> 20) + nib_char(n >> 16) +
+           nib_char(n >> 12) + nib_char(n >> 8) + nib_char(n >> 4) + nib_char(n)
+}
+
+// PBKDF2-HMAC-SHA256 主入口。
+pub func pbkdf2_hmac_sha256(p_hex: string, s_hex: string, iter: i64, dklen: i64) -> string {
+    var num_blocks = (dklen + 31) / 32          // ceil(dklen / 32)
+    var out: string = ""
+    var block: i64 = 1
+    while block <= num_blocks {
+        var u = hmac.hmac_sha256(p_hex, s_hex + int_be(block))   // U1
+        var t = u
+        var c: i64 = 1
+        while c < iter {
+            u = hmac.hmac_sha256(p_hex, u)                       // U_j
+            t = xor_hex(t, u)
+            c = c + 1
+        }
+        out = out + t
+        block = block + 1
+    }
+    return substr(out, 0, dklen * 2)
+}
+
+}   // namespace pbkdf2

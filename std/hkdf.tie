@@ -1,0 +1,104 @@
+type tie<class>
+// ============================================================================
+// hkdf.tie：标准库——HKDF（基于 HMAC 的密钥派生函数，命名空间 hkdf）
+// 用途：把不完美的输入密钥材料（IKM）经"提取-扩展"两阶段，派生为任意长度的
+//   密码学安全密钥（RFC 5869）。常用于 TLS 1.3、SSH、磁盘加密等上下文。
+// 接口（输入输出均为**小写十六进制字符串**，字节级，逐字节参与计算）：
+//   hkdf.extract(salt_hex, ikm_hex) -> string     // 返回 PRK，恒 64 位 hex（32 字节）
+//   hkdf.expand(prk_hex, info_hex, len_bytes:i64) -> string  // 返回 len_bytes 字节 hex
+//   hkdf.derive(salt_hex, ikm_hex, info_hex, len_bytes:i64) -> string
+// 与 hmac.tie 一致：tie 字符串按 UTF-8 存储，无法直接承载 ≥0x80 原始字节，故所有
+// 字节序列以 hex 字符串传入（例："password" 传 "70617373776f7264"）。
+//
+// 算法（RFC 5869，Hash=HMAC-SHA256，H_len=32）：
+//   extract：PRK = HMAC(SHA-256, salt, IKM)。salt 省略（空串）时用 32 字节全 0。
+//   expand  ：T(0)=""；i=1..ceil(L/32)：T(i)=HMAC(PRK,T(i-1)||info||INT8(i))，
+//             OKM = T(1)||T(2)||...，前 L 字节输出。
+//   derive  ：extract 后接 expand。
+//
+// 权威向量（RFC 5869 Test Case 1，已核对）：
+//   IKM=0x0b×22, salt=000102..0c, info=f0f1..f9, L=42：
+//   PRK = 077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5
+//   OKM = 3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf
+//         34007208d5b887185865
+//   （注：RFC 全文 OKM 前 32 字节 = 3cb25f25faacd57a90434f64d0362f2a）
+// 探针：tests/kdf_probe/hkdf_probe.tie。
+// 备注：命名空间内互调为裸调用；本文件只 import 同目录 hmac.tie 的公有入口。
+// ============================================================================
+
+import "./hmac.tie"
+using hmac;
+
+namespace hkdf {
+
+// 截取字符串 [a, b)（码点区间）——内联实现（不依赖 string.tie）。
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 单字符十六进制数字（0..15）；非十六进制返回 0（仅用于内部 hex 构造）。
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 单字节（0..255）→ 2 位小写 hex。
+func byte_hex(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, (v >> 4) & 0xF) + str_char(hex, v & 0xF)
+}
+
+// 生成 n 字节全 0 的 hex 串（2n 个 '0' 字符）。
+func zeros(n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + "00"
+        i = i + 1
+    }
+    return out
+}
+
+// 【阶段一·提取】PRK = HMAC(SHA-256, salt, IKM)。返回 32 字节 hex（恒 64 位）。
+pub func extract(salt_hex: string, ikm_hex: string) -> string {
+    var salt = salt_hex
+    if len(salt_hex) == 0 {
+        salt = zeros(32)
+    }
+    return hmac.hmac_sha256(salt, ikm_hex)
+}
+
+// 【阶段二·扩展】OKM = T(1)||T(2)||...||T(ceil(L/32))，截断到前 L 字节。
+//   T(i) = HMAC(PRK, T(i-1) || info || byte(i))，byte(i) 为单字节大端计数器。
+pub func expand(prk_hex: string, info_hex: string, len_bytes: i64) -> string {
+    var out: string = ""
+    var prev: string = ""
+    var i: i64 = 1
+    while len(out) < len_bytes * 2 {
+        var m = prev + info_hex + byte_hex(i)
+        prev = hmac.hmac_sha256(prk_hex, m)
+        out = out + prev
+        i = i + 1
+    }
+    return substr(out, 0, len_bytes * 2)
+}
+
+// 【一步完成】derive = expand(PRK, info) 其中 PRK = extract(salt, IKM)。
+pub func derive(salt_hex: string, ikm_hex: string, info_hex: string, len_bytes: i64) -> string {
+    return expand(extract(salt_hex, ikm_hex), info_hex, len_bytes)
+}
+
+}   // namespace hkdf

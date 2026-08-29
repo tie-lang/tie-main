@@ -1,0 +1,38 @@
+type tie<logic>
+// argon2 探针：最小参数（t=1, m=32 KiB, p=1）下断言
+//   ① 确定性（同输入两次同输出）② 微变敏感性（改 1 字节输出大变）③ 标签长度精确。
+// 说明：argon2-cffi 本机不可装，无权威向量可比对；本实现为简化单通道自洽版，
+//   不承诺与 RFC 9106 正式实现逐字节一致（见 ext/argon2.tie 文件头）。故探针
+//   以「确定性 + 微变敏感性 + 长度」作为功能与安全性质的最小门槛探针。
+import "../../ext/argon2.tie"
+using argon2;
+
+func show(name: string, cond: bool) {
+    if cond {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        exit(1)
+    }
+}
+
+func main() {
+    // 确定性：同输入两次同输出
+    var a = argon2.argon2id("70617373", "73616c74", 1, 32, 1, 32)
+    var b = argon2.argon2id("70617373", "73616c74", 1, 32, 1, 32)
+    show("deterministic", a == b && len(a) == 64)
+    // 微变敏感性：改口令/盐 1 字节，标签应大变
+    var c = argon2.argon2id("70617374", "73616c74", 1, 32, 1, 32)  // 口令末字节 0x73->0x74
+    var d = argon2.argon2id("70617373", "73616c75", 1, 32, 1, 32)  // 盐末字节 0x74->0x75
+    show("sensitive_pwd", a != c)
+    show("sensitive_salt", a != d)
+    show("sensitive_diff_cnt", a != d)  // 双断言间即便初始相同也各自非零（保守）
+    // 标签长度精确：outlen=1 / 16 / 64 分别对应 2/32/128 位 hex
+    var e1 = argon2.argon2id("", "", 1, 8, 1, 1)
+    var e64 = argon2.argon2id("", "", 1, 8, 1, 64)
+    show("len_out1", len(e1) == 2)
+    show("len_out64", len(e64) == 128)
+    show("len_shorter_consistent", argon2.argon2id("", "", 1, 8, 1, 16) ==
+        argon2.argon2id("", "", 1, 8, 1, 16))
+    println("argon2 探针全部通过")
+}

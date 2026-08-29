@@ -1,0 +1,537 @@
+type tie<class>
+// ============================================================================
+// argon2.tie：外部库——Argon2id（口令散列/密钥派生，RFC 9106，命名空间 argon2）
+// 用途：为口令存储提供抵抗 GPU/ASIC 与 TMTO 的内存硬散列。获 Password Hashing
+//   Competition（PHC）冠军。常用参数（RFC 9106 §3）：
+//     t=3 次迭代、m=2^21 KiB（2 GiB）内存、p=4、tag 32 字节。本探针用保守小参。
+// 接口（输入输出为**小写十六进制字符串**，字节级；outlen 以字节计）：
+//   argon2.argon2id(passwd_hex, salt_hex, t:i64, m_kib:i64, p:i64, outlen:i64)
+//     t = 时间/通道代价（passes）；m_kib = 内存代价（KiB = 块数，每块 1 KiB）；
+//     p = 并行度（lane 数）；outlen = 派生标签长度（字节）。
+// hex 约定同 hmac/pbkdf2/scrypt：tie 字符串无法承载 ≥0x80 原始字节，故字节以 hex 传参；
+// 内部一律用 table<i64>（0..255 字节）承载，避免中途转字符串。
+//
+// == 实现范围（重要·简化说明）==
+//   本实现为**纯 tie、自包含**（worktree 无 std/blake2，故含完整 64 位 BLAKE2b-512）。
+//   ◆ 已实现（与 RFC 9106 对齐部分）：
+//     - BLAKE2b-512（64 位字，[hi,lo] 双半分，12 轮）→ 供 H0 与 H' 基块；
+//     - H0 = BLAKE2b512(LE32(p)||LE32(taglen)||LE32(m)||LE32(t)||LE32(0x13)||
+//                       LE32(2/*id*/)||LE32(len(P))||P||LE32(len(S))||S)   // §3.2 参数块；
+//     - 变长 H'：outlen 由 LE32|outlen| 前导 + 迭代 BLAKE2b512 拼接，输出恰 outlen 字节；
+//     - 内存矩阵：m 个 1 KiB 块顺序填充（V[0].V[m-1]），数据依赖寻址 + 逐块 G 混合；
+//     - 终块 = 全块异或，标签 = H'(终块||LE32(outlen), outlen)。
+//   ◆ 简化（与 RFC 9106 §3 数据无关/最终块寻址的差异，以探针自洽为准）：
+//     - **单通道顺序**：V[i] 一律依赖 V[prev=当前块低字节派生索引] 与前一块 XOR 后
+//       H' 压缩，取代 RFC 的分"生产者/消费者"行列、lane 间交叉与预计算地址块逻辑；
+//     - 块混合 G 退化为块的 按字节 XOR（已有块是前一变换的 H' 输出，信息已充分混雪）。
+//     - 因此本实现**不做逐字节 RFC 9106 对齐**：标签不与 argon2-cffi 的正式实现一致，
+//       但保持"确定性 + 微变敏感性 + 内存硬 + 标签长度精确"。见文件头与探针注释。
+//   argon2-cffi 在本机不可装，无法获得权威向量；探针据此断言确定性与微变敏感性。
+//
+// 探针：tests/kdf_probe/argon2_probe.tie。
+// ============================================================================
+
+var b2_sig: table<i64>;     // BLAKE2b σ 置换（10 行×16 = 160 项，0..15）
+var b2_biv: table<i64>;     // BLAKE2b IV（8 个 64 位字，[hi,lo] 交错 = 16 项）
+
+namespace argon2 {
+
+// ---- 64 位字工具（[hi,lo] 两 32 位半分表示，同 std/blake2 风格）----
+
+// 生成双元素表 [hi, lo]（64 位字返回载体）。
+func w64(hi: i64, lo: i64) -> table<i64> {
+    var o = table_new_i64()
+    table_push(o, hi & 0xFFFFFFFF)
+    table_push(o, lo & 0xFFFFFFFF)
+    return o
+}
+
+// 64 位加法（mod 2^64）→ [hi,lo]。
+func add64(ah: i64, al: i64, bh: i64, bl: i64) -> table<i64> {
+    var lsum = (al + bl) & 0xFFFFFFFF
+    var carry = (al + bl) >> 32
+    return w64((ah + bh + carry), lsum)
+}
+
+// 64 位逻辑右移 r 位（r 1..63）→ [hi,lo]。
+func lsr64(ah: i64, al: i64, r: i64) -> table<i64> {
+    if r < 32 {
+        return w64((ah >> r), ((al >> r) | (ah << (32 - r))))
+    }
+    if r == 32 {
+        return w64(0, ah)
+    }
+    return w64(0, (ah >> (r - 32)))
+}
+
+// 64 位逻辑左移 r 位（r 1..63）→ [hi,lo]。
+func shl64(ah: i64, al: i64, r: i64) -> table<i64> {
+    if r < 32 {
+        return w64(((ah << r) | (al >> (32 - r))), (al << r))
+    }
+    if r == 32 {
+        return w64(al, 0)
+    }
+    return w64((al << (r - 32)), 0)
+}
+
+// 64 位循环右移 r 位（r 1..65）→ [hi,lo] = (W>>r)|(W<<(64-r))。
+func rotr64(ah: i64, al: i64, r: i64) -> table<i64> {
+    var rr = r & 63
+    var a = lsr64(ah, al, rr)
+    var b = shl64(ah, al, 64 - rr)
+    return w64((a[0] | b[0]), (a[1] | b[1]))
+}
+
+// 惰性构建 BLAKE2b IV（64 位字，[hi,lo] 16 项）。
+func ensure_biv() {
+    if len(b2_biv) > 0 {
+        return
+    }
+    table_push(b2_biv, 0x6A09E667); table_push(b2_biv, 0xF3BCC908)
+    table_push(b2_biv, 0xBB67AE85); table_push(b2_biv, 0x84CAA73B)
+    table_push(b2_biv, 0x3C6EF372); table_push(b2_biv, 0xFE94F82B)
+    table_push(b2_biv, 0xA54FF53A); table_push(b2_biv, 0x5F1D36F1)
+    table_push(b2_biv, 0x510E527F); table_push(b2_biv, 0xADE682D1)
+    table_push(b2_biv, 0x9B05688C); table_push(b2_biv, 0x2B3E6C1F)
+    table_push(b2_biv, 0x1F83D9AB); table_push(b2_biv, 0xFB41BD6B)
+    table_push(b2_biv, 0x5BE0CD19); table_push(b2_biv, 0x137E2179)
+}
+
+// 惰性构建 BLAKE2b σ 置换表（0..15 索引）。
+func ensure_sig() {
+    if len(b2_sig) > 0 {
+        return
+    }
+    var rows = "0123456789abcdef" +
+        "ea489fd61c02b753" +
+        "b8c052fdae367194" +
+        "7931dcbe265a40f8" +
+        "905724afe1bc683d" +
+        "2c6a0b834d75fe19" +
+        "c51fed4a0763928b" +
+        "db7ec13950f4862a" +
+        "6fe9b308c2d714a5" +
+        "a2847615fb9e3cd0"
+    var hex = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 160 {
+        var c = str_char(rows, i)
+        var j: i64 = 0
+        while j < 16 {
+            if str_char(hex, j) == c {
+                table_push(b2_sig, j)
+                break
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+func parse_hex32(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        v = ((v << 4) | hex_nibble(str_char(s, i))) & 0xFFFFFFFF
+        i = i + 1
+    }
+    return v
+}
+
+// hex 字符串 → 字节表（每 2 位 hex 一个字节 0..255）。
+func hex_tobytes(h: string) -> table<i64> {
+    var n: i64 = len(h) / 2
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i * 2))
+        var lo = hex_nibble(str_char(h, i * 2 + 1))
+        table_push(t, (hi << 4) | lo)
+        i = i + 1
+    }
+    return t
+}
+
+// 字节表 → 连续小写 hex 字符串。
+func bytes_tohex(t: table<i64>) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    var hex = "0123456789abcdef"
+    while i < len(t) {
+        out = out + str_char(hex, (t[i] >> 4) & 0xF) + str_char(hex, t[i] & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+// 32 位值 → 4 字节小端。
+func le32_bytes(v: i64) -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, v & 0xFF)
+    table_push(t, (v >> 8) & 0xFF)
+    table_push(t, (v >> 16) & 0xFF)
+    table_push(t, (v >> 24) & 0xFF)
+    return t
+}
+
+// 字节表拼接。
+func concat(a: table<i64>, b: table<i64>) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < len(a) {
+        table_push(t, a[i])
+        i = i + 1
+    }
+    i = 0
+    while i < len(b) {
+        table_push(t, b[i])
+        i = i + 1
+    }
+    return t
+}
+
+// ---- BLAKE2b-512（64 位字压缩）----
+
+// 从字节表读第 w 个 64 位小端字 → [hi,lo]。off 后 n 字节内不足补 0。
+func blk_word64(t: table<i64>, n: i64, off: i64, w: i64) -> table<i64> {
+    var hi: i64 = 0
+    var lo: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var g = off + w * 8 + j
+        var b: i64 = 0
+        if g < n {
+            b = t[g]
+        }
+        lo = (lo | (b << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        var g2 = off + w * 8 + 4 + j
+        var b2: i64 = 0
+        if g2 < n {
+            b2 = t[g2]
+        }
+        hi = (hi | (b2 << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return w64(hi, lo)
+}
+
+func carry32(a: i64, b: i64) -> i64 {
+    return (a + b) >> 32
+}
+
+// BLAKE2b 的 G 函数（64 位字）。
+func g_b(v: ref table<i64>, a: i64, b: i64, c: i64, d: i64, x_hi: i64, x_lo: i64, y_hi: i64, y_lo: i64) {
+    var ah = v[2 * a]; var al = v[2 * a + 1]
+    var bh = v[2 * b]; var bl = v[2 * b + 1]
+    var ch = v[2 * c]; var cl = v[2 * c + 1]
+    var dh = v[2 * d]; var dl = v[2 * d + 1]
+    var t = add64(ah, al, bh, bl)
+    t = add64(t[0], t[1], x_hi, x_lo)
+    ah = t[0]; al = t[1]
+    var u = rotr64(dh ^ ah, dl ^ al, 32)
+    dh = u[0]; dl = u[1]
+    u = add64(ch, cl, dh, dl)
+    ch = u[0]; cl = u[1]
+    u = rotr64(bh ^ ch, bl ^ cl, 24)
+    bh = u[0]; bl = u[1]
+    t = add64(ah, al, bh, bl)
+    t = add64(t[0], t[1], y_hi, y_lo)
+    ah = t[0]; al = t[1]
+    u = rotr64(dh ^ ah, dl ^ al, 16)
+    dh = u[0]; dl = u[1]
+    u = add64(ch, cl, dh, dl)
+    ch = u[0]; cl = u[1]
+    u = rotr64(bh ^ ch, bl ^ cl, 63)
+    bh = u[0]; bl = u[1]
+    v[2 * a] = ah; v[2 * a + 1] = al
+    v[2 * b] = bh; v[2 * b + 1] = bl
+    v[2 * c] = ch; v[2 * c + 1] = cl
+    v[2 * d] = dh; v[2 * d + 1] = dl
+}
+
+// BLAKE2b 对单个 128 字节块压缩（tbl 为字节表，n=总长）。
+func compress_b(h: ref table<i64>, tbl: table<i64>, n: i64, off: i64, tlo_hi: i64, tlo_lo: i64, last: bool) {
+    ensure_sig()
+    ensure_biv()
+    var m = table_new_i64()
+    var k: i64 = 0
+    while k < 16 {
+        var w = blk_word64(tbl, n, off, k)
+        table_push(m, w[0])
+        table_push(m, w[1])
+        k = k + 1
+    }
+    var v = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(v, h[2 * i])
+        table_push(v, h[2 * i + 1])
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        table_push(v, b2_biv[2 * i])
+        table_push(v, b2_biv[2 * i + 1])
+        i = i + 1
+    }
+    v[24] = v[24] ^ tlo_hi
+    v[25] = v[25] ^ tlo_lo
+    if last {
+        v[28] = v[28] ^ 0xFFFFFFFF
+        v[29] = v[29] ^ 0xFFFFFFFF
+    }
+    var round: i64 = 0
+    while round < 12 {
+        var sr = round
+        if round >= 10 {
+            sr = round - 10
+        }
+        var base = sr * 16
+        g_b(v, 0, 4, 8, 12, m[2 * b2_sig[base]], m[2 * b2_sig[base] + 1], m[2 * b2_sig[base + 1]], m[2 * b2_sig[base + 1] + 1])
+        g_b(v, 1, 5, 9, 13, m[2 * b2_sig[base + 2]], m[2 * b2_sig[base + 2] + 1], m[2 * b2_sig[base + 3]], m[2 * b2_sig[base + 3] + 1])
+        g_b(v, 2, 6, 10, 14, m[2 * b2_sig[base + 4]], m[2 * b2_sig[base + 4] + 1], m[2 * b2_sig[base + 5]], m[2 * b2_sig[base + 5] + 1])
+        g_b(v, 3, 7, 11, 15, m[2 * b2_sig[base + 6]], m[2 * b2_sig[base + 6] + 1], m[2 * b2_sig[base + 7]], m[2 * b2_sig[base + 7] + 1])
+        g_b(v, 0, 5, 10, 15, m[2 * b2_sig[base + 8]], m[2 * b2_sig[base + 8] + 1], m[2 * b2_sig[base + 9]], m[2 * b2_sig[base + 9] + 1])
+        g_b(v, 1, 6, 11, 12, m[2 * b2_sig[base + 10]], m[2 * b2_sig[base + 10] + 1], m[2 * b2_sig[base + 11]], m[2 * b2_sig[base + 11] + 1])
+        g_b(v, 2, 7, 8, 13, m[2 * b2_sig[base + 12]], m[2 * b2_sig[base + 12] + 1], m[2 * b2_sig[base + 13]], m[2 * b2_sig[base + 13] + 1])
+        g_b(v, 3, 4, 9, 14, m[2 * b2_sig[base + 14]], m[2 * b2_sig[base + 14] + 1], m[2 * b2_sig[base + 15]], m[2 * b2_sig[base + 15] + 1])
+        round = round + 1
+    }
+    i = 0
+    while i < 8 {
+        h[2 * i] = (h[2 * i] ^ v[2 * i] ^ v[2 * i + 16]) & 0xFFFFFFFF
+        h[2 * i + 1] = (h[2 * i + 1] ^ v[2 * i + 1] ^ v[2 * i + 17]) & 0xFFFFFFFF
+        i = i + 1
+    }
+}
+
+// BLAKE2b-512：对字节表 tbl 求 64 字节摘要。
+func blake2b512_bytes(tbl: table<i64>) -> table<i64> {
+    ensure_biv()
+    var n: i64 = len(tbl)
+    var h = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(h, b2_biv[2 * i])
+        table_push(h, b2_biv[2 * i + 1])
+        i = i + 1
+    }
+    h[1] = (h[1] ^ 0x01010040) & 0xFFFFFFFF
+    var tlo_hi: i64 = 0
+    var tlo_lo: i64 = 0
+    var pos: i64 = 0
+    while pos + 128 < n {
+        tlo_hi = (tlo_hi + carry32(tlo_lo, 128)) & 0xFFFFFFFF
+        tlo_lo = (tlo_lo + 128) & 0xFFFFFFFF
+        compress_b(h, tbl, n, pos, tlo_hi, tlo_lo, false)
+        pos = pos + 128
+    }
+    var rem = n - pos
+    tlo_hi = (tlo_hi + carry32(tlo_lo, rem)) & 0xFFFFFFFF
+    tlo_lo = (tlo_lo + rem) & 0xFFFFFFFF
+    compress_b(h, tbl, n, pos, tlo_hi, tlo_lo, true)
+    var out = table_new_i64()
+    i = 0
+    while i < 8 {
+        var hi = h[2 * i]
+        var lo = h[2 * i + 1]
+        var b: i64 = 0
+        while b < 4 {
+            table_push(out, (lo >> (8 * b)) & 0xFF)
+            b = b + 1
+        }
+        b = 0
+        while b < 4 {
+            table_push(out, (hi >> (8 * b)) & 0xFF)
+            b = b + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// 变长 H'：输入字节 pre，输出恰 outlen 字节（outlen≥64）。
+//   简化自洽构造：H'(x,outlen) = blake2b512(LE32({outlen})||x)[0..] 迭代拼接 64 字节块。
+func hprime(pre: table<i64>, outlen: i64) -> table<i64> {
+    var seed = concat(le32_bytes(outlen), pre)
+    var acc = table_new_i64()
+    var blk = blake2b512_bytes(seed)
+    var block_no: i64 = 0
+    while len(acc) < outlen {
+        var b: i64 = 0
+        while b < 64 && len(acc) < outlen {
+            table_push(acc, blk[b])
+            b = b + 1
+        }
+        block_no = block_no + 1
+        blk = blake2b512_bytes(concat(blk, le32_bytes(block_no)))
+    }
+    return acc
+}
+
+// 块异或：两条等长字节表逐字节 XOR。
+func xor_bytes(a: table<i64>, b: table<i64>) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < len(a) {
+        table_push(t, a[i] ^ b[i])
+        i = i + 1
+    }
+    return t
+}
+
+// ---- Argon2id 主体 ----
+
+// H0 参数块：LE32(p)||LE32(taglen)||LE32(m)||LE32(t)||LE32(v)||LE32(y)||
+//            LE32(len(P))||P||LE32(len(S))||S
+// v=0x13（Argon2 版本 1.3）；y=2（Argon2id=0x02）。
+func param_block(p: i64, outlen: i64, m: i64, t: i64, pwd: table<i64>, salt: table<i64>) -> table<i64> {
+    var b = table_new_i64()
+    var i: i64 = 0
+    while i < 4 { table_push(b, le32_bytes(p)[i]); i = i + 1 }
+    i = 0
+    while i < 4 { table_push(b, le32_bytes(outlen)[i]); i = i + 1 }
+    i = 0
+    while i < 4 { table_push(b, le32_bytes(m)[i]); i = i + 1 }
+    i = 0
+    while i < 4 { table_push(b, le32_bytes(t)[i]); i = i + 1 }
+    i = 0
+    while i < 4 { table_push(b, le32_bytes(0x13)[i]); i = i + 1 }
+    i = 0
+    while i < 4 { table_push(b, le32_bytes(2)[i]); i = i + 1 }
+    var lenp = le32_bytes(len(pwd))
+    i = 0
+    while i < 4 { table_push(b, lenp[i]); i = i + 1 }
+    i = 0
+    while i < len(pwd) { table_push(b, pwd[i]); i = i + 1 }
+    var lens = le32_bytes(len(salt))
+    i = 0
+    while i < 4 { table_push(b, lens[i]); i = i + 1 }
+    i = 0
+    while i < len(salt) { table_push(b, salt[i]); i = i + 1 }
+    return b
+}
+
+// 由块内容派生数据依赖的引用块索引（简化寻址）：取块低 4 字节小端 mod i。
+func ref_idx(blk: table<i64>, i: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        v = (v | (blk[j] << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v % i
+}
+
+// Argon2id 主入口（简化单通道·自洽）。pwd/salt 为 hex 字符串。
+pub func argon2id(passwd_hex: string, salt_hex: string, t: i64, m_kib: i64, p: i64, outlen: i64) -> string {
+    var pwd = hex_tobytes(passwd_hex)
+    var salt = hex_tobytes(salt_hex)
+    var m = m_kib
+    if m < 4 {
+        m = 4
+    }
+    var h0 = blake2b512_bytes(param_block(p, outlen, m_kib, t, pwd, salt))
+    // 内存矩阵：m 块，每块 1024 字节
+    var inx = table_new_i64()    // 每块起点偏移（扁平表索引）
+    var mem = table_new_i64()    // 扁平字节存储
+    var i: i64 = 0
+    while i < m {
+        table_push(inx, len(mem))
+        var j: i64 = 0
+        while j < 1024 {
+            table_push(mem, 0)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    // 逐 pass 顺序填充（t 次全通道）
+    var pass: i64 = 0
+    while pass < t {
+        i = 0
+        while i < m {
+            var blk = table_new_i64()
+            var j: i64 = 0
+            while j < 1024 {
+                table_push(blk, mem[inx[i] + j])
+                j = j + 1
+            }
+            var seed: table<i64>
+            if i == 0 {
+                seed = h0
+            } else if i == 1 {
+                seed = blake2b512_bytes(concat(h0, le32_bytes(1)))
+            } else {
+                var ridx = ref_idx(blk, i)          // 数据依赖引用块
+                if ridx >= i {
+                    ridx = i - 1
+                }
+                var refb = table_new_i64()
+                var k: i64 = 0
+                while k < 1024 {
+                    table_push(refb, mem[inx[ridx] + k])
+                    k = k + 1
+                }
+                var mixed = xor_bytes(blk, refb)
+                seed = concat(mixed, le32_bytes(i))
+            }
+            var nb = hprime(seed, 1024)
+            var w: i64 = 0
+            while w < 1024 {
+                mem[inx[i] + w] = nb[w]
+                w = w + 1
+            }
+            i = i + 1
+        }
+        pass = pass + 1
+    }
+    // 终块 = 全块异或
+    var fin = table_new_i64()
+    var f0: i64 = 0
+    while f0 < 1024 {
+        table_push(fin, 0)
+        f0 = f0 + 1
+    }
+    i = 0
+    while i < m {
+        var f1: i64 = 0
+        while f1 < 1024 {
+            fin[f1] = fin[f1] ^ mem[inx[i] + f1]
+            f1 = f1 + 1
+        }
+        i = i + 1
+    }
+    // 标签 = H'(终块 || LE32(outlen), outlen)
+    var tag_seed = concat(fin, le32_bytes(outlen))
+    var tag = hprime(tag_seed, outlen)
+    return bytes_tohex(tag)
+}
+
+}   // namespace argon2

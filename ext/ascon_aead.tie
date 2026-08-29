@@ -1,0 +1,423 @@
+type tie<class>
+// ============================================================================
+// ascon_aead.tie：ext——Ascon-128a 认证加密（AEAD，NIST 轻量密码标准，命名空间 ascon_aead）
+// 用途：轻量认证加密底座（加密同时提供完整性标签），面向通用平台与受限环境。
+// 接口（IO 统一为 **小写 hex 字符串**）：
+//   ascon_aead.encrypt(key: string, nonce: string, assoc: string, msg: string) -> string
+//     key=32 hex（16 字节）、nonce=32 hex（16 字节）、assoc=关联数据 hex、
+//     msg=明文 hex；返回 (密文 || 16 字节标签) hex，长度 = len(msg)+32。
+//   ascon_aead.decrypt(key: string, nonce: string, assoc: string, ct: string) -> string
+//     ct=(密文||标签) hex；认证通过返回明文 hex，失败返回空串。
+//
+// == 算法（官方 Ascon-128a：a=12、b=8、rate=16 字节、320 位内态）==
+//   320 位内态 = 5×64 位字（x0..x4），以 32 位 hi/lo 半分表示（同 blake2b/ascon_mac）。
+//   - 初始化：IV=0x8080080c00000000(0\|k=128\|rate=128\|a=12\|b=8) || key || nonce，
+//     p^12 后 x3^=key_hi、x4^=key_lo（二次密钥加）。
+//   - 关联数据：0x80+零填充到 16 字节，逐块异或 x0/x1 后 p^8；末尾 x4^=1 域分离。
+//   - 明文：0x80+零填充；整块异或 x0/x1 挤出 x0||x1 密文后 p^8；末块截断，无 p。
+//   - 终态：x2^=key_hi、x3^=key_lo、p^12、x3^=key_hi、x4^=key_lo，标签=x3||x4。
+//   - 解密反向处理密文末块（c_padding1/c_mask 恢复明文填充），重算标签比对。
+//     （任务描述“12+6+6 轮 / 384 位内态”为近似；此处按官方 Ascon-128a 参数与其
+//     一致，见 std/ascon_mac.tie 同款注释说明。）
+//
+// == 验证（官方 pyascon Ascon-128a 交叉生成，已核对）==
+//   key=nonce=000102…0f；若干 AD/msg 组合的 (密文||标签) 见 tests/cipher_probe/ascon_aead_probe.tie。
+// 备注：命名空间内互调为裸调用，内部函数不加 ascon_aead_ 前缀。
+// ============================================================================
+
+namespace ascon_aead {
+
+// ---- 通用 hex / 字节表 ----
+
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+func hex_to_bytes(h: string) -> table<i64> {
+    var out = table_new_i64()
+    var n: i64 = len(h)
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i))
+        var lo = hex_nibble(str_char(h, i + 1))
+        table_push(out, (hi << 4) | lo)
+        i = i + 2
+    }
+    return out
+}
+
+func bytes_to_hex(bs: table<i64>) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(bs) {
+        out = out + str_char(hex, (bs[i] >> 4) & 0xF) + str_char(hex, bs[i] & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+// 大端 4 字节 → 32 位值。
+func be32(bs: table<i64>, base: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        v = ((v << 8) | bs[base + j]) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+
+// 32 位值 → 4 个 大端字节追加入表。
+func push_be4(out: ref table<i64>, v: i64) {
+    table_push(out, (v >> 24) & 0xFF)
+    table_push(out, (v >> 16) & 0xFF)
+    table_push(out, (v >> 8) & 0xFF)
+    table_push(out, v & 0xFF)
+}
+
+// ---- 64 位字运算（hi/lo 两个 32 位半分）----
+
+func w64(hi: i64, lo: i64) -> table<i64> {
+    var o = table_new_i64()
+    table_push(o, hi & 0xFFFFFFFF)
+    table_push(o, lo & 0xFFFFFFFF)
+    return o
+}
+
+func lsr64(ah: i64, al: i64, r: i64) -> table<i64> {
+    if r == 0 {
+        return w64(ah, al)
+    }
+    if r < 32 {
+        return w64((ah >> r), ((al >> r) | (ah << (32 - r))))
+    }
+    if r == 32 {
+        return w64(0, ah)
+    }
+    return w64(0, (ah >> (r - 32)))
+}
+
+func shl64(ah: i64, al: i64, r: i64) -> table<i64> {
+    if r == 0 {
+        return w64(ah, al)
+    }
+    if r < 32 {
+        return w64(((ah << r) | (al >> (32 - r))), (al << r))
+    }
+    if r == 32 {
+        return w64(al, 0)
+    }
+    return w64((al << (r - 32)), 0)
+}
+
+func rotr64(ah: i64, al: i64, r: i64) -> table<i64> {
+    var a = lsr64(ah, al, r)
+    var b = shl64(ah, al, 64 - r)
+    return w64((a[0] | b[0]), (a[1] | b[1]))
+}
+
+// ---- Ascon SP 置换 p^rounds（rounds ∈ {12,8}）----
+// 内态 s = [x0h,x0l,x1h,x1l,x2h,x2l,x3h,x3l,x4h,x4l]（10 项）。
+func perm(s: ref table<i64>, rounds: i64) {
+    var r: i64 = 12 - rounds
+    while r < 12 {
+        // 轮常数异或入 x2 低字节
+        s[5] = s[5] ^ (0xf0 - 15 * r)
+        var x0h = s[0]; var x0l = s[1]
+        var x1h = s[2]; var x1l = s[3]
+        var x2h = s[4]; var x2l = s[5]
+        var x3h = s[6]; var x3l = s[7]
+        var x4h = s[8]; var x4l = s[9]
+        // 线性预异或
+        x0h = x0h ^ x4h; x0l = x0l ^ x4l
+        x4h = x4h ^ x3h; x4l = x4l ^ x3l
+        x2h = x2h ^ x1h; x2l = x2l ^ x1l
+        // χ：t[i] = ~x[i] & x[i+1]
+        var t0h = (0xFFFFFFFF ^ x0h) & x1h; var t0l = (0xFFFFFFFF ^ x0l) & x1l
+        var t1h = (0xFFFFFFFF ^ x1h) & x2h; var t1l = (0xFFFFFFFF ^ x1l) & x2l
+        var t2h = (0xFFFFFFFF ^ x2h) & x3h; var t2l = (0xFFFFFFFF ^ x2l) & x3l
+        var t3h = (0xFFFFFFFF ^ x3h) & x4h; var t3l = (0xFFFFFFFF ^ x3l) & x4l
+        var t4h = (0xFFFFFFFF ^ x4h) & x0h; var t4l = (0xFFFFFFFF ^ x4l) & x0l
+        x0h = x0h ^ t1h; x0l = x0l ^ t1l
+        x1h = x1h ^ t2h; x1l = x1l ^ t2l
+        x2h = x2h ^ t3h; x2l = x2l ^ t3l
+        x3h = x3h ^ t4h; x3l = x3l ^ t4l
+        x4h = x4h ^ t0h; x4l = x4l ^ t0l
+        // 半线性
+        x1h = x1h ^ x0h; x1l = x1l ^ x0l
+        x0h = x0h ^ x4h; x0l = x0l ^ x4l
+        x3h = x3h ^ x2h; x3l = x3l ^ x2l
+        x2h = x2h ^ 0xFFFFFFFF; x2l = x2l ^ 0xFFFFFFFF
+        // 线性扩散层
+        var p1 = rotr64(x0h, x0l, 19)
+        var p2 = rotr64(x0h, x0l, 28)
+        x0h = x0h ^ p1[0] ^ p2[0]; x0l = x0l ^ p1[1] ^ p2[1]
+        p1 = rotr64(x1h, x1l, 61)
+        p2 = rotr64(x1h, x1l, 39)
+        x1h = x1h ^ p1[0] ^ p2[0]; x1l = x1l ^ p1[1] ^ p2[1]
+        p1 = rotr64(x2h, x2l, 1)
+        p2 = rotr64(x2h, x2l, 6)
+        x2h = x2h ^ p1[0] ^ p2[0]; x2l = x2l ^ p1[1] ^ p2[1]
+        p1 = rotr64(x3h, x3l, 10)
+        p2 = rotr64(x3h, x3l, 17)
+        x3h = x3h ^ p1[0] ^ p2[0]; x3l = x3l ^ p1[1] ^ p2[1]
+        p1 = rotr64(x4h, x4l, 7)
+        p2 = rotr64(x4h, x4l, 41)
+        x4h = x4h ^ p1[0] ^ p2[0]; x4l = x4l ^ p1[1] ^ p2[1]
+        s[0] = x0h & 0xFFFFFFFF; s[1] = x0l & 0xFFFFFFFF
+        s[2] = x1h & 0xFFFFFFFF; s[3] = x1l & 0xFFFFFFFF
+        s[4] = x2h & 0xFFFFFFFF; s[5] = x2l & 0xFFFFFFFF
+        s[6] = x3h & 0xFFFFFFFF; s[7] = x3l & 0xFFFFFFFF
+        s[8] = x4h & 0xFFFFFFFF; s[9] = x4l & 0xFFFFFFFF
+        r = r + 1
+    }
+}
+
+// ---- 相/密文块处理 ----
+
+// x0/x1 ^= bs[base..base+16]（rate=16 吸收/异或进速率字）。
+func xor_rate(s: ref table<i64>, bs: table<i64>, base: i64) {
+    s[0] = s[0] ^ be32(bs, base)
+    s[1] = s[1] ^ be32(bs, base + 4)
+    s[2] = s[2] ^ be32(bs, base + 8)
+    s[3] = s[3] ^ be32(bs, base + 12)
+}
+
+// 挤出 x0||x1 = 16 字节表（密文块）。
+func rate16_bytes(s: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    push_be4(out, s[0])
+    push_be4(out, s[1])
+    push_be4(out, s[2])
+    push_be4(out, s[3])
+    return out
+}
+
+// x0||x1 异或 Ci 后 16 字节（解密整块明文）。
+func rate16_xor_bytes(s: table<i64>, ci0h: i64, ci0l: i64, ci1h: i64, ci1l: i64) -> table<i64> {
+    var out = table_new_i64()
+    push_be4(out, s[0] ^ ci0h)
+    push_be4(out, s[1] ^ ci0l)
+    push_be4(out, s[2] ^ ci1h)
+    push_be4(out, s[3] ^ ci1l)
+    return out
+}
+
+// 0x80 + 零补到 16 字节块。
+func pad_16(mb: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var n: i64 = len(mb)
+    var i: i64 = 0
+    while i < n {
+        table_push(out, mb[i])
+        i = i + 1
+    }
+    table_push(out, 0x80)
+    var need = 16 - (len(out) % 16)
+    if need == 16 {
+        need = 0
+    }
+    i = 0
+    while i < need {
+        table_push(out, 0)
+        i = i + 1
+    }
+    return out
+}
+
+// ---- 初始化 / 关联数据 ----
+
+func init_state(s: ref table<i64>, kb: table<i64>, nb: table<i64>) {
+    s[0] = 0x80800C08   // IV 高（Ascon-128a：0x80800c0800000000 = [0x80,0x80,0x0c,0x08]）
+    s[1] = 0x00000000   // IV 低
+    s[2] = be32(kb, 0); s[3] = be32(kb, 4)    // x1 = key[0:8]
+    s[4] = be32(kb, 8); s[5] = be32(kb, 12)   // x2 = key[8:16]
+    s[6] = be32(nb, 0); s[7] = be32(nb, 4)    // x3 = nonce[0:8]
+    s[8] = be32(nb, 8); s[9] = be32(nb, 12)   // x4 = nonce[8:16]
+    perm(s, 12)
+    // 二次密钥加：用**原始 key 字节**（非置换后的状态字）
+    s[6] = s[6] ^ be32(kb, 0); s[7] = s[7] ^ be32(kb, 4)    // x3 ^= key[0:8]
+    s[8] = s[8] ^ be32(kb, 8); s[9] = s[9] ^ be32(kb, 12)   // x4 ^= key[8:16]
+}
+
+// 关联数据处理：非空则 0x80 填充逐块异或 x0/x1 后 p^8；末尾 x4^=1 域分离。
+func process_ad(s: ref table<i64>, assoc: string) {
+    var ab = hex_to_bytes(assoc)
+    if len(ab) > 0 {
+        var ap = pad_16(ab)
+        var pos: i64 = 0
+        while pos < len(ap) {
+            xor_rate(s, ap, pos)
+            perm(s, 8)
+            pos = pos + 16
+        }
+    }
+    s[9] = s[9] ^ 1   // x4 低字异或 1（AD 域分离）
+}
+
+// 终态与标签：x2^=key_hi、x3^=key_lo、p^12、x3^=key_hi、x4^=key_lo，标签=x3||x4（32 hex）。
+func finalize_tag(s: ref table<i64>, kb: table<i64>) -> string {
+    s[4] = s[4] ^ be32(kb, 0); s[5] = s[5] ^ be32(kb, 4)    // x2 ^= key_hi
+    s[6] = s[6] ^ be32(kb, 8); s[7] = s[7] ^ be32(kb, 12)   // x3 ^= key_lo
+    perm(s, 12)
+    s[6] = s[6] ^ be32(kb, 0); s[7] = s[7] ^ be32(kb, 4)    // x3 ^= key_hi
+    s[8] = s[8] ^ be32(kb, 8); s[9] = s[9] ^ be32(kb, 12)   // x4 ^= key_lo
+    var tb = table_new_i64()
+    push_be4(tb, s[6]); push_be4(tb, s[7])
+    push_be4(tb, s[8]); push_be4(tb, s[9])
+    return bytes_to_hex(tb)
+}
+
+// ---- 公有接口 ----
+
+pub func encrypt(key: string, nonce: string, assoc: string, msg: string) -> string {
+    var kb = hex_to_bytes(key)
+    var nb = hex_to_bytes(nonce)
+    var s = table_new_i64()
+    var i: i64 = 0
+    while i < 10 {
+        table_push(s, 0)
+        i = i + 1
+    }
+    init_state(s, kb, nb)
+    process_ad(s, assoc)
+    var mb = hex_to_bytes(msg)
+    var mp = pad_16(mb)
+    var nmsg: i64 = len(mb)
+    var nblocks: i64 = len(mp) / 16
+    var ct = table_new_i64()
+    var b: i64 = 0
+    while b < nblocks {
+        var base = b * 16
+        xor_rate(s, mp, base)
+        var rb = rate16_bytes(s)
+        if b < nblocks - 1 {
+            var k: i64 = 0
+            while k < 16 {
+                table_push(ct, rb[k])
+                k = k + 1
+            }
+            perm(s, 8)
+        } else {
+            var rem = nmsg - base
+            var k2: i64 = 0
+            while k2 < rem {
+                table_push(ct, rb[k2])
+                k2 = k2 + 1
+            }
+            // 末块不置换
+        }
+        b = b + 1
+    }
+    var tag = finalize_tag(s, kb)
+    return bytes_to_hex(ct) + tag
+}
+
+pub func decrypt(key: string, nonce: string, assoc: string, ct: string) -> string {
+    var kb = hex_to_bytes(key)
+    var nb = hex_to_bytes(nonce)
+    var ctb = hex_to_bytes(ct)
+    if len(ctb) < 16 {
+        return ""
+    }
+    // 拆分：末尾 16 字节为标签
+    var tag_recv = table_new_i64()
+    var ci = table_new_i64()
+    var i: i64 = 0
+    var n = len(ctb)
+    while i < n - 16 {
+        table_push(ci, ctb[i])
+        i = i + 1
+    }
+    i = 0
+    while i < 16 {
+        table_push(tag_recv, ctb[n - 16 + i])
+        i = i + 1
+    }
+    var s = table_new_i64()
+    i = 0
+    while i < 10 {
+        table_push(s, 0)
+        i = i + 1
+    }
+    init_state(s, kb, nb)
+    process_ad(s, assoc)
+    // 解密密文
+    var len_ci: i64 = len(ci)
+    var c_lastlen = len_ci % 16
+    var cp = table_new_i64()
+    i = 0
+    while i < len_ci {
+        table_push(cp, ci[i])
+        i = i + 1
+    }
+    i = 0
+    while i < 16 - c_lastlen {
+        table_push(cp, 0)
+        i = i + 1
+    }
+    var len_cp: i64 = len(cp)
+    var plain = table_new_i64()
+    var block: i64 = 0
+    while block < len_cp - 16 {
+        var b0h = be32(cp, block)
+        var b0l = be32(cp, block + 4)
+        var b1h = be32(cp, block + 8)
+        var b1l = be32(cp, block + 12)
+        var rb = rate16_xor_bytes(s, b0h, b0l, b1h, b1l)
+        var k: i64 = 0
+        while k < 16 {
+            table_push(plain, rb[k])
+            k = k + 1
+        }
+        s[0] = b0h; s[1] = b0l
+        s[2] = b1h; s[3] = b1l
+        perm(s, 8)
+        block = block + 16
+    }
+    // 密文末块（恢复填充）
+    var lb = len_cp - 16
+    var cw = c_lastlen % 8
+    var P = (8 - cw - 1) * 8
+    var pad = shl64(0, 0x80, P)
+    var cmsk = lsr64(0xFFFFFFFF, 0xFFFFFFFF, cw * 8)
+    var b0h = be32(cp, lb)
+    var b0l = be32(cp, lb + 4)
+    var b1h = be32(cp, lb + 8)
+    var b1l = be32(cp, lb + 12)
+    var rb = rate16_xor_bytes(s, b0h, b0l, b1h, b1l)
+    if c_lastlen > 16 {
+        c_lastlen = 16
+    }
+    var p2: i64 = 0
+    while p2 < c_lastlen {
+        table_push(plain, rb[p2])
+        p2 = p2 + 1
+    }
+    if c_lastlen < 8 {
+        s[0] = (b0h ^ (s[0] & cmsk[0]) ^ pad[0]) & 0xFFFFFFFF
+        s[1] = (b0l ^ (s[1] & cmsk[1]) ^ pad[1]) & 0xFFFFFFFF
+        s[2] = b1h; s[3] = b1l
+    } else {
+        s[0] = b0h; s[1] = b0l
+        s[2] = (b1h ^ (s[2] & cmsk[0]) ^ pad[0]) & 0xFFFFFFFF
+        s[3] = (b1l ^ (s[3] & cmsk[1]) ^ pad[1]) & 0xFFFFFFFF
+    }
+    // 终态 + 标签比对
+    var tag = finalize_tag(s, kb)
+    if tag == bytes_to_hex(tag_recv) {
+        return bytes_to_hex(plain)
+    }
+    return ""
+}
+
+}   // namespace ascon_aead

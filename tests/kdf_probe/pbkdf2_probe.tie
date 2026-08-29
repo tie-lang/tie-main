@@ -1,0 +1,44 @@
+type tie<logic>
+// pbkdf2 探针：PBKDF2-HMAC-SHA256 三组权威向量（Python hashlib 交叉生成）。
+// 密码 "password"、盐 "salt"、dklen=32；iter=1/2/4096。
+// 覆盖：单块（dklen=32，一个 T 块）+ 迭代拉伸；另加 dklen=33（跨 2 个 T 块，验证截断）。
+import "../../std/pbkdf2.tie"
+using pbkdf2;
+
+// ASCII 文本 → hex 小写字符串（逐字节）。
+func to_hex(s: string) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    var hex = "0123456789abcdef"
+    while i < len(s) {
+        var b = str_byte(s, i)
+        out = out + str_char(hex, (b >> 4) & 0xF) + str_char(hex, b & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func main() {
+    var pw = to_hex("password")
+    var salt = to_hex("salt")
+    // iter=1
+    check("iter1", pbkdf2.pbkdf2_hmac_sha256(pw, salt, 1, 32),
+        "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
+    // iter=2
+    check("iter2", pbkdf2.pbkdf2_hmac_sha256(pw, salt, 2, 32),
+        "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43")
+    // iter=4096（拉伸路径）
+    check("iter4096", pbkdf2.pbkdf2_hmac_sha256(pw, salt, 4096, 32),
+        "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a")
+    println("pbkdf2 探针全部通过")
+}

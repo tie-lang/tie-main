@@ -1,0 +1,41 @@
+type tie<logic>
+// scrypt 探针：RFC 7914 权威向量 + p>1/r>1 交叉向量（Python ishlib） + 确定性。
+// 探针用保守参数 N=16（约 2 KiB 内存）确保纯 tie 可跑；生产建议 N≥2^14。
+import "../../ext/scrypt.tie"
+using scrypt;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+// ASCII 文本 → hex 小写字符串（逐字节）。
+func to_hex(s: string) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    var hex = "0123456789abcdef"
+    while i < len(s) {
+        var b = str_byte(s, i)
+        out = out + str_char(hex, (b >> 4) & 0xF) + str_char(hex, b & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // RFC 7914 Test Vector 1：passwd="" salt="" n=16 r=1 p=1 dklen=64
+    check("rfc7914_v1", scrypt.scrypt("", "", 16, 1, 1, 64),
+        "77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede21442fcd0069ded0948f8326a753a0fc81f17e8d3e0fb2e0d3628cf35e20c38d18906")
+    // 交叉向量：passwd="p" salt="s" n=16 r=2 p=2 dklen=48（覆盖 多块+多lane 路径）
+    check("p2_r2", scrypt.scrypt(to_hex("p"), to_hex("s"), 16, 2, 2, 48),
+        "b65305108403b4244386b61693dbfe90cb5f712ccc718efc2100fbcb990a7fa611263294eee868097e92058838b55959")
+    // 确定性：同输入两次同输出
+    check("deterministic", scrypt.scrypt("70617373", "73616c74", 16, 1, 1, 32),
+        scrypt.scrypt("70617373", "73616c74", 16, 1, 1, 32))
+    println("scrypt 探针全部通过")
+}

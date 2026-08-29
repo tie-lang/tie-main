@@ -1,0 +1,62 @@
+type tie<logic>
+// aes 探针：AES-128/256 ECB 已知向量（FIPS 197）+ pycryptodome CBC（PKCS7）向量 + 往返。
+// key/iv/block/msg 均以 hex 字符串传（小写）。期望输出：全部 PASS + "aes 探针全部通过"。
+import "../../ext/aes.tie"
+using aes;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func reps(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    var k128 = "000102030405060708090a0b0c0d0e0f"
+    var k256 = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    var pt = "00112233445566778899aabbccddeeff"
+    var iv = "000102030405060708090a0b0c0d0e0f"
+
+    // FIPS 197 ECB
+    check("fips128", aes.encrypt_ecb(k128, pt), "69c4e0d86a7b0430d8cdb78070b4c55a")
+    check("fips256", aes.encrypt_ecb(k256, pt), "8ea2b7ca516745bfeafc49904b496089")
+
+    // ECB 往返（两密钥长度）
+    check("ecb128_rt", aes.decrypt_ecb(k128, aes.encrypt_ecb(k128, pt)), pt)
+    check("ecb256_rt", aes.decrypt_ecb(k256, aes.encrypt_ecb(k256, pt)), pt)
+    var inblock = "deadbeef00112233cafebabef00dfeed"
+    check("ecb128_rt2", aes.decrypt_ecb(k128, aes.encrypt_ecb(k128, inblock)), inblock)
+
+    // CBC-128（pycryptodome AES-CBC-PKCS7 向量）
+    check("cbc128_empty", aes.encrypt_cbc(k128, iv, ""), "07feef74e1d5036e900eee118e949293")
+    check("cbc128_short", aes.encrypt_cbc(k128, iv, "6869"), "758d8114ae47b964fe0f314ec7d38905")
+    check("cbc128_blk1", aes.encrypt_cbc(k128, iv, pt), "76d0627da1d290436e21a4af7fca94b7177c1fc94173d442e36ee79d7ca0e461")
+    check("cbc128_2blk", aes.encrypt_cbc(k128, iv, pt + pt), "76d0627da1d290436e21a4af7fca94b732a06af3e0df74a359a0d1f48889e6152d0aac07ab1895b5082b9b299b6d77bc")
+    // CBC-256 向量
+    check("cbc256_blk1", aes.encrypt_cbc(k256, iv, pt), "78e16b06817a4453abef8a235fa9fa5157b8fc2d20975e7e023e44bc0ab13bc6")
+
+    // CBC 往返（边界长度：0/1/15/16/17/30/31/32/33 字节）
+    check("cbc_rt_len0", aes.decrypt_cbc(k128, iv, aes.encrypt_cbc(k128, iv, "")), "")
+    check("cbc_rt_len1", aes.decrypt_cbc(k128, iv, aes.encrypt_cbc(k128, iv, "aa")), "aa")
+    check("cbc_rt_len15", aes.decrypt_cbc(k128, iv, aes.encrypt_cbc(k128, iv, reps("ab", 30))), reps("ab", 30))
+    check("cbc_rt_len16", aes.decrypt_cbc(k128, iv, aes.encrypt_cbc(k128, iv, reps("cd", 32))), reps("cd", 32))
+    check("cbc_rt_len17", aes.decrypt_cbc(k128, iv, aes.encrypt_cbc(k128, iv, reps("ef", 34))), reps("ef", 34))
+    check("cbc_rt_len31", aes.decrypt_cbc(k128, iv, aes.encrypt_cbc(k128, iv, reps("11", 62))), reps("11", 62))
+    check("cbc_rt_len32", aes.decrypt_cbc(k128, iv, aes.encrypt_cbc(k128, iv, reps("22", 64))), reps("22", 64))
+    check("cbc_rt_len33", aes.decrypt_cbc(k256, iv, aes.encrypt_cbc(k256, iv, reps("33", 66))), reps("33", 66))
+
+    println("aes 探针全部通过")
+}

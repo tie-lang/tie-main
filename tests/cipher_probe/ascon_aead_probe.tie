@@ -1,0 +1,84 @@
+type tie<logic>
+// ascon_aead 探针：Ascon-128a AEAD（官方 pyascon 交叉向量）+ 往返 + 认证失败负例。
+// key/nonce/assoc/msg 均以 hex 传。期望输出：全部 PASS + "ascon_aead 探针全部通过"。
+import "../../ext/ascon_aead.tie"
+using ascon_aead;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func main() {
+    var key = "000102030405060708090a0b0c0d0e0f"
+    var nonce = "000102030405060708090a0b0c0d0e0f"
+
+    // 官方 pyascon Ascon-128a 交叉向量（(密文||标签) hex）——硬编码参考
+    // 空/仅 AD/短消息/两者
+    var c_empty = "7a834e6f09210957067b10fd831f0078"
+    var c_ad = "b06f74e28199c3509997adeee777b282"
+    var c_short = "0f2ab2d62612653de8abe42f2e1c1931d936"
+    var c_both = "744f271fa65077babb3747f62c767de1c65a064f72"
+
+    check("empty", ascon_aead.encrypt(key, nonce, "", ""), c_empty)
+    check("ad_only", ascon_aead.encrypt(key, nonce, "4144", ""), c_ad)
+    check("msg_short", ascon_aead.encrypt(key, nonce, "", "6162"), c_short)
+    check("both", ascon_aead.encrypt(key, nonce, "4153434f4e", "6173636f6e"), c_both)
+
+    // 恰一块（msg 16 字节）与多块
+    check("1blk", ascon_aead.encrypt(key, nonce,
+        "6173736f636961746564206461746120626c6f636b",
+        "78787878787878787878787878787878"),
+        "284e35516c5c4cb60aa0a21a8084c6d596594b11d7d17bab794a00abf1600741")
+    check("2blk", ascon_aead.encrypt(key, nonce,
+        "616461646164616461646164616461646164",
+        "706c61696e74657874706c61696e74657874706c61696e74657874706c61696e74657874"),
+        "f7a4b35dae45b371907a95f460ce78e9c6dd4c3eb42662c98b26f2890796d02e63bff58ea6eee2353afdf2342cfd17c1feea831c")
+    // 长 AD / 长消息
+    check("long_ad", ascon_aead.encrypt(key, nonce,
+        "303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566", ""),
+        "c9e435c06f409a45bb5670101fb2ef7a")
+    check("long", ascon_aead.encrypt(key, nonce,
+        "616420626c6f636b616420626c6f636b616420626c6f636b616420626c6f636b",
+        "3031323334353637383961626364656630313233343536373839616263646566303132333435363738396162636465667461696c"),
+        "da9cf063643dab7cf8db543a5879f983510d7ed5f949759e80b9ab0043572db299997cc73bcc8cd98bc950b55e70d117d9e3563bab144835c9ba97c99e973e8db13bc67d")
+
+    // 往返：decrypt(encrypt(msg)) == msg（覆盖空/短/恰一块/多块/长）
+    check("rt_empty", ascon_aead.decrypt(key, nonce, "", ascon_aead.encrypt(key, nonce, "", "")), "")
+    check("rt_short", ascon_aead.decrypt(key, nonce, "", ascon_aead.encrypt(key, nonce, "", "6162")), "6162")
+    check("rt_both", ascon_aead.decrypt(key, nonce, "4153434f4e", ascon_aead.encrypt(key, nonce, "4153434f4e", "6173636f6e")), "6173636f6e")
+    check("rt_1blk", ascon_aead.decrypt(key, nonce, "4153434f4e", ascon_aead.encrypt(key, nonce, "4153434f4e",
+        "78787878787878787878787878787878")), "78787878787878787878787878787878")
+    check("rt_2blk", ascon_aead.decrypt(key, nonce, "6162", ascon_aead.encrypt(key, nonce, "6162",
+        "706c61696e74657874706c61696e74657874706c61696e74657874706c61696e74657874")),
+        "706c61696e74657874706c61696e74657874706c61696e74657874706c61696e74657874")
+    check("rt_long", ascon_aead.decrypt(key, nonce, "616420626c6f636b", ascon_aead.encrypt(key, nonce, "616420626c6f636b",
+        "3031323334353637383961626364656630313233343536373839616263646566303132333435363738396162636465667461696c")),
+        "3031323334353637383961626364656630313233343536373839616263646566303132333435363738396162636465667461696c")
+
+    // 认证失败负例：篡改标签/密文任一字节 → 返回空串
+    var good = ascon_aead.encrypt(key, nonce, "4153434f4e", "6173636f6e")
+    var tampered = "744f271fa65077babb3747f62c767de1c65a064f73"   // 末字节翻转
+    var bad = ascon_aead.decrypt(key, nonce, "4153434f4e", tampered)
+    if bad == "" {
+        println("PASS auth_fail")
+    } else {
+        println("FAIL auth_fail got=" + bad)
+        exit(1)
+    }
+    // 错误的关联数据也应认证失败
+    var bad2 = ascon_aead.decrypt(key, nonce, "4144", good)
+    if bad2 == "" {
+        println("PASS auth_fail_ad")
+    } else {
+        println("FAIL auth_fail_ad got=" + bad2)
+        exit(1)
+    }
+
+    println("ascon_aead 探针全部通过")
+}

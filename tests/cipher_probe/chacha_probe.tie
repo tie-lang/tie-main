@@ -1,0 +1,57 @@
+type tie<logic>
+// chacha20 探针：RFC 8439 §2.3.2 官方向量 + 独立 Python 参考向量 + 往返（流自逆）。
+// key/nonce/msg 均以 hex 传。期望输出：全部 PASS + "chacha20 探针全部通过"。
+import "../../ext/chacha20.tie"
+using chacha;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func reps(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    var key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    var nonce = "000000000000004a00000000"
+    // RFC 8439 §2.3.2 明文（114 字节）与官方密文
+    var msg = "4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e"
+    var rfc = "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d"
+
+    // RFC 官方向量（counter=1）
+    check("rfc8439", chacha.chacha20_encrypt(key, nonce, 1, msg), rfc)
+
+    // 独立参考：nonce=全零 counter=0，确定性短消息
+    check("c0", chacha.chacha20_encrypt(key, "000000000000000000000000", 0,
+        "68656c6c6f206173636f6e206369706865722070726f626520303030"),
+        "51984711b6e57819eed26d57dbb53a21ef47f81fceb108a992fc4d7c")
+
+    // 空明文 / 长明文（342 字节，跨多块推进 counter）
+    check("empty", chacha.chacha20_encrypt(key, nonce, 1, ""), "")
+    check("long", chacha.chacha20_encrypt(key, nonce, 1, msg + msg + msg),
+        rfc + "386217497fd2a89ad28c19d6a183bc8163210bfdbd2f57559a8922709089c8ddf866ae2b8d6daf11f08f4f2c01992a113cd894abaedffe0a5b1a52bfb1106def18a7e381f379241df2d57ef50d7cdcf3818f9fad6f294410354d1944bfe60f8c403748d2a856121af0cc81511964e9e44960cfa6c2b2c9860481aaf661e8e265671f70c84017c0be235d0dc9a806a83dd4d16e9d576ecc5068d2a3109a3e7f881aa4d835df6928693c6ab73301d45e0a972dce8d205df2a7704f74812585afbbaa9cb7dc4517445ecfd9bff7551dfa88b94308faa50815cb636b75f0349b058119e540ba")
+
+    // 往返（流自逆）：边界长度 0/1/63/64/65/114/342 字节
+    check("rt_len0", chacha.chacha20_encrypt(key, nonce, 1, chacha.chacha20_encrypt(key, nonce, 1, "")), "")
+    check("rt_len1", chacha.chacha20_encrypt(key, nonce, 1, chacha.chacha20_encrypt(key, nonce, 1, "ab")), "ab")
+    check("rt_len63", chacha.chacha20_encrypt(key, nonce, 1, chacha.chacha20_encrypt(key, nonce, 1, reps("c1", 126))), reps("c1", 126))
+    check("rt_len64", chacha.chacha20_encrypt(key, nonce, 1, chacha.chacha20_encrypt(key, nonce, 1, reps("d2", 128))), reps("d2", 128))
+    check("rt_len65", chacha.chacha20_encrypt(key, nonce, 1, chacha.chacha20_encrypt(key, nonce, 1, reps("e3", 130))), reps("e3", 130))
+    check("rt_len114", chacha.chacha20_encrypt(key, nonce, 1, chacha.chacha20_encrypt(key, nonce, 1, msg)), msg)
+    check("rt_len342", chacha.chacha20_encrypt(key, nonce, 1, chacha.chacha20_encrypt(key, nonce, 1, reps("f4", 684))), reps("f4", 684))
+
+    println("chacha20 探针全部通过")
+}

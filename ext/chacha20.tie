@@ -1,0 +1,173 @@
+type tie<class>
+// ============================================================================
+// chacha20.tie：ext——ChaCha20 流密码（RFC 8439，命名空间 chacha）
+// 用途：轻量流加密底座，面向通用平台与受限环境（无查找表，纯 ARX 标量）。
+// 接口（IO 统一为 **小写 hex 字符串**；流密码加密==解密，故仅暴露加密）：
+//   chacha.chacha20_encrypt(key: string, nonce: string, counter: i64, msg: string) -> string
+//     key=64 hex（32 字节）、nonce=24 hex（12 字节）、counter=块计数器（RFC 用 1）、
+//     msg=明文 hex；返回等长密文 hex。
+// 解密：以同一 key/nonce/counter 再次调用（XOR 流自逆）。
+//
+// == 算法（RFC 8439 §2）==
+//   - 16 字 512 位状态：4 常量字("expand 32-byte k") + 8 密钥字(小端) + 计数器字 +
+//     3 nonce 字(小端)。
+//   - 10 轮双四分之一轮（column+diagonal QR，旋转 16/12/8/7），输出字 = 原字+工字
+//     (mod 2^32) 按小端 4 字节串成 64 字节 keystream 与明文异或。
+//   - counter 随 64 字节块递增；输入超一块时自动推进。
+//
+// == 验证（RFC 8439 §2.3.2 官方 + 独立纯 Python 参考，已核对）==
+//   key=00…1f, nonce=000000000000004a00000000, counter=1, msg="Ladies and Gentlemen…it."
+//     → 6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524
+//       733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e0
+//       88a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d
+//   （114 字节密文，与 RFC §2.3.2 完全一致。）
+// 备注：命名空间内互调为裸调用，内部函数不加 chacha_ 前缀。
+// ============================================================================
+
+namespace chacha {
+
+// ---- 通用 hex / 字节表 ----
+
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+func hex_to_bytes(h: string) -> table<i64> {
+    var out = table_new_i64()
+    var n: i64 = len(h)
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i))
+        var lo = hex_nibble(str_char(h, i + 1))
+        table_push(out, (hi << 4) | lo)
+        i = i + 2
+    }
+    return out
+}
+
+func bytes_to_hex(bs: table<i64>) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(bs) {
+        out = out + str_char(hex, (bs[i] >> 4) & 0xF) + str_char(hex, bs[i] & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+// ---- ChaCha20 核心 ----
+
+// 32 位循环左移。
+func r32(v: i64, n: i64) -> i64 {
+    return ((v << n) | (v >> (32 - n))) & 0xFFFFFFFF
+}
+
+// 四分之一轮（ARX）。所有字恒 <2^32 正数，>> 即逻辑右移。
+func qr(x: ref table<i64>, a: i64, b: i64, c: i64, d: i64) {
+    x[a] = (x[a] + x[b]) & 0xFFFFFFFF;  x[d] = r32(x[d] ^ x[a], 16)
+    x[c] = (x[c] + x[d]) & 0xFFFFFFFF;  x[b] = r32(x[b] ^ x[c], 12)
+    x[a] = (x[a] + x[b]) & 0xFFFFFFFF;  x[d] = r32(x[d] ^ x[a], 8)
+    x[c] = (x[c] + x[d]) & 0xFFFFFFFF;  x[b] = r32(x[b] ^ x[c], 7)
+}
+
+// 字节表（每 4 字节一个小端 32 位字）→ 字表（取前 nword 个）。
+func le_words(bs: table<i64>, nword: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < nword {
+        var w: i64 = 0
+        var j: i64 = 0
+        while j < 4 {
+            w = (w | (bs[i * 4 + j] << (8 * j))) & 0xFFFFFFFF
+            j = j + 1
+        }
+        table_push(out, w)
+        i = i + 1
+    }
+    return out
+}
+
+// 单个 64 字节 keystream 块（keystream 以小端 4 字节逐字铺开）。
+func block_keystream(kw: table<i64>, counter: i64, nw: table<i64>) -> table<i64> {
+    var x = table_new_i64()
+    table_push(x, 0x61707865)
+    table_push(x, 0x3320646e)
+    table_push(x, 0x79622d32)
+    table_push(x, 0x6b206574)
+    var i: i64 = 0
+    while i < 8 {
+        table_push(x, kw[i])
+        i = i + 1
+    }
+    table_push(x, counter & 0xFFFFFFFF)
+    i = 0
+    while i < 3 {
+        table_push(x, nw[i])
+        i = i + 1
+    }
+    var s = table_new_i64()
+    i = 0
+    while i < 16 {
+        table_push(s, x[i])
+        i = i + 1
+    }
+    var r: i64 = 0
+    while r < 10 {
+        qr(x, 0, 4, 8, 12)
+        qr(x, 1, 5, 9, 13)
+        qr(x, 2, 6, 10, 14)
+        qr(x, 3, 7, 11, 15)
+        qr(x, 0, 5, 10, 15)
+        qr(x, 1, 6, 11, 12)
+        qr(x, 2, 7, 8, 13)
+        qr(x, 3, 4, 9, 14)
+        r = r + 1
+    }
+    var ks = table_new_i64()
+    i = 0
+    while i < 16 {
+        var w = (x[i] + s[i]) & 0xFFFFFFFF
+        table_push(ks, w & 0xFF)
+        table_push(ks, (w >> 8) & 0xFF)
+        table_push(ks, (w >> 16) & 0xFF)
+        table_push(ks, (w >> 24) & 0xFF)
+        i = i + 1
+    }
+    return ks
+}
+
+// ---- 公有接口 ----
+
+pub func chacha20_encrypt(key: string, nonce: string, counter: i64, msg: string) -> string {
+    var kb = hex_to_bytes(key)
+    var nb = hex_to_bytes(nonce)
+    var kw = le_words(kb, 8)
+    var nw = le_words(nb, 3)
+    var mb = hex_to_bytes(msg)
+    var out = table_new_i64()
+    var ctr = counter
+    var pos: i64 = 0
+    var n: i64 = len(mb)
+    while pos < n {
+        var ks = block_keystream(kw, ctr, nw)
+        var k: i64 = 0
+        while k < 64 && pos + k < n {
+            table_push(out, mb[pos + k] ^ ks[k])
+            k = k + 1
+        }
+        pos = pos + 64
+        ctr = ctr + 1
+    }
+    return bytes_to_hex(out)
+}
+
+}   // namespace chacha
