@@ -161,6 +161,47 @@ tie.pkg（凭证区，包自带）
 | S5 | blake2 核心库（BLAKE2s-256/BLAKE2b-512，验证向量探针）→ 凭证+指纹审计链（指纹树→验签→fp 锚定 lock） | RFC 测试向量探针绿；篡改/冒名包负例全拦截 |
 | S6 | CLI 子命令注册化 + 库树收敛（std/ext/rdu ↔ lib_v1 定位） | 全命令行按注册项分派 |
 
+## 6.5 安全算法底座（并行于 S1–S6 的前置任务）
+
+**目标**：先巩固安全底座——调研当前经典与新兴安全算法，分类纳入 std/ext/rdu 三库，
+供插件审计链与平台应用使用。
+
+**分类归属**（写入 tie-main 树，lib_v1 为 library-v1 不可变归档不作修改）：
+
+| 类别 | 算法 | 归属 |
+|---|---|---|
+| 哈希/校验 | SHA-2 族、SHA-3（Keccak）、BLAKE2s/b、BLAKE3、XXH3、SipHash；MD5/SHA-1 仅兼容标注 | std |
+| MAC | HMAC、Poly1305、Ascon-MAC（轻量） | std + rdu 复刻 |
+| 对称加密 | AES（CBC/GCM/CTR/XTS）、ChaCha20、Ascon-128a/AEAD（NIST 轻量标准） | ext（AES）/std（ChaCha20）/rdu（Ascon） |
+| KDF/口令 | HKDF、PBKDF2（std）；scrypt、Argon2id（内存硬，ext） | std/ext |
+| 非对称 | Ed25519、X25519、ECDSA/P-256、RSA | ext |
+| 后量子 | ML-KEM（FIPS 203）、ML-DSA（FIPS 204）、SLH-DSA（FIPS 205）；Falcon/HQC 待标准 | ext（评估后列） |
+| TSHA 族 | 见 §6.6 | std（核心） |
+
+**执行纪律**：实现委托子代理（每类一个，防上下文过长）；每步自举 + regress-s21 零回归；
+BLAKE2 优先（S5 前置依赖）后按类推进。
+
+## 6.6 TSHA（tie 自有哈希，tsha1 代）
+
+**定位**：tie 平台自有通用安全哈希；ARX 轮函数（BLAKE 家族已验证构造，无查表、软件快、
+状态小），与 BLAKE2 指纹底座同宗、实现可交叉验证。结构信任 BLAKE 族，自创仅限
+参数/常量/轮数，不宣称新结构贡献；附带 security-notes 说明未经独立审计。
+
+**家族（tsha1 代，三档 × 位长）**：
+
+| 档位 | 名称 | 设计 |
+|---|---|---|
+| 快速 | `tsha1f-<n>` | ARX 轻量轮（BLAKE2s 同族 u32/u64 双线），速度优先；TSHA-512 用 G 函数 + ROTR{32,24,16,63}，轮 10（BLAKE2 为 7）；TSHA-256 轮 12（BLAKE2s 为 10） |
+| 复杂 | `tsha1b-<n>` | 强化轮——更高轮数 + 混合置换（σ 置换/更多消息调度），抗现分析显著增强 |
+| 加强 | `tsha1x-<n>` | **f 与 b 多次排列组合再计算**（对 f 与 b 的输出做多次排列组合混合再算），显著增加破解难度 |
+
+**命名**：`tsha1<档>-<位长>`；位长对齐 256/512，后续代次递增（tsha1 → tsha2 → …）。
+
+**IV/常量定制**：取标准种子 + PRNG 扩展固化（可复现、无主观 backdoor 选择）。
+
+**验证**：已知答案向量（空串/abc/长消息/边界长度）逐变体生成；与 BLAKE2 交叉验证
+G 函数正确性；同构性测试（同消息比对差异仅限参数层）。
+
 ## 7. 风险与未决
 
 - **BLAKE2 纯 tie 实现性能**：编译器自举路径可能调用频繁；若慢，在 S5 前做基准与优化
