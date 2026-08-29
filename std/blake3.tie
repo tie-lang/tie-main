@@ -1,0 +1,319 @@
+type tie<class>
+// ============================================================================
+// blake3.tie：标准库——BLAKE3-256（安全哈希，命名空间 blake3）
+// 用途：快速现代安全哈希，可用于完整性校验 / 指纹（较 SHA-2 更快）。
+//   与官方实现（blake3 参考库 / b3sum，Python blake3 包）二进制兼容。
+// 接口：
+//   blake3.blake3_256(s: string) -> string   输出 64 位十六进制小写
+// 逐**字节**处理（str_byte + len），任意 UTF-8 原始字节可哈希（同 sha/blake）。
+//
+// 算法（BLAKE3 规范，7 轮 BLAKE2s 式压缩 + 二叉树树形模式）：
+//   - 压缩函数 compress(cv, block16, counter, block_len, flags)：
+//       state = [cv0..7, IV0..3, counter_lo, counter_hi, block_len, flags]；
+//       7 轮，每轮 8 个对角 G（旋转 16/12/8/7），消息调度用固定置换 σ（重复 7 次）；
+//       chaining-value 与摘要同 = state[i] ^ state[i+8]（**无** feed-forward；
+//       feed-forward state[i+8]^cv[i] 仅属 XOF 第二半，本模块不取）。
+//   - 能力值 counter（64 位）= **块所在 chunk 的序号**（0 起，本 chunk 内所有块
+//     同一 counter；树更大时仍为该 chunk 序号）；父块恒 counter=0。这是实现要点，
+//     与"counter=块内序号"的直觉不同——以官方库逐长度核对确认。
+//   - 树形（1 KiB / 1024 字节 chunk 为叶子）：叶子 chunk 顺序吸收，末块 CHUNK_END；
+//     内部父块 = PARENT，根父块 = PARENT|ROOT；单 chunk 的根末块上 ROOT。
+//   - 摘要在 8 个 CV 字 × 每个字 4 字节小端 = 32 字节。
+// == 字宽 ==
+//   全 32 位字，i64 每步 & 0xFFFFFFFF 保持 <2^32 恒正；`>>` 对正操作数为逻辑右移
+//   （数值安全论证同 sha256/crypto）。G 的 32 位加法溢出经 & 掩码回绕。
+//
+// 标准向量（BLAKE3 官方测试向量 / blake3 包，已核对）：
+//   blake3_256("")    = af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+//   blake3_256("abc") = 6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85
+// 探针：tests/hash2_probe/blake3_probe.tie（空串/abc/55/56/64/65/128/129/256，
+//   覆盖单块、多块单 chunk 与多 chunk 树形路径）。
+// 备注：命名空间内互调为裸调用，内部函数不加 blake3_ 前缀（同 sha/blake）。
+// ============================================================================
+
+var b3_iv: table<i64>;     // BLAKE3 IV（8 个 32 位字）
+var b3_sig: table<i64>;     // 消息字置换 σ（16 项）
+
+namespace blake3 {
+
+// 惰性构建 IV 与 σ 置换。
+func ensure_iv() {
+    if len(b3_iv) > 0 {
+        return
+    }
+    table_push(b3_iv, 0x6A09E667); table_push(b3_iv, 0xBB67AE85)
+    table_push(b3_iv, 0x3C6EF372); table_push(b3_iv, 0xA54FF53A)
+    table_push(b3_iv, 0x510E527F); table_push(b3_iv, 0x9B05688C)
+    table_push(b3_iv, 0x1F83D9AB); table_push(b3_iv, 0x5BE0CD19)
+}
+func ensure_sig() {
+    if len(b3_sig) > 0 {
+        return
+    }
+    var s = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
+    var i: i64 = 0
+    while i < 16 {
+        table_push(b3_sig, s[i])
+        i = i + 1
+    }
+}
+
+// 截取字符串 [a, b)（码点区间）——内联实现（不依赖 string.tie）。
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 拷贝 8 个 i64 到表（复制 IV / cv 初值）。
+func copy8(src: table<i64>, from: i64) -> table<i64> {
+    var o = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(o, src[from + i])
+        i = i + 1
+    }
+    return o
+}
+
+// 32 位循环右移 n 位。
+func rr32(v: i64, n: i64) -> i64 {
+    return ((v >> n) | (v << (32 - n))) & 0xFFFFFFFF
+}
+
+// G 函数：对 state 的四个字做 ARX 混合（BLAKE2s 同构）。
+func g(s: ref table<i64>, a: i64, b: i64, c: i64, d: i64, x: i64, y: i64) {
+    var va = s[a]; var vb = s[b]; var vc = s[c]; var vd = s[d]
+    va = (va + vb + x) & 0xFFFFFFFF
+    vd = rr32(vd ^ va, 16)
+    vc = (vc + vd) & 0xFFFFFFFF
+    vb = rr32(vb ^ vc, 12)
+    va = (va + vb + y) & 0xFFFFFFFF
+    vd = rr32(vd ^ va, 8)
+    vc = (vc + vd) & 0xFFFFFFFF
+    vb = rr32(vb ^ vc, 7)
+    s[a] = va; s[b] = vb; s[c] = vc; s[d] = vd
+}
+
+// 一轮：8 个对角 G。s 为 16 字状态（就地修改），m 为当前轮消息字 16 项。
+func round_fn(s: ref table<i64>, m: table<i64>) {
+    g(s, 0, 4, 8, 12, m[0], m[1])
+    g(s, 1, 5, 9, 13, m[2], m[3])
+    g(s, 2, 6, 10, 14, m[4], m[5])
+    g(s, 3, 7, 11, 15, m[6], m[7])
+    g(s, 0, 5, 10, 15, m[8], m[9])
+    g(s, 1, 6, 11, 12, m[10], m[11])
+    g(s, 2, 7, 8, 13, m[12], m[13])
+    g(s, 3, 4, 9, 14, m[14], m[15])
+}
+
+// 7 轮 → chaining value / 摘要 = state[i]^state[i+8]（无 feed-forward）。
+func compress(cv: table<i64>, block: table<i64>, counter: i64, blen: i64, flags: i64) -> table<i64> {
+    ensure_iv()
+    var s = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(s, cv[i])
+        i = i + 1
+    }
+    i = 0
+    while i < 4 {
+        table_push(s, b3_iv[i])
+        i = i + 1
+    }
+    table_push(s, counter & 0xFFFFFFFF)
+    table_push(s, (counter >> 32) & 0xFFFFFFFF)
+    table_push(s, blen & 0xFFFFFFFF)
+    table_push(s, flags)
+    var sched = table_new_i64()
+    i = 0
+    while i < 16 {
+        table_push(sched, block[i])
+        i = i + 1
+    }
+    var r: i64 = 0
+    while r < 7 {
+        round_fn(s, sched)
+        var ns = table_new_i64()
+        var k: i64 = 0
+        while k < 16 {
+            table_push(ns, sched[b3_sig[k]])
+            k = k + 1
+        }
+        sched = ns
+        r = r + 1
+    }
+    var out = table_new_i64()
+    i = 0
+    while i < 8 {
+        table_push(out, (s[i] ^ s[i + 8]) & 0xFFFFFFFF)
+        i = i + 1
+    }
+    return out
+}
+
+// 从消息[off..off+blen) 读 16 个小端 32 位字（不足字节补 0）。
+func load_block(msg: string, n: i64, off: i64, blen: i64) -> table<i64> {
+    var w = table_new_i64()
+    var k: i64 = 0
+    while k < 16 {
+        var word: i64 = 0
+        var j: i64 = 0
+        while j < 4 {
+            var pos = off + k * 4 + j
+            var b: i64 = 0
+            if pos < off + blen && pos < n {
+                b = str_byte(msg, pos)
+            }
+            word = (word | (b << (8 * j))) & 0xFFFFFFFF
+            j = j + 1
+        }
+        table_push(w, word)
+        k = k + 1
+    }
+    return w
+}
+
+// 处理一个 chunk（自 off 起 clen 字节）：顺序压缩块，counter 为 chunk 序号。
+// last_root：该 chunk 同时是根（≤1024 单 chunk）→ 末块加 ROOT。
+func chunk_cv(msg: string, n: i64, off: i64, clen: i64, counter: i64, is_root: bool) -> table<i64> {
+    ensure_iv()
+    var cv = copy8(b3_iv, 0)
+    var nblocks: i64 = 1
+    if clen > 0 {
+        nblocks = (clen + 63) / 64
+    }
+    var bi: i64 = 0
+    while bi < nblocks {
+        var start = bi * 64
+        var blen: i64 = 64
+        if start + 64 > clen {
+            blen = clen - start
+        }
+        var block = load_block(msg, n, off + start, blen)
+        var flags: i64 = 0
+        if bi == 0 {
+            flags = flags | 1
+        }
+        if bi == nblocks - 1 {
+            flags = flags | 2
+            if is_root {
+                flags = flags | 8
+            }
+        }
+        cv = compress(cv, block, counter, blen, flags)
+        bi = bi + 1
+    }
+    return cv
+}
+
+// 父块压缩：block1-16 字 = 左 cv8 + 右 cv8，counter=0，blen=64。
+func parent_cv(level: ref table<i64>, a0: i64, b0: i64, flags: i64) -> table<i64> {
+    ensure_iv()
+    var block = table_new_i64()
+    var k: i64 = 0
+    while k < 8 {
+        table_push(block, level[a0 + k])
+        k = k + 1
+    }
+    k = 0
+    while k < 8 {
+        table_push(block, level[b0 + k])
+        k = k + 1
+    }
+    return compress(copy8(b3_iv, 0), block, 0, 64, flags)
+}
+
+// 32 位值 → 8 位小写 hex（按字节小端：字节低地址在前，字节内高半字节在前）。
+func hex8_le(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var b: i64 = 0
+    while b < 4 {
+        var hi2 = (v >> (8 * b + 4)) & 0xF
+        var lo = (v >> (8 * b)) & 0xF
+        out = out + str_char(hex, hi2) + str_char(hex, lo)
+        b = b + 1
+    }
+    return out
+}
+
+// BLAKE3-256 主入口：输入 ≤1024 → 单 chunk；否则树形合并，输出 32 字节 = 64 hex。
+pub func blake3_256(msg: string) -> string {
+    ensure_iv()
+    ensure_sig()
+    var n: i64 = len(msg)
+    if n == 0 {
+        var cv0 = chunk_cv(msg, n, 0, 0, 0, true)
+        return hex(cv0)
+    }
+    if n <= 1024 {
+        var cv1 = chunk_cv(msg, n, 0, n, 0, true)
+        return hex(cv1)
+    }
+    // 多 chunk：先求各叶子 CV（counter = chunk 序号）
+    var level = table_new_i64()
+    var pos: i64 = 0
+    var ci: i64 = 0
+    while pos < n {
+        var clen: i64 = 1024
+        if pos + 1024 > n {
+            clen = n - pos
+        }
+        var cv = chunk_cv(msg, n, pos, clen, ci, false)
+        var k: i64 = 0
+        while k < 8 {
+            table_push(level, cv[k])
+            k = k + 1
+        }
+        pos = pos + clen
+        ci = ci + 1
+    }
+    // 自底向上合并
+    while (len(level) / 8) > 1 {
+        var cnt = len(level) / 8
+        var nxt = table_new_i64()
+        var i: i64 = 0
+        while i < cnt {
+            if i + 1 < cnt {
+                var flags: i64 = 4
+                if cnt == 2 {
+                    flags = 12
+                }
+                var p = parent_cv(level, i * 8, i * 8 + 8, flags)
+                var k: i64 = 0
+                while k < 8 {
+                    table_push(nxt, p[k])
+                    k = k + 1
+                }
+            } else {
+                var k: i64 = 0
+                while k < 8 {
+                    table_push(nxt, level[i * 8 + k])
+                    k = k + 1
+                }
+            }
+            i = i + 2
+        }
+        level = nxt
+    }
+    return hex(level)
+}
+
+// cv（8 字）→ 32 字节小端 hex。
+func hex(cv: table<i64>) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < 8 {
+        out = out + hex8_le(cv[i])
+        i = i + 1
+    }
+    return out
+}
+
+}   // namespace blake3
+

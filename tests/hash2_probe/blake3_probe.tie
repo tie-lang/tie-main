@@ -1,0 +1,54 @@
+type tie<logic>
+// blake3-256 探针：空串/abc + 块边界（单块 55/56/64、多块单 chunk 65/128/129、
+// 256；另含一个多 chunk 树形长度 2048）。向量来源：blake3 官方参考库（Python
+// blake3 包，b3sum 同源）——列表见 tests/hash2_probe/gen_vectors.py。
+import "../../std/blake3.tie"
+using blake3;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // 任务指定向量（空串 / abc）
+    check("b3 empty", blake3.blake3_256(""),
+        "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+    check("b3 abc", blake3.blake3_256("abc"),
+        "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85")
+    // 边界：单块 + 多块单 chunk
+    check("b3 a55", blake3.blake3_256(rep("a", 55)),
+        "8e0494b8aa1fa7fc245b4de5ecfb343f35550e6cc3c051e1e872c4a0a4105f83")
+    check("b3 a56", blake3.blake3_256(rep("a", 56)),
+        "86dd7cd514f2b1f6aaa34688ead22746f453e9d9ddeeca1ef124477507aefc9f")
+    check("b3 a64", blake3.blake3_256(rep("a", 64)),
+        "472c51290d607f100d2036fdcedd7590bba245e9adeb21364a063b7bb4ca81c7")
+    check("b3 a65", blake3.blake3_256(rep("a", 65)),
+        "f345679d9055e53939e92c04ff4f6c9d824b849810d4b598f54baa23336cde99")
+    check("b3 a128", blake3.blake3_256(rep("a", 128)),
+        "0753df896d00f20c247f7e8c8977bb84d42f57532a5cc30d8f2ea035c9ce5757")
+    check("b3 a129", blake3.blake3_256(rep("a", 129)),
+        "1431d92bd2d292bbd1dd48fbbf133168c9a84425d5e0e0aa24ced8fe934fe664")
+    check("b3 a256", blake3.blake3_256(rep("a", 256)),
+        "dfce7664ce28f7fdebfdbdb06e9f4513f1f63287daf63959e866d5035a903197")
+    // 多 chunk 树形（1025 → 两 chunk 叶 -> 根父）
+    check("b3 a2048", blake3.blake3_256(rep("a", 2048)),
+        "11654ac17d073b0905429320fee0a34776cb5f10a9767287c70b627fc4f45539")
+    println("blake3 探针全部通过")
+}
+
