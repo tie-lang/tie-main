@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-"""TSHA1 家族总体架构图生成脚本（PIL）。输出 docs/papers/tsha1-arch.png"""
+"""TSHA1 家族总体架构图生成脚本（PIL）。输出 docs/papers/tsha1-arch.png
+描述对 std/tsha1.tie 重构后的设计：f/b/r 复用同一「三进制双轨并行 + 最后综合」内核，
+仅轮数/常量/输出字数不同；tsha1x 对 f+b 输出排列组合再算。"""
 import math
 import os
 from PIL import Image, ImageDraw, ImageFont
@@ -45,20 +47,18 @@ box(570, 26, 340, 58, "消息 M（任意字节串）", fill="#fdf3dc", edge="#a8
     lines=["消息 M（任意字节串）"])
 
 # 填充层
-box(560, 112, 360, 62, "", fill="#ffffff", edge="#33475b")
-box(560, 112, 360, 62, "纯零填充 + 64 位计数器 t（mod 2^64）",
+box(528, 112, 394, 62, "纯零填充 + 64 位计数器 t（mod 2^64）",
     lines=["纯零填充 + 64 位计数器 t", "（mod 2^64，长度绑定）"])
 arrow(740, 84, 740, 112)
 
-# ---- 主线到五栏（四档 + trit 特写）----
+# ---- 主线到四模型（f/b/x/r）----
 cols = [
-    (30,  "tsha1f-256", "快速档", ["T 轨旁路扰动", "BLAKE-ARX ×12", "24 基混合调度"], "#e8f4f8"),
-    (318, "tsha1b-256", "复杂档", ["B 轨 ARX ×14", "T 轨 trit 位平面", "每 3 轮 SPN 强化"], "#f3eef9"),
-    (606, "tsha1x-256", "加强档", ["f+b 输出排列组合", "再算 NX=6 固定序", "签名对象级强度"], "#fdeeee"),
-    (894, "tsha1r-128", "轻量档", ["轻量 SPN 吸收", "长度绑定 + 终筛轮", "trit 终筛扰动"], "#eef9ef"),
-    (1182,"trit 位平面", "包装层", ["u64=(M<<32)|N", "幅值 M / 符号 N 两平面", "运算走 &^|<<，无 mod3"], "#fbf6ea"),
+    (76,  "tsha1f-256", "快速模型", ["三进制双轨并行 R_F=12", "trit 位平面（平衡加/乘/多数）", "双轨耦合 + 轮常量，末段 S=4 综合"], "#e8f4f8"),
+    (424, "tsha1b-256", "复杂模型", ["三进制双轨并行 R_B=14", "trit 位平面扩散（同 f 同构）", "双轨耦合 + 轮常量，末段 S=4 综合"], "#f3eef9"),
+    (772, "tsha1x-256", "加强模型", ["f+b 输出排列组合再算", "NX=6 固定序（digest_f/digest_b）", "签名对象级强度"], "#fdeeee"),
+    (1120,"tsha1r-128", "轻量模型", ["三进制双轨并行 R_R=8", "trit 位平面扩散（轮数最少）", "末段 S=4 综合，仅取前 4 字"], "#eef9ef"),
 ]
-bw, bh, tmp_top = 264, 62, 244
+bw, bh, tmp_top = 304, 62, 260
 center_x = [x + bw / 2 for (x, _, _, _, _) in cols]
 
 arrow(740, 174, 740, 196)
@@ -73,13 +73,15 @@ for cx, (x, name, tag, steps, fill) in zip(center_x, cols):
         box(x + 14, y, bw - 28, 54, s, fill=fill, edge="#7d8ea3", fs=f_small)
         y += 66
 
-# ---- 底部输出：五栏底部统一箭头，输出框覆盖全域 ----
+# ---- 底部输出：四栏底部统一箭头，输出框覆盖全域 ----
 out_top = 700
 for cx in center_x:
-    arrow(cx, 466, cx, out_top - 6, color="#7d8ea3", wd=3)   # 466 = 第 3 步底部下方
-box(230, out_top, 1200, 72, "", fill="#ffffff", edge="#33475b")
-box(230, out_top, 1200, 72, "任选一档：摘要输出 → Base48（46 / 23 字符）  ｜  _hex 十六进制可选",
-    fs=font(21), lines=["任选一档：摘要输出 → Base48（46 / 23 字符）", "｜  _hex 十六进制可选"])
+    arrow(cx, 530, cx, out_top - 6, color="#7d8ea3", wd=3)   # 530 = 第 3 步盒底部+下方
+box(76, out_top, 1348, 76, "", fill="#ffffff", edge="#33475b")
+box(76, out_top, 1348, 76,
+    "任选一模型：位长 n 显式指定，n∈{2,3,4,6,8,12,16,24,32,48,64,88,96}（48 进制符号个数）",
+    fs=font(19), lines=["任选一模型：位长 n 显式指定，n∈{2,3,4,6,8,12,16,24,32,48,64,88,96}（48 进制符号个数）",
+                        "→ Base48 编码（n 个字符）｜ 其它进制 {2,3,8,16} 按信息量换算 ｜ _hex 可选（64/32）"])
 
 im.save(OUT, dpi=(200, 200))
 print("saved:", OUT, im.size)
