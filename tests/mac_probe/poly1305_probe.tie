@@ -1,0 +1,44 @@
+type tie<logic>
+// poly1305 探针：RFC 8439 §2.5.2 + 边界向量（全零 key、空消息、多块消息）。
+// key 以 64 位 hex 传（32 字节密钥 r||s）；msg 为原始字符串。
+// 期望输出：四组 PASS + "poly1305 探针全部通过"。
+import "../../std/poly1305.tie"
+using poly;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func reps(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // vec1：RFC 8439 §2.5.2 权威向量（34 字节消息 → 跨块 + 末偏块）
+    check("vec1", poly.poly1305("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b",
+        "Cryptographic Forum Research Group"),
+        "a8061dc1305136c6c22b8baf0c0127a9")
+    // vec2：全零 key（r=s=0）→ 标签 0
+    check("vec2", poly.poly1305(reps("00", 32), "Cryptographic Forum Research Group"),
+        "00000000000000000000000000000000")
+    // vec3：空消息（ceil(0/16)=0 块）→ 标签 = s（key 后 16 字节）
+    check("vec3", poly.poly1305("0f0e0d0c0b0a09080706050403020100d8d9dadbdcdddedfe0e1e2e3e4e5e6e7", ""),
+        "d8d9dadbdcdddedfe0e1e2e3e4e5e6e7")
+    // vec4：48 字节 'a'（3 个满块，多块路径）
+    check("vec4", poly.poly1305("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        reps("a", 48)),
+        "386631259d5059b43d26e49d0febb10a")
+    println("poly1305 探针全部通过")
+}

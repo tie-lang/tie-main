@@ -1,0 +1,277 @@
+type tie<class>
+// ============================================================================
+// poly1305.tie：标准库——Poly1305 消息认证码（命名空间 poly）
+// 用途：轻量消息认证（RFC 8439 / RFC 7539），无查表、纯标量算术，适合受限环境。
+// 接口：poly.poly1305(key: string, msg: string) -> string
+//   返回 16 字节标签 → 32 位十六进制小写。（任务描述中的 "64 hex" 为笔误——
+//   Poly1305 标签固定 128 位 = 16 字节 = 32 位 hex。）
+//
+// == 输入约定 ==
+//   key：**32 字节密钥**，以 64 位 hex 小写传入（前 16 字节 = r，后 16 字节 = s）。
+//     （RFC 8439 中 "key32hex" 即 32 字节密钥的十六进制表达；Poly1305 密需 32 字节，
+//     单 16 字节不构成可用的 Poly1305 密钥。）
+//   msg：**原始字符串**（逐字节 str_byte 参与），自然 ASCII 文本直接传。
+//
+// 算法（RFC 8439 §2.5）：
+//   1. r = 前 16 字节，夹紧：r[3,7,11,15]&=0x0f、r[4,8,12]&=0xfc
+//      （等价整数掩码 0x0ffffffc0ffffffc0ffffffc0fffffff）。
+//   2. P = 2^130-5。每个 16 字节块作小端数 + 高位 1（末块高位在 2^(8*cnt)），
+//      Acc = ((Acc + block) * r) mod P。
+//   3. tag = (Acc + s) 的低 128 位，小端序列化 16 字节。
+//   内部用 5 个 26-bit 肢表示 130 位累加（h0..h4 / r0..r4），每肢 < 2^26，
+//   乘积 ≤ 5×2^53 ≈ 2^55 << i64::MAX，乘算无溢出（数值安全同 sha/crypto 论证）。
+//
+// 标准向量（RFC 8439 §2.5.2，已核对）：
+//   key=85d6be7857556d337f4452fe42d506a8 0103808afb0db2fd4abff6af4149f51b
+//   msg="Cryptographic Forum Research Group"
+//   tag = a8061dc1305136c6c22b8baf0c0127a9
+// 备注：命名空间内互调为裸调用（Harbor M2.1.6），内部函数不加 poly_ 前缀。
+// ============================================================================
+
+// 顶层常量：26 位肢掩码（写为局部字面量 0x3ffffff，见下；顶层标量全局字面量
+// 初始化在本编译器未生效，故不定义全局 MASK，函数内一律用字面量 0x3ffffff）。
+
+namespace poly {
+
+// 单字符十六进制数字（0..15）。
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// key[.. 64 hex]第 idx 个字节（hex 串每 2 字符 1 字节）。
+func byte_at(key: string, idx: i64) -> i64 {
+    var hi = hex_nibble(str_char(key, idx * 2))
+    var lo = hex_nibble(str_char(key, idx * 2 + 1))
+    return (hi << 4) | lo
+}
+
+// 从 16 字节基数偏移 base 处读 4 个 32 位小端字到表 w[0..3]。
+func words(key: string, base: i64) -> table<i64> {
+    var w = table_new_i64()
+    var j: i64 = 0
+    while j < 4 {
+        var v: i64 = 0
+        var b4: i64 = 0
+        while b4 < 4 {
+            v = v | (byte_at(key, base + j * 4 + b4) << (8 * b4))
+            b4 = b4 + 1
+        }
+        table_push(w, v)
+        j = j + 1
+    }
+    return w
+}
+
+// 从 4 个 32 位小端字中取第 off 位（26 的倍数）起的 26-bit 肢。
+func limb_at(w: table<i64>, off: i64) -> i64 {
+    var w0 = w[0]; var w1 = w[1]; var w2 = w[2]; var w3 = w[3]
+    var v: i64 = 0
+    if off == 0 {
+        v = w0 & 0x3ffffff
+    } else if off == 26 {
+        v = ((w0 >> 26) & 0x3f) | ((w1 & 0xfffff) << 6)
+    } else if off == 52 {
+        v = ((w1 >> 20) & 0xfff) | ((w2 & 0x3fff) << 12)
+    } else if off == 78 {
+        v = ((w2 >> 14) & 0x3ffff) | ((w3 & 0xff) << 18)
+    } else {
+        v = (w3 >> 8) & 0x3ffffff
+    }
+    return v & 0x3ffffff
+}
+
+// 消息从字节 off 起 cnt 字节一块：小端数 + 高位 1（2^(8*cnt)）→ 5 个 26-bit 肢。
+func block_limbs(msg: string, off: i64, cnt: i64) -> table<i64> {
+    var w = table_new_i64()
+    var j: i64 = 0
+    while j < 4 {
+        var v: i64 = 0
+        var b4: i64 = 0
+        while b4 < 4 {
+            var bx = off + j * 4 + b4
+            var byte: i64 = 0
+            if bx < off + cnt {
+                byte = str_byte(msg, bx)
+            }
+            v = v | (byte << (8 * b4))
+            b4 = b4 + 1
+        }
+        table_push(w, v)
+        j = j + 1
+    }
+    if cnt < 16 {   // 偏块：高位在 2^(8*cnt)（存进对应字）
+        var wIdx = (8 * cnt) / 32
+        var bit = (8 * cnt) % 32
+        w[wIdx] = w[wIdx] | (1 << bit)
+    }
+    var t = table_new_i64()
+    var k: i64 = 0
+    while k < 5 {
+        table_push(t, limb_at(w, 26 * k))
+        k = k + 1
+    }
+    if cnt == 16 {   // 满块：第 128 位（2^128）落在肢 4 的位 24
+        t[4] = t[4] + 0x1000000
+    }
+    return t
+}
+
+// h = (h + t) * r  mod 2^130-5，肢归一化。
+func addmul(h: ref table<i64>, r: table<i64>, t: table<i64>) {
+    var h0 = h[0] + t[0]
+    var h1 = h[1] + t[1]
+    var h2 = h[2] + t[2]
+    var h3 = h[3] + t[3]
+    var h4 = h[4] + t[4]
+    var r0 = r[0]; var r1 = r[1]; var r2 = r[2]; var r3 = r[3]; var r4 = r[4]
+    var d0 = h0 * r0
+    var d1 = h0 * r1 + h1 * r0
+    var d2 = h0 * r2 + h1 * r1 + h2 * r0
+    var d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0
+    var d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0
+    var d5 = h1 * r4 + h2 * r3 + h3 * r2 + h4 * r1
+    var d6 = h2 * r4 + h3 * r3 + h4 * r2
+    var d7 = h3 * r4 + h4 * r3
+    var d8 = h4 * r4
+    // 折高位肢（2^130 ≡ 5 mod 2^130-5）
+    d3 = d3 + 5 * d8
+    d2 = d2 + 5 * d7
+    d1 = d1 + 5 * d6
+    d0 = d0 + 5 * d5
+    // 进位链
+    var m = 0x3ffffff
+    var c = d0 >> 26; h0 = d0 & m; d1 = d1 + c
+    c = d1 >> 26; h1 = d1 & m; d2 = d2 + c
+    c = d2 >> 26; h2 = d2 & m; d3 = d3 + c
+    c = d3 >> 26; h3 = d3 & m; d4 = d4 + c
+    c = d4 >> 26; h4 = d4 & m; h0 = h0 + c * 5
+    c = h0 >> 26; h0 = h0 & m; h1 = h1 + c
+    c = h1 >> 26; h1 = h1 & m; h2 = h2 + c
+    c = h2 >> 26; h2 = h2 & m; h3 = h3 + c
+    c = h3 >> 26; h3 = h3 & m; h4 = h4 + c
+    c = h4 >> 26; h4 = h4 & m; h0 = h0 + c * 5
+    h[0] = h0; h[1] = h1; h[2] = h2; h[3] = h3; h[4] = h4
+}
+
+// 终处理：(h mod P) + s 的低 128 位 → 标签肢（就地写回 h）。
+func finish(h: ref table<i64>, s: table<i64>) {
+    var m = 0x3ffffff
+    // 完全进位 h
+    var c = h[4] >> 26; h[4] = h[4] & m; h[0] = h[0] + c * 5
+    c = h[0] >> 26; h[0] = h[0] & m; h[1] = h[1] + c
+    c = h[1] >> 26; h[1] = h[1] & m; h[2] = h[2] + c
+    c = h[2] >> 26; h[2] = h[2] & m; h[3] = h[3] + c
+    c = h[3] >> 26; h[3] = h[3] & m; h[4] = h[4] + c
+    var h0 = h[0]; var h1 = h[1]; var h2 = h[2]; var h3 = h[3]; var h4 = h[4]
+    // h - P
+    var g0 = h0 + 5; c = g0 >> 26; g0 = g0 & m
+    var g1 = h1 + c; c = g1 >> 26; g1 = g1 & m
+    var g2 = h2 + c; c = g2 >> 26; g2 = g2 & m
+    var g3 = h3 + c; c = g3 >> 26; g3 = g3 & m
+    var g4 = h4 + c - 0x4000000
+    // h>=P（g4>=0）时取 g，否则取 h
+    var useg: i64 = 0
+    if g4 >= 0 {
+        useg = -1
+    }
+    var useh: i64 = -1 - useg
+    g0 = g0 & useg; g1 = g1 & useg; g2 = g2 & useg; g3 = g3 & useg; g4 = g4 & useg
+    h0 = (h0 & useh) | g0
+    h1 = (h1 & useh) | g1
+    h2 = (h2 & useh) | g2
+    h3 = (h3 & useh) | g3
+    h4 = (h4 & useh) | g4
+    // h += s（s 也是 5 肢）
+    var s0 = s[0]; var s1 = s[1]; var s2 = s[2]; var s3 = s[3]; var s4 = s[4]
+    c = h4
+    h4 = s4
+    h0 = h0 + s0
+    var c1 = h0 >> 26; h0 = h0 & m; h1 = h1 + s1 + c1; c1 = h1 >> 26; h1 = h1 & m
+    h2 = h2 + s2 + c1; c1 = h2 >> 26; h2 = h2 & m
+    h3 = h3 + s3 + c1; c1 = h3 >> 26; h3 = h3 & m
+    h4 = h4 + c + c1
+    // 折 h4 进位（mod 2^130-5）
+    c1 = h4 >> 26; h4 = h4 & m; h0 = h0 + c1 * 5
+    c1 = h0 >> 26; h0 = h0 & m; h1 = h1 + c1
+    c1 = h1 >> 26; h1 = h1 & m; h2 = h2 + c1
+    c1 = h2 >> 26; h2 = h2 & m; h3 = h3 + c1
+    c1 = h3 >> 26; h3 = h3 & m; h4 = h4 + c1
+    h[0] = h0; h[1] = h1; h[2] = h2; h[3] = h3; h[4] = h4
+}
+
+// 从 5 肢标签取第 j 个输出字节（小端，位 8j..8j+7，可能跨两肢）。
+func tag_byte(t: table<i64>, j: i64) -> i64 {
+    var bitlo = 8 * j
+    var li = bitlo / 26
+    var ro = bitlo % 26
+    var v: i64 = (t[li] >> ro) & 0xFF
+    var need = ro + 8 - 26
+    if need > 0 {
+        v = v | (((t[li + 1] & ((1 << need) - 1)) << (8 - need)) & 0xFF)
+    }
+    return v & 0xFF
+}
+
+// 字节 → 2 位小写 hex。
+func hex2(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, (v >> 4) & 0xF) + str_char(hex, v & 0xF)
+}
+
+// Poly1305 主入口：key=32 字节密钥（64 位 hex），msg=原始字符串，返回 32 位 hex。
+pub func poly1305(key: string, msg: string) -> string {
+    var wr = words(key, 0)   // r 的 4 字
+    // 夹紧 r（字节 r[3,7,11,15]&=0x0f → 清字节高 4 位=字位 28-31；r[4,8,12]&=0xfc → 清字位 0-1）
+    wr[0] = wr[0] & 0x0FFFFFFF
+    wr[1] = wr[1] & 0x0FFFFFFC
+    wr[2] = wr[2] & 0x0FFFFFFC
+    wr[3] = wr[3] & 0x0FFFFFFC
+    var ws = words(key, 16)  // s 的 4 字
+    var r = table_new_i64()
+    var s = table_new_i64()
+    var k: i64 = 0
+    while k < 5 {
+        table_push(r, limb_at(wr, 26 * k))
+        table_push(s, limb_at(ws, 26 * k))
+        k = k + 1
+    }
+    var h = table_new_i64()
+    k = 0
+    while k < 5 {
+        table_push(h, 0)
+        k = k + 1
+    }
+    var n: i64 = len(msg)
+    var nblocks: i64 = (n + 15) / 16
+    var pos: i64 = 0
+    var b: i64 = 0
+    while b < nblocks {
+        var remb = n - pos
+        var cnt: i64 = 16
+        if remb < 16 {
+            cnt = remb
+        }
+        var t = block_limbs(msg, pos, cnt)
+        addmul(h, r, t)
+        pos = pos + cnt
+        b = b + 1
+    }
+    finish(h, s)
+    var out: string = ""
+    var j: i64 = 0
+    while j < 16 {
+        out = out + hex2(tag_byte(h, j))
+        j = j + 1
+    }
+    return out
+}
+
+}   // namespace poly
