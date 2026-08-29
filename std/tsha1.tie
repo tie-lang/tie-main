@@ -1,6 +1,6 @@
 type tie<class>
 // ============================================================================
-// tsha1.tie：标准库——TSHA1 哈希族（tie 自有安全哈希，命名空间 tsha）
+// tsha1.tie：标准库——TSHA1 哈希族（TIE Secure Hash Algorithm 1.0，命名空间 tsha）
 // 用途：tie 平台自有通用安全哈希底座（插件审计链 / 完整性校验 / 指纹）。
 // 来源：docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6
 // 接口（本期实现 f/r/b/x 四档）：

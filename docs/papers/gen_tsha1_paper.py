@@ -10,7 +10,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tsha1-paper.docx")
+OUT = os.environ.get("TSHA1_PAPER_OUT",
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "tsha1-paper.docx"))
 
 doc = Document()
 
@@ -43,8 +44,16 @@ def para(text="", zh="宋体", en="Times New Roman", size=12, bold=False,
     if align is not None:
         p.alignment = align
     if text:
-        r = p.add_run(text)
-        _set_font(r, zh, en, size, bold=bold, italic=italic)
+        if "**" in text:
+            # 支持 **加粗** 内联标记（python-docx 不解析 Markdown，手动分段渲染）
+            for k, seg in enumerate(text.split("**")):
+                if not seg:
+                    continue
+                r = p.add_run(seg)
+                _set_font(r, zh, en, size, bold=(bold or (k % 2 == 1)), italic=italic)
+        else:
+            r = p.add_run(text)
+            _set_font(r, zh, en, size, bold=bold, italic=italic)
     return p
 
 def heading(text, size=14):
@@ -81,9 +90,9 @@ def add_table(headers, rows, caption):
     return t
 
 # ================= 标题 =================
-para("TSHA1：一种融合平衡三进制位平面扩散的杂凑函数家族", zh="黑体", size=16,
+para("TSHA1：一种多原语确定性组合的安全杂凑函数家族", zh="黑体", size=16,
      align=WD_ALIGN_PARAGRAPH.CENTER, indent=False, space_after=2)
-para("——基于自举语言 TIE 的纯语言实现与评估", zh="黑体", size=14,
+para("——新型构造、强度梯度与可论证安全性质（基于自举语言 TIE 的纯语言实现）", zh="黑体", size=12,
      align=WD_ALIGN_PARAGRAPH.CENTER, indent=False, space_after=10)
 para("侯杨宝鑫，TIE 项目团队", size=12, align=WD_ALIGN_PARAGRAPH.CENTER, indent=False, space_after=2)
 para("（侯杨宝鑫为 TIE 项目团队成员；单位：TIE Language Project）", zh="楷体", size=10.5,
@@ -91,87 +100,101 @@ para("（侯杨宝鑫为 TIE 项目团队成员；单位：TIE Language Project�
 
 # ================= 中文摘要 =================
 heading("摘　要", size=12)
-para("TSHA1 是为自举编程语言 TIE 设计并完全以该语言实现的杂凑函数（哈希）家族，"
-     "包含快速档 tsha1f、复杂档 tsha1b、加强档 tsha1x 与轻量档 tsha1r 四档。"
-     "该家族以经充分研究验证的 ARX 与 SPN 结构为骨架——主轮函数采用 BLAKE 型 G 函数，"
-     "非线性层采用 Ascon 型位切片 S-盒与旋-异或线性扩散，并创造性引入基于平衡三进制（trit）"
-     "的位平面旁路扩散：每个 u64 装填 32 个 trit（幅值与符号两个位平面），全部扩散运算"
-     "以与/或/异或/移位实现，避免逐 trit 模 3 的慢点。四档分别面向海量小文件指纹、"
-     "复杂强度场景、最高抗破解强度签名对象与嵌入式受限环境。全部实现为纯 TIE 代码，"
-     "无外部运行时依赖；摘要默认采用自行设计的 Base48（48 符号连续字符集）输出，"
-     "便于人类抄写与审计链标识。探针以与平台交叉生成的已知答案向量逐字节核对；"
-     "基准实测（TIE 自写编译器/IR 执行层）大消息稳态吞吐为 tsha1f≈34 MB/s、"
-     "tsha1b≈22 MB/s、tsha1r≈22 MB/s、tsha1x≈13 MB/s，档位间速度差与设计定位相符。"
-     "该家族已作为插件化内核审计链的指纹与凭证签名哈希底座投入使用。",
+para("TSHA1 是为自举编程语言 TIE 设计并完全以该语言实现的**新型安全杂凑函数家族**，"
+     "包含快速档 tsha1f、复杂档 tsha1b、加强档 tsha1x 与轻量档 tsha1r。其“新型”体现在"
+     "构造而非机理：不以单一原语为卖点，而是将已经充分公开分析的 BLAKE 型 ARX 轮、"
+     "Ascon 型位切片 SPN 作为结构骨架，叠加自主设计的 trit 位平面旁路扩散与 f+b 输出"
+     "排列组合再算，形成四档速度/强度梯度。“更安全”体现在四方面可论证性质：其一，"
+     "计数器式纯零填充与 64 位长度绑定在结构上免疫 Merkle–Damgård 型长度扩展攻击；"
+     "其二，全部轮常量由“标准种子＋PRNG 扩展”确定性生成、可复现，杜绝猜测常量与"
+     "后门注入疑虑；其三，结构信任完全继承已审原语体系，自创层仅限参数/常量/轮数/"
+     "排列组合序，安全性可随组合逐一论证；其四，多扩散构件交叠（ARX＋SPN＋位平面）"
+     "与加强档的排列组合再算共同抬高结构化攻击的破解成本。实现为纯 TIE、零外部依赖，"
+     "摘要默认采用自行设计的 Base48（48 符号连续字符集）输出，便于人类抄写与审计链标识；"
+     "探针以跨平台交叉生成的已知答案向量逐字节核对。基准实测（TIE 自写编译器/IR 执行层）"
+     "大消息稳态吞吐 tsha1f≈34 MB/s、tsha1b≈22、tsha1r≈22、tsha1x≈13，档位间速度差"
+     "与强度梯度设计相符。该家族已作为插件化内核审计链的指纹与凭证签名哈希底座投入使用。",
      size=12, space_after=6)
 p = para("", size=12, indent=False, space_after=10)
 r0 = p.add_run("关键词：")
 _set_font(r0, "黑体", "Times New Roman", 12, bold=True)
-for w in ["杂凑函数", "平衡三进制", "trit 位平面", "ARX", "SPN", "Base48", "自举语言", "审计链"]:
+for w in ["新型安全杂凑", "确定性组合构造", "抗长度扩展", "多扩散构件", "ARX", "SPN", "强度梯度", "Base48"]:
     p.add_run(w + " ")
 
 # ================= English Abstract =================
 heading("Abstract", size=12)
-para("TSHA1 is a family of cryptographic hash functions designed for and fully implemented in the "
-     "self-hosting programming language TIE, comprising four variants: tsha1f (fast), tsha1b "
-     "(complex), tsha1x (strengthened) and tsha1r (lightweight). The family is built on the "
-     "well-studied ARX and SPN frameworks: the round function is a BLAKE-like G function, the "
-     "nonlinear layer adopts Ascon-style bit-sliced S-boxes with rotation-xor linear diffusion, "
-     "and, as a novel contribution, a balanced-ternary (trit) bit-plane bypass diffusion is "
-     "introduced: each 64-bit word packs 32 trits into magnitude and sign bit-planes, and all "
-     "diffusion is expressed solely with AND/OR/XOR/shifts, avoiding per-trit modular-3 "
-     "operations. The four variants address bulk small-file fingerprinting, high-complexity "
-     "scenarios, maximum-resistance signing objects and embedded environments respectively. "
-     "The entire implementation is pure TIE with no external runtime dependency; digests are "
-     "encoded by default in a purpose-built Base48 alphabet (a continuous 48-symbol set) for "
-     "human transcription and audit-chain identifiers. Known-answer vectors, cross-generated "
-     "with the platform, are verified byte-for-byte by probes. Benchmarks on the TIE "
-     "self-hosted compiler/IR execution layer show steady-state throughput of ≈34 MB/s "
-     "(tsha1f), ≈22 MB/s (tsha1b), ≈22 MB/s (tsha1r) and ≈13 MB/s (tsha1x) on large "
-     "messages, matching the intended speed/strength hierarchy. TSHA1 has been adopted as the "
-     "fingerprint and credential-signing hash foundation of the plug-in kernel audit chain.",
+para("TSHA1 is a new family of cryptographic hash functions designed for and fully implemented "
+     "in the self-hosting programming language TIE, comprising four variants: tsha1f (fast), "
+     "tsha1b (complex), tsha1x (strengthened) and tsha1r (lightweight). Its novelty lies in "
+     "construction rather than a single primitive: well-analyzed BLAKE-style ARX rounds and "
+     "Ascon-style bit-sliced SPN layers serve as the structural backbone, on top of which a "
+     "self-designed trit bit-plane bypass diffusion and an f+b output permutation chain are "
+     "superimposed, yielding a four-variant speed/strength hierarchy. Improved security is "
+     "argued on four verifiable grounds: (i) counter-based zero padding with a 64-bit length "
+     "binding structurally defeats Merkle–Damgård-style length-extension attacks; (ii) all "
+     "round constants are deterministically derived from a standard seed via PRNG extension "
+     "and are fully reproducible, ruling out guess-constant or backdoor concerns; (iii) "
+     "structural trust is inherited entirely from previously audited primitives, and the "
+     "self-designed layer is restricted to parameters/constants/rounds/permutation order, "
+     "so that security can be argued compositionally; and (iv) the interplay of multiple "
+     "diffusion components (ARX + SPN + bit-planes), combined with the strengthened "
+     "variant's permutation re-hashing, raises the cost of structural cryptanalysis. The "
+     "implementation is pure TIE with no external dependency; digests are encoded by default "
+     "in a purpose-built Base48 alphabet for human transcription. Known-answer vectors "
+     "cross-generated with the platform are verified byte-for-byte. Benchmarks on the TIE "
+     "self-hosted execution layer show ≈34/22/22/13 MB/s for f/b/r/x on large messages, "
+     "matching the intended hierarchy. TSHA1 has been adopted as the fingerprint and "
+     "credential-signing hash foundation of the plug-in kernel audit chain.",
      size=12, space_after=6)
 p = para("", size=12, indent=False, space_after=10)
 r0 = p.add_run("Keywords: ")
 _set_font(r0, "宋体", "Times New Roman", 12, italic=True)
-for w in ["hash function", "balanced ternary", "trit plane", "ARX", "SPN", "Base48",
-          "self-hosting language", "audit chain"]:
+for w in ["new design hash", "deterministic composition", "length-extension resistance",
+          "multi-diffusion construction", "ARX", "SPN", "strength hierarchy", "Base48"]:
     p.add_run(w + " ")
 
 # ================= 1 引言 =================
 heading("1　引言")
-para("TIE 是一套以自身编写的编译器（tiec）构建的自举编程语言系统，其标准库与编译器前端、"
-     "中端、后端全部以 TIE 编写，形成“tie 写 tiec、tie 写 tie 库”的闭环。在向全平台插件化"
-     "架构演进的过程中，平台需要一个完全由 TIE 自身实现、可随编译器自举一致交付的安全哈希"
-     "底座，用于插件审计链的完整性指纹、包树根校验与凭证签名对象绑定。这带来两个要求：其一，"
-     "算法必须能在纯 TIE 的数值模型（有符号 64 位运算、表驱动、无约定 unsafe）下正确、"
-     "稳定地实现；其二，实现必须与平台回归体系（regress-s21、自举门禁）解耦地单独验证。")
-para("TSHA1（Trit-SHA1 of TIE，第一代）正是面向上述需求设计的杂凑函数家族。它不宣称"
-     "提出全新的密码学结构贡献，而是将 BLAKE 系 ARX、Ascon 系位切片 SPN 与平衡三进制"
-     "（balanced ternary）的信息论与扩散思想做确定性组合：自创层仅限参数、常量、轮数、"
-     "排列组合序与输出编码，结构信任均继承已经充分公开分析的标准原语。与此同时，TIE 语言"
-     "在类型与内置层面提供了 trit 直接支持（−1t/0t/1t 字面量、to_trit/trit_val 转换、"
-     "三值逻辑），TSHA1 的 trit 位平面扩散深度契合该语言特性，是“语言特性驱动密码设计”"
-     "的一次实践。")
+para("哈希函数是现代密码体系的地基，其安全性直接决定签名、消息认证、密钥派生与完整性"
+     "审计的可靠性。标准算法虽经长期沉淀而高度成熟，仍存在结构性局限：MD5/SHA-1 已出现"
+     "可证明的碰撞攻击；SHA-2 的 Merkle–Damgård 结构公开了长度扩展攻击面；SHA-3 虽结构"
+     "免疫，但其海绵构造以吞吐换取状态规模，在受限环境中开销不小。与此同时，越来越多"
+     "自给自足的平台希望拥有“可自持、可复现、安全性质可明确论证”的自有哈希体系，而非"
+     "仅仅封装外部标准实现。TIE 便是一个以自身编译器（tiec）构建的自举编程语言系统："
+     "其前端、中端、后端与标准库全部以 TIE 编写，形成“tie 写 tiec、tie 写 tie 库”的闭环。"
+     "在向全平台插件化架构演进的过程中，平台需要一个完全由 TIE 自身实现、随自举闭环一致"
+     "交付的安全哈希底座，用于插件审计链的完整性指纹、包树根校验与凭证签名对象绑定。")
+para("本文提出的 TSHA1（全称 TIE Secure Hash Algorithm 1.0，下文简称 TSHA1）正是面向"
+     "“新型、更安全”这一目标设计的。"
+     "其**新颖性**体现为确定性组合构造：以经充分公开分析的 BLAKE 型 ARX 轮与 Ascon 型"
+     "位切片 SPN 为结构骨架，叠加自主设计的 trit 位平面旁路扩散与 f+b 输出排列组合再算，"
+     "构成四档强度梯度；自创层严格限于参数、常量、轮数与排列组合序。其**更强的安全性质**"
+     "可归纳为五点：(1) 计数器式纯零填充与 64 位长度绑定在结构上免疫长度扩展攻击；"
+     "(2) 常量由“标准种子＋PRNG 扩展”确定性生成、可复现，排除猜测常量与后门注入疑虑；"
+     "(3) 结构信任完全继承已审原语，未引入任何未经审计的新结构断言，安全性可组合论证；"
+     "(4) ARX、SPN 与位平面三类扩散构件交叠，配合加强档的排列组合再算，整体抬高结构化"
+     "攻击的破解成本；(5) 四档梯度使同一族可同时满足快速指纹、复杂强度与签名对象级防护。"
+     "trit 位平面扩散在这一构造中扮演扩散构件角色（§3.2），其实现受益于 TIE 语言对平衡"
+     "三进制的一等支持，但并非本文主张的主体。")
 para("本文组织如下：第 2 节综述相关工作；第 3 节给出 TSHA1 设计与四档结构；第 4 节讨论"
      "安全性质与已知限制；第 5 节报告纯 TIE 实现、向量验证与基准；第 6 节说明其在插件"
      "审计链中的应用；第 7 节总结与展望。")
 
-para("现状与当前存在的问题。就本研究启动时的平台现状而言：(1) 标准哈希函数（SHA-2/3、"
-     "BLAKE2/3）在 TIE 平台虽有标准库实现，但其常数为外部标准参数，既不体现平台的语言"
-     "特性，也难以满足“平台自持有、且可随自举闭环逐字节复现”的审计链强需求；(2) TIE 语言"
-     "自 M4 起提供平衡三进制的一等支持（−1t/0t/1t 字面量、to_trit/trit_val 转换、三值"
-     "逻辑），这一语言级能力此前尚未被用于任何安全原语的构造；(3) 平台执行模型（有符号"
-     " 64 位运算、表驱动、字符串 {ptr,len} 逐字节语义）对通用算法的移植存在适配成本与"
-     "验证噪音；(4) 插件化审计链需要“文件级快速指纹—包级强指纹—签名对象”的分层哈希底座，"
-     "单一标准算法难以同时满足成本与强度梯度。")
+para("现状与当前存在的问题。就本研究启动时而言：(1) 平台对标准哈希（SHA-2/3、BLAKE2/3）"
+     "已有标准库实现，但作为外部标准算法，其常量与参数不体现平台语境，难以满足“自持有、"
+     "且随自举闭环逐字节复现”的审计链强需求；(2) 标准算法各自存在结构性局限（长度扩展、"
+     "温室化参数、退出审计较难的长期依赖），而评估一个“既有实力又可控”的自有族需要可论证"
+     "的安全机制，而非经验式拼装；(3) 平台执行模型（有符号 64 位、表驱动、字符串 {ptr,len} "
+     "逐字节语义）对通用算法的移植存在适配成本与验证噪音；(4) 插件化审计链需要“文件级快速"
+     "指纹—包级强指纹—签名对象”的分层哈希底座，单一算法难以同时满足成本与强度梯度。")
 para("针对上述现状，TSHA1 着力解决以下问题：（1）自持——以纯 TIE 实现四档哈希，零外部"
      "运行时依赖，常量按“标准种子＋PRNG 扩展”可复现（§3.7），并随自举闭环交付（§5.1）；"
-     "（2）利用——将 trit 位平面扩散作为一等构件嵌入 ARX/SPN 轮结构（§3.2），使语言特性"
-     "直接服务于安全设计；（3）适配——全部实现遵循 i64 无溢出论证与逐字节模型，探针以"
-     "跨平台交叉生成的 KAT 逐字节核对，并与常规回归体系解耦验证（§5.2）；（4）分层——"
-     "四档速度/强度梯度（基准实测 f≈34 > b≈r≈22 > x≈13 MB/s，§5.3）匹配审计链"
-     " per-file / 包树根 / 签名对象的三级需求（§6）。")
+     "（2）安全机制可论证——抗长度扩展的结构设计（§3.3）、可复现常量（§3.7）、结构信任"
+     "继承已审原语与多扩散构件交叠（§4），使“更安全”不依赖对未验证结构的断言；（3）"
+     "档位深度——四档按速度/强度梯度组织，实测 f≈34 > b≈r≈22 > x≈13 MB/s（§5.3），"
+     "单调满足审计链 per-file / 包树根 / 签名对象的三级需求（§6）；（4）适配验证——全部"
+     "实现遵循 i64 无溢出论证与逐字节模型，探针以跨平台交叉生成的 KAT 逐字节核对，并与"
+     "常规回归体系解耦验证（§5.2）。")
 
 # ================= 2 相关工作 =================
 heading("2　相关工作")
@@ -215,16 +238,16 @@ if os.path.exists(IMG):
     para("图 1　TSHA1 家族总体架构（四档互斥选择；trit 位平面包装层作用于各档 T 轨/终筛）",
          zh="黑体", size=10.5, align=WD_ALIGN_PARAGRAPH.CENTER, indent=False, space_after=8)
 
-heading("3.2　trit 位平面表示", size=12)
-para("平衡三进制以符号集 {−1, 0, +1} 编码信息。TIE 语言提供对 trit 的直接语言支持："
-     "字面量 −1t/0t/1t、内置 to_trit/trit_val 转换（饱和钳制）与三值逻辑。TSHA1 以位平面"
-     "打包方式使用 trit：每个 64 位双字装填 32 个 trit，高 32 位为幅值位平面 M（第 i 位=1"
-     "当且仅当第 i 个 trit 非零），低 32 位为符号位平面 N（第 i 位=1 当且仅当第 i 个 trit"
-     "为负），即等价于 (M<<32)|N。由于 M、N 均保持 <2^32，在 TIE 的有符号 64 位模型中"
-     "任何位操作都不会进入符号位，pack/unpack 与扩散运算可全部以 &、^、|、<< 表达，"
-     "避免了逐 trit 模 3 的慢点与条件分支。这一表示同时带来轻度的非线性“三值”扰动："
-     "字节经 to_trit 饱和（高二位 0→−1、1→0、2/3→+1）注入位平面，使消息的非线性"
-     "“解锁距离”在主 ARX 轮之外再叠加一个低开销的扩散层级。")
+heading("3.2　trit 位平面扩散层（扩散构件）", size=12)
+para("TSHA1 以“多扩散构件交叠”作为安全增强的核心手段之一：除 ARX 模加扩散与 SPN 位切片"
+     "非线性外，家族引入平衡三进制位平面作为旁路扩散构件。每个 64 位双字装填 32 个 trit，"
+     "高 32 位为幅值位平面 M（第 i 位=1 当且仅当第 i 个 trit 非零），低 32 位为符号位平面 N"
+     "（第 i 位=1 当且仅当第 i 个 trit 为负），即等价于 (M<<32)|N。由于 M、N 均保持 <2^32，"
+     "任何位操作都不进入符号位，全部扩散运算可表达为 &、^、|、<<，避免逐 trit 模 3 的慢点"
+     "与条件分支。消息经饱和映射（字节高二位 0→−1、1→0、2/3→+1）注入位平面，为 ARX/SPN "
+     "主体之外再叠加一层低开销、非线性的旁路扰动。该构件在 TIE 中的实现直接受益于语言对"
+     "平衡三进制的一等支持（−1t/0t/1t 字面量、to_trit/trit_val），但在本文构造中它仅作为"
+     "扩散构件之一，与 ARX、SPN 并列；TSHA1 的安全主张不依赖对三进制的结构性创新。")
 
 heading("3.3　tsha1f：B 骨架（快速档）", size=12)
 para("tsha1f 由三部分组成：(1) BLAKE-ARX 主体——G 函数与 BLAKE2s 同构，可交叉验证；"
@@ -274,23 +297,26 @@ para("默认输出使用自行设计的 Base48 编码（命名空间 b48）：�
      "视觉相近对，属换取字符连续性的取舍，在实现中明确注释说明。")
 
 # ================= 4 安全性质 =================
-heading("4　安全性质与已知限制")
-para("（1）结构与信任边界：TSHA1 的结构信任继承自已充分公开分析的 BLAKE2 G 函数与 "
-     "Ascon SPN 线性层；自创层（trit 位平面扩散、24 基调度、排列组合序、常量与轮数）"
-     "未宣称新结构贡献，属确定性组合。家族在说明文档中以 security-notes 声明**未经独立"
-     "审计**，正式部署前应由第三方密码学审计复核。")
-para("（2）雪崩与扩散：ARX 轮提供逐位模加扩散，trit 位平面提供旁路非线性扰动，SPN 强化层"
-     "（tsha1b/tsha1r）提供字节级非线性；向量探针对包含空串、177 字节边界（55/63/64/127/"
-     "128/129 等）在内的消息做确定性 KAT 核对，保证实现与生成器一致，但一致性验证不等同于"
-     "统计雪崩检验，后续工作将补做严格的 avalanche/Avalanche 差分测试。")
-para("（3）长度扩展与填充：tsha1f/tsha1b 采用计数器式纯零填充，长度由 64 位计数器承载，"
-     "杜绝了 Merkle–Damgård 型长度扩展攻击面；tsha1r 采用速率吸收＋长度绑定，同属结构上"
-     "免疫长度扩展的形态。")
-para("（4）常数时间：TIE 的数值执行语义不提供硬件级常数时间保证（无 volatile、无恒定时间"
-     "乘除指令特判），位平面打包与 24 基调度引入的分支循环在原理上允许时间侧信道差异。"
-     "TSHA1 用于完整性指纹与签名对象哈希，不直接处理机密数据；若后续用于密钥派生等常时间"
-     "敏感场景，须在平台层落实常数时间保证并复核。")
-para("（5）输出编码：Base48 默认输出降低 28% 长度代价仅存于编码层（O(1) 相对哈希成本），"
+heading("4　安全性质与论证")
+para("TSHA1“更安全”的主张建立在四类可论证机制上，而非经验式声明：(a) 结构层面——"
+     "抗长度扩展（计数器式纯零填充＋64 位长度绑定，§3.3）与抗冲击面收窄（状态与输出"
+     "解耦）；(b) 构造层面——多扩散构件交叠（ARX 模加＋SPN 位切片＋trit 位平面旁路）"
+     "通过三个异源扩散通道交织，显著抬高差分/代数类结构化攻击所需的多轮追踪复杂度；"
+     "加强档 x 的 f+b 排列组合再算（§3.5）进一步将攻击者对单结构的利用性切割；(c) "
+     "信任层面——结构信任完全继承已审原语（BLAKE2 G 函数、Ascon S-盒/线性层），自创层"
+     "严格限于参数/常量/轮数/排列组合序，未引入任何未经审计的新结构断言，安全性可随"
+     "组合逐一论证；(d) 工程层面——常量种子化可复现（§3.7）、实现纯 TIE 可自举交付"
+     "（§5.1）、KAT 逐字节核对（§5.2），从源头排除后门注入与实现漂移。")
+para("以下逐点说明安全边界与已知限制：(1) 结构信任边界——自创层未宣称新结构贡献，"
+     "属确定性组合，家族在说明文档中以 security-notes 声明**未经独立审计**，正式部署前"
+     "应由第三方密码学审计复核；(2) 雪崩与差分——ARX 提供逐位模加扩散、SPN 提供字节级"
+     "非线性、trit 位平面提供旁路扰动，向量探针判定实现与生成器一致，但一致性验证不等同"
+     "于统计雪崩检验，后续将补做严格的差分/雪崩统计测试；(3) 长度扩展免疫——计数器式"
+     "填充（f/b）与速率吸收＋长度绑定（r）在结构上杜绝 Merkle–Damgård 型长度扩展；"
+     "(4) 常数时间——TIE 数值执行语义不提供硬件级常数时间保证（无 volatile、无恒定时间"
+     "指令特判），位平面打包与 24 基调度引入的分支循环在原理上允许时间侧信道差异；"
+     "TSHA1 当前用于完整性指纹与签名对象哈希，不直接处理机密数据；若后续用于常时间敏感"
+     "场景，须在平台层落实常数时间保证并复核；(5) 输出编码——Base48 默认输出（§3.8）"
      "不改变内部 256/128 位摘要字节，decode(b48) 与 hex 逐字节一致。")
 
 # ================= 5 实现与评估 =================
@@ -347,14 +373,16 @@ para("TIE 全平台插件化内核以“核心微内核（机制）+注册表+�
 
 # ================= 7 结论 =================
 heading("7　结论与展望")
-para("本文提出了 TSHA1——一个完全以自举语言 TIE 实现的杂凑函数家族。其以 BLAKE 型 ARX 与 "
-     "Ascon 型 SPN 为结构骨架，创造性融入平衡三进制位平面旁路扩散与确定性排列组合再算，"
-     "并以 48 符号 Base48 编码输出服务人类可抄写场景。实现为纯 TIE、零外部依赖，探针"
-     "逐字节核对 KAT，自发字节边界全覆盖；基准结果与档位设计一致，并已投入插件化内核的"
-     "指纹与凭证签名底座。后续工作包括：严格的雪花/差分统计检验与独立第三方安全审计；"
-     "将 trit 位平面扩散与现有 Keccak/Ascon 置换统一为可配置扩散内核以降低维护面；"
-     "在编译器执行层实现字符串就地追加等语言级性能优化后重新量化吞吐；以及将 TSHA1 与"
-     "后量子签名（SLH-DSA 纯 TIE 前沿）组合为审计链的长期凭证方案。")
+para("本文提出了 TSHA1——一个完全以自举语言 TIE 实现的**新型安全杂凑函数家族**。其"
+     "新颖性在于确定性组合构造：以经公开分析的 BLAKE 型 ARX 与 Ascon 型 SPN 为结构骨架，"
+     "叠加 trit 位平面旁路扩散与 f+b 排列组合再算，形成四档速度/强度梯度；更强的安全性质"
+     "来自四类可论证机制——结构层面抗长度扩展、构造层面多扩散构件交叠、信任层面结构继承"
+     "已审原语、工程层面常量可复现与纯 TIE 自举交付。实现为纯 TIE、零外部依赖，探针逐字节"
+     "核对 KAT、字节边界全覆盖；基准结果与档位设计一致，并已投入插件化内核的指纹与凭证"
+     "签名底座。后续工作包括：严格的差分/雪崩统计检验与独立第三方安全审计；将位平面扩散"
+     "与既有 Keccak/Ascon 置换统一为可配置扩散内核以降低维护面；在编译器执行层实现字符串"
+     "就地追加等语言级性能优化后重新量化吞吐；以及将 TSHA1 与后量子签名（SLH-DSA 纯 TIE "
+     "前沿）组合为审计链的长期凭证方案。")
 
 # ================= 参考文献 =================
 heading("参考文献")
