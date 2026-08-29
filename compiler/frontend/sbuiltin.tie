@@ -362,7 +362,8 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_I64)
     }
-    if fn_name == "to_string" || fn_name == "parse_int" || fn_name == "parse_float" || fn_name == "parse_trit" {
+    if fn_name == "to_string" || fn_name == "parse_int" || fn_name == "parse_float" || fn_name == "parse_trit" ||
+        fn_name == "to_trit" || fn_name == "trit_val" {
         if nargs != 1 {
             sm_err_line = s_lines[call_node]
             sm_err_col = s_cols[call_node]
@@ -379,6 +380,14 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
             // trit 解析：桥返回 i8（值域 -1/0/1）——语义类型标 TK_TRIT，
             // 否则 to_string(parse_trit(x)) 会把 i8 值当 i64 直传类型错
             return types.named(TK_TRIT)
+        }
+        if fn_name == "to_trit" {
+            // i64 → 饱和钳制 trit（>0→+1，<0→-1，0→0，对齐 interp_bin clamp_trit）
+            return types.named(TK_TRIT)
+        }
+        if fn_name == "trit_val" {
+            // trit → i64（-1/0/1 直接返回）
+            return types.named(TK_I64)
         }
         return types.named(TK_I64)
     }

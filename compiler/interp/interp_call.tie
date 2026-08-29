@@ -176,6 +176,7 @@ func is_builtin(name: string) -> bool {
     if name == "println" || name == "print" || name == "len" || name == "str_len" ||
         name == "str_char" || name == "char_code" || name == "to_string" ||
         name == "parse_int" || name == "parse_float" ||
+        name == "parse_trit" || name == "to_trit" || name == "trit_val" ||
         name == "table_new_i64" || name == "table_new_f64" ||
         name == "table_new_string" || name == "table_new_bool" ||
         name == "table_at" || name == "eval" || name == "eval_call" {
@@ -346,6 +347,32 @@ func call_builtin(name: string, args: table<i64>) -> i64 {
         }
         g_err = "to_string 需要一个数字参数"
         return -1
+    }
+    if name == "to_trit" {
+        // i64 → 饱和钳制 trit（>0→+1，<0→-1，0→0，对齐 interp_bin clamp_trit）
+        if len(args) != 1 {
+            g_err = "to_trit 需要一个整数参数"
+            return -1
+        }
+        if ivalue.type_of(args[0]) != T_INT {
+            if ivalue.type_of(args[0]) != T_TRIT {
+                g_err = "to_trit 需要一个整数参数"
+                return -1
+            }
+        }
+        return ivalue.new_trit(clamp_trit(ivalue.int_val(args[0])))
+    }
+    if name == "trit_val" {
+        // trit → i64（-1/0/1 直接返回）；trit 盒即 i64，直取 int_val
+        if len(args) != 1 {
+            g_err = "trit_val 需要一个 trit 参数"
+            return -1
+        }
+        if ivalue.type_of(args[0]) != T_TRIT {
+            g_err = "trit_val 需要一个 trit 参数"
+            return -1
+        }
+        return ivalue.new_int(ivalue.int_val(args[0]))
     }
     if name == "parse_int" {
         if len(args) != 1 {

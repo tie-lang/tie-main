@@ -1,0 +1,68 @@
+type tie<logic>
+// trit 优化 L2 正例：内置转换原语 to_trit / trit_val
+// 覆盖：饱和钳制、直接取值、往返、函数返回/参数。
+// 期望输出（7 组 PASS）：
+//   PASS clamp  (to_trit(5)=1, to_trit(-3)=-1, to_trit(0)=0)
+//   PASS clamp2 (to_trit(2)=1, to_trit(-100)=-1, to_trit(1)=1)
+//   PASS val    (trit_val(1t)=1, trit_val(-1t)=-1, trit_val(0t)=0)
+//   PASS roundtrip (trit_val(to_trit(7))=1 一致)
+//   PASS fnret  (func clamp(v)->trit 返回 to_trit(v))
+//   PASS fnarg  (func vval(t:trit)->i64 返回 trit_val(t))
+//   PASS eq     (to_trit(3) == 1t 三值比较)
+
+// i64 → trit（饱和钳制），供函数返回
+func clamp_to_trit(v: i64) -> trit { return to_trit(v) }
+
+// trit → i64，供函数参数/返回
+func trit_num(t: trit) -> i64 { return trit_val(t) }
+
+func main() {
+    var ok: bool = true
+    // 饱和钳制基本
+    if to_trit(5) != 1t { ok = false }
+    if to_trit(-3) != -1t { ok = false }
+    if to_trit(0) != 0t { ok = false }
+    if to_trit(2) != 1t { ok = false }
+    if to_trit(-100) != -1t { ok = false }
+    if to_trit(1) != 1t { ok = false }
+    if ok { println("PASS clamp") } else { println("FAIL clamp"); exit(1) }
+
+    // 直接取值
+    ok = true
+    if trit_val(1t) != 1 { ok = false }
+    if trit_val(-1t) != -1 { ok = false }
+    if trit_val(0t) != 0 { ok = false }
+    if ok { println("PASS val") } else { println("FAIL val"); exit(1) }
+
+    // 往返：to_trit → trit_val
+    if trit_val(to_trit(7)) == 1 && trit_val(to_trit(-9)) == -1 && trit_val(to_trit(0)) == 0 {
+        println("PASS roundtrip")
+    } else {
+        println("FAIL roundtrip")
+        exit(1)
+    }
+
+    // 函数返回 to_trit
+    if clamp_to_trit(5) == 1t && clamp_to_trit(-1) == -1t && clamp_to_trit(0) == 0t {
+        println("PASS fnret")
+    } else {
+        println("FAIL fnret")
+        exit(1)
+    }
+
+    // 函数参数 trit → trit_val
+    if trit_num(1t) == 1 && trit_num(-1t) == -1 && trit_num(0t) == 0 {
+        println("PASS fnarg")
+    } else {
+        println("FAIL fnarg")
+        exit(1)
+    }
+
+    // 与 trit 字面量混合比较
+    if to_trit(3) == 1t && to_trit(-3) == -1t && trit_val(to_trit(3)) == trit_val(1t) {
+        println("PASS eq")
+    } else {
+        println("FAIL eq")
+        exit(1)
+    }
+}

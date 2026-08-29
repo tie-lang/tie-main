@@ -1,0 +1,6 @@
+type tie<logic>
+// trit 优化 L2 负例：trit_val 两参数 → 应拒绝（期望 1 个）。
+func main() {
+    var n: i64 = trit_val(1t, 1t)
+    println("UNEXPECTED pass")
+}

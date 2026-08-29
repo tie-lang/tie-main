@@ -404,7 +404,8 @@ func is_builtin_name(nm: string) -> bool {
         nm == "net_udp_bind" || nm == "net_udp_recv" || nm == "net_udp_send" {
         return true
     }
-    if nm == "to_string" || nm == "parse_int" || nm == "parse_float" || nm == "parse_trit" {
+    if nm == "to_string" || nm == "parse_int" || nm == "parse_float" || nm == "parse_trit" ||
+        nm == "to_trit" || nm == "trit_val" {
         return true
     }
     if nm == "len" {
@@ -1551,6 +1552,30 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         var pto = ir.new_inst(g_cur_block, 20, types.named(TK_I8))  // alloca i8
         ir.add_operand(pto, types.named(TK_I8), 2)
         g_builtin_res = tig_parse_trit(v, ir.get_value(pto))
+        return 0
+    }
+    if nm == "to_trit" {
+        // i64 → 饱和钳制 trit（i8，值域 -1/0/1；对齐 interp_bin clamp_trit）：
+        // lt = x< -1 → -1；gt = x>1 → 1；否则 x。clamp 后 trunc i8。
+        var v = tig_expr(call_arg(id, 0))
+        if v < 0 {
+            return -1
+        }
+        var T64 = types.named(TK_I64)
+        var lt = tig_icmp_c(v, tig_int_lit(-1), 2)          // x < -1 (slt)
+        var c1 = tig_select_i(lt, tig_int_lit(-1), v, T64)  // c1 = clamp 下界
+        var gt = tig_icmp_c(c1, tig_int_lit(1), 3)          // x > 1 (sgt)
+        var c2 = tig_select_i(gt, tig_int_lit(1), c1, T64)  // c2 ∈ [-1,1]
+        g_builtin_res = s21_trunc_i8(c2)                    // i64 → i8 trit
+        return 0
+    }
+    if nm == "trit_val" {
+        // trit（i8）→ i64：sext 符号扩展（-1/0/1 → i64）
+        var v = tig_expr(call_arg(id, 0))
+        if v < 0 {
+            return -1
+        }
+        g_builtin_res = tig_sext(v, types.named(TK_I8), types.named(TK_I64))
         return 0
     }
     if nm == "len" {

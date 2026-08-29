@@ -1,0 +1,6 @@
+type tie<logic>
+// trit 优化 L2 负例：to_trit/trit_val 参数个数错误 → 应拒绝。
+func main() {
+    var a: trit = to_trit()
+    println("UNEXPECTED pass")
+}
