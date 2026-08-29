@@ -1,10 +1,10 @@
 type tie<logic>
-// base48 无歧义编码原语探针：encode / decode / encode↔decode 往返一致 / 非法负例。
+// base48 连续编码原语探针：encode / decode / encode↔decode 往返一致 / 非法负例。
 // 向量来源：tests/base48_probe/gen_vectors.py（纯 Python 参考实现，已与 tie 对照；
 //   并在 50000 组随机字节串（含任意前导零字节）上核对 decode(encode(h))==h 成立）。
 // 覆盖：空串、1 字节（含 0x00/0x2f/0xff）、6 字节、22 字节（max）、33 字节（尾块 0）、
-//   非法负例（奇数 hex、非 hex 字符、非字符台字符 0/1/I/O/l/o、无可对应字节长的长度、
-//   值溢出 256^L）。期望输出全部 PASS。
+//   非法负例（奇数 hex、非 hex 字符、字符集外字符（大写 M..Z、大写 O 等）、
+//   无可对应字节长的长度、值溢出 256^L）。期望输出全部 PASS。
 import "../../std/base48.tie"
 using b48;
 
@@ -47,25 +47,25 @@ func assert_invalid(name: string, kind: string, s: string) {
 func main() {
     // 已知向量（encode 正例 + 往返一致）
     assert_vec("empty", "", "")
-    assert_vec("one0x00", "00", "22")
-    assert_vec("one0x2f", "2f", "2z")
-    assert_vec("one0xff", "ff", "7H")
-    assert_vec("six mix", "010203040506", "23uf3rkJ8")
-    assert_vec("22byte max", rep("f", 44), "9Fyzt85JFmNkvissehz8F5i55xz5n97H")
+    assert_vec("one0x00", "00", "00")
+    assert_vec("one0x2f", "2f", "0L")
+    assert_vec("one0xff", "ff", "5f")
+    assert_vec("six mix", "010203040506", "01Gt1Dyg6")
+    assert_vec("22byte max", rep("f", 44), "7dKLF63gdzkyHwEEsvL6d3w33JL3A75f")
     assert_vec("33byte tail0", rep("f", 64) + "00",
-        "4sMH5eDrjxCbewRm9p8taQAR5eFcHxLEMn5aj4wHax7zf3i2")
+        "2Ejf3sbDxJapsInz7B6Fom8n3sdqfJicjA3ox2IfoJ5Lt1w0")
 
     // 非法负例：encode
     assert_invalid("odd hex", "enc", "abc")
     assert_invalid("non-hex g", "enc", "gg")
     assert_invalid("odd len1", "enc", "2")
-    // 非法负例：decode
-    assert_invalid("bad char 0", "dec", "20")
-    assert_invalid("bad char 1", "dec", "21")
-    assert_invalid("bad char I", "dec", "2I")
+    // 非法负例：decode（新集合外字符：大写 M..Z、大写 O、标点等）
+    assert_invalid("bad char M", "dec", "2M")
+    assert_invalid("bad char P", "dec", "2P")
     assert_invalid("bad char O", "dec", "2O")
-    assert_invalid("bad char l", "dec", "2l")
-    assert_invalid("bad char o", "dec", "2o")
+    assert_invalid("bad char N", "dec", "2N")
+    assert_invalid("bad char Z", "dec", "2Z")
+    assert_invalid("bad char _", "dec", "2_")
     assert_invalid("no byte-length", "dec", "2")
     assert_invalid("overflow 256^1", "dec", "82")
 

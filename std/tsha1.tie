@@ -8,8 +8,8 @@ type tie<class>
 //   tsha.tsha1f_hex(msg) -> string        tsha1f-256 → 64 位十六进制（可选，旧 hex 保留）
 //   tsha.tsha1r(msg: string) -> string    tsha1r-128（嵌入式，轻量 SPN）→ 默认 23 字符 base48
 //   tsha.tsha1r_hex(msg) -> string        tsha1r-128 → 32 位十六进制（可选，旧 hex 保留）
-// 默认输出为 base48 无歧义编码（std/base48.tie，命名空间 b48）：短、无 0/1/I/O/l
-//   视觉混淆，适合指纹/审计链 ID 人类可抄读。_hex 后缀保留原有 hex 行为（回归兼容）。
+// 默认输出为 base48 连续字符集编码（std/base48.tie，命名空间 b48）：短、可手抄，
+//   适合指纹/审计链 ID 人类可抄读。_hex 后缀保留原有 hex 行为（回归兼容）。
 //   内部哈希字节不变（f=256 位=32 字节→46 字符 base48；r=128 位=16 字节→23 字符），
 //   仅在输出层切换编码：decode(tsha1f_hex(msg) 的 b48) == tsha1f_hex(msg) 字节一致。
 // 逐**字节**处理（str_byte + len），任意 UTF-8 原始字节可哈希。

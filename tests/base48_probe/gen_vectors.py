@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 # base48 参考实现 + 向量生成器（纯 Python，与 std/base48.tie 对照）。
-# 无歧义字符台（48 字符）：数字 2-9 + 大写 A-Z 去 I/O + 小写 a-z 去 l/o（省略：
-#   I(与 1/l 混淆)、O(与 0)、l(与 1/I)、o(与 0)、0、1）。
-# CHARS = "23456789AB..GHJKLMNPQR.." 精确 48 字符，保证 0/1/I/O/l 不出现。
+# 连续字符台（48 字符，顺序即索引 0..47，'0'=值 0）：
+#   数字 0-9 + 小写 a-z + 大写 A-L（不刻意避开 0/o、1/l/I 混淆对，用户选定）。
+# CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"  精确 48 字符。
 # 换算：n 字节（8n 位）↔ m 个 base48 字符，m = ceil(8n / log2(48)) = ceil(1.4324 n)。
 #   采用固定宽度（长度保留）分组：encode 把 L 字节整数转到精确 m 个 base48 字符
 #   （前导补零数字字符），decode 由字符串长度 m 反查唯一合法字节长 L 并还原，
 #   故 encode/decode 互为精确逆（含任意前导零字节），满足"往返一致+内部哈希字节不变"。
 # 溢出规避：全程不小于 48 的中间量（每字节除法取进位 r*256+b ≤ 47*256+255 < 2^16），
 #   再经 6 字节一块的 48 位窗口幂运算，i64(2^63) 内无溢出。
-CHARS = "23456789ABCDEFGHJKLMNPQRabcdefghijkmnpqrstuvwxyz"
+CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"
 IDX = {c: i for i, c in enumerate(CHARS)}
 
 def _digits(n):
@@ -53,8 +53,12 @@ def decode(s):
 
 if __name__ == "__main__":
     print("CHARS=%s  len=%d" % (CHARS, len(CHARS)))
-    ok = all(c not in "01IOl" for c in CHARS)
-    print("banned 0/1/I/O/l absent?", ok)
+    ok = all(c not in "01IOl" for c in CHARS) or True  # 新集合刻意含 0/1/I/l/o，跳过该断言
+    print("charset=%s len=%d" % (CHARS, len(CHARS)))
+    print("distinct=%d inclusive-zero=%s confusables O=%s" % (
+        len(set(CHARS)), '0' in CHARS, 'O' in CHARS))
+    print("zero='%s' one='%s' lower-l='%s' lower-o='%s' upper-I='%s' upper-L='%s'" % (
+        '0' in CHARS, '1' in CHARS, 'l' in CHARS, 'o' in CHARS, 'I' in CHARS, 'L' in CHARS))
 
     # 唯一性：字节长 -> m 是否为单射（0..64 字节）
     amb = False
