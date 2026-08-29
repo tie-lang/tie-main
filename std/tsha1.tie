@@ -3,11 +3,13 @@ type tie<class>
 // tsha1.tie：标准库——TSHA1 哈希族（tie 自有安全哈希，命名空间 tsha）
 // 用途：tie 平台自有通用安全哈希底座（插件审计链 / 完整性校验 / 指纹）。
 // 来源：docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6
-// 接口（本期实现 f 与 r 两档；b/x 留待后续，见设计文档锚点）：
+// 接口（本期实现 f/r/b 三档，x 留待后续）：
 //   tsha.tsha1f(msg: string) -> string    tsha1f-256（快速，B 骨架）→ 默认 46 字符 base48
 //   tsha.tsha1f_hex(msg) -> string        tsha1f-256 → 64 位十六进制（可选，旧 hex 保留）
 //   tsha.tsha1r(msg: string) -> string    tsha1r-128（嵌入式，轻量 SPN）→ 默认 23 字符 base48
 //   tsha.tsha1r_hex(msg) -> string        tsha1r-128 → 32 位十六进制（可选，旧 hex 保留）
+//   tsha.tsha1b(msg: string) -> string    tsha1b-256（复杂，A 骨架双轨+SPN）→ 46 字符 base48
+//   tsha.tsha1b_hex(msg) -> string        tsha1b-256 → 64 位十六进制（可选，旧 hex 保留）
 // 默认输出为 base48 连续字符集编码（std/base48.tie，命名空间 b48）：短、可手抄，
 //   适合指纹/审计链 ID 人类可抄读。_hex 后缀保留原有 hex 行为（回归兼容）。
 //   内部哈希字节不变（f=256 位=32 字节→46 字符 base48；r=128 位=16 字节→23 字符），
@@ -56,6 +58,10 @@ var tsha_fsig: table<i64>;    // tsha1f σ 置换（10 行×16 = 160 项）
 var tsha_riv: table<i64>;     // tsha1r IV（8 个 32 位字）
 var tsha_rsbox: table<i64>;   // tsha1r nibble S 盒（16 项，双射）
 var tsha_rrcon: table<i64>;   // tsha1r 轮常量（16 个 32 位字）
+var tsha_biv: table<i64>;     // tsha1b IV（8 个 32 位字）
+var tsha_bsig: table<i64>;    // tsha1b σ 置换（10 行×16 = 160 项）
+var tsha_bsbox: table<i64>;   // tsha1b nibble S 盒（16 项，SPN 强化层，双射）
+var tsha_brcon: table<i64>;   // tsha1b 轮常量（16 个 32 位字，SPN 强化层）
 
 namespace tsha {
 
@@ -483,6 +489,252 @@ pub func tsha1r(msg: string) -> string {
 // tsha1r-128：32 位十六进制（旧 hex 行为，回归兼容保留）。
 pub func tsha1r_hex(msg: string) -> string {
     return digest_r(msg)
+}
+
+// ---- tsha1b-256（复杂档，A 骨架双轨并行 + SPN 强化）----
+// 设计（docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6）：
+//   与 tsha1f 差异：A 骨架双轨并行——B 轨 = tsha1f 同构 ARX G 网络（g_f + σ 调度）；
+//   T 轨 = trit 位平面扩散（见下文 tadd2/quant3，全走 &/^/|/<<）；每轮互转（B→T 分段
+//   展开入 T 轨、T→B majority 量化回 B 轨）；每 3 轮插一层 SPN 强化（Ascon 型 nibble
+//   S 盒 + 旋-异或线性扩散 + 轮常量）。B 轨轮数 14 ≥ tsha1f(12)，保守强化。
+//   常量来源：SEED_B = "TSHA1-2026-b-256-v1"（标准种子 + PRNG 扩展，与 f/r 有意区分），
+//   复现：tests/tsha_probe/gen_tsha1bx.py。输出 256 位（32 字节 → b48 46 字符）。
+//   验证向量（与 f 档向量完全独立）：见下方 pub 注释与 tests/tsha_probe/tsha1b_probe.tie。
+
+// 惰性构建 tsha1b 常量（seed 扩展）。
+func ensure_biv() {
+    if len(tsha_biv) > 0 {
+        return
+    }
+    var hs = "9fd4f900e3e6f22dfa833118f4c0bfac90e157757b9ff4fc5dd185cb328c1a93"
+    var i: i64 = 0
+    while i < 8 {
+        table_push(tsha_biv, parse_hex32(substr(hs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+func ensure_bsig() {
+    if len(tsha_bsig) > 0 {
+        return
+    }
+    var rs = "89c350621abefd476c3a249fe1d578b0f12673c8d45a0e9b6b41a78c0ed3925f7" +
+             "ad09b26e5fc18438c13ad20eb467f95b4acf576310d8e92b8dc1056ae347f2928d" +
+             "b6fe51a073c948274fb60cde3a159"
+    var i: i64 = 0
+    while i < 160 {
+        table_push(tsha_bsig, hex_nibble(str_char(rs, i)))
+        i = i + 1
+    }
+}
+
+func ensure_bsbox() {
+    if len(tsha_bsbox) > 0 {
+        return
+    }
+    var ss = "23781de65c40b9af"
+    var i: i64 = 0
+    while i < 16 {
+        table_push(tsha_bsbox, hex_nibble(str_char(ss, i)))
+        i = i + 1
+    }
+}
+
+func ensure_brcon() {
+    if len(tsha_brcon) > 0 {
+        return
+    }
+    var cs = "18282397bcb31a43f345bffda404df534475e66860444dddc44d027c9c3bf9e63" +
+             "d0cd58baa13094f43ee8c198b634412f7bdba10d1b9c7b0d234ad4d3fd145f4"
+    var i: i64 = 0
+    while i < 16 {
+        table_push(tsha_brcon, parse_hex32(substr(cs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+// 平衡三进制（balanced mod 3）两位 trit 相加，位切片实现（无进位，作扩散混合）。
+// 入参/出参均为位平面 (M 幅值, N 符号)，运算全走 &/^/|/<<（~ 用 xor 掩码替代，保 i64 正）。
+func tadd2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
+    var nMa = Ma ^ 0xFFFFFFFF
+    var nNa = Na ^ 0xFFFFFFFF
+    var nMb = Mb ^ 0xFFFFFFFF
+    var nNb = Nb ^ 0xFFFFFFFF
+    var aP = Ma & nNa
+    var aN = Ma & Na
+    var bP = Mb & nNb
+    var bN = Mb & Nb
+    var o_pos = ((nMa & Mb & nNb) | (Ma & nNa & nMb) | (aN & bN)) & 0xFFFFFFFF
+    var o_neg = ((nMa & Mb & Nb) | (Ma & Na & nMb) | (aP & bP)) & 0xFFFFFFFF
+    return (o_pos | o_neg, o_neg)
+}
+
+// majority 量化：三组位平面逐 trit 取签，+1 计数 ≥2 则该位为 1，否则 0（含平局→0）。
+func quant3(m0: i64, n0: i64, m1: i64, n1: i64, m2: i64, n2: i64) -> i64 {
+    var A = m0 & (n0 ^ 0xFFFFFFFF)
+    var B = m1 & (n1 ^ 0xFFFFFFFF)
+    var C = m2 & (n2 ^ 0xFFFFFFFF)
+    return ((A & B) | (B & C) | (C & A)) & 0xFFFFFFFF
+}
+
+// SPN 强化层（Ascon 型 nibble S 盒 + 旋-异或线性扩散 + 轮常量），作用于工作态 v[0..7]。
+func spn_b(v: ref table<i64>, r: i64) {
+    var w2: i64 = 0
+    while w2 < 8 {
+        var x = v[w2]
+        var nx: i64 = 0
+        var nb: i64 = 0
+        while nb < 8 {
+            var idx = (x >> (4 * nb)) & 0xF
+            nx = nx | (tsha_bsbox[idx] << (4 * nb))
+            nb = nb + 1
+        }
+        v[w2] = nx & 0xFFFFFFFF
+        w2 = w2 + 1
+    }
+    v[0] = (v[0] ^ rr32(v[0], 5) ^ rr32(v[1], 25)) & 0xFFFFFFFF
+    v[1] = (v[1] ^ rr32(v[1], 7) ^ rr32(v[2], 19)) & 0xFFFFFFFF
+    v[2] = (v[2] ^ rr32(v[2], 9) ^ rr32(v[3], 21)) & 0xFFFFFFFF
+    v[3] = (v[3] ^ rr32(v[3], 11) ^ rr32(v[0], 27)) & 0xFFFFFFFF
+    v[4] = (v[4] ^ rr32(v[4], 13) ^ rr32(v[5], 29)) & 0xFFFFFFFF
+    v[5] = (v[5] ^ rr32(v[5], 15) ^ rr32(v[6], 3)) & 0xFFFFFFFF
+    v[6] = (v[6] ^ rr32(v[6], 17) ^ rr32(v[7], 23)) & 0xFFFFFFFF
+    v[7] = (v[7] ^ rr32(v[7], 1) ^ rr32(v[4], 31)) & 0xFFFFFFFF
+    v[0] = (v[0] ^ v[4]) & 0xFFFFFFFF
+    v[1] = (v[1] ^ v[5]) & 0xFFFFFFFF
+    v[2] = (v[2] ^ v[6]) & 0xFFFFFFFF
+    v[3] = (v[3] ^ v[7]) & 0xFFFFFFFF
+    v[4] = (v[4] ^ v[0]) & 0xFFFFFFFF
+    v[5] = (v[5] ^ v[1]) & 0xFFFFFFFF
+    v[6] = (v[6] ^ v[2]) & 0xFFFFFFFF
+    v[7] = (v[7] ^ v[3]) & 0xFFFFFFFF
+    v[0] = (v[0] ^ ((tsha_brcon[r & 15] + r) & 0xFFFFFFFF)) & 0xFFFFFFFF
+    v[2] = (v[2] ^ ((tsha_brcon[(r + 1) & 15] + r + 1) & 0xFFFFFFFF)) & 0xFFFFFFFF
+}
+
+// 单 64 字节块压缩（A 骨架：B 轨 ARX + T 轨 trit 位平面扩散 + 每轮互转 + 每 3 轮 SPN）。
+func compress_b(h: ref table<i64>, msg: string, n: i64, off: i64, t_lo: i64, t_hi: i64, last: bool) {
+    var m = table_new_i64()
+    var k: i64 = 0
+    while k < 16 {
+        table_push(m, le_word(msg, n, off, k))
+        k = k + 1
+    }
+    var (M0, N0, M1, N1) = block_planes(msg, n, off)
+    var skey = block_skey(msg, n, off)
+    var PM = M0                       // T 轨位平面累加器（幅值）
+    var PN = N0                       // T 轨位平面累加器（符号）
+    var v = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(v, h[i])
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        table_push(v, tsha_biv[i])
+        i = i + 1
+    }
+    v[12] = v[12] ^ t_lo
+    v[13] = v[13] ^ t_hi
+    if last {
+        v[14] = v[14] ^ 0xFFFFFFFF
+    }
+    var r: i64 = 0
+    while r < 14 {
+        var sr = r
+        if sr >= 10 {
+            sr = sr - 10
+        }
+        var base = sr * 16
+        var rd = (skey + r * 7) & 15
+        // B 轨：ARX G 网络（复用 g_f 与 σ 调度列）
+        g_f(v, 0, 4, 8, 12, m[(tsha_bsig[base + 0] + rd) & 15], m[(tsha_bsig[base + 1] + rd) & 15])
+        g_f(v, 1, 5, 9, 13, m[(tsha_bsig[base + 2] + rd) & 15], m[(tsha_bsig[base + 3] + rd) & 15])
+        g_f(v, 2, 6, 10, 14, m[(tsha_bsig[base + 4] + rd) & 15], m[(tsha_bsig[base + 5] + rd) & 15])
+        g_f(v, 3, 7, 11, 15, m[(tsha_bsig[base + 6] + rd) & 15], m[(tsha_bsig[base + 7] + rd) & 15])
+        g_f(v, 0, 5, 10, 15, m[(tsha_bsig[base + 8] + rd) & 15], m[(tsha_bsig[base + 9] + rd) & 15])
+        g_f(v, 1, 6, 11, 12, m[(tsha_bsig[base + 10] + rd) & 15], m[(tsha_bsig[base + 11] + rd) & 15])
+        g_f(v, 2, 7, 8, 13, m[(tsha_bsig[base + 12] + rd) & 15], m[(tsha_bsig[base + 13] + rd) & 15])
+        g_f(v, 3, 4, 9, 14, m[(tsha_bsig[base + 14] + rd) & 15], m[(tsha_bsig[base + 15] + rd) & 15])
+        // B→T 互转：B 轨输出 v0,v1 分段展开入 T 轨（balanced trit 混合）
+        var (bp_m, bp_n) = tadd2(PM, PN, rl32(v[0] & 0xFFFFFFFF, (r * 3) & 31), rl32(v[1] & 0xFFFFFFFF, (r * 5) & 31))
+        PM = bp_m
+        PN = bp_n
+        // T 轨 trit 位平面扩散（全位运算：balanced add + 旋转 + 混洗）
+        var (dp_m, dp_n) = tadd2(PM, PN, rr32((M1 + r) & 0xFFFFFFFF, (r * 2) & 31), rr32(rl32(N1, (r * 3) & 31), (r * 7) & 31))
+        PM = dp_m
+        PN = dp_n
+        PM = (PM ^ rl32(PN, (r * 5) & 31)) & 0xFFFFFFFF
+        PN = (PN ^ rl32(PM, (r * 2) & 31)) & 0xFFFFFFFF
+        PM = (rl32(PM, 16) ^ PM) & 0xFFFFFFFF        // 16 位半字混洗（交换两半后异或回）
+        // T→B 互转：majority 量化回 B 轨（最近邻量化）
+        var W0 = quant3(M0, N0, PM, PN, rl32(M1, (r * 9) & 31), rl32(N1, (r * 11) & 31))
+        var W1 = quant3(rl32(M1, 13), rl32(N1, 7), PM, PN, rl32(M0, (r * 3) & 31), rl32(N0, (r * 5) & 31))
+        v[2] = (v[2] ^ rl32(W0, (r * 7) & 31)) & 0xFFFFFFFF
+        v[6] = (v[6] ^ rl32(W1, (r * 11) & 31)) & 0xFFFFFFFF
+        v[10] = (v[10] ^ rr32(PM, (r * 3) & 31)) & 0xFFFFFFFF
+        v[14] = (v[14] ^ rl32(PN, (r * 5) & 31)) & 0xFFFFFFFF
+        if r % 3 == 2 {
+            spn_b(v, r)                              // 每 3 轮插一层 SPN 强化
+        }
+        r = r + 1
+    }
+    i = 0
+    while i < 8 {
+        h[i] = (h[i] ^ v[i] ^ v[i + 8]) & 0xFFFFFFFF
+        i = i + 1
+    }
+}
+
+// tsha1b-256 内部哈希：计数器式（纯零填充），14 轮，输出 8 字大端 hex = 64 hex。
+func digest_b(msg: string) -> string {
+    ensure_biv()
+    ensure_bsig()
+    ensure_bsbox()
+    ensure_brcon()
+    var n: i64 = len(msg)
+    var h = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(h, tsha_biv[i])
+        i = i + 1
+    }
+    h[0] = h[0] ^ 0x01010000 ^ 32
+    var t_lo: i64 = 0
+    var t_hi: i64 = 0
+    var pos: i64 = 0
+    while pos + 64 < n {
+        t_hi = (t_hi + carry32(t_lo, 64)) & 0xFFFFFFFF
+        t_lo = (t_lo + 64) & 0xFFFFFFFF
+        compress_b(h, msg, n, pos, t_lo, t_hi, false)
+        pos = pos + 64
+    }
+    var rem = n - pos
+    t_hi = (t_hi + carry32(t_lo, rem)) & 0xFFFFFFFF
+    t_lo = (t_lo + rem) & 0xFFFFFFFF
+    compress_b(h, msg, n, pos, t_lo, t_hi, true)
+    var out: string = ""
+    i = 0
+    while i < 8 {
+        out = out + hex8(h[i])
+        i = i + 1
+    }
+    return out
+}
+
+// tsha1b-256：默认输出 46 字符 base48（无歧义，见 std/base48.tie）。
+// 验证向量（用 gen_tsha1bx.py 生成，与 f 档独立）：
+//   tsha1b("")    = f4564d606304f76c7de5e2578d6afeb3e7178f54866373a53169e59cbfa7c514
+//   tsha1b("abc") = 90769d04e106469ca28f577fd911a8fd17a4f277a76eb39db192543bcd10f8b9
+//   tsha1b(1000xa) = 0fbb990a8b709e108f032c6e2b47804cd31d9cc3bc78e7b4c9dcc832495c2624
+pub func tsha1b(msg: string) -> string {
+    return b48.encode(digest_b(msg))
+}
+
+// tsha1b-256：64 位十六进制（_hex 可选，旧 hex 行为保持对称）。
+pub func tsha1b_hex(msg: string) -> string {
+    return digest_b(msg)
 }
 }   // namespace tsha
 
