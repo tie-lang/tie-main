@@ -1,0 +1,44 @@
+type tie<logic>
+// sha256 探针：正例多向量 + 长消息/边界长度（SHA-256 无碰撞负例——哈希是确定性
+// 函数，负例即"改变输入，输出必变"，此处用不同长度的边界输入覆盖填充分支）。
+// 覆盖：空串、单块短消息（abc）、跨块边界消息、1000 'a' 长消息、55/56/64 字节
+//   填充边界（触及 0x80 位置与长度位布局）。期望输出全部 PASS。
+import "../../std/sha256.tie"
+using sha;
+
+// 便捷断言：打印 PASS/FAIL 并比较
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func main() {
+    // 标准向量（FIPS 180-4 / 已核对）
+    check("empty", sha.sha256(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    check("abc",   sha.sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    // 长消息：1000 个 'a'
+    var m1000: string = ""
+    var i: i64 = 0
+    while i < 1000 {
+        m1000 = m1000 + "a"
+        i = i + 1
+    }
+    check("a1000", sha.sha256(m1000), "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3")
+    // 80 字符（跨两个 64 字节块）
+    var m80 = "12345678901234567890123456789012345678901234567890123456789012345678901234567890"
+    check("m80", sha.sha256(m80), "f371bc4a311f2b009eef952dd83ca80e2b60026c8e935592d0f9c308453c813e")
+    // 填充边界：55 / 56 / 64 字节（0x80 与长度位布局分支）
+    check("b55", sha.sha256("1234567890123456789012345678901234567890123456789012345"),
+        "03c3a70e99ed5eeccd80f73771fcf1ece643d939d9ecc76f25544b0233f708e9")
+    check("b56", sha.sha256("12345678901234567890123456789012345678901234567890123456"),
+        "0be66ce72c2467e793202906000672306661791622e0ca9adf4a8955b2ed189c")
+    check("b64", sha.sha256("1234567890123456789012345678901234567890123456789012345678901234"),
+        "676491965ed3ec50cb7a63ee96315480a95c54426b0b72bca8a0d4ad1285ad55")
+    println("sha256 探针全部通过")
+}
+

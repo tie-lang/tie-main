@@ -1,0 +1,248 @@
+type tie<class>
+// ============================================================================
+// sha256.tie：标准库——SHA-256（安全哈希，命名空间 sha）
+// 用途：完整性校验 / 指纹底座（安全哈希族），供插件审计链与平台应用使用。
+// 接口：sha.sha256(s: string) -> string，返回 64 位十六进制小写摘要。
+//   逐**字节**处理：用 str_byte(s, i) 步进字节、len(s) 取字节数，可对任意
+//   UTF-8 字符串的原始字节做哈希（非 ASCII 多字节字符按其 UTF-8 字节序列
+//   参与计算，与主流实现一致——纯字节语义，不需 str_char 码点）。
+// 算法（FIPS 180-4）：初始 H[0..7] + 64 项 K 常量 + 消息填充（0x80 +
+//   零填充到 56 字节 + 64 位大端比特长度）+ 16 字消息调度 + 64 轮压缩
+//   （Σ0/Σ1 为 2/13/22 与 6/11/25 的循环右移异或；Ch/Maj 布尔函数）。
+// 字宽：全部 32 位字，i64 中每步 `& 0xFFFFFFFF` 保持 < 2^32 恒正，故
+//   `>>`（ashr 算术右移）对正操作数 == 逻辑右移（与 std/crypto.tie 同款
+//   数值安全论证，查 ir.rs Shr：仅无符号走 lshr，本模块依赖"恒正"）。
+// 标准向量：
+//   sha256("")    = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+//   sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+// 备注：命名空间内互调为裸调用（Harbor M2.1.6），内部函数不加 sha_ 前缀。
+// ============================================================================
+
+// 顶层常量（懒构建）：仅字面量不能初始化表，故运行期首次调用时填充。
+var sha_k: table<i64>;    // 64 个 K 轮常量（32 位）
+var sha_h: table<i64>;    // 初始状态 H[0..7]
+
+namespace sha {
+
+// 惰性构建 SHA-256 轮常量 K[0..63]（FIPS 180-4 表 4，前 64 个素数立方根小数）。
+func ensure_k() {
+    if len(sha_k) > 0 {
+        return
+    }
+    // 512 个十六进制字符（每 8 字符一个字，共 64 字）
+    var ks = "428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5" +
+             "d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174" +
+             "e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da" +
+             "983e5152a831c66db00327c8bf597fc7c6e00bf3d5a7914706ca635114292967" +
+             "27b70a852e1b21384d2c6dfc53380d13650a7354766a0abb81c2c92e92722c85" +
+             "a2bfe8a1a81a664bc24b8b70c76c51a3d192e819d6990624f40e3585106aa070" +
+             "19a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3" +
+             "748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2"
+    var i: i64 = 0
+    while i < 64 {
+        // 每 8 个十六进制字符一组解析为 32 位值
+        table_push(sha_k, parse_hex32(substr(ks, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+// 惰性构建初始状态 H[0..7]（SHA-256 前八个素数平方根小数部分十六进制取 32 位）。
+func ensure_h() {
+    if len(sha_h) > 0 {
+        return
+    }
+    var hs = "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19"
+    var i: i64 = 0
+    while i < 8 {
+        table_push(sha_h, parse_hex32(substr(hs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+// 截取字符串 [a_p, b_p)（码点区间）——内联实现（不依赖 string.tie）。
+func substr(s: string, a_p: i64, b_p: i64) -> string {
+    var out: string = ""
+    var i: i64 = a_p
+    while i < b_p {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 解析 8 个十六进制字符（ASCII）为 32 位 i64 值：v = v*16 + nibble。
+func parse_hex32(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        var c = str_char(s, i)
+        var n: i64 = hex_nibble(c)
+        v = ((v << 4) | n) & 0xFFFFFFFF
+        i = i + 1
+    }
+    return v
+}
+
+// 单字符十六进制数字（0..15）；非十六进制字符返回 0（仅用于解析内部常量）。
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 32 位循环右移 n 位：rotr(v, n)。v 恒 < 2^32 正数 → v>>n 即逻辑右移（见头部）。
+func rr(v: i64, n: i64) -> i64 {
+    return ((v >> n) | (v << (32 - n))) & 0xFFFFFFFF
+}
+
+// 对单个 64 字节消息块做一次 SHA-256 压缩，就地累加到状态表 h[0..7]。
+// 字节源跨 原文/填充：用 pad_byte 按全局位置取字节（含 0x80 与长度区）。
+func compress_block(h: ref table<i64>, s: string, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, block: i64, w: ref table<i64>) {
+    // 1) 构造消息调度 w[0..15]（大端 32 位）并扩展 w[16..63]
+    var i: i64 = 0
+    while i < 16 {
+        var word: i64 = 0
+        var j: i64 = 0
+        while j < 4 {
+            var pos = block * 64 + i * 4 + j
+            var byte: i64 = pad_byte(s, n, pad_len, len_hi, len_lo, pos)
+            word = ((word << 8) | byte) & 0xFFFFFFFF
+            j = j + 1
+        }
+        w[i] = word
+        i = i + 1
+    }
+    i = 16
+    while i < 64 {
+        var s0 = rr(w[i - 15], 7) ^ rr(w[i - 15], 18) ^ (w[i - 15] >> 3)
+        var s1 = rr(w[i - 2], 17) ^ rr(w[i - 2], 19) ^ (w[i - 2] >> 10)
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 0xFFFFFFFF
+        i = i + 1
+    }
+
+    // 2) 初始化工作变量 a..h
+    var aa: i64 = h[0]
+    var bb: i64 = h[1]
+    var cc: i64 = h[2]
+    var dd: i64 = h[3]
+    var ee: i64 = h[4]
+    var ff: i64 = h[5]
+    var gg: i64 = h[6]
+    var hh: i64 = h[7]
+    var m32: i64 = 0xFFFFFFFF
+
+    // 3) 64 轮压缩
+    var t: i64 = 0
+    while t < 64 {
+        var sum1: i64 = rr(ee, 6) ^ rr(ee, 11) ^ rr(ee, 25)
+        var ch: i64 = (ee & ff) ^ ((ee ^ m32) & gg)
+        var t1: i64 = (hh + sum1 + ch + sha_k[t] + w[t]) & m32
+        var sum0: i64 = rr(aa, 2) ^ rr(aa, 13) ^ rr(aa, 22)
+        var maj: i64 = (aa & bb) ^ (aa & cc) ^ (bb & cc)
+        var t2: i64 = (sum0 + maj) & m32
+        hh = gg
+        gg = ff
+        ff = ee
+        ee = (dd + t1) & m32
+        dd = cc
+        cc = bb
+        bb = aa
+        aa = (t1 + t2) & m32
+        t = t + 1
+    }
+
+    // 4) 累加到状态 h
+    h[0] = (h[0] + aa) & m32
+    h[1] = (h[1] + bb) & m32
+    h[2] = (h[2] + cc) & m32
+    h[3] = (h[3] + dd) & m32
+    h[4] = (h[4] + ee) & m32
+    h[5] = (h[5] + ff) & m32
+    h[6] = (h[6] + gg) & m32
+    h[7] = (h[7] + hh) & m32
+}
+
+// 返回填充后消息在字节位置 pos 处的字节值：
+//   pos < n            → 原文 str_byte(s, pos)
+//   pos == n           → 0x80（填充开始标志）
+//   pos >= pad_len-8   → 64 位大端比特长度的 8 个字节（len_hi 高 4 字节、len_lo 低 4 字节）
+//   否则               → 0
+func pad_byte(s: string, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, pos: i64) -> i64 {
+    if pos < n {
+        return str_byte(s, pos)
+    }
+    if pos == n {
+        return 0x80
+    }
+    if pos >= pad_len - 8 {
+        var idx = pos - (pad_len - 8) // 0..7
+        var val: i64 = len_hi
+        if idx >= 4 {
+            val = len_lo
+            idx = idx - 4
+        }
+        // 32 位值的大端字节：字节 0（MSB）位宽 24，字节 3（LSB）位宽 0
+        return (val >> (24 - idx * 8)) & 0xFF
+    }
+    return 0
+}
+
+// SHA-256 主入口：计算字符串 s 的 SHA-256 摘要，返回 64 位十六进制小写。
+pub func sha256(s: string) -> string {
+    ensure_h()
+    ensure_k()
+    var m32: i64 = 0xFFFFFFFF
+    var n: i64 = len(s)             // 字节数
+    var bits: i64 = n * 8           // 比特长度
+    var len_hi: i64 = (bits >> 32) & m32
+    var len_lo: i64 = bits & m32
+    var pad_len: i64 = ((n + 72) / 64) * 64   // 填充后字节数（64 的倍数）
+    var num_blocks: i64 = pad_len / 64
+
+    var h = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(h, sha_h[i])
+        i = i + 1
+    }
+    var w = table_new_i64()
+    i = 0
+    while i < 64 {
+        table_push(w, 0)
+        i = i + 1
+    }
+    var blk: i64 = 0
+    while blk < num_blocks {
+        compress_block(h, s, n, pad_len, len_hi, len_lo, blk, w)
+        blk = blk + 1
+    }
+    var out: string = ""
+    i = 0
+    while i < 8 {
+        out = out + hex8(h[i])
+        i = i + 1
+    }
+    return out
+}
+
+// 32 位值 → 8 位小写十六进制。
+func hex8(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var p: i64 = 0
+    while p < 8 {
+        var shift = 28 - p * 4
+        var nib = (v >> shift) & 0xF
+        out = out + str_char(hex, nib)
+        p = p + 1
+    }
+    return out
+}
+
+}   // namespace sha
