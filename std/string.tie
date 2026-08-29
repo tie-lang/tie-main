@@ -361,14 +361,20 @@ pub func join(items: table<string>, sep: string) -> string {
 }
 
 // 把 s 重复 n 次拼接；n <= 0 返回空串（n 为负视为不重复）。
+// 性能：StringBuilder 原地追加（O(n·|s|) 分派总量，容量倍增重分配）——
+// 旧实现 out + s 逐遍整串拷贝是 O(n²)，长 n/长 s 时内存峰值爆炸
+// （如 n=524288,|s|=1 → 内存操作 ≈ 134GB，曾致 32GB 机器内存打满）。
 pub func repeat(s: string, n: i64) -> string {
-    var out: string = ""
+    if n <= 0 {
+        return ""
+    }
+    var sb = string_builder()
     var i: i64 = 0
     while i < n {
-        out = out + s
+        sb_append(sb, s)
         i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // 深拷贝字符串（S1.5 移动语义配套）：返回 s 的独立副本。

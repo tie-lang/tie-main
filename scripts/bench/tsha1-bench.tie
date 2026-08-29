@@ -1,0 +1,85 @@
+type tie<logic>
+// tsha1-bench.tie——TSHA1 全家族基准测试（f/b/x/r 四档）
+//
+// 计时原语：time_now()（Unix 秒，秒级粒度——见 ext/bench.tie 头部说明）。
+// 因此采用「目标时长循环」测吞吐：对每个 (哈希档位, 消息长度) 组合，
+// 重复哈希直到总时长 ≥ TARGET_SEC（带迭代上限 CAP 防慢组合死循环），
+// 以总数据量/总时长折算 吞吐 MB/s 与 hash/s。
+//
+// 输出（每行制表符分隔，便于机器/人读）：
+//   <档位> <字节数> <迭代次数> <耗时秒> <字节/秒> <次/秒>
+//
+// 运行：tiec scripts/bench/tsha1-bench.tie -o tsha1-bench.exe && tsha1-bench.exe
+import "../../std/tsha1.tie"
+using tsha;
+
+func itoa(v: i64) -> string {
+    return to_string(v)
+}
+
+// rep 生成 c 重复 n 次的字符串：用 StringBuilder 逐字节追加（O(n)，避开 += 逐次整串拷贝）
+func rep(c: string, n: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        sb_append(sb, c)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 单个组合基准：目标时长 TARGET_SEC（秒级精度，最小可辨 1s），迭代上限 CAP。
+// 返回 "档位\t字节\t次数\t耗时秒\t字节每秒\t次每秒"
+func bench_one(tag: string, msg: string, cap: i64, target_sec: i64) -> string {
+    var len = len(msg)
+    var iters: i64 = 0
+    var t0 = time_now()
+    var sec: i64 = 0
+    while time_now() - t0 < target_sec {
+        if iters >= cap {
+            break
+        }
+        var d: string = ""
+        if tag == "f" {
+            d = tsha.tsha1f(msg);
+        } else if tag == "b" {
+            d = tsha.tsha1b(msg);
+        } else if tag == "x" {
+            d = tsha.tsha1x(msg)
+        } else {
+            d = tsha.tsha1r(msg)
+        }
+        iters = iters + 1
+    }
+    sec = time_now() - t0
+    if sec < 1 {
+        sec = 1
+    }
+    var bytes = len * iters
+    var bps = bytes / (sec * 1048576)          // MB/s（二进制 MB，取整）
+    var hps = iters / sec                       // hash/s
+    return tag + "\t" + itoa(len) + "\t" + itoa(iters) + "\t" + itoa(sec) + "\t" +
+           itoa(bps) + "\t" + itoa(hps)
+}
+
+func main() {
+    println("tsha1 family benchmark: f/b/x/r × 2KB/32KB/512KB（目标时长≥2s，迭代上限保护）")
+
+    // 长度梯度与对应迭代上限（反比缩放：越长次数越少，控制单档总时长）
+    var lens: table<i64> = [2048, 32768, 524288]
+    var caps: table<i64> = [65536, 8192, 1024]
+    var tags: table<string> = ["f", "b", "x", "r"]
+
+    var i: i64 = 0
+    while i < 3 {
+        var msg = rep("a", lens[i])
+        var j: i64 = 0
+        while j < 4 {
+            var line = bench_one(tags[j], msg, caps[i], 2)
+            println(line)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    println("done")
+}
