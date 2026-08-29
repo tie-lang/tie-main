@@ -1,12 +1,15 @@
 # 规划：后量子密码（PQC）接入评估与路线图（ML-KEM / ML-DSA / SLH-DSA）
 
-> 状态：**评估完成，立项分析**（2026-08-29，纯文档，未实现）
+> 状态：**决策已定——全量纯 tie**（2026-08-29，纯文档，未实现）
 > 关联：`docs/plans/asymmetric-roadmap.md`（非对称族评估：ECDSA/Ed25519/X25519 先例）、
 > `std/sha256.tie` / `std/sha3.tie` / `std/blake2.tie`（std 哈希族）、
 > `ext/aes.tie` / `ext/chacha20.tie` / `ext/ascon_aead.tie`（ext 对称族）、
-> `docs/plans/unsafe-model.md`（extern 能力边界）。
-> 结论一句话：**密钥封装（ML-KEM-768）与格签名（ML-DSA-65）走 extern（首选 Windows CNG，
-> 内建免新增依赖）；哈希签名（SLH-DSA-SHA2）具备纯 tie 最低风险通路，作长期审计凭证远期立项。**
+> `docs/plans/unsafe-model.md`（unsafe / extern 能力边界）。
+> 结论一句话：**全量纯 tie 实现——SLH-DSA-SHA2（哈希基）优先 → ML-KEM-768 → ML-DSA-65；
+> 弃 extern CNG / liboqs / OpenSSL。**理由：项目铁律「Cannot use Rust in implementation、
+> 去 Rust 桥、tie 自写 tiec」——所有算法库必须纯 tie，不依赖 extern 系统库；CNG/liboqs/OpenSSL
+> 仅保留为背景信息与验证向量来源（见 §3 §6）。
+> **决策记录：同意用户纯 tie 决策，弃 extern。**
 > 当前编译基线不受本文档影响（纯文档，未触碰任何 `.tie` 与编译器源码）。
 
 ---
@@ -31,11 +34,12 @@
   轮函数 block）、`blake2` / `blake3`、`sha1`、`tsha1`（trit 混合）、`base48`。**尚无 SHAKE
   XOF 公开封装**（`sha3.tie` 的 keccak 可为其铺路）。
 - **ext 对称族**：AES、ChaCha20、Ascon-AEAD。
-- **ext 非对称**：ECDSA P-256 走 BCrypt extern（`ext/ecdsa.tie`，已实证）；Ed25519/X25519 受阻
-  （BCrypt 曾无覆盖），拟走纯 tie bigint 或 libsodium（见 asymmetric-roadmap）。
+- **ext 非对称**：ECDSA P-256 已走 BCrypt extern 落地（`ext/ecdsa.tie`，已实证）——**过渡方案，
+  远期纯 tie**；Ed25519/X25519 统一走纯 tie bigint（依赖 `std/bigint.tie`，见 asymmetric-roadmap）。
 - **无现成多项式 / 格 / 有限域数学库**（`std/linalg` 为浮点线性代数，非模 q 环运算）。
 - **随机源**：`rdu/rnd.tie` 为 xorshift64 伪随机（**非密码学安全**）；PQC 密钥生成需密码学安全
-  随机源，纯 tie 路径必须先接入系统 CSPRNG（Windows `BCryptGenRandom`）。
+  随机源，纯 tie 只提供算法主体，熵仍须来自系统 CSPRNG（如 Windows `BCryptGenRandom`）——
+  **熵源属基础设施，非算法库 extern，不违纯 tie 决策**（见 §3.5）。
 - **字节承载**：tie `string` 为 UTF-8、可含 NUL，但不能可靠承载 ≥0x80 的原始任意字节，IO 统一
   用**小写 hex 字符串**（与 asymmetric-roadmap / ext 一致）。
 
@@ -43,23 +47,29 @@
 
 ## 2. 三条路线对比
 
-> extern 后端三选：**Windows CNG（内建，已含 ML-KEM/ML-DSA）**、**liboqs（需自带 dll）**、
-> **OpenSSL 3.5+（需自带 dll）**。CNG 与 liboqs/OpenSSL 的取舍见 §3 核实与 §4 推荐。
+> extern 后端三选（**仅作背景与验证向量来源，本项目不采用**）：**Windows CNG（内建，已含
+> ML-KEM/ML-DSA）**、**liboqs（需自带 dll）**、**OpenSSL 3.5+（需自带 dll）**。
+> 经用户决策：**全量纯 tie，弃 extern**。下表记录被否（A/B）与采纳（C）的路径。
 
-| 维度 | A. 纯 tie 实现 | B. extern C 库（CNG / liboqs / OpenSSL 3.5+） | C. 混合（按算法分派：extern + 纯 tie） |
+| 维度 | A. extern C 库（CNG / liboqs / OpenSSL 3.5+） | B. 混合（extern + 纯 tie 分派） | **C. 纯 tie 全量（推荐）** |
 | --- | --- | --- | --- |
-| **算法覆盖** | ML-KEM / ML-DSA / SLH-DSA 全栈自研（NTT、多项式 mod q、CBD 噪声、哈希树） | ML-KEM ✓ ML-DSA ✓（CNG 内建）；SLH-DSA ✗（CNG 无）；liboqs 三者皆有 | KEM / 格签名走 extern（B），SLH-DSA 走纯 tie（A 子集） |
-| **常数时间 / 侧信道** | **高风险**：tie 无安全常数时间基建，secret 分支 / 索引 / 乘法泄漏风险高；且**无内存清除原语**，密钥残留风险 | **安全**：系统 / 库经 FIPS 140 或专业审计 | extern 部分安全；纯 tie 部分仍暴露同上风险 |
-| **正确性** | 自研格数学 + 编码易出边界 bug（中心二项分布、模约简、密钥派生），向量核对工作量巨大 | 系统级已验证，作往返即可 | 混合 |
-| **工作量大** | **极大**（ML-KEM-768 约 1500–3000 行 + 全量 NIST ACVP 向量核对） | 小（CNG extern glue 约 300–600 行，同 ECDSA 先例） | 中 |
-| **SHAKE XOF 前提** | 须先补 `sha3` → SHAKE128/256 XOF 公开封装（ML-KEM / ML-DSA 均以 SHAKE 为核心） | 不需要（库内自带） | extern 不需；纯 tie 的 SLH-DSA-SHA2 需 SHA2，SHAKE 仅作可选 |
-| **外部二进制依赖** | 无 | CNG：无新增 dll（内建于 Windows，链接 `-lbcrypt`）；liboqs / OpenSSL：**须自带并打包 dll** | CNG 无新增；liboqs 有 |
-| **平台 / 可用性** | 全平台 | CNG：仅 Windows 11 24H2+（含 ML-KEM / ML-DSA，SLH-DSA 无）；liboqs / OpenSSL：跨平台 | 俱上 |
-| **可行性（现状）** | 未证（量大） | **ML-KEM extern 通路与 ECDSA 同型，底层机制已由 asymmetric-roadmap 实证** | CNG 通路沿用实证；纯 tie 仅 SLH-DSA 低风险 |
+| **算法覆盖** | CNG：ML-KEM ✓ ML-DSA ✓ **SLH-DSA ✗**；liboqs/OpenSSL 三者皆有 | KEM / 格签名 extern，SLH-DSA 纯 tie | **ML-KEM ✓ ML-DSA ✓ SLH-DSA ✓** 全栈自研（NTT、多项式 mod q、CBD 噪声、哈希树、超树） |
+| **常数时间 / 侧信道** | 系统 / 库经 FIPS 或专业审计，安全 | extern 部分安全；纯 tie 部分仍暴露 | **高风险（可控）**：tie 无现成常数时间基建；以算法结构常数时间 + sensitive 数据槽覆写约定缓解（§3.5） |
+| **正确性** | 系统级已验证，作往返即可 | 混合 | 自研格数学 + 编码易出边界 bug；靠 KAT + ACVP 向量逐字节收敛（每步挂钩） |
+| **工作量大** | 小（CNG glue 约 300–600 行，同 ECDSA 先例） | 中 | **极大，分期消化**：SLH-DSA 约 1500+ 行首发；ML-KEM-768 约 1500–3000；**ML-DSA 最重** |
+| **SHAKE XOF 前提** | 不需要（库内自带） | extern 不需；纯 tie 部分需 | **必需**：`sha3` → SHAKE128/256 XOF（ML-KEM / ML-DSA 均以 SHAKE 为核心） |
+| **额外数学地基** | 不需要 | 仅纯 tie 部分 | **必需 `std/bigint.tie`（256/512 位大数、模逆/模幂）**——Ed25519 与格算法共通底座 |
+| **外部二进制依赖** | CNG 内建零 dll；liboqs / OpenSSL 须自带打包 | 同 A + 纯 tie 无 | **无（满足铁律）** |
+| **平台 / 可用性** | CNG 仅 Win 24H2+（且无 SLH-DSA）；liboqs/OpenSSL 跨平台 | 俱上 | 全平台 |
+| **对项目铁律符合度** | **✗**（依赖 extern 系统库，违背用户决策） | **✗**（部分依赖 extern） | **✓**（纯 tie，去 Rust 桥 / tie 自写 tiec 之延伸） |
+| **决策** | **弃**（仅背景） | **弃** | **采纳** |
 
 ---
 
 ## 3. 外部事实核实（WebSearch 结论，来源见 §8）
+
+> **标注**：本节为外部事实核实（背景信息）——**本项目不采用 extern 实现**，仅采纳其标准与
+> 官方 self-test / ACVP 向量作为纯 tie 实现的核对基准。
 
 ### 3.1 标准状态
 
@@ -96,24 +106,42 @@
 | 可用性 | 微软 2025-05 官宣 PQC 入 Windows（Insider Canary 27852+）；ML-KEM / ML-DSA 随较新 Windows 内置；**内建于 `bcryptprimitives.dll`，无新增二进制依赖** |
 
 > **关键更正**：asymmetric-roadmap 评估时（纯 ECDSA 阶段）BCrypt 无 PQC；**截至 2026-08，
-> Windows CNG 已内建 ML-KEM / ML-DSA**。这使「extern CNG」路线从「无 PQC 可用」变为
-> 「零新依赖即可满足 KEM + 格签名」——是本次评估最重要的事实更新。
+> Windows CNG 已内建 ML-KEM / ML-DSA**。该事实使「extern CNG」在技术上从「无 PQC 可用」变为
+> 「零新依赖即可满足 KEM + 格签名」——**但仅作背景信息：经用户纯 tie 决策，本项目不采用 extern，
+> 不以此变更路线**。
+
+---
+
+## 3.5 前置依赖（纯 tie 数学地基）
+
+> 纯 tie 全量路线必须先建立「大数 / XOF / 常数时间」三块地基，再进入任何算法。顺序增量自举，
+> 每块完工即被后续算法复用——是「哈希基首发消化工具链」的物质前提。
+
+| 地基 | 内容 | 复用算法 | 风险与缓解 |
+| --- | --- | --- | --- |
+| **`std/bigint.tie`（大数底座）** | 256/512 位无符号大数、模加/模乘、**模逆、模幂**（+ 蒙哥马利 / Barrett 优化）；以 `std/blake2.tie` 双半 `[hi,lo]` 为起点 | **Ed25519/X25519（标量 / 域运算）与格算法（ML-KEM / ML-DSA 的编码、模约简、树 hash 参数）共通底座** | 正确性风险：模约简/模逆边界 bug；以 RFC 8032 Ed25519 向量 + FIPS 203/204 KAT 收敛 |
+| **SHAKE XOF（SHA-3 扩展）** | `std/sha3.tie` 的 Keccak block 封一层 SHAKE128/256 XOF（squeeze 任意长输出） | **SLH-DSA-SHAKE**、**ML-KEM**（XOF 派生 A / 种子）、**ML-DSA** 共同前提 | 少；Keccak block 已在 std 实证，仅需 XOF 封装与向量核对 |
+| **常数时间与内存清除** | 常数时间结构（固定循环 / 无 secret 索引）；密钥 / 共享秘密清除 | 全部非对称算法 | tie **无 `memzero`**：`sensitive` 数据槽覆写约定——安全上下文里的临时 buffer 用毕逐字覆写为 0x00，不由通用 GC 保证；常数时间性由算法结构 + 向量兜底；**内存清除为该路线强制的先行前置** |
+
+> 随机源（熵源基础设施，非算法 extern）：上述数学地基就绪后，密钥生成先接系统 CSPRNG 熵源
+> （如 Windows `BCryptGenRandom`），`rdu/rnd`（xorshift64）不作为安全熵。
 
 ---
 
 ## 4. 推荐与分期
 
-### 4.1 推荐：B（extern）先行 + C（纯 tie）补充——按算法分派
+### 4.1 推荐：**C 纯 tie 全量**（弃 extern CNG / liboqs / OpenSSL）
 
-| 目标算法 | 推荐后端 | 理由 |
-| --- | --- | --- |
-| **ML-KEM-768**（密钥封装） | **B. extern CNG** | 内建于 Windows、零新 dll、链接 `-lbcrypt` 与 ECDSA 同型（机制已实证）；常数时间 / 密钥处理由系统保证，规避 tie 无内存清除原语的风险 |
-| **ML-DSA-65**（格签名） | **B. extern CNG**（或 liboqs 作跨平台备选） | 同 CNG 内建理由；CNG 不支持时（跨平台 / 旧 Win）退 liboqs |
-| **SLH-DSA-SHA2**（哈希签名） | **C. 纯 tie（远期）** | CNG 无 SLH-DSA；哈希基算法与 tie std 哈希族完全咬合（见 §4.2），是**唯一低风险纯 tie 通路** |
+| 目标算法 | 推荐实现 | 优先级 | 理由 |
+| --- | --- | --- | --- |
+| **SLH-DSA-SHA2**（哈希签名） | **纯 tie** | **① 首发** | 哈希基：无 NTT、无模 q 多项式环、无常数时间标量乘——纯哈希 + Merkle / 超树，与 std 哈希族（sha2 / sha3）咬合**可达性最高**；先消化「大数 / 常数时间 / KAT」全套基建与流程 |
+| **ML-KEM-768**（密钥封装） | **纯 tie** | ② | 需 **NTT / 多项式环 mod q** 库（前置依赖 §3.5）；障碍居中 |
+| **ML-DSA-65**（格签名） | **纯 tie** | ③ 最重 | 格族最重：多项式乘 / 格基 / 常数时间面最宽，放最后冲刺 |
 
-> 为何不用 liboqs 作首选 B：tie 目标运行期是 Windows，CNG **内建无新增依赖**，liboqs 需自带
-> 并打包 dll、升级需跟进上游 release；CNG 在「KEM + 格签名」覆盖面已够用。liboqs 保留为：
-> （1）跨平台（非 Windows）；（2）需 SLH-DSA 也要 extern 快速到位；（3）需 HQC / SNOVA 等候选。
+> 弃 extern 的理由：**项目铁律——Cannot use Rust in implementation、去 Rust 桥、tie 自写 tiec**；
+> 用户明确要求**全部算法库纯 tie 实现，不依赖 extern 系统库**。CNG / liboqs / OpenSSL 仅保留作
+> 背景与验证向量来源（其官方 self-test / ACVP 向量用于核对纯 tie 输出），不再作为实现后端。
+> 同理弃「混合」：只要引 extern 即违背决策，纯 tie 部分也会被 extern 拖累。
 
 ### 4.2 为何 SLH-DSA 是纯 tie 的「最低风险首选」
 
@@ -124,35 +152,37 @@
   `sha3.keccak` 加一层 XOF 即可）。
 - 因此纯 tie SLH-DSA 的**实现风险 / 工作量远低于任何格算法**（格路线核心难点是常数时间 + 侧信道；
   哈希签名的主要风险仅是 Merkle / 超树的状态与索引正确性，可用 KAT / ACVP 向量收敛）。
-- 定位：**平台审计链的长期签名凭证**（安全假设最保守、有效期长），与 CNG 短平快的 KEM / 格签名
-  形成互补。
+- 定位：**平台审计链的长期签名凭证**（安全假设最保守、有效期长），并作为纯 tie 格路线的
+  **首发入口**——先用低风险哈希基消化「大数 / 常数时间 / 向量核对」全套基建，再攻格算法。
 
 ### 4.3 分期建议
 
 | 阶段 | 内容 | 前提 / 验收 |
 | --- | --- | --- |
-| 一（现行） | 本文档立项评估 | 无需实现 |
-| 二 | **ML-KEM-768 extern（CNG）** 探针 + `ext/mlkem.tie` 封装（hex IO + key import / export + encap / decap 往返） | 复用 ECDSA extern 模式；要求目标机 Win 24H2+；往返 + 微变敏感 + KAT 向量一致 |
-| 三 | **ML-DSA-65 extern**（CNG / liboqs）封装 | 同上；向量核对 + 验签 |
-| 四 | **SLH-DSA-SHA2 纯 tie** 立项：`sha3` → SHAKE XOF 公开化 → Merkle / 超树 → 签名 / 验签 | KAT + ACVP 向量核对；`rdu/rnd` 换 CSPRNG（`BCryptGenRandom`） |
-| 五（远期） | 接入插件审计链凭证签发 / 验签 | 自举（自签凭证用 tie 验签）+ 全量回归 |
+| 一（现行） | 本文档决策定稿（纯 tie） | 无需实现 |
+| 二 | **数学地基**：`std/bigint.tie`（256/512 位大数、模逆/模幂）+ `sha3`→SHAKE128/256 XOF + `sensitive` 槽覆写约定 | 单测 + RFC 8032 Ed25519 向量 + KAT |
+| 三 | **SLH-DSA-SHA2 纯 tie（哈希基首发）**：Merkle / 超树 / 签名 / 验签 | NIST SLH-DSA KAT + ACVP 逐字节；接系统熵源 |
+| 四 | **Ed25519 / X25519 纯 tie**（依赖 bigint） | RFC 8032 / RFC 7748 向量逐字节 |
+| 五 | **ML-KEM-768 纯 tie**：多项式环 mod q、NTT、CBD、K-PKE、encap / decap、密钥派生 | FIPS 203 KAT + ACVP |
+| 六 | **ML-DSA-65 纯 tie（格签名，最重）** | FIPS 204 KAT + ACVP |
+| 七（远期） | 接入插件审计链凭证签发 / 验签 | 自举（自签凭证用 tie 验签）+ 全量回归 |
 
 ---
 
-## 5. 落地步骤（每步验收挂钩自举 + 回归）
+## 5. 落地步骤（地基 → SLH-DSA → Ed25519/X25519 → ML-KEM → ML-DSA）
 
-> 通用验收准则：每步产出独立探针，**与既有回归基线解耦**——新功能不得破坏现有编译 / 运行
-> 基线；新增代码的测试归入对应探针目录，不并入通用回归。
+> 通用验收准则（每步三挂钩）：**① KAT / ACVP 向量逐字节一致；② 自举**——产出可运行 exe、
+> tie 自己编译运行；**③ 回归**——与既有回归基线解耦，不破坏现有编译 / 运行基线；新增测试归入
+> 对应探针目录，不并入通用回归。
 
 | 步骤 | 交付 | 验收挂钩 |
 | --- | --- | --- |
-| 1 评估期 | 本文档 | 通过评审即可（无代码） |
-| 2 基础数学库（仅纯 tie A） | `std/ntt` / `modq` 多项式环，或 `sha3`∷shake XOF | 单测 + KAT 向量；若选 B 跳过 |
-| 3 extern 封装（若选 B） | `ext/mlkem` / `ext/mldsa` glue（声明 + 段缓冲 IO） | 编译零错误 + `-lbcrypt` 链入，同 ECDSA 探针 |
-| 4 单算法原型 | 单一算法探针（encap/decap 或 sign/verify） | 自举：产出可运行 exe；回归：既有用例通过 |
-| 5 向量核对 | NIST ACVP + 每算法 KAT（确定性向量） | 输出字节与标准向量逐字节一致 |
-| 6 探针化 | 探针回归进 tests 对应目录 | 与主回归基线隔离运行 |
-| 7 接入审计链凭证（远期） | 签发 / 验签接入插件链路 | 自举闭环（tie 验自己的签）+ 全量回归 |
+| 1 数学地基 | `std/bigint.tie`（256/512 位大数、模逆/模幂）+ `sha3`→SHAKE128/256 XOF + `sensitive` 槽覆写 / 常数时间约定 | 单测 + KAT；RFC 8032 Ed25519 向量作早期交叉验证 |
+| 2 哈希签名首发 | `std/slhdsa`（SLH-DSA-SHA2 → 可选 SLH-DSA-SHAKE）：Merkle / 超树 / 签名 / 验签 | NIST SLH-DSA KAT + ACVP 逐字节一致 |
+| 3 曲线族 | `std/ed25519`、`std/x25519`（依赖 bigint） | RFC 8032 / RFC 7748 向量逐字节一致 |
+| 4 格 KEM | `std/mlkem`（ML-KEM-768：多项式环 mod q、NTT、CBD、K-PKE、encap/decap、密钥派生） | FIPS 203 KAT + ACVP |
+| 5 格签名 | `std/mldsa`（ML-DSA-65，最重） | FIPS 204 KAT + ACVP |
+| 6 接入审计链凭证（远期） | 签发 / 验签接入插件链路 | 自举闭环（tie 验自己的签）+ 全量回归 |
 
 ---
 
@@ -160,15 +190,14 @@
 
 | 风险 | 等级 | 说明与缓解 |
 | --- | --- | --- |
-| 实现复杂度 | A 高 / B 低 / C 中低 | 格路线（ML-KEM / ML-DSA 纯 tie）复杂度与 bug 面最大；推荐 extern 承担；纯 tie 只保留 SLH-DSA |
-| 常数时间 / 侧信道 | 纯 tie 高 | tie 无安全常数时间基建；纯 tie 格算法不建议用于生产密钥；extern 由系统保证 |
-| 内存安全（**tie 无内存清除原语**） | 中 | 密钥 / 共享秘密残留：
-  - extern 路径：密钥驻留在系统对象（CNG handle），tie 侧仅接触 hex，泄漏面小；
-  - 纯 tie 路径：须先引入**零化清除**约定（临时 buffer 用完覆写）——**本文档明确将其列为纯 tie 强制的先行前置** |
-| 互操作向量源 | 中 | KEM / 签名需对齐 ASCII 化字节序（tie 用 hex）；向量源：NIST ACVP / 各算法 KAT / OpenSSL / liboqs 自检向量 |
-| 平台可用性（CNG） | 低-中 | ML-KEM / ML-DSA 随 Win 24H2+，部分功能标 prerelease / Insider；旧 Win / 跨平台须退 liboqs 或纯 tie |
-| 密码学安全随机源 | 中（纯 tie） | `rdu/rnd` 为 xorshift64 非安全；纯 tie 签名须接 `BCryptGenRandom`（extern）作熵源 |
-| 劝退项（YAGNI） | — | 若 PQC 仅用于平台内部审计链、无对外长期密文 / 凭证刚需，**可整体滞后**（Ed25519 都未定，PQC 应在非对称族稳定后推进）；本文档仅背书「评估」，现阶段不投重 |
+| 实现复杂度 / bug 面 | 纯 tie 高 | 格路线（ML-KEM→ML-DSA）复杂度与 bug 面最大；**缓解：分别期**——SLH-DSA 哈希基首发消化工具链与 KAT 流程，格路线靠逐字节向量收敛 |
+| 常数时间 / 侧信道 | 纯 tie 高（可控） | tie 无现成常数时间基建；**缓解**：算法结构常数时间（固定循环 / 无 secret 索引）+ `sensitive` 槽覆写 + 明确不上线侧信道测量 |
+| 内存安全（**tie 无内存清除原语**） | 中 | 密钥 / 共享秘密残留：纯 tie 路径须先引入 **`sensitive` 数据槽覆写约定**（临时 buffer 用毕逐字覆写 0x00，不由 GC 保证）——**列为强制的先行前置（§3.5）** |
+| 互操作向量源 | 中 | KEM / 签名需对齐 ASCII 化字节序（tie 用 hex）；向量源：NIST ACVP / 各算法 KAT / OpenSSL / liboqs 自检向量（**仅作核对基准，不引用其实现**） |
+| 平台可用性 | 低 | 纯 tie 全平台，无 CNG / Win 版本耦合（extern 特有的旧 Win / 跨平台问题在本路线不存在） |
+| 密码学安全随机源 | 中 | `rdu/rnd` 为 xorshift64 非安全；密钥生成接系统 CSPRNG 熵源（如 `BCryptGenRandom`）——**熵源属基础设施，非算法 extern** |
+| 工期 / 范围膨胀 | 高 | 全栈三算法自研边宽；**缓解：严格分期**（地基→哈希基→Ed25519→ML-KEM→ML-DSA），每步三挂钩收敛后才启动下一步 |
+| 劝退项（YAGNI） | — | 已按用户纯 tie 决策立项，不再整体滞后；但若审计链无对外长期凭证刚需，仍可选择性延后格路线保留哈希基凭证 |
 
 ---
 
@@ -176,12 +205,13 @@
 
 | 决策点 | 结论 | 备选 |
 | --- | --- | --- |
-| PQC 牵头算法 | SLH-DSA 作纯 tie 优先（哈希基、与 std 哈希族咬合、风险远低于格） | ML-KEM 作 extern 优先 |
-| 密钥封装 / 格签名实现路径 | **extern（首选 CNG，内建零依赖）** | liboqs（跨平台 / 需 SLH-DSA extern）；OpenSSL 3.5+ |
-| extern 后端首选 | **CNG / `-lbcrypt`** | 不做纯 tie 的格路线（量大、常数时间风险） |
-| 纯 tie 范围 | 收敛到 **SLH-DSA-SHA2（远期）** | ML-KEM / ML-DSA 纯 tie 仅作教学若促成 |
-| 是否现在就投实现 | **否**（先立项评估，待非对称族 Ed25519 稳定后重估） | 若审计链有长期凭证刚需，可提前立项 SLH-DSA |
-| 随机源 / 内存清除 | 纯 tie 需先接 CSPRNG 外源 + 引入零化清除约定 | extern 路径暂不需要 |
+| PQC 牵头算法 | **SLH-DSA-SHA2 哈希基作纯 tie 首发**（哈希基、与 std 哈希族咬合、风险远低于格） | ML-KEM 作首发（弃，需 NTT 前置更重） |
+| 实现路径 | **纯 tie 全量（弃 extern CNG / liboqs / OpenSSL）** | extern / 混合——仅背景，不采用 |
+| 纯 tie 范围 | **ML-KEM-768 + ML-DSA-65 + SLH-DSA-SHA2 全栈** | 收敛到 SLH-DSA（弃，不符合全量纯 tie 决策） |
+| 前置依赖 | **`std/bigint.tie` + SHAKE XOF + `sensitive` 槽覆写 / 常数时间约定 + 系统熵源**（§3.5） | 无地基直接上格路线（弃，风险不可控） |
+| extern 后端（CNG / liboqs / OpenSSL） | **弃**（仅作背景与验证向量来源） | — |
+| 是否现在就投实现 | **是——同意用户纯 tie 决策，弃 extern**；按 地基→SLH-DSA→Ed25519/X25519→ML-KEM→ML-DSA 分期 | 仅立项评估（弃，已被决策取代） |
+| 随机源 / 内存清除 | 密钥生成接系统 CSPRNG 熵源 + `sensitive` 槽覆写约定（先行前置） | — |
 
 ---
 

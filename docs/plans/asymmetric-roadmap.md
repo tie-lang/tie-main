@@ -1,9 +1,12 @@
 # 规划：非对称签名 / 密钥交换族路线评估（Ed25519 / X25519 / ECDSA P-256）
 
-> 状态：**评估已完成 + ECDSA P-256 实证（2026-08-29）**
-> 关联：`std/blake2.tie`（bignum / 双半 [hi,lo] 先例）、`ext/aes.tie`（ext 风格）、
-> `docs/plans/unsafe-model.md`（extern 能力边界）。
+> 状态：**评估已完成 + ECDSA P-256 实证（2026-08-29）；路线决策更新——非对称族统一纯 tie**
+> 关联：`std/bigint.tie`（规划的地基库，Ed25519 与格算法共通底座）、`std/blake2.tie`
+> （bignum / 双半 [hi,lo] 先例）、`ext/aes.tie`（ext 风格）、
+> `docs/plans/unsafe-model.md`（extern 能力边界）、`docs/plans/pqc-roadmap.md`（PQC 纯 tie 先例）。
 > 实证探针：`tests/asym_probe/ecdsa_p256_probe.tie`（本文件作者已跑通）。
+> **决策记录：同意用户纯 tie 决策——Ed25519/X25519 统一纯 tie bigint（依赖 `std/bigint.tie`）；
+> ECDSA P-256 已 extern 落地，标注为过渡方案，远期纯 tie。**
 
 ---
 
@@ -28,16 +31,16 @@
 
 ## 2. 三条路线对比
 
-| 维度 | A. 纯 tie bigint | B. extern BCrypt(CNG) | C. 混合（标量乘纯 tie + 杂项 extern） |
+| 维度 | A. extern BCrypt(CNG) | B. 混合（bigint / libsodium） | **C. 纯 tie bigint（推荐）** |
 | --- | --- | --- | --- |
-| **自研 256/512 位大数** | 必须（加减/模乘/模逆/模幂 + 蒙哥马利/Barrett 优化） | 不需要 | 仅标量乘（仍要大数） |
-| **算法覆盖** | Ed25519 ✓ X25519 ✓ ECDSA P-256 ✓ | **ECDSA P-256 ✓**；**Ed25519 ✗、X25519 ✗**（见 §3） | Ed25519/X25519 ✓（纯 tie），ECDSA 走 extern |
-| **常数时间 / 侧信道** | **高风险**：tie 无安全常数时间基建，secret 分支/索引泄漏风险高 | **安全**：系统 FIPS 140 已验证实现 | 标量乘仍暴露侧信道风险 |
-| **正确性** | 自己写曲线+签名，易出边界 bug（I/O、编码、模约简） | 系统级已验证 | 半系统半自研 |
-| **工作量大** | 极大（Ed25519+ECDSA 双曲线全栈，约 1500-2500 行 + 大量向量核对） | 中（只 ECDSA P-256 时约 300-500 行 extern glue；但覆盖不了 Curve25519 族） | 大 |
-| **验证向量** | 必须逐向量核对（RFC 8032/7748/openssl），工作量与正确性强绑定 | 系统实现自带正确性，只需测往返 | Curve25519 部分仍要核对 |
-| **外部依赖** | 无 | Windows 平台（bcrypt.dll 内建于 Windows Vista+；无新增 dll） | 无新增，平台性 |
-| **可行性（已实证）** | 未证（量大） | **ECDSA P-256 已实证可编译/链接/运行**（见 §5） | 未证 |
+| **自研 256/512 位大数** | 不需要 | 需（Ed25519 标量乘仍要大数）；走 libsodium 则不需要 | **必须**：`std/bigint.tie`（加减 / 模乘 / 模逆 / 模幂 + 蒙哥马利 / Barrett 优化） |
+| **算法覆盖** | **仅 ECDSA P-256（+ NIST 曲线 ECDH）**；**Ed25519 ✗、X25519 ✗**（见 §3） | Ed25519/X25519 纯 tie；ECDSA extern | **Ed25519 ✓ X25519 ✓ ECDSA P-256 ✓**（统一）：Ed25519/X25519 纯 tie；ECDSA 远期纯 tie 并入 |
+| **常数时间 / 侧信道** | **安全**（系统 FIPS 140 已验证，但仅覆盖 ECDSA） | 标量乘仍暴露侧信道风险 | **高风险（可控）**：算法结构常数时间 + `sensitive` 槽覆写约定（见 pqc-roadmap §3.5） |
+| **正确性** | 系统级已验证，作往返即可 | 半系统半自研 | 自研曲线 + 签名易出边界 bug（I/O、编码、模约简）；靠 RFC 8032/7748 向量 + openssl 交叉逐字节核对 |
+| **工作量大** | 中（ECDSA glue 约 300–500 行，但覆盖不了 Curve25519 族） | 大 | 大（Ed25519/X25519 全栈自研约 1000–1500 行，依赖地基库先行） |
+| **验证向量** | 系统实现自带正确性，只需测往返 | Curve25519 部分仍要核对 | 必须逐向量核对（RFC 8032 / 7748 / openssl），正确性与工作量强绑定 |
+| **外部依赖** | Windows（bcrypt.dll 内建） | libsodium 需 `-lsodium` + 打包 dll | **无（满足铁律）** |
+| **决策** | **过渡**（ECDSA 已落地）；远期纯 tie | **弃**（不再 libsodium 二选一） | **采纳** |
 
 ---
 
@@ -117,41 +120,44 @@ Open ECDSA_P256 → GenerateKeyPair(256) → FinalizeKeyPair
 - `往返` + `微变敏感` 均通过；
 - NTSTATUS 负值正确透传（调试期 0xC00000BB 即 STATUS_NOT_SUPPORTED 可读）。
 
-**结论**：**路线 B 的 extern 机制可行性已实证**（对 BCrypt 覆盖的算法，即 ECDSA P-256）。
+**结论**：**路线 A 的 extern 机制可行性已实证**（对 BCrypt 覆盖的算法，即 ECDSA P-256）；
+ECDSA 的 extern 只列为过渡方案，远期随 `std/bigint.tie` 转纯 tie。
 
 ---
 
 ## 6. 推荐路线
 
-### 推荐：**混合（C 形态）——按算法分派后端**
+### 推荐：**统一纯 tie bigint（C）——双曲线 + ECDSA 全量纯 tie，extern 仅过渡**
 
-| 算法族 | 推荐后端 | 理由 |
+| 算法族 | 推荐实现 | 理由 |
 | --- | --- | --- |
-| ECDSA P-256（及 ECDH P-256/384/521） | **B. extern BCrypt** | 已实证链路走通、系统 FIPS 140 安全、零自研大数风险 |
-| Ed25519 / X25519 | **A. 纯 tie bigint 后续件**（或若允许，加 libsodium extern） | BCrypt 不支持；纯 tie 作教学/可验证实现，但须严格按 RFC 8032/7748 向量核对 + 自证常数时间 |
+| **Ed25519 / X25519** | **纯 tie bigint（`std/bigint.tie`）** | BCrypt 不支持（§3）；按用户纯 tie 决策**不再 libsodium 二选一**——统一依赖 `std/bigint.tie`，Curve25519 族原生落地 |
+| **ECDSA P-256** | **现状 extern（BCrypt）为过渡；远期纯 tie** | 已 extern 落地（探针实证）——**列为过渡方案**；待 `std/bigint.tie` 成熟后整体转纯 tie |
 
-> 理由：tie 语言当前**无安全常数时间 bigint 基建**，纯自研 Ed25519/X25519/ECDSA 全栈易出
-> 侧信道与正确性 bug——故 ECDSA 优先复用系统 BCrypt（B）；而 Curve25519 族（Ed25519/X25519）
-> 是任务命名目标但 BCrypt 缺失，只能走纯 tie（A）或引入 libsodium（需加 `-lsodium` + 打包 dll，
-> 引入外部二进制依赖）。**若目标是尽快落地「可用的签名/密钥交换」，最务实是：ECDSA P-256 走
-> BCrypt（本评估已交付探针），Ed25519/X25519 立项纯 tie 二期。**
+> 理由：项目铁律（Cannot use Rust in implementation、去 Rust 桥、tie 自写 tiec）与用户决策要求
+> **弃 extern 系统库**。虽然 tie 当前无现成常数时间 bigint 基建、纯自研全栈易出侧信道 / 正确性
+> bug——但决策要求算法库纯 tie。故：**Ed25519 / X25519 统一纯 tie bigint**（依赖地基库 `std/
+> bigint.tie`）；**ECDSA P-256 的 BCrypt extern 仅作为「已落地的过渡方案」**（记录其验证作用），
+> 远期随 `std/bigint.tie` 成熟整体转纯 tie。**libsodium 不再作为备选。**
 
 ### 三路线结论表
 
 | 路线 | 覆盖 Ed25519 | 覆盖 X25519 | 覆盖 ECDSA | 常数时间 | 工作量 | 平台依赖 | 结论 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| A 纯 tie | ✓ | ✓ | ✓ | 高风险 | 极大 | 无 | 教学/可验证，二期 |
-| B 纯 BCrypt | ✗ | ✗ | ✓ | 安全 | 中 | Windows | **ECDSA 采用** |
-| **C 混合（推荐）** | **（A 二期）** | **（A 二期）** | **B ✓** | 安全/自研并存 | 大 | Windows | **落地路径** |
+| A. extern BCrypt | ✗ | ✗ | ✓（已落地） | 安全（过渡） | 中 | Windows | ECDSA 过渡采用；无法覆盖本族命名目标 |
+| B. 混合（bigint / libsodium） | ✓ | ✓ | ✓ | 自研部分高风险 | 大 | libsodium 需打包 | 弃（不再 libsodium 二选一） |
+| **C. 纯 tie bigint（推荐）** | **✓** | **✓** | **✓（远期并入）** | 高风险（可控） | 大 | 无 | **落地路径**（符合纯 tie 铁律） |
 
 ---
 
 ## 7. 实施记录 / 受阻点
 
-- 本评估**已实现并实证 ECDSA P-256（BCrypt extern）**：探针通过。性质上属「路线 B 可行性验证」，
-  而非完整 `ext/ecdsa.tie` 库（后者为增量包装：hex IO + 密钥 import/export + SHA-256 摘要链）。
-- **Ed25519 / X25519：受限于 BCrypt 能力缺口**（§3），若按路线 B 纯 BCrypt 走即**不可行**；
-  需 A（纯 tie）或引入 libsodium。`ext/ed25519.tie`、`ext/x25519.tie` 暂不产出（避免半吊子假实现）。
+- 本评估**已实现并实证 ECDSA P-256（BCrypt extern）**：探针通过。性质上属「路线 A 可行性验证」。
+  **ECDSA 的 extern 列为过渡方案**——待 `std/bigint.tie` 成熟后整体转纯 tie；完整库形态为增量
+  包装（hex IO + 密钥 import/export + SHA-256 摘要链），纯 tie 化列入后续。
+- **Ed25519 / X25519：统一走纯 tie bigint（`std/bigint.tie`）**，不再 libsodium 二选一——符合
+  用户纯 tie 决策。依赖地基库先行（见 pqc-roadmap §3.5 / §5 步骤 3）；`ext/ed25519.tie`、
+  `ext/x25519.tie` 待地基库就绪后产出，避免半吊子假实现。
 - 探针依赖 `tie_interp.lib`（g_used_interp）——构建环境已具备；若要纯 codegen 免 Rust 桥，
   走 §4.1 白名单优化。
 
