@@ -4,8 +4,14 @@ type tie<class>
 // 用途：tie 平台自有通用安全哈希底座（插件审计链 / 完整性校验 / 指纹）。
 // 来源：docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6
 // 接口（本期实现 f 与 r 两档；b/x 留待后续，见设计文档锚点）：
-//   tsha.tsha1f(msg: string) -> string   tsha1f-256（快速，B 骨架）→ 64 位十六进制
-//   tsha.tsha1r(msg: string) -> string   tsha1r-128（嵌入式，轻量 SPN）→ 32 位十六进制
+//   tsha.tsha1f(msg: string) -> string    tsha1f-256（快速，B 骨架）→ 默认 46 字符 base48
+//   tsha.tsha1f_hex(msg) -> string        tsha1f-256 → 64 位十六进制（可选，旧 hex 保留）
+//   tsha.tsha1r(msg: string) -> string    tsha1r-128（嵌入式，轻量 SPN）→ 默认 23 字符 base48
+//   tsha.tsha1r_hex(msg) -> string        tsha1r-128 → 32 位十六进制（可选，旧 hex 保留）
+// 默认输出为 base48 无歧义编码（std/base48.tie，命名空间 b48）：短、无 0/1/I/O/l
+//   视觉混淆，适合指纹/审计链 ID 人类可抄读。_hex 后缀保留原有 hex 行为（回归兼容）。
+//   内部哈希字节不变（f=256 位=32 字节→46 字符 base48；r=128 位=16 字节→23 字符），
+//   仅在输出层切换编码：decode(tsha1f_hex(msg) 的 b48) == tsha1f_hex(msg) 字节一致。
 // 逐**字节**处理（str_byte + len），任意 UTF-8 原始字节可哈希。
 //
 // == 结构（快速档 tsha1f-256）==
@@ -41,6 +47,9 @@ type tie<class>
 //   探针：tests/tsha_probe/tsha1f_probe.tie 与 tsha1r_probe.tie（多向量 + 块边界）。
 // 备注：命名空间内互调为裸调用，内部函数不加 tsha_ 前缀（同 sha/blake）。
 // ============================================================================
+
+import "./base48.tie"
+using b48;
 
 var tsha_fiv: table<i64>;     // tsha1f IV（8 个 32 位字）
 var tsha_fsig: table<i64>;    // tsha1f σ 置换（10 行×16 = 160 项）
@@ -293,8 +302,9 @@ func compress_f(h: ref table<i64>, msg: string, n: i64, off: i64, t_lo: i64, t_h
     }
 }
 
-// tsha1f-256 主入口：计数器式（纯零填充），12 轮，输出 8 字大端 hex = 64 hex。
-pub func tsha1f(msg: string) -> string {
+// tsha1f-256 内部哈希：计数器式（纯零填充），12 轮，输出 8 字大端 hex = 64 hex。
+// （算法主体与旧 tsha1f 完全一致，仅把外部编码拆到 _hex/b48 封装，内部字节不变。）
+func digest_f(msg: string) -> string {
     ensure_fiv()
     ensure_fsig()
     var n: i64 = len(msg)
@@ -325,6 +335,16 @@ pub func tsha1f(msg: string) -> string {
         i = i + 1
     }
     return out
+}
+
+// tsha1f-256：默认输出 46 字符 base48（无歧义，见 std/base48.tie）。
+pub func tsha1f(msg: string) -> string {
+    return b48.encode(digest_f(msg))
+}
+
+// tsha1f-256：64 位十六进制（旧 hex 行为，回归兼容保留）。
+pub func tsha1f_hex(msg: string) -> string {
+    return digest_f(msg)
 }
 
 // ---- tsha1r-128（嵌入式，轻量 SPN Ascon 型）----
@@ -404,8 +424,9 @@ func r_perm(s: ref table<i64>, r: i64, Mpn: i64, npn: i64) {
     s[3] = s[3] ^ (npn & 0xFFFFFFFF)                // trit 符号位平面
 }
 
-// tsha1r-128 主入口：128 位速率吸收 + 长度绑定 + 终筛轮，状态压缩到 128 位输出。
-pub func tsha1r(msg: string) -> string {
+// tsha1r-128 内部哈希：128 位速率吸收 + 长度绑定 + 终筛轮，状态压缩到 128 位
+// 输出 32 hex（算法主体与旧 tsha1r 完全一致，仅拆输出层编码到 _hex/b48 封装）。
+func digest_r(msg: string) -> string {
     ensure_riv()
     ensure_rsbox()
     ensure_rrcon()
@@ -452,6 +473,16 @@ pub func tsha1r(msg: string) -> string {
         ow = ow + 1
     }
     return out
+}
+
+// tsha1r-128：默认输出 23 字符 base48（无歧义，见 std/base48.tie）。
+pub func tsha1r(msg: string) -> string {
+    return b48.encode(digest_r(msg))
+}
+
+// tsha1r-128：32 位十六进制（旧 hex 行为，回归兼容保留）。
+pub func tsha1r_hex(msg: string) -> string {
+    return digest_r(msg)
 }
 }   // namespace tsha
 

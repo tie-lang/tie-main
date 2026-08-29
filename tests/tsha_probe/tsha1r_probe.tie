@@ -1,11 +1,12 @@
 type tie<logic>
-// tsha1r-128 探针：嵌入式（轻量 SPN Ascon 型 + trit 混合扰动 + 状态压缩）正例
-// 多向量 + 长消息/块边界（空串/abc/1000x'a'/15/16/17/31/32/33/128/256 字节，
-// 触及 16 字节块边界与末块零填充分支）。短消息（<16 字节）走末块终筛扰动路径，
-// 已核对末块 trit 位平面亦有激活。期望输出全部 PASS。
-// 向量来源：tests/tsha_probe/gen_vectors.py（私有种子扩展参考生成器，已核对）。
+// tsha1r-128 探针：默认输出 base48（23 字符，无歧义）+ `_hex` 保留 32 位十六进制 +
+//   b48↔hex 往返一致性（decode(tsha1r(msg)) == tsha1r_hex(msg) 字节一致）。
+// 正向向量：空串/abc/1000x'a'/15/16/17/31/32/33/128/256 字节（同 gen_vectors.py）。
+// 说明：tsha1r 内部哈希字节不变（r=128 位=16 字节），仅输出层编码在 base48 与 hex 间切换。
 import "../../std/tsha1.tie"
 using tsha;
+import "../../std/base48.tie"
+using b48;
 
 func check(name: string, got: string, want: string) {
     if got == want {
@@ -27,28 +28,48 @@ func rep(c: string, n: i64) -> string {
     return out
 }
 
+// 断言：tsha1r(msg)==b48（默认 48 进制）、tsha1r_hex(msg)==hex（_hex 可选），
+// 且 b48.decode(b48)==hex（encode 前向一致）、b48.decode(tsha1r(msg))==hex（往返一致）。
+func assert_vec(name: string, msg: string, hex: string, b48str: string) {
+    check(name + " b48", tsha.tsha1r(msg), b48str)
+    check(name + " hex", tsha.tsha1r_hex(msg), hex)
+    check(name + " dec", b48.decode(b48str), hex)
+    check(name + " rt ", b48.decode(tsha.tsha1r(msg)), hex)
+}
+
 func main() {
-    check("r empty", tsha.tsha1r(""),
-        "1d41e39ece695096448cf4947429d6cd")
-    check("r abc", tsha.tsha1r("abc"),
-        "2539601d2671289458b7c0683324edd6")
-    check("r a1000", tsha.tsha1r(rep("a", 1000)),
-        "6eeceed1b7e425e0e6ec3d599f0810f6")
-    check("r b15", tsha.tsha1r(rep("a", 15)),
-        "ac28659b3067b525055a93beb915dc62")
-    check("r b16", tsha.tsha1r(rep("a", 16)),
-        "87f1abe9412295eea98878dd89297675")
-    check("r b17", tsha.tsha1r(rep("a", 17)),
-        "061791308d040a6fef8edaa0cf983c10")
-    check("r b31", tsha.tsha1r(rep("a", 31)),
-        "93ee91d9f3a9283e4a1c5b8b6bc348b3")
-    check("r b32", tsha.tsha1r(rep("a", 32)),
-        "5c1418590bc6df5890a7e05e931f5df8")
-    check("r b33", tsha.tsha1r(rep("a", 33)),
-        "087ef9354719d55e26070683a80bbf8f")
-    check("r b128", tsha.tsha1r(rep("a", 128)),
-        "b44f6a2f99afc3ce2a3883bf5c35fae5")
-    check("r b256", tsha.tsha1r(rep("a", 256)),
-        "00aa837c85abd811d0cc93fe3e7dbbc2")
+    assert_vec("r empty", "",
+        "1d41e39ece695096448cf4947429d6cd",
+        "62Bwgpx9Hzgen6z8866QNGx")
+    assert_vec("r abc", "abc",
+        "2539601d2671289458b7c0683324edd6",
+        "76c8fd3RAgtaH2RQKe4rhnQ")
+    assert_vec("r a1000", rep("a", 1000),
+        "6eeceed1b7e425e0e6ec3d599f0810f6",
+        "HAkvMg6pJNzzGj34tu2Rmhq")
+    assert_vec("r b15", rep("a", 15),
+        "ac28659b3067b525055a93beb915dc62",
+        "RczjdK2nccG3N3epKGnCe44")
+    assert_vec("r b16", rep("a", 16),
+        "87f1abe9412295eea98878dd89297675",
+        "Lf69qv7fLyLp3xhEz9aqq4P")
+    assert_vec("r b17", rep("a", 17),
+        "061791308d040a6fef8edaa0cf983c10",
+        "2s34NzsN83idJ7yyKyprsPi")
+    assert_vec("r b31", rep("a", 31),
+        "93ee91d9f3a9283e4a1c5b8b6bc348b3",
+        "NDsLPFCp3KciNaqBggMM8GM")
+    assert_vec("r b32", rep("a", 32),
+        "5c1418590bc6df5890a7e05e931f5df8",
+        "Eevmj5pfyugHCuPHb3BFECa")
+    assert_vec("r b33", rep("a", 33),
+        "087ef9354719d55e26070683a80bbf8f",
+        "39r6mgyrdsc8y7x2aqz9cfh")
+    assert_vec("r b128", rep("a", 128),
+        "b44f6a2f99afc3ce2a3883bf5c35fae5",
+        "aicPuFG3mrh3KAPeA7c96np")
+    assert_vec("r b256", rep("a", 256),
+        "00aa837c85abd811d0cc93fe3e7dbbc2",
+        "26L3m4gawwtwcgryb9C4CBL")
     println("tsha1r 探针全部通过")
 }
