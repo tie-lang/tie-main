@@ -1,0 +1,426 @@
+type tie<class>
+// ============================================================================
+// sha512.tie：标准库——SHA-512（安全哈希，命名空间 sha512）
+// 用途：Ed25519 签名的哈希底座（RFC 8032 规定 Ed25519 用 SHA-512 而非 BLAKE2/
+//   SHA-3——三者虽同为 512 位摘要但算法不同，本模块提供 FIPS 180-4 的标准 SHA-512）。
+// 接口：
+//   sha512.sha512(msg: string) -> string        逐**字节**哈希字符串（UTF-8 原始
+//     字节语义，与 sha256/blake2 一致；对纯 ASCII 消息，码点==字节）。返回 128 位
+//     十六进制小写摘要。
+//   sha512.sha512_bytes(pt: table<i64>) -> string  对**字节表**（每元素 0..255）
+//     直接哈希——tie 字符串按 UTF-8 存储无法承载任意 ≥0x80 原始字节，密码流程
+//     （如 Ed25519 的 R‖A‖msg 拼接哈希）需对十六进制解码后的原始字节表求哈希，
+//     sha512_bytes 供此类内部字节导向路径使用。
+//
+// 算法（FIPS 180-4 §6.4）：
+//   - 8 个 64 位状态字 H[0..7] + 80 项 K 轮常量（前 80 个素数立方根小数）。
+//   - 消息填充：0x80 + 零填充到 ≡112 (mod 128) + **128 位**大端比特长度
+//     （SHA-512 与 SHA-256 不同：长度字段 16 字节、块 128 字节、80 轮、状态 8 字）。
+//   - 消息调度 w[0..79]：前 16 字为大端 64 位消息字；扩展 σ0=rotr1⊕rotr8⊕shr7、
+//     σ1=rotr19⊕rotr61⊕shr6。
+//   - 压缩：Σ0=rotr28⊕rotr34⊕rotr39、Σ1=rotr14⊕rotr18⊕rotr41、Ch、Maj。
+//
+// == 字宽 ==
+//   64 位字：i64 有符号且 `>>` 生 ashr（算术右移），故每个 64 位字用**两个 32 位
+//   半分 (hi,lo)** 表示（各自恒 <2^32 正数，>> 即逻辑右移）；加减/循环右移/异或
+//   经 32 位拆分实现（add64/lsr64/shl64/rotr64，全 mod 2^64）。tie 的 ref 仅支持
+//   表，故两个 32 位半分的运算结果用 2 元素表 [hi,lo] 返回。
+//
+// 标准向量（FIPS 180-4，已核对）：
+//   sha512("")    = cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce
+//                   47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e
+//   sha512("abc") = ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a
+//                   2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f
+// 备注：命名空间内互调为裸调用（Harbor M2.1.6），内部函数不加 sha512_ 前缀。
+// ============================================================================
+
+// 顶层常量（懒构建）：K 轮常量（80×64 位 = 160 个 32 位半分）与初始状态（8×2 半分）。
+var s5_k: table<i64>;    // K[0..79] 每个 64 位字拆 [hi,lo]，共 160 项
+var s5_h0: table<i64>;   // 初始状态 H[0..7]，每字 [hi,lo]，共 16 项
+
+namespace sha512 {
+
+// 惰性构建 SHA-512 轮常量 K[0..79]（FIPS 180-4 表 4，前 80 个素数立方根小数）。
+func ensure_k() {
+    if len(s5_k) > 0 {
+        return
+    }
+    // 80 字 × 16 hex 字符 = 1280 hex 字符
+    var ks = "428a2f98d728ae227137449123ef65cdb5c0fbcfec4d3b2fe9b5dba58189dbbc" +
+             "3956c25bf348b53859f111f1b605d019923f82a4af194f9bab1c5ed5da6d8118" +
+             "d807aa98a303024212835b0145706fbe243185be4ee4b28c550c7dc3d5ffb4e2" +
+             "72be5d74f27b896f80deb1fe3b1696b19bdc06a725c71235c19bf174cf692694" +
+             "e49b69c19ef14ad2efbe4786384f25e30fc19dc68b8cd5b5240ca1cc77ac9c65" +
+             "2de92c6f592b02754a7484aa6ea6e4835cb0a9dcbd41fbd476f988da831153b5" +
+             "983e5152ee66dfaba831c66d2db43210b00327c898fb213fbf597fc7beef0ee4" +
+             "c6e00bf33da88fc2d5a79147930aa72506ca6351e003826f142929670a0e6e70" +
+             "27b70a8546d22ffc2e1b21385c26c9264d2c6dfc5ac42aed53380d139d95b3df" +
+             "650a73548baf63de766a0abb3c77b2a881c2c92e47edaee692722c851482353b" +
+             "a2bfe8a14cf10364a81a664bbc423001c24b8b70d0f89791c76c51a30654be30" +
+             "d192e819d6ef5218d69906245565a910f40e35855771202a106aa07032bbd1b8" +
+             "19a4c116b8d2d0c81e376c085141ab532748774cdf8eeb9934b0bcb5e19b48a8" +
+             "391c0cb3c5c95a634ed8aa4ae3418acb5b9cca4f7763e373682e6ff3d6b2b8a3" +
+             "748f82ee5defb2fc78a5636f43172f6084c87814a1f0ab728cc702081a6439ec" +
+             "90befffa23631e28a4506cebde82bde9bef9a3f7b2c67915c67178f2e372532b" +
+             "ca273eceea26619cd186b8c721c0c207eada7dd6cde0eb1ef57d4f7fee6ed178" +
+             "06f067aa72176fba0a637dc5a2c898a6113f9804bef90dae1b710b35131c471b" +
+             "28db77f523047d8432caab7b40c724933c9ebe0a15c9bebc431d67c49c100d4c" +
+             "4cc5d4becb3e42b6597f299cfc657e2a5fcb6fab3ad6faec6c44198c4a475817"
+    var i: i64 = 0
+    while i < 80 {
+        // 每 16 个 hex 字符一个 64 位字，拆高/低各 8 字符 → 两个 32 位半分
+        var hi: i64 = parse_hex32(substr(ks, i * 16, i * 16 + 8))
+        var lo: i64 = parse_hex32(substr(ks, i * 16 + 8, i * 16 + 16))
+        table_push(s5_k, hi)
+        table_push(s5_k, lo)
+        i = i + 1
+    }
+}
+
+// 惰性构建初始状态 H[0..7]（SHA-512 专用 IV，与 SHA-256/blake2b 不同）。
+func ensure_h0() {
+    if len(s5_h0) > 0 {
+        return
+    }
+    var hs = "6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1" +
+             "510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179"
+    var i: i64 = 0
+    while i < 8 {
+        var hi: i64 = parse_hex32(substr(hs, i * 16, i * 16 + 8))
+        var lo: i64 = parse_hex32(substr(hs, i * 16 + 8, i * 16 + 16))
+        table_push(s5_h0, hi)
+        table_push(s5_h0, lo)
+        i = i + 1
+    }
+}
+
+// 截取字符串 [a, b)（码点区间）——内联实现（不依赖 string.tie）。
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 单字符十六进制数字（0..15）；非十六进制返回 0（仅用于解析内部常量）。
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 解析 8 个 hex 字符为 32 位 i64（恒 <2^32 正数）。
+func parse_hex32(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        v = ((v << 4) | hex_nibble(str_char(s, i))) & 0xFFFFFFFF
+        i = i + 1
+    }
+    return v
+}
+
+// 生成双元素表 [hi, lo]（64 位字返回值载体，因 tie 的 ref 仅限表参数）。
+func w64(hi: i64, lo: i64) -> table<i64> {
+    var o = table_new_i64()
+    table_push(o, hi & 0xFFFFFFFF)
+    table_push(o, lo & 0xFFFFFFFF)
+    return o
+}
+
+// 64 位加法（mod 2^64）→ [hi,lo]：lo 相加 + 进位到 hi；进位超 64 位丢弃。
+func add64(ah: i64, al: i64, bh: i64, bl: i64) -> table<i64> {
+    var lsum = (al + bl) & 0xFFFFFFFF
+    var carry = ((al + bl) >> 32) & 0xFFFFFFFF
+    return w64((ah + bh + carry), lsum)
+}
+
+// 三操作数 64 位加法（mod 2^64）→ [hi,lo]（用于 T1 = h+Σ1+ch+K+w 的串联）。
+func add64_3(ah: i64, al: i64, bh: i64, bl: i64, ch: i64, cl: i64) -> table<i64> {
+    var t = add64(ah, al, bh, bl)
+    return add64(t[0], t[1], ch, cl)
+}
+
+// 64 位逻辑右移 r 位（r 0..63）→ [hi,lo]。
+func lsr64(ah: i64, al: i64, r: i64) -> table<i64> {
+    if r == 0 {
+        return w64(ah, al)
+    }
+    if r < 32 {
+        return w64((ah >> r), ((al >> r) | (ah << (32 - r))))
+    }
+    if r == 32 {
+        return w64(0, ah)
+    }
+    return w64(0, (ah >> (r - 32)))
+}
+
+// 64 位逻辑左移 r 位（r 0..63）→ [hi,lo]。
+func shl64(ah: i64, al: i64, r: i64) -> table<i64> {
+    if r == 0 {
+        return w64(ah, al)
+    }
+    if r < 32 {
+        return w64(((ah << r) | (al >> (32 - r))), (al << r))
+    }
+    if r == 32 {
+        return w64(al, 0)
+    }
+    return w64((al << (r - 32)), 0)
+}
+
+// 64 位循环右移 r 位（r 1..63）→ [hi,lo] = (W>>r) | (W<<(64-r))。
+func rotr64(ah: i64, al: i64, r: i64) -> table<i64> {
+    var a = lsr64(ah, al, r)
+    var b = shl64(ah, al, 64 - r)
+    return w64((a[0] | b[0]), (a[1] | b[1]))
+}
+
+// 返回填充后消息在字节位置 pos 处的字节值：
+//   pos < n            → 原文 pt[pos]
+//   pos == n           → 0x80（填充开始标志）
+//   pos >= pad_len-16  → 128 位大端比特长度的 16 个字节（高 8 字节恒 0 +
+//     低 8 字节 = len_hi/len_lo 的 64 位大端展开）
+//   否则               → 0
+func pad_byte(pt: table<i64>, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, pos: i64) -> i64 {
+    if pos < n {
+        return pt[pos]
+    }
+    if pos == n {
+        return 0x80
+    }
+    if pos >= pad_len - 16 {
+        var idx = pos - (pad_len - 16)   // 0..15
+        if idx < 8 {
+            return 0                      // 128 位长度的最高 64 位（本库消息 < 2^61 字节 → 恒 0）
+        }
+        idx = idx - 8                     // 低 8 字节：64 位大端比特长度
+        var val: i64 = len_hi
+        if idx >= 4 {
+            val = len_lo
+            idx = idx - 4
+        }
+        return (val >> (24 - idx * 8)) & 0xFF
+    }
+    return 0
+}
+
+// 读取本块第 w 个 64 位大端字 → [hi,lo]：字节块*128+8w..+8w+7（大端，最高字节进 hi）。
+func block_word(pt: table<i64>, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, block: i64, w: i64) -> table<i64> {
+    var hi: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var pos = block * 128 + w * 8 + j
+        hi = ((hi << 8) | pad_byte(pt, n, pad_len, len_hi, len_lo, pos)) & 0xFFFFFFFF
+        j = j + 1
+    }
+    var lo: i64 = 0
+    j = 0
+    while j < 4 {
+        var pos2 = block * 128 + w * 8 + 4 + j
+        lo = ((lo << 8) | pad_byte(pt, n, pad_len, len_hi, len_lo, pos2)) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return w64(hi, lo)
+}
+
+// 对单个 128 字节消息块做一次 SHA-512 压缩，就地更新状态 st（16 项 [hi,lo] 交错）。
+// 状态 st 复用为工作变量初始值，块间轮换由调用方维护。
+func compress_block(st: ref table<i64>, wv: ref table<i64>, pt: table<i64>, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, block: i64) {
+    // 1) 消息调度：w[0..15] 大端 64 位字，扩展 w[16..79]
+    var i: i64 = 0
+    while i < 80 {
+        if i < 16 {
+            var word = block_word(pt, n, pad_len, len_hi, len_lo, block, i)
+            wv[2 * i] = word[0]
+            wv[2 * i + 1] = word[1]
+        } else {
+            var s0h: i64 = 0
+            var s0l: i64 = 0
+            var a1 = rotr64(wv[2 * (i - 15)], wv[2 * (i - 15) + 1], 1)
+            var a2 = rotr64(wv[2 * (i - 15)], wv[2 * (i - 15) + 1], 8)
+            var a3 = lsr64(wv[2 * (i - 15)], wv[2 * (i - 15) + 1], 7)
+            s0h = a1[0] ^ a2[0] ^ a3[0]
+            s0l = a1[1] ^ a2[1] ^ a3[1]
+            var s1h: i64 = 0
+            var s1l: i64 = 0
+            var b1 = rotr64(wv[2 * (i - 2)], wv[2 * (i - 2) + 1], 19)
+            var b2 = rotr64(wv[2 * (i - 2)], wv[2 * (i - 2) + 1], 61)
+            var b3 = lsr64(wv[2 * (i - 2)], wv[2 * (i - 2) + 1], 6)
+            s1h = b1[0] ^ b2[0] ^ b3[0]
+            s1l = b1[1] ^ b2[1] ^ b3[1]
+            // w[i] = w[i-16] + s0 + w[i-7] + s1   (mod 2^64)
+            var tw = add64(wv[2 * (i - 16)], wv[2 * (i - 16) + 1], s0h, s0l)
+            tw = add64(tw[0], tw[1], wv[2 * (i - 7)], wv[2 * (i - 7) + 1])
+            tw = add64(tw[0], tw[1], s1h, s1l)
+            wv[2 * i] = tw[0]
+            wv[2 * i + 1] = tw[1]
+        }
+        i = i + 1
+    }
+
+    // 2) 工作变量 a..h（st 内，16 项：[a.hi,a.lo, b.hi,b.lo, ..., h.hi,h.lo]）
+    var a_h = st[0]; var a_l = st[1]
+    var b_h = st[2]; var b_l = st[3]
+    var c_h = st[4]; var c_l = st[5]
+    var d_h = st[6]; var d_l = st[7]
+    var e_h = st[8]; var e_l = st[9]
+    var f_h = st[10]; var f_l = st[11]
+    var g_h = st[12]; var g_l = st[13]
+    var h_h = st[14]; var h_l = st[15]
+    var m32: i64 = 0xFFFFFFFF
+
+    // 3) 80 轮压缩
+    var t: i64 = 0
+    while t < 80 {
+        // Σ1(e) = rotr14 ^ rotr18 ^ rotr41
+        var r1 = rotr64(e_h, e_l, 14)
+        var r2 = rotr64(e_h, e_l, 18)
+        var r3 = rotr64(e_h, e_l, 41)
+        var sum1_h: i64 = r1[0] ^ r2[0] ^ r3[0]
+        var sum1_l: i64 = r1[1] ^ r2[1] ^ r3[1]
+        // Ch(e,f,g) = (e&f) ^ (~e&g)
+        var ch_h: i64 = (e_h & f_h) ^ ((e_h ^ m32) & g_h)
+        var ch_l: i64 = (e_l & f_l) ^ ((e_l ^ m32) & g_l)
+        // T1 = h + Σ1 + Ch + K[t] + w[t]
+        var t1 = add64_3(h_h, h_l, sum1_h, sum1_l, ch_h, ch_l)
+        t1 = add64(t1[0], t1[1], s5_k[2 * t], s5_k[2 * t + 1])
+        t1 = add64(t1[0], t1[1], wv[2 * t], wv[2 * t + 1])
+        // Σ0(a) = rotr28 ^ rotr34 ^ rotr39
+        var p1 = rotr64(a_h, a_l, 28)
+        var p2 = rotr64(a_h, a_l, 34)
+        var p3 = rotr64(a_h, a_l, 39)
+        var sum0_h: i64 = p1[0] ^ p2[0] ^ p3[0]
+        var sum0_l: i64 = p1[1] ^ p2[1] ^ p3[1]
+        // Maj(a,b,c) = (a&b) ^ (a&c) ^ (b&c)
+        var maj_h: i64 = (a_h & b_h) ^ (a_h & c_h) ^ (b_h & c_h)
+        var maj_l: i64 = (a_l & b_l) ^ (a_l & c_l) ^ (b_l & c_l)
+        // T2 = Σ0 + Maj
+        var t2h = sum0_h + maj_h
+        var t2l = sum0_l + maj_l
+        var t2h_c = (t2l >> 32) & m32
+        t2l = t2l & m32
+        t2h = (t2h + t2h_c) & m32
+        // 轮换：h=g g=f f=e e=d+T1 d=c c=b b=a a=T1+T2
+        h_h = g_h; h_l = g_l
+        g_h = f_h; g_l = f_l
+        f_h = e_h; f_l = e_l
+        var enew = add64(d_h, d_l, t1[0], t1[1])
+        e_h = enew[0]; e_l = enew[1]
+        d_h = c_h; d_l = c_l
+        c_h = b_h; c_l = b_l
+        b_h = a_h; b_l = a_l
+        // a = T1 + T2
+        var anew = add64(t1[0], t1[1], t2h, t2l)
+        a_h = anew[0]; a_l = anew[1]
+        t = t + 1
+    }
+
+    // 4) 累加到状态 st（mod 2^64）
+    var na0 = add64(st[0], st[1], a_h, a_l)
+    st[0] = na0[0]
+    st[1] = na0[1]
+    var nb0 = add64(st[2], st[3], b_h, b_l)
+    st[2] = nb0[0]
+    st[3] = nb0[1]
+    var nc0 = add64(st[4], st[5], c_h, c_l)
+    st[4] = nc0[0]
+    st[5] = nc0[1]
+    var nd0 = add64(st[6], st[7], d_h, d_l)
+    st[6] = nd0[0]
+    st[7] = nd0[1]
+    var ne0 = add64(st[8], st[9], e_h, e_l)
+    st[8] = ne0[0]
+    st[9] = ne0[1]
+    var nf0 = add64(st[10], st[11], f_h, f_l)
+    st[10] = nf0[0]
+    st[11] = nf0[1]
+    var ng0 = add64(st[12], st[13], g_h, g_l)
+    st[12] = ng0[0]
+    st[13] = ng0[1]
+    var nh0 = add64(st[14], st[15], h_h, h_l)
+    st[14] = nh0[0]
+    st[15] = nh0[1]
+}
+
+// SHA-512 主入口（字节表版，密码流程内部使用）：计算字节表 pt 的摘要，128 位 hex。
+func sha512_core(pt: table<i64>) -> string {
+    ensure_k()
+    ensure_h0()
+    var n: i64 = len(pt)
+    // 填充：n + 1(0x80) + 零填充使 ≡112 (mod 128) + 16 字节长度
+    var rem = (n + 1) % 128
+    var left = ((112 - rem) % 128 + 128) % 128
+    var pad_len: i64 = n + 1 + left + 16
+    var num_blocks: i64 = pad_len / 128
+    var bits: i64 = n * 8
+    var len_hi: i64 = (bits >> 32) & 0xFFFFFFFF
+    var len_lo: i64 = bits & 0xFFFFFFFF
+
+    var st = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(st, s5_h0[2 * i])
+        table_push(st, s5_h0[2 * i + 1])
+        i = i + 1
+    }
+    var wv = table_new_i64()
+    i = 0
+    while i < 160 {
+        table_push(wv, 0)
+        i = i + 1
+    }
+    var blk: i64 = 0
+    while blk < num_blocks {
+        compress_block(st, wv, pt, n, pad_len, len_hi, len_lo, blk)
+        blk = blk + 1
+    }
+    var out: string = ""
+    i = 0
+    while i < 8 {
+        out = out + hex8(st[2 * i]) + hex8(st[2 * i + 1])
+        i = i + 1
+    }
+    return out
+}
+
+// 32 位值 → 8 位小写十六进制（大端 nibble 序）。
+func hex8(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var p: i64 = 0
+    while p < 8 {
+        var nib = (v >> (28 - p * 4)) & 0xF
+        out = out + str_char(hex, nib)
+        p = p + 1
+    }
+    return out
+}
+
+// 公有：对任意 UTF-8 字符串的原始字节求 SHA-512（纯字节语义，与 blake2/sha256 一致）。
+pub func sha512(s: string) -> string {
+    var pt = table_new_i64()
+    var i: i64 = 0
+    var nb: i64 = len(s)
+    while i < nb {
+        table_push(pt, str_byte(s, i))
+        i = i + 1
+    }
+    return sha512_core(pt)
+}
+
+// 公有：对字节表（0..255）求 SHA-512 —— 供密码流程对无法用字符串承载的原始字节哈希。
+pub func sha512_bytes(pt: table<i64>) -> string {
+    return sha512_core(pt)
+}
+
+}   // namespace sha512
