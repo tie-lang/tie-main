@@ -1,0 +1,77 @@
+type tie<logic>
+// tsha1x-256 探针：默认输出 base48（46 字符）+ `_hex` 保留 64 位十六进制 +
+//   b48↔hex 往返一致性（decode(tsha1x(msg)) == tsha1x_hex(msg) 字节一致）。
+// 正向向量：空串/abc/1000x'a'/55/56/63/64/65/127/128/129/256 字节（同 gen_tsha1bx.py）。
+// 说明：tsha1x 内部哈希字节不变（x=256 位），仅输出层编码在 base48 与 hex 间切换。
+// 向量与 f/b 档完全独立（确定性自检，f+b 排列组合表见 gen_tsha1bx.py PATT）。
+import "../../std/tsha1.tie"
+using tsha;
+import "../../std/base48.tie"
+using b48;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func assert_vec(name: string, msg: string, hex: string, b48str: string) {
+    check(name + " b48", tsha.tsha1x(msg), b48str)
+    check(name + " hex", tsha.tsha1x_hex(msg), hex)
+    check(name + " dec", b48.decode(b48str), hex)
+    check(name + " rt ", b48.decode(tsha.tsha1x(msg)), hex)
+}
+
+func main() {
+    assert_vec("x empty", "",
+        "77f38778ddf1f5e49b561378c8416cdc8c13b9455126809536628e5088080262",
+        "bLacFKiCbE7uFJrcmp5x57Egv0h553zGoqxGiKizFJg0cy")
+    assert_vec("x abc", "abc",
+        "a9f41187288e85c10d2f7d6f2d62e3d094d5c7b2c618f97b6ecdfb250d0aa66b",
+        "gKLxB3BHo542j506pbiA4wl5BHhBdjh1rjm89dbAxc8wyb")
+    assert_vec("x a1000", rep("a", 1000),
+        "d095cb5f3802a8c13b5546936eed2136d94e13ee19a7d375d2ce12c5708ba98a",
+        "kEbI71aKFhF2g9ajlLKLGjGgAzjybHE5qvdL8Atd86mfdq")
+    assert_vec("x b55", rep("a", 55),
+        "e832b8ae58c25ac9b086d39bb23badc3059480a4f04cbfe66f744458d5a00c13",
+        "n9n6oCtokktntBDvsigLww8HJaxvFgDKyHi5wC6m11ij5z")
+    assert_vec("x b56", rep("a", 56),
+        "dbd637f2d083a9bd5c4acc10e4fe7fb4f7cc64019e649d02451ead75a5aadcc8",
+        "lK9D5s8gHiAvAoasJcIasrA47zlz9hGJg3L9qeCI3Cchk8")
+    assert_vec("x b63", rep("a", 63),
+        "8600cf15a23adddc0b06a5fdce6a6aa4c62adf1ec7d2700ffa90ca495d1cadc5",
+        "disyeqwcn8iwkDh8GtxqC1lxGBc39Fxe81JegB9j19bvA5")
+    assert_vec("x b64", rep("a", 64),
+        "4dcfd8d980550988eb274ae30ab2392e9b63620ebd5974a9ca20c548a815145c",
+        "7B6w03f3xvvn9dhHxgBpeg8nz5psyee9kH8of3lxl0lKxI")
+    assert_vec("x b65", rep("a", 65),
+        "4da4a40c9f5d8239c09abd0eb1c35106f73b24ecad0e6358899d2fcc9404466e",
+        "7AfDdoJLpphF7nG4zfqjLC0HLa1KF9cvyd0ppflFEb5nDu")
+    assert_vec("x b127", rep("a", 127),
+        "c38276e487bd16f1faf48d79d2622be7d56237270989b0e2d3ae2bea76a7fb48",
+        "jpqa947Hx3tbGLFzxsa3bh3d1syv99mg95I2sum4wDLLmE")
+    assert_vec("x b128", rep("a", 128),
+        "d5b5f479db774199aafe9a1cf2aba18a57d8daffdead3bb97f3eb8aa2dbb7c07",
+        "lgDz5j3ad712y5GDzmgumr9cia145kj6d5td99oJ906Cw7")
+    assert_vec("x b129", rep("a", 129),
+        "c51b6c9377a0439490c3359f0af5c8ef73334eff95569c104854d06d5c56c790",
+        "jx9IepBBEGtItA7h4HqsLfqipmltuKh6dgyJI2ICf7Lddw")
+    assert_vec("x b256", rep("a", 256),
+        "260c7c116411555194a0563d6b5d1c32fbd44d04be7d322fb0bc710471577138",
+        "3Cm1fLlb1HLguesm17Cre8rtdwwoasm0qaGKtijafb7hHE")
+    println("tsha1x 探针全部通过")
+}

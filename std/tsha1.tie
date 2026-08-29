@@ -3,13 +3,15 @@ type tie<class>
 // tsha1.tie：标准库——TSHA1 哈希族（tie 自有安全哈希，命名空间 tsha）
 // 用途：tie 平台自有通用安全哈希底座（插件审计链 / 完整性校验 / 指纹）。
 // 来源：docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6
-// 接口（本期实现 f/r/b 三档，x 留待后续）：
+// 接口（本期实现 f/r/b/x 四档）：
 //   tsha.tsha1f(msg: string) -> string    tsha1f-256（快速，B 骨架）→ 默认 46 字符 base48
 //   tsha.tsha1f_hex(msg) -> string        tsha1f-256 → 64 位十六进制（可选，旧 hex 保留）
 //   tsha.tsha1r(msg: string) -> string    tsha1r-128（嵌入式，轻量 SPN）→ 默认 23 字符 base48
 //   tsha.tsha1r_hex(msg) -> string        tsha1r-128 → 32 位十六进制（可选，旧 hex 保留）
 //   tsha.tsha1b(msg: string) -> string    tsha1b-256（复杂，A 骨架双轨+SPN）→ 46 字符 base48
 //   tsha.tsha1b_hex(msg) -> string        tsha1b-256 → 64 位十六进制（可选，旧 hex 保留）
+//   tsha.tsha1x(msg: string) -> string    tsha1x-256（加强，f+b 排列组合）→ 46 字符 base48
+//   tsha.tsha1x_hex(msg) -> string        tsha1x-256 → 64 位十六进制（可选，旧 hex 保留）
 // 默认输出为 base48 连续字符集编码（std/base48.tie，命名空间 b48）：短、可手抄，
 //   适合指纹/审计链 ID 人类可抄读。_hex 后缀保留原有 hex 行为（回归兼容）。
 //   内部哈希字节不变（f=256 位=32 字节→46 字符 base48；r=128 位=16 字节→23 字符），
@@ -735,6 +737,62 @@ pub func tsha1b(msg: string) -> string {
 // tsha1b-256：64 位十六进制（_hex 可选，旧 hex 行为保持对称）。
 pub func tsha1b_hex(msg: string) -> string {
     return digest_b(msg)
+}
+
+// ---- tsha1x-256（加强档，f+b 排列组合再算）----
+// 设计（docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6）：
+//   对 f 与 b 的输出做多次排列组合再计算：首状态 = digest_f(msg) ‖ digest_b(msg)
+//   （128 hex），随后 NX=6 轮固定排列混合（排列表见下），每轮对上一 hex 状态再分别做
+//   digest_f 与 digest_b，并按排列表 pick 其 16-hex 四分重新拼接回 64-hex 状态，最终
+//   取 256 位（64 hex）。设计自由度在"排列组合次数/序"，全部固定、可复现。
+//   排列组合表 PATT（行=轮，列=拼接位置，u 取 digest_f 的四分、w 取 digest_b 的四分，
+//   四分索引 0..3 = hex[16k..16k+16)）：
+//     u0 w0 u1 w1 | w2 u2 w3 u3 | u3 u0 w2 w1 | w0 u1 w3 u2 | u2 w1 u0 w3 | w0 u3 w2 u1
+//   复现：tests/tsha_probe/gen_tsha1bx.py。输出 256 位（32 字节 → b48 46 字符）。
+//   向量（与 f/b 档独立，确定性自检）：tests/tsha_probe/tsha1x_probe.tie。
+
+// tsha1x-256 内部哈希：f+b 排列组合（NX=6 轮，固定排列表）。
+func digest_x(msg: string) -> string {
+    // 固定排列组合表（24 个 pick，行主序，每行 = "u?"/"w?" 拼接返回 64 hex）
+    var patt = "u0w0u1w1w2u2w3u3u3u0w2w1w0u1w3u2u2w1u0w3w0u3w2u1"
+    var state = digest_f(msg) + digest_b(msg)      // 首状态 128 hex
+    var i: i64 = 0
+    while i < 6 {
+        var u = digest_f(state)                     // 64 hex
+        var w2 = digest_b(state)                    // 64 hex
+        var out: string = ""
+        var c: i64 = 0
+        while c < 4 {
+            var pos = i * 8 + c * 2
+            var spec = substr(patt, pos, pos + 2)
+            var src = str_char(spec, 0)
+            var q = str_byte(spec, 1) - 48          // 四分索引 '0'..'3'
+            var s = q * 16
+            if src == "u" {
+                out = out + substr(u, s, s + 16)
+            } else {
+                out = out + substr(w2, s, s + 16)
+            }
+            c = c + 1
+        }
+        state = out
+        i = i + 1
+    }
+    return state                                    // 64 hex = 256 位
+}
+
+// tsha1x-256：默认输出 46 字符 base48（无歧义，见 std/base48.tie）。
+// 验证向量（用 gen_tsha1bx.py 生成，与 f/b 档独立）：
+//   tsha1x("")    = 77f38778ddf1f5e49b561378c8416cdc8c13b9455126809536628e5088080262
+//   tsha1x("abc") = a9f41187288e85c10d2f7d6f2d62e3d094d5c7b2c618f97b6ecdfb250d0aa66b
+//   tsha1x(1000xa) = d095cb5f3802a8c13b5546936eed2136d94e13ee19a7d375d2ce12c5708ba98a
+pub func tsha1x(msg: string) -> string {
+    return b48.encode(digest_x(msg))
+}
+
+// tsha1x-256：64 位十六进制（_hex 可选，旧 hex 行为保持对称）。
+pub func tsha1x_hex(msg: string) -> string {
+    return digest_x(msg)
 }
 }   // namespace tsha
 
