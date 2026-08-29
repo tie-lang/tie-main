@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-# tsha1b / tsha1x 参考生成器（纯 Python，与 std/tsha1.tie 对照，仅用于向量生成与复现）。
+# tsha1f / tsha1r 参考生成器（纯 Python，与 std/tsha1.tie 对照，仅用于向量生成与复现）。
 # 设计（docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6，内部摘要按
-#   「三进制 + 双轨并行 + 最后综合」重设计，废弃 BLAKE-ARX/SPN 骨架）：
-#   tsha1b-256：轨道全部用平衡三进制位平面运算（tadd2 平衡加 / tmul2 平衡乘 /
-#     quant3 majority / 旋转混洗）；双轨并行——轨 A(v[0..7]) 与轨 B(v[8..15]) 各 4 个
-#     三进制字独立跑 R=14 轮并行扩散，每轮消息平面交替注入两轨并做轨间耦合/轮常量，
-#     整链压缩完后再跑 S=4 轮一体化收束轮（最后综合）并投影 8 字。
-#   tsha1x-256：加强档 = 对 f 与 b 的输出做多次排列组合再算（固定排列表 PATT，多轮
-#     π_i 混合，每轮对上一状态再做 digest_f/digest_b）。
+#   「三进制 + 双轨并行 + 最后综合」统一重设计，废弃 BLAKE-ARX/SPN 骨架）：
+#   三档全部复用同一套三进制双轨并行压缩器（与 tsha1b 同构，仅轮数/常量/输出字数不同）：
+#     - 轨道全用平衡三进制位平面运算（tadd2 平衡加 / tmul2 平衡乘 / quant3 majority /
+#       rrp 旋转混洗）；双轨并行——轨 A(v[0..7]) 与轨 B(v[8..15]) 各 4 个三进制字独立
+#       扩散，每轮消息平面交替注入两轨并做轨间耦合/轮常量；
+#     - 整链压缩完后再跑 S=4 轮一体化收束轮（最后综合 fin）并投影。
+#   tsha1f-256：快速档，R_F=12 轮（三档中最快），链 8 字 → 输出 64 hex（32 字节）。
+#     常量：SEED_F = "TSHA1-2026-f-256-v1" → IV(8 字) + RCON(16 字)。
+#   tsha1r-128：嵌入式/轻量档，R_R=8 轮（轮数最少），链 8 字 → 输出仅前 4 字
+#     （16 字节 → 32 hex）。常量：SEED_R = "TSHA1-2026-r-128-v1" → IV(8 字) + RCON(16 字)。
 # trit 表示（层内标准）：位平面——每个 u64 存 32 trit，高 32 位为幅值位平面、低 32 位为
 #   符号位平面；运算全走 &/^/|/<<。(M=幅值, N=符号) 两个 32 位字。
 # 常量定制（可复现）：标准种子 + PRNG 扩展（SHA-256(SEED || u64be(k)) 计数器流）。
 import hashlib
-from gen_tsha1fr import fr_consts, SEED_F, tsha1f   # f 档已统一为三进制双轨并行参考
 M32 = 0xFFFFFFFF
 
 def byte_stream(seed):
@@ -31,18 +33,10 @@ def gen_words(stream, nwords):
         out.append(v)
     return out
 
-def gen_perm_16(stream):
-    perm = list(range(16))
-    for i in range(15, 0, -1):
-        j = next(stream) % (i + 1)
-        perm[i], perm[j] = perm[j], perm[i]
-    return perm
-
 def rotr(x, n):
     return ((x >> n) | (x << (32 - n))) & M32
 def rotl(x, n):
     return ((x << n) | (x >> (32 - n))) & M32
-
 def rrp(x, r):
     return rotr(x, r & 31)
 
@@ -69,36 +63,6 @@ def planes(tvs, count):
 def carry32(a, b):
     return (a + b) >> 32
 
-def le_word(blk, k):
-    v = 0
-    for j in range(4):
-        b = blk[k * 4 + j] if k * 4 + j < len(blk) else 0
-        v |= b << (8 * j)
-    return v & M32
-
-def g_f(v, a, b, c, d, x, y):
-    v[a] = (v[a] + v[b] + x) & M32
-    v[d] = rotr(v[d] ^ v[a], 16)
-    v[c] = (v[c] + v[d]) & M32
-    v[b] = rotr(v[b] ^ v[c], 12)
-    v[a] = (v[a] + v[b] + y) & M32
-    v[d] = rotr(v[d] ^ v[a], 8)
-    v[c] = (v[c] + v[d]) & M32
-    v[b] = rotr(v[b] ^ v[c], 7)
-
-# ---- tsha1b 常量（IV 与轮常量；σ/S 盒已随 ARX/SPN 骨架废弃）----
-SEED_B = b"TSHA1-2026-b-256-v1"
-def tsha1b_consts():
-    st = byte_stream(SEED_B)
-    iv = gen_words(st, 8)
-    sig = []
-    for _ in range(10):
-        sig += gen_perm_16(st)
-    sbox = gen_perm_16(st)
-    rcon = [gen_words(st, 1)[0] for _ in range(16)]
-    return iv, sig, sbox, rcon
-
-# 平衡三进制（balanced mod 3）两位 trit 相加，位切片实现，无进位（作扩散混合）。
 def tadd2(Ma, Na, Mb, Nb):
     aP = Ma & ~Na; aN = Ma & Na
     bP = Mb & ~Nb; bN = Mb & Nb
@@ -106,25 +70,20 @@ def tadd2(Ma, Na, Mb, Nb):
     o_neg = ((~Ma & Mb & Nb) | (Ma & Na & ~Mb) | (aP & bP)) & M32
     return (o_pos | o_neg) & M32, o_neg & M32
 
-# 平衡三进制（balanced mod 3）两位 trit 相乘（±1·±1 = ±1，0 吸收为 0），位切片实现。
 def tmul2(Ma, Na, Mb, Nb):
     amp = (Ma & Mb) & M32
     no = ((Na ^ Nb) & amp) & M32
     return amp, no
 
-# majority 量化：三组位平面逐 trit 取签，+1 计数 ≥2 则该位为 1，否则 0（含平局→0）。
 def quant3(m0, n0, m1, n1, m2, n2):
     A = m0 & ~n0
     B = m1 & ~n1
     C = m2 & ~n2
     return ((A & B) | (B & C) | (C & A)) & M32
 
-# ---- tsha1b-256 三进制双轨并行压缩 + 最后综合（SPN/ARX 骨架已废弃）----
-RB = 14
-S = 4
-
-# 单 64 字节块压缩（三进制双轨并行；轨 A = v[0..7]，轨 B = v[8..15]，每两平面 = 一个三进制字 (M,N)）
-def tsha1b_compress(h, blk, t_lo, t_hi, last, iv, rcon):
+# ---- 通用三进制双轨并行压缩器 + 最后综合（与 tsha1b 完全同构，仅轮数 R 可调）----
+# 复用 gen_tsha1bx.py 中的 tsha1b_compress / tsha1b_fin 结构。
+def tri_compress(h, blk, t_lo, t_hi, last, iv, rcon, R):
     tvs = [byte_trit(blk[j])[1] for j in range(64)]
     M, N = planes(tvs, 64)
     M0, M1 = M[0], M[1]; N0, N1 = N[0], N[1]
@@ -134,7 +93,6 @@ def tsha1b_compress(h, blk, t_lo, t_hi, last, iv, rcon):
         dig = bits3 * 3 + (tv + 1)
         skey = (skey * 24 + dig) & M32
     v = [0] * 16
-    # 初始化双轨（链值 h / IV / 计数器 / 末块）
     v[0] = h[0]; v[1] = rotr(h[4], 7)
     v[2] = h[1]; v[3] = rotr(h[5], 7)
     v[4] = h[2]; v[5] = rotr(h[6], 7)
@@ -148,13 +106,11 @@ def tsha1b_compress(h, blk, t_lo, t_hi, last, iv, rcon):
     if last:
         v[3] ^= M32
     v = [x & M32 for x in v]
-    # 三进制双轨并行轮
-    for r in range(RB):
+    for r in range(R):
         rA = (r * 3 + (skey & 7)) & 31
         rB = (r * 7 + ((skey >> 3) & 7)) & 31
         mA = (r * 5 + ((skey >> 6) & 7)) & 31
         mB = (r * 11 + ((skey >> 9) & 7)) & 31
-        # 轨 A 并行扩散（平衡加 + 平衡乘 + majority）
         s0 = tadd2(v[0], v[1], rrp(v[2], rA), rrp(v[3], rA))
         s1 = tadd2(v[2], v[3], rrp(v[4], rA + 5), rrp(v[5], rA + 5))
         s2 = tadd2(v[4], v[5], rrp(v[6], rA + 9), rrp(v[7], rA + 9))
@@ -166,7 +122,6 @@ def tsha1b_compress(h, blk, t_lo, t_hi, last, iv, rcon):
         v[2] = s1[0] ^ p1[0]; v[3] = s1[1] ^ p1[1]
         v[4] = s2[0] ^ p2[0]; v[5] = s2[1] ^ p2[1]
         v[6] = s3[0] ^ mjA; v[7] = s3[1] ^ rrp(mjA, rA + 7)
-        # 轨 B 并行扩散
         u0 = tadd2(v[8], v[9], rrp(v[10], rB), rrp(v[11], rB))
         u1 = tadd2(v[10], v[11], rrp(v[12], rB + 4), rrp(v[13], rB + 4))
         u2 = tadd2(v[12], v[13], rrp(v[14], rB + 8), rrp(v[15], rB + 8))
@@ -178,28 +133,23 @@ def tsha1b_compress(h, blk, t_lo, t_hi, last, iv, rcon):
         v[10] = u1[0] ^ q1[0]; v[11] = u1[1] ^ q1[1]
         v[12] = u2[0] ^ q2[0]; v[13] = u2[1] ^ q2[1]
         v[14] = u3[0] ^ mjB; v[15] = u3[1] ^ rrp(mjB, rB + 6)
-        # 消息平面注入（轨 A ← M0,N0；轨 B ← M1,N1，旋转后平衡加）
         im = tadd2(v[0], v[1], rrp(M0, mA), rrp(N0, mA))
         v[0], v[1] = im
         jm = tadd2(v[8], v[9], rrp(M1, mB), rrp(N1, mB))
         v[8], v[9] = jm
-        # 轨间耦合（隔轨平衡加 / 乘积 / 旋转传播）
         cm = tadd2(v[4], v[5], v[10], v[11])
         v[4], v[5] = cm
         dm = tmul2(v[12], v[13], v[0], v[1])
         v[12], v[13] = dm
         em = tadd2(v[14], v[15], rrp(v[6], r * 3), rrp(v[7], r * 3))
         v[14], v[15] = em
-        # 轮常量双轨错位注入
         v[0] ^= rcon[r & 15]
         v[9] ^= rrp(rcon[(r + 1) & 15], r * 5)
         v = [x & M32 for x in v]
-    # 双轨折回链值 h
     for i in range(8):
         h[i] = (h[i] ^ v[2 * i] ^ rrp(v[2 * i + 1], i * 3)) & M32
 
-# 最后综合（终筛）：链 h 重新载入双轨，S 轮一体化收束后投影 8 字
-def tsha1b_fin(h):
+def tri_fin(h):
     v = [0] * 16
     v[0] = h[0]; v[1] = rotr(h[4], 7)
     v[2] = h[1]; v[3] = rotr(h[5], 7)
@@ -209,7 +159,7 @@ def tsha1b_fin(h):
     v[10] = rotr(h[1], 13); v[11] = rotr(h[5], 13)
     v[12] = rotr(h[2], 13); v[13] = rotr(h[6], 13)
     v[14] = rotr(h[3], 13); v[15] = rotr(h[7], 13)
-    for sf in range(S):
+    for sf in range(4):
         tmp = [0] * 16
         for t in range(8):
             t1 = (t + 1) & 7; t2 = (t + 2) & 7; t3 = (t + 3) & 7; t4 = (t + 4) & 7
@@ -223,70 +173,61 @@ def tsha1b_fin(h):
     for i in range(8):
         h[i] = (h[i] ^ v[2 * i] ^ rotl(v[2 * i + 1], (i * 7) & 31)) & M32
 
-def tsha1b(msg, iv, rcon):
+# 通用壳：nwords=输出字数（f=8 全出；r=4 只取前 4 字）。
+def dig_hex(msg, iv, rcon, R, sep, nwords):
     h = iv[:]
-    h[0] ^= 0x01010000 ^ 32
+    h[0] ^= 0x01010000 ^ sep
     n = len(msg)
     t_lo = t_hi = 0
     pos = 0
     while pos + 64 < n:
         t_hi = (t_hi + carry32(t_lo, 64)) & M32
         t_lo = (t_lo + 64) & M32
-        tsha1b_compress(h, list(msg[pos:pos + 64]), t_lo, t_hi, False, iv, rcon)
+        tri_compress(h, list(msg[pos:pos + 64]), t_lo, t_hi, False, iv, rcon, R)
         pos += 64
     rem = n - pos
     t_hi = (t_hi + carry32(t_lo, rem)) & M32
     t_lo = (t_lo + rem) & M32
     pad = list(msg[pos:]) + [0] * (64 - rem)
-    tsha1b_compress(h, pad[:64], t_lo, t_hi, True, iv, rcon)
-    tsha1b_fin(h)     # 最后综合（终筛）
-    return ''.join('%08x' % w for w in h)
+    tri_compress(h, pad[:64], t_lo, t_hi, True, iv, rcon, R)
+    tri_fin(h)
+    return ''.join('%08x' % w for w in h[:nwords])
 
-# ---- tsha1x-256（f+b 排列组合再算）----
-# 固定排列表 PATT：每轮从 u=digest_f(state)、w=digest_b(state) 各取 16-hex 四分
-#   （u0..u3 / w0..w3），按排列拼接回 64-hex 状态。顺序固定、可复现。
-NX = 6
-PATT = [
-    ["u0", "w0", "u1", "w1"],
-    ["w2", "u2", "w3", "u3"],
-    ["u3", "u0", "w2", "w1"],
-    ["w0", "u1", "w3", "u2"],
-    ["u2", "w1", "u0", "w3"],
-    ["w0", "u3", "w2", "u1"],
-]
+# ---- 常量（SEED_F / SEED_R → IV(8) + RCON(16)，废弃 σ/S 盒）----
+SEED_F = b"TSHA1-2026-f-256-v1"
+SEED_R = b"TSHA1-2026-r-128-v1"
+def fr_consts(seed):
+    st = byte_stream(seed)
+    iv = gen_words(st, 8)
+    rcon = [gen_words(st, 1)[0] for _ in range(16)]
+    return iv, rcon
 
-def digest_b(msg, ivb, rcon):
-    return tsha1b(msg, ivb, rcon)
+def tsha1f(msg, iv, rcon):
+    return dig_hex(msg, iv, rcon, R=12, sep=32, nwords=8)
 
-def tsha1x_ref(msg, ivf, rconf, ivb, rcon):
-    # 首状态 = f 与 b 各自 64-hex 输出直接拼接（128-hex），再进入 NX 轮排列组合
-    state = tsha1f(msg, ivf, rconf) + digest_b(msg, ivb, rcon)
-    for i in range(NX):
-        # 与 tie 一致：把 hex 状态按 ASCII 字节喂回（str 为字节语义）
-        inp = state.encode('ascii')
-        u = tsha1f(inp, ivf, rconf)
-        w = digest_b(inp, ivb, rcon)
-        out = ""
-        for spec in PATT[i]:
-            s = int(spec[1]) * 16
-            out += (u if spec[0] == "u" else w)[s:s + 16]
-        state = out
-    return state   # 64-hex = 256 位
+def tsha1r(msg, iv, rcon):
+    return dig_hex(msg, iv, rcon, R=8, sep=16, nwords=4)
 
 def reps(c, n):
     return bytes([c]) * n
 
 def main():
     iv_f, rcon_f = fr_consts(SEED_F)
-    ivb, sigb, sbox, rcon = tsha1b_consts()
-    print("IV_B   = " + "".join("%08x" % w for w in ivb))
-    print("RCON_B = " + "".join("%08x" % w for w in rcon))
+    iv_r, rcon_r = fr_consts(SEED_R)
+    print("IV_F   = " + "".join("%08x" % w for w in iv_f))
+    print("RCON_F = " + "".join("%08x" % w for w in rcon_f))
+    print("IV_R   = " + "".join("%08x" % w for w in iv_r))
+    print("RCON_R = " + "".join("%08x" % w for w in rcon_r))
     for name, ln in [("empty", 0), ("abc", 3), ("a1000", 1000), ("b55", 55),
                      ("b56", 56), ("b63", 63), ("b64", 64), ("b65", 65),
                      ("b127", 127), ("b128", 128), ("b129", 129), ("b256", 256)]:
         msg = b"" if ln == 0 else (b"abc" if ln == 3 else reps(ord("a"), ln))
-        print("B  %-5s %s" % (name, tsha1b(msg, ivb, rcon)))
-        print("X  %-5s %s" % (name, tsha1x_ref(msg, iv_f, rcon_f, ivb, rcon)))
+        print("F  %-5s %s" % (name, tsha1f(msg, iv_f, rcon_f)))
+    for name, ln in [("empty", 0), ("abc", 3), ("a1000", 1000), ("b15", 15),
+                     ("b16", 16), ("b17", 17), ("b31", 31), ("b32", 32),
+                     ("b33", 33), ("b128", 128), ("b256", 256)]:
+        msg = b"" if ln == 0 else (b"abc" if ln == 3 else reps(ord("a"), ln))
+        print("R  %-5s %s" % (name, tsha1r(msg, iv_r, rcon_r)))
 
 if __name__ == "__main__":
     main()

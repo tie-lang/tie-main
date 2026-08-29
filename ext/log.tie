@@ -160,12 +160,12 @@ namespace log {
     // 错误子命名空间：按错误键分组，提供多语言 API
     namespace error {
         // 综合方案示例：no_file 错误。
-        // 调用形态 1（方案 B）：log::error.no_file(["zh-cn","en-us"])
-        //   → 省略 texts，从字典查当前语言的 no_file 文本（需先 register 登记）
-        // 调用形态 2（方案 A）：log::error.no_file(["zh-cn","en-us"], ["文件不存在","File not found"])
+        // 调用形态 1（省略 texts，按错误键查字典）：log::error.no_file(["zh-cn","en-us"])
+        //   → 从字典查当前语言的 no_file 文本（需先 register 登记）
+        // 调用形态 2（显式传入多语言文本表）：log::error.no_file(["zh-cn","en-us"], ["文件不存在","File not found"])
         //   → texts 按 langs 顺序给文本，直接返回当前语言对应文本，调用点自包含
         pub func no_file(langs: table<string>, texts: table<string> = []) -> string {
-            // 方案 A：调用方提供了文本表（非空）→ 按当前语言匹配 langs 取文本
+            // 形态 2：调用方提供了文本表（非空）→ 按当前语言匹配 langs 取文本
             if len(texts) > 0 {
                 // langs 与 texts 按位置对应；langs[i] 是地区码（如 "zh-cn"），
                 // 当前语言是基础码（如 "zh"）→ 用前缀匹配（"zh-cn" 以 "zh" 开头）
@@ -179,7 +179,7 @@ namespace log {
                 // 未命中任何语言 → 回退第一个文本
                 return texts[0]
             }
-            // 方案 B：字典集中登记（键 "error.no_file"），回退链兜底
+            // 形态 1：字典集中登记（键 "error.no_file"），回退链兜底
             return lookup("error.no_file")
         }
     }

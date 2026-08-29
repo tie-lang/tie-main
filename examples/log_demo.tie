@@ -14,7 +14,7 @@ func main() {
     assert.assert(log.t("hello") == "Hello")         // 切 en
     assert.assert(log.t("unknown.key") == "unknown.key")  // 回退键本身
 
-    // ---- 综合方案 方案 B：省略 texts → 查字典 ----
+    // ---- 省略 texts → 查字典 ----
     log.register("error.no_file", "zh", "文件不存在")
     log.register("error.no_file", "en", "File not found")
     log.set_lang("zh")

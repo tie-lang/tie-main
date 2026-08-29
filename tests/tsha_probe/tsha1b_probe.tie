@@ -29,49 +29,45 @@ func rep(c: string, n: i64) -> string {
     return out
 }
 
-func assert_vec(name: string, msg: string, hex: string, b48str: string) {
-    check(name + " b48", tsha.tsha1b(msg), b48str)
+func prefix(s: string, k: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < k {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+func assert_vec(name: string, msg: string, hex: string) {
     check(name + " hex", tsha.tsha1b_hex(msg), hex)
-    check(name + " dec", b48.decode(b48str), hex)
-    check(name + " rt ", b48.decode(tsha.tsha1b(msg)), hex)
+    check(name + " b48p", prefix(tsha.tsha1b(msg, 64), 46), b48.encode(hex))
 }
 
 func main() {
     assert_vec("b empty", "",
-        "f4564d606304f76c7de5e2578d6afeb3e7178f54866373a53169e59cbfa7c514",
-        "ojxdbzcfcBrroygG6E1uKCa3fbo71K7somFneGlwjLxuBA")
+        "2f9d8eda98c5eb60aefbda6f53651c3470afe366b056ac882e1c36c80eeee244")
     assert_vec("b abc", "abc",
-        "90769d04e106469ca28f577fd911a8fd17a4f277a76eb39db192543bcd10f8b9",
-        "ekAknHvpxdpJK15nad8I7l5cEi6uBsb29Dy9w2iwCBzpF9")
+        "72ecd6a49318633b3a8ffe8a80920a67f1434ec00fbb4e138fa2cb6bdefaa324")
     assert_vec("b a1000", rep("a", 1000),
-        "0fbb990a8b709e108f032c6e2b47804cd31d9cc3bc78e7b4c9dcc832495c2624",
-        "1rlhgeewIvGoDIlxnv5gGgBnnFzJDj1bswDAir1rsFkDC4")
+        "f29105d9baa59da088f0bba06a3cd88f4d0f4a2073b54ac6223686c44e805cd0")
     assert_vec("b b55", rep("a", 55),
-        "9e8c14f92457570128416c1806971f15a384ead1ab9f6f86a137f6400c5ed7b8",
-        "fEebgrEIr31F81eGmGm8eA2EueDd6DGwhrlkju77lJtpzE")
+        "1e3dbe1449b7375b3b1b6f7d031b70934f968c96113233af84af2a2fa0630311")
     assert_vec("b b56", rep("a", 56),
-        "3cfcfdd36e2a99e0e592f8769821fe735d1814a158368285a0efd8782cf15b8f",
-        "64maefHAjzKwKhmc5D0iFesjubzapCf4E5jv3CKEaFekEf")
+        "c530e575969686d6a03acae740c24bc9855cc80272dfe83787faab6bdd65db56")
     assert_vec("b b63", rep("a", 63),
-        "a0d15d675c04a0ebd123982377e50464d14dcc7bd616f4cde33165b710c39c77",
-        "g38GwzFCi7KycAHj6kEfI0CDasJ00yGqLpJJ5raF7hb1in")
+        "0646011725973df056a442c4cfa1b8de6e3c4b4b27e7aa910f15871e601f4332")
     assert_vec("b b64", rep("a", 64),
-        "d0d403851d237ee6ef19f8487e7481ab8f7450326718ef36a6ee065a4d1cd211",
-        "kFjFldbujIFf4JoerFox9ge7xoxKDc5Ltqj5FAgHehgngh")
+        "3072de987ec8aacdeae13d4e652d316ca1d7ff76707189623e72e38082389d1e")
     assert_vec("b b65", rep("a", 65),
-        "398b96968baf0942938d74aaa2193cdd60dc047cd56129ff7b7e1b4070367d78",
-        "5zJy9pDIwbLgpqmw5G9GfBe7qkfDtfIg1rexzz1cHmszd8")
+        "669b73a20552cb34a366f98a46ca6ca8108adc5ed9051fc7644cd54e861d84a8")
     assert_vec("b b127", rep("a", 127),
-        "7f7931836e681c958e53cde9e0c8b2f0779e6f5a0f7277d8ebf830109f9a9367",
-        "czdxBfsGIkqxDGmIehnHFcukqrn2dboF7xE2Itcfb4FDnn")
+        "d1ac1dcafab588098effafe710746c94fd35b34d71fd2f508cd08548e98f1416")
     assert_vec("b b128", rep("a", 128),
-        "90fa307037bcd151678846ea9e697edff87d3fdc1aec8372e835716f4bd196ed",
-        "enaz5HDw6oLILC6i4he3cKiD4q7npAIFcJCmh117sbdiqd")
+        "2f8c217f2260576adb22f20ddd462e6bf98cc44d2816a6ea878caf2ffe74b67f")
     assert_vec("b b129", rep("a", 129),
-        "7cf3d922734310b96488d4dd7ece9244acc9e066c96b04f753d21b9f35360ae5",
-        "cn9lsLrhEGfKg1wB3Koyal4kB7ff99gjHgBkp3f3mC9ofl")
+        "74ae0b73e7b45017bb55c013d9283d7d35de7f2aaddbeb7de6dc859fc0a4f794")
     assert_vec("b b256", rep("a", 256),
-        "863a550c8742063eb82e5941e2f1f2a86ce46997039ffb865ca97baa17714976",
-        "djwkIm15A2glxDGIbExtxzcqdBpAxCk3q5I075Jg9KuiDC")
+        "73b76b318d141dd686609385550d4abcf9f2c089e3e2cbbba6cd7572e4ddd04d")
     println("tsha1b 探针全部通过")
 }

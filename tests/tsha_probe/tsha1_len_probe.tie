@@ -1,0 +1,120 @@
+type tie<logic>
+// tsha1 位长（48 进制符号个数）输出探针：位长集合
+//   {2,3,4,6,8,12,16,24,32,48,64,88,96} + 非法值拒绝（返回空串）+ 前缀一致性。
+import "../../std/tsha1.tie"
+using tsha;
+
+func check_len(name: string, got: string, want: i64) {
+    var L: i64 = len(got)
+    if L == want {
+        println("PASS " + name + " len=" + radix10(L))
+    } else {
+        println("FAIL " + name + " len=" + radix10(L) + " want=" + radix10(want))
+        exit(1)
+    }
+}
+
+func prefix(s: string, k: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < k {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+func radix10(v: i64) -> string {
+    if v == 0 {
+        return "0"
+    }
+    var digits = "0123456789"
+    var out: string = ""
+    var x = v
+    while x > 0 {
+        out = str_char(digits, x % 10) + out
+        x = x / 10
+    }
+    return out
+}
+
+func main() {
+    // 全位长集合 {2,3,4,6,8,12,16,24,32,48,64,88,96}——快速模型逐值覆盖
+    check_len("f n=2 ", tsha.tsha1f("abc", 2), 2)
+    check_len("f n=3 ", tsha.tsha1f("abc", 3), 3)
+    check_len("f n=4 ", tsha.tsha1f("abc", 4), 4)
+    check_len("f n=6 ", tsha.tsha1f("abc", 6), 6)
+    check_len("f n=8 ", tsha.tsha1f("abc", 8), 8)
+    check_len("f n=12", tsha.tsha1f("abc", 12), 12)
+    check_len("f n=16", tsha.tsha1f("abc", 16), 16)
+    check_len("f n=24", tsha.tsha1f("abc", 24), 24)
+    check_len("f n=32", tsha.tsha1f("abc", 32), 32)
+    check_len("f n=48", tsha.tsha1f("abc", 48), 48)
+    check_len("f n=64", tsha.tsha1f("abc", 64), 64)
+    check_len("f n=88", tsha.tsha1f("abc", 88), 88)
+    check_len("f n=96", tsha.tsha1f("abc", 96), 96)
+    // 其他模型抽样（含新增 2/3/4/6/88）
+    check_len("b n=2 ", tsha.tsha1b("", 2), 2)
+    check_len("b n=6 ", tsha.tsha1b("", 6), 6)
+    check_len("b n=88", tsha.tsha1b("", 88), 88)
+    check_len("b n=96", tsha.tsha1b("", 96), 96)
+    check_len("x n=3 ", tsha.tsha1x("", 3), 3)
+    check_len("x n=24", tsha.tsha1x("", 24), 24)
+    check_len("x n=64", tsha.tsha1x("", 64), 64)
+    check_len("x n=88", tsha.tsha1x("", 88), 88)
+    check_len("r n=4 ", tsha.tsha1r("", 4), 4)
+    check_len("r n=12", tsha.tsha1r("", 12), 12)
+    check_len("r n=32", tsha.tsha1r("", 32), 32)
+    check_len("r n=88", tsha.tsha1r("", 88), 88)
+    check_len("r n=96", tsha.tsha1r("", 96), 96)
+    // 非法位长 → 拒绝，返回空串
+    check_len("f n=0  reject", tsha.tsha1f("abc", 0), 0)
+    check_len("f n=5  reject", tsha.tsha1f("abc", 5), 0)
+    check_len("f n=7  reject", tsha.tsha1f("abc", 7), 0)
+    check_len("f n=46 reject", tsha.tsha1f("abc", 46), 0)
+    check_len("f n=100 reject", tsha.tsha1f("abc", 100), 0)
+    check_len("r n=23 reject", tsha.tsha1r("abc", 23), 0)
+    // 进制 base ∈ {2,3,8,16,48}（默认 48），同 n 信息量一致：
+    // n=8 → b0=5 字节 → base2=40 位 / base3=26 / base8=14 / base16=10 / base48=8
+    check_len("f n=8 b2 ", tsha.tsha1f("abc", 8, 2), 40)
+    check_len("f n=8 b3 ", tsha.tsha1f("abc", 8, 3), 26)
+    check_len("f n=8 b8 ", tsha.tsha1f("abc", 8, 8), 14)
+    check_len("f n=8 b16", tsha.tsha1f("abc", 8, 16), 10)
+    check_len("f n=8 b48", tsha.tsha1f("abc", 8, 48), 8)
+    // n=96 → b0=67 字节 → base2=536 / base8=179 / base16=134 / base3=339
+    check_len("f n=96 b2 ", tsha.tsha1f("abc", 96, 2), 536)
+    check_len("f n=96 b8 ", tsha.tsha1f("abc", 96, 8), 179)
+    check_len("f n=96 b16", tsha.tsha1f("abc", 96, 16), 134)
+    check_len("f n=96 b3 ", tsha.tsha1f("abc", 96, 3), 339)
+    // n=88 → b0=61 字节 → base16=122
+    check_len("f n=88 b16", tsha.tsha1f("abc", 88, 16), 122)
+    // 其他模型抽样
+    check_len("r n=12 b2 ", tsha.tsha1r("", 12, 2), 64)
+    check_len("b n=48 b8 ", tsha.tsha1b("", 48, 8), 88)
+    check_len("x n=64 b16", tsha.tsha1x("", 64, 16), 88)
+    // 非法进制 → 拒绝，返回空串；base=0（显式）按默认 48 处理
+    check_len("f n=8 b5  reject", tsha.tsha1f("abc", 8, 5), 0)
+    check_len("f n=8 b7  reject", tsha.tsha1f("abc", 8, 7), 0)
+    check_len("f n=8 b100 reject", tsha.tsha1f("abc", 8, 100), 0)
+    check_len("f n=8 b0 default", tsha.tsha1f("abc", 8, 0), 8)
+    // 前缀一致性（块级拼接）：n 较大输出以较小位长输出为前缀
+    if prefix(tsha.tsha1f("abc", 96), 64) == tsha.tsha1f("abc", 64) {
+        println("PASS f prefix96-64")
+    } else {
+        println("FAIL f prefix96-64")
+        exit(1)
+    }
+    if prefix(tsha.tsha1f("abc", 88), 64) == tsha.tsha1f("abc", 64) {
+        println("PASS f prefix88-64")
+    } else {
+        println("FAIL f prefix88-64")
+        exit(1)
+    }
+    if prefix(tsha.tsha1r("abc", 96), 48) == tsha.tsha1r("abc", 48) {
+        println("PASS r prefix96-48")
+    } else {
+        println("FAIL r prefix96-48")
+        exit(1)
+    }
+    println("位长输出探针全部通过")
+}

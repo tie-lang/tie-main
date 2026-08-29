@@ -8,9 +8,9 @@ type tie<class>
 // 位操作用 & | << >>，UTF-8 用 str_from_code/char_code/str_char 原语。
 //
 // 语言限制（已实测确认，本模块的规避方式）：
-//   1. tie 无 map 键枚举 API 且 tiec 下 map 段错误（主控决策方案 A）：
-//      map 一律用**平行表**（键表 table<string> + 值表 table<i64/string/bool>）
-//      表示，语义等价 map 键值对集合；tiec 修复 map 后接口可无缝升级。
+//   1. tie 无 map 键枚举 API 且 tiec 下 map 段错误：map 一律用**平行表**
+//      （键表 table<string> + 值表 table<i64/string/bool>）表示，
+//      语义等价 map 键值对集合；tiec 修复 map 后接口可无缝升级。
 //   2. tie 无 f64↔i64 位转换原语：f64 IEEE 754 位模式用浮点数学分解
 //      （log/pow/floor + parse_int(to_string(floor(x))) 的 f64→i64 路径），
 //      尾数逐位提取/构造（见 f64_bits/read_f64_be 注释，全链路精确）。
@@ -859,7 +859,7 @@ pub func encode_tuple(t: table<i64>) -> table<i64> {
     return encode_i64_array(t)
 }
 
-// ==================== map 编码（平行表，主控决策方案 A） ====================
+// ==================== map 编码（平行表：键表 + 值表） ====================
 // tie 无 map 键枚举 API 且 tiec 下 map 段错误，map 用「键表 + 值表」平行表表示
 // （语义等价 map 键值对集合）。键恒为字符串（encode_string）；值按类型分函数。
 

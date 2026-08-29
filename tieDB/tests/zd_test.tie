@@ -8,7 +8,7 @@ type tie<logic>
 // 元组（(1,2,3) 与异构 (1,"a",true)）、record 字段（Protobuf tag）、
 // 紧凑性断言、文件 save/load（含中文）。
 //
-// 注意（主控决策方案 A）：tie 无 map 键枚举 API 且 tiec 下 map 段错误
+// 注意：tie 无 map 键枚举 API 且 tiec 下 map 段错误
 // （0xC0000005，编译器 bug，连官方 map-bench.tie 都崩），故 map 用平行表
 // （键表 table<string> + 值表 table<i64>）表示，语义等价 map 键值对集合；
 // tiec 修复 map 后可无缝升级为 map 类型。

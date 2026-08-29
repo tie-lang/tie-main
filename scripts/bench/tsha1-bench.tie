@@ -41,13 +41,13 @@ func bench_one(tag: string, msg: string, cap: i64, target_sec: i64) -> string {
         }
         var d: string = ""
         if tag == "f" {
-            d = tsha.tsha1f(msg);
+            d = tsha.tsha1f(msg, 64);
         } else if tag == "b" {
-            d = tsha.tsha1b(msg);
+            d = tsha.tsha1b(msg, 64);
         } else if tag == "x" {
-            d = tsha.tsha1x(msg)
+            d = tsha.tsha1x(msg, 64)
         } else {
-            d = tsha.tsha1r(msg)
+            d = tsha.tsha1r(msg, 64)
         }
         iters = iters + 1
     }
