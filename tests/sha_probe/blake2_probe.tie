@@ -1,0 +1,60 @@
+type tie<logic>
+// blake2 探针：覆盖 blake2s-256 与 blake2b-512 的 RFC 7693 向量 + 长消息与
+// 块边界（55/56/63/64/128/257 字节，触及满块/末块/零填充分支）。
+import "../../std/blake2.tie"
+using blake;
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // ---- blake2s-256 ----
+    check("s empty", blake.blake2s(""),
+        "69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9")
+    check("s abc", blake.blake2s("abc"),
+        "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982")
+    check("s a1000", blake.blake2s(rep("a", 1000)),
+        "a4691c2bf852334ece63c024234338fc6c150bdf04fa3f6e0e4c5209b326438d")
+    check("s b55", blake.blake2s(rep("a", 55)),
+        "8265e9235687e0db03e94d2827d2c44f5bcb2c9a51e3cd3198078500bc58e5f1")
+    check("s b56", blake.blake2s(rep("a", 56)),
+        "9d5b6436d9c8ae3b397f25afece0afe865b26748ae4986360bf2fd0ae0b28dd6")
+    check("s b64", blake.blake2s(rep("a", 64)),
+        "651d2f5f20952eacaea2fba2f2af2bcd633e511ea2d2e4c9ae2ac0d9ffb7b252")
+    check("s b128", blake.blake2s(rep("a", 128)),
+        "3ac477e27353f9019b81694afe60c8049403784f91a58288428ea318bfa82809")
+
+    // ---- blake2b-512 ----
+    check("b empty", blake.blake2b(""),
+        "786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce")
+    check("b abc", blake.blake2b("abc"),
+        "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923")
+    check("b a1000", blake.blake2b(rep("a", 1000)),
+        "d6a69459fe93fc6b9537ed4336e5099e0dcca3e97290a412500ed7a0daffb03d80cf3650a20e0591f748e10c3c534945ee83d5f2c9722f1a68d98b8c01af23fd")
+    check("b a257", blake.blake2b(rep("a", 257)),
+        "0d686cbcff66401ab36b8a8e7fcf4085319eb296eaa55c4470c36bccaff2ecd4b3572c32ed48e8bb97cc5d08302a79b3a26e751feb7f565b19fa0d8f65247dd1")
+    check("b b56", blake.blake2b(rep("a", 56)),
+        "f9b5059561f8b9e80d479466be753b9395b7860d2f3e99bea262074afd8eed5ceefc67730b4fe6191b0e5475712eaa99922e8f11662cd4bce0792aeddce337fa")
+    check("b b64", blake.blake2b(rep("a", 64)),
+        "29119322fbf7552c76c608d4d61bd648175dfc856f714992a950da978d5609bac2ce1dea8e12d06b1dba888c897ba37f905386620e08ec992b2ae7ffb68fd7ea")
+    check("b b128", blake.blake2b(rep("a", 128)),
+        "fc6c71f688f43ea7d60817478808f3cac753e61571865c95adbc2d9122c943a76b92c2cb1047ef3fe7bf6e436ec1d0a99a9e5b216780bf7fed9d7ca91d3a8f3b")
+    println("blake2 探针全部通过")
+}

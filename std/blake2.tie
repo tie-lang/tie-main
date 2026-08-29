@@ -1,0 +1,483 @@
+type tie<class>
+// ============================================================================
+// blake2.tie：标准库——BLAKE2s / BLAKE2b（安全哈希族，命名空间 blake）
+// 用途：去中心化凭证指纹底座、完整性校验，供插件审计链与平台应用使用
+//   （docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §5.1）。
+// 接口：
+//   blake.blake2s(msg: string) -> string   BLAKE2s-256 → 64 位十六进制小写
+//   blake.blake2b(msg: string) -> string   BLAKE2b-512 → 128 位十六进制小写
+// 逐**字节**处理（str_byte + len），与 SHA-256 一致，任意 UTF-8 原始字节可哈希。
+//
+// 算法（RFC 7693）：
+//   - 参数块：h[0] ^= 0x01010000 ^ digest_length（blake2s 用 32、blake2b 用 64）。
+//   - 状态 v[0..15] = h || IV；v[12]^=计数器 t 低 32、v[13]^=t 高 32；
+//     last_block 时 v[14]^=0xFFFFFFFF（顺序哈希 f0，f1 恒 0）。
+//   - 10 行 σ 置换 + G 函数（ARX）。**轮数**：BLAKE2s = 10 轮，BLAKE2b = 12 轮
+//     （第 10/11 轮复用 σ[0]/σ[1]）——注意两者不同。
+//   - 消息填充为**纯零**（无 0x80、无长度位，长度由计数器 t 承载）。
+//   - 摘要输出按**小端字节序**展开（BLAKE2 家族约定）。
+//
+// == 字宽 ==
+//   blake2s 用 32 位字：i64 每步 & 0xFFFFFFFF 保持 < 2^32 恒正，`>>`（ashr）
+//     对正操作数 == 逻辑右移（数值安全论证同 sha256/crypto，查 ir.rs Shr）。
+//   blake2b 用 64 位字：i64 有符号且 `>>` 生 ashr，故每个 64 位字用**两个 32 位
+//     半分 (hi, lo)** 表示（各 <2^32 恒正），加/异或/循环右移经 32 位拆分实现
+//     （add64/lsr64/shl64/rotr64）；tie 的 ref 修饰仅支持表，故运算结果用
+//     2 元素表 [hi, lo] 返回（正确性优先于微分配开销）。
+//
+// 标准向量（RFC 7693 附录，已核对）：
+//   blake2s("")    = 69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9
+//   blake2s("abc") = 508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982
+//   blake2b("")    = 786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419
+//                    d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce
+//   blake2b("abc") = ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d1
+//                    7d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923
+// 备注：命名空间内互调为裸调用（Harbor M2.1.6），内部函数不加 blake_ 前缀。
+// ============================================================================
+
+var blke_sig: table<i64>;   // σ 置换表（10 行 × 16 列 = 160 项）
+var blke_siv: table<i64>;    // BLAKE2s IV（8 个 32 位字）
+var blke_biv: table<i64>;    // BLAKE2b IV（8 个 64 位字，按 [hi,lo] 交错 = 16 项）
+
+namespace blake {
+
+// 惰性构建 σ 置换表（RFC 7693）。每行 16 个 0..15 值，编码为 16 个 hex 数字。
+func ensure_sig() {
+    if len(blke_sig) > 0 {
+        return
+    }
+    var rows = "0123456789abcdef" +
+               "ea489fd61c02b753" +
+               "b8c052fdae367194" +
+               "7931dcbe265a40f8" +
+               "905724afe1bc683d" +
+               "2c6a0b834d75fe19" +
+               "c51fed4a0763928b" +
+               "db7ec13950f4862a" +
+               "6fe9b308c2d714a5" +
+               "a2847615fb9e3cd0"
+    var ri: i64 = 0
+    while ri < 10 {
+        var ci: i64 = 0
+        while ci < 16 {
+            table_push(blke_sig, hex_nibble(str_char(rows, ri * 16 + ci)))
+            ci = ci + 1
+        }
+        ri = ri + 1
+    }
+}
+
+// BLAKE2s IV（8 个 32 位字）。
+func ensure_siv() {
+    if len(blke_siv) > 0 {
+        return
+    }
+    table_push(blke_siv, 0x6A09E667)
+    table_push(blke_siv, 0xBB67AE85)
+    table_push(blke_siv, 0x3C6EF372)
+    table_push(blke_siv, 0xA54FF53A)
+    table_push(blke_siv, 0x510E527F)
+    table_push(blke_siv, 0x9B05688C)
+    table_push(blke_siv, 0x1F83D9AB)
+    table_push(blke_siv, 0x5BE0CD19)
+}
+
+// BLAKE2b IV：64 位字超 i64 字面量范围，按 高/低 各 8 hex 拆分解析（各 <2^32）。
+func ensure_biv() {
+    if len(blke_biv) > 0 {
+        return
+    }
+    var hs = "6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1" +
+             "510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179"
+    var i: i64 = 0
+    while i < 8 {
+        var hi: i64 = parse_hex32(substr(hs, i * 16, i * 16 + 8))
+        var lo: i64 = parse_hex32(substr(hs, i * 16 + 8, i * 16 + 16))
+        table_push(blke_biv, hi)
+        table_push(blke_biv, lo)
+        i = i + 1
+    }
+}
+
+// 截取字符串 [a, b)（码点区间）——内联实现（不依赖 string.tie）。
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 单字符十六进制数字（0..15）；非十六进制返回 0（仅内部常量）。
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 解析 8 个 hex 字符为 32 位 i64（恒 <2^32 正数）。
+func parse_hex32(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        v = ((v << 4) | hex_nibble(str_char(s, i))) & 0xFFFFFFFF
+        i = i + 1
+    }
+    return v
+}
+
+// 单字节 → 2 位小写 hex。
+func hex2(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, (v >> 4) & 0xF) + str_char(hex, v & 0xF)
+}
+
+// 32 位值 → 8 位小写 hex（**小端字节序**：低位字节在前；BLAKE2 摘要按小端输出）。
+func hex8_le(v: i64) -> string {
+    var out: string = ""
+    var b: i64 = 0
+    while b < 4 {
+        out = out + hex2((v >> (8 * b)) & 0xFF)
+        b = b + 1
+    }
+    return out
+}
+
+// 64 位（hi,lo 两个 32 位半分）→ 16 位小端 hex：先 lo（低 4 字节）再 hi（高 4 字节）。
+func hex16(hi: i64, lo: i64) -> string {
+    return hex8_le(lo) + hex8_le(hi)
+}
+
+// 生成双元素表 [hi, lo]（64 位字返回值载体，因 tie 的 ref 仅限表参数）。
+func w64(hi: i64, lo: i64) -> table<i64> {
+    var o = table_new_i64()
+    table_push(o, hi & 0xFFFFFFFF)
+    table_push(o, lo & 0xFFFFFFFF)
+    return o
+}
+
+// 32 位循环右移 n 位（blake2s G 用）。v < 2^32 正数 → >> 即逻辑右移。
+func rr32(v: i64, n: i64) -> i64 {
+    return ((v >> n) | (v << (32 - n))) & 0xFFFFFFFF
+}
+
+// 读取消息块第 w 个 32 位小端字：字节 off+4w..off+4w+3；超过消息总长 n 的填充 0。
+func blk_word32(msg: string, n: i64, off: i64, w: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var g = off + w * 4 + j
+        var b: i64 = 0
+        if g < n {
+            b = str_byte(msg, g)
+        }
+        v = (v | (b << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+
+// 读取消息块第 w 个 64 位字 → [hi,lo]。字节 off+8w..off+8w+7 小端（低 4 字节→lo）。
+func blk_word64(msg: string, n: i64, off: i64, w: i64) -> table<i64> {
+    var hi: i64 = 0
+    var lo: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var g = off + w * 8 + j
+        var b: i64 = 0
+        if g < n {
+            b = str_byte(msg, g)
+        }
+        lo = (lo | (b << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        var g2 = off + w * 8 + 4 + j
+        var b2: i64 = 0
+        if g2 < n {
+            b2 = str_byte(msg, g2)
+        }
+        hi = (hi | (b2 << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return w64(hi, lo)
+}
+
+// 32 位加法进位（0 或 1）：a,b 均 <2^32。
+func carry32(a: i64, b: i64) -> i64 {
+    return (a + b) >> 32
+}
+
+// 64 位加法（mod 2^64）→ [hi,lo]：lo 相加 + 进位到 hi。
+func add64(ah: i64, al: i64, bh: i64, bl: i64) -> table<i64> {
+    var lsum = (al + bl) & 0xFFFFFFFF
+    var carry = (al + bl) >> 32
+    return w64((ah + bh + carry), lsum)
+}
+
+// 64 位逻辑右移 r 位（r 0..63）→ [hi,lo]。
+func lsr64(ah: i64, al: i64, r: i64) -> table<i64> {
+    if r == 0 {
+        return w64(ah, al)
+    }
+    if r < 32 {
+        return w64((ah >> r), ((al >> r) | (ah << (32 - r))))
+    }
+    if r == 32 {
+        return w64(0, ah)
+    }
+    return w64(0, (ah >> (r - 32)))
+}
+
+// 64 位逻辑左移 r 位（r 0..63）→ [hi,lo]。
+func shl64(ah: i64, al: i64, r: i64) -> table<i64> {
+    if r == 0 {
+        return w64(ah, al)
+    }
+    if r < 32 {
+        return w64(((ah << r) | (al >> (32 - r))), (al << r))
+    }
+    if r == 32 {
+        return w64(al, 0)
+    }
+    return w64((al << (r - 32)), 0)
+}
+
+// 64 位循环右移 r 位（r 1..63）→ [hi,lo] = (W>>r) | (W<<(64-r))。
+func rotr64(ah: i64, al: i64, r: i64) -> table<i64> {
+    var a = lsr64(ah, al, r)
+    var b = shl64(ah, al, 64 - r)
+    return w64((a[0] | b[0]), (a[1] | b[1]))
+}
+
+// ---- BLAKE2s（32 位字，10 轮）----
+
+// BLAKE2s 的 G 函数：对 v 的四个 32 位字 a/b/c/d 做 ARX 混合。
+func g_s(v: ref table<i64>, a: i64, b: i64, c: i64, d: i64, x: i64, y: i64) {
+    var va = v[a]; var vb = v[b]; var vc = v[c]; var vd = v[d]
+    va = (va + vb + x) & 0xFFFFFFFF
+    vd = rr32(vd ^ va, 16)
+    vc = (vc + vd) & 0xFFFFFFFF
+    vb = rr32(vb ^ vc, 12)
+    va = (va + vb + y) & 0xFFFFFFFF
+    vd = rr32(vd ^ va, 8)
+    vc = (vc + vd) & 0xFFFFFFFF
+    vb = rr32(vb ^ vc, 7)
+    v[a] = va; v[b] = vb; v[c] = vc; v[d] = vd
+}
+
+// BLAKE2s 对单个 64 字节块压缩；t 为 64 位计数器（t_lo/t_hi 两个 32 位字）。
+func compress_s(h: ref table<i64>, msg: string, n: i64, off: i64, t_lo: i64, t_hi: i64, last: bool) {
+    // 预计算本块 16 个消息字（小端），供各轮 σ 索引（与参考实现一致，避免重复读字节）
+    var m = table_new_i64()
+    var k: i64 = 0
+    while k < 16 {
+        table_push(m, blk_word32(msg, n, off, k))
+        k = k + 1
+    }
+    var v = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(v, h[i])
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        table_push(v, blke_siv[i])
+        i = i + 1
+    }
+    v[12] = v[12] ^ t_lo
+    v[13] = v[13] ^ t_hi
+    if last {
+        v[14] = v[14] ^ 0xFFFFFFFF
+    }
+    var round: i64 = 0
+    while round < 10 {          // BLAKE2s 共 10 轮（σ[0..9] 各用一次）
+        var base = round * 16
+        g_s(v, 0, 4, 8, 12, m[blke_sig[base]], m[blke_sig[base + 1]])
+        g_s(v, 1, 5, 9, 13, m[blke_sig[base + 2]], m[blke_sig[base + 3]])
+        g_s(v, 2, 6, 10, 14, m[blke_sig[base + 4]], m[blke_sig[base + 5]])
+        g_s(v, 3, 7, 11, 15, m[blke_sig[base + 6]], m[blke_sig[base + 7]])
+        g_s(v, 0, 5, 10, 15, m[blke_sig[base + 8]], m[blke_sig[base + 9]])
+        g_s(v, 1, 6, 11, 12, m[blke_sig[base + 10]], m[blke_sig[base + 11]])
+        g_s(v, 2, 7, 8, 13, m[blke_sig[base + 12]], m[blke_sig[base + 13]])
+        g_s(v, 3, 4, 9, 14, m[blke_sig[base + 14]], m[blke_sig[base + 15]])
+        round = round + 1
+    }
+    i = 0
+    while i < 8 {
+        h[i] = h[i] ^ v[i] ^ v[i + 8]
+        i = i + 1
+    }
+}
+
+// BLAKE2s-256 主入口。计数器 t 为 64 位（t_lo/t_hi 两个 32 位字，累计字节数）。
+pub func blake2s(msg: string) -> string {
+    ensure_sig()
+    ensure_siv()
+    var n: i64 = len(msg)
+    var h = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(h, blke_siv[i])
+        i = i + 1
+    }
+    h[0] = h[0] ^ 0x01010000 ^ 32   // 参数块：IV[0] ^ 0x01010000 ^ digest_length(32)
+    var t_lo: i64 = 0
+    var t_hi: i64 = 0
+    var pos: i64 = 0
+    while pos + 64 < n {
+        t_hi = (t_hi + carry32(t_lo, 64)) & 0xFFFFFFFF
+        t_lo = (t_lo + 64) & 0xFFFFFFFF
+        compress_s(h, msg, n, pos, t_lo, t_hi, false)
+        pos = pos + 64
+    }
+    var rem = n - pos
+    t_hi = (t_hi + carry32(t_lo, rem)) & 0xFFFFFFFF
+    t_lo = (t_lo + rem) & 0xFFFFFFFF
+    compress_s(h, msg, n, pos, t_lo, t_hi, true)
+    var out: string = ""
+    i = 0
+    while i < 8 {
+        out = out + hex8_le(h[i])   // BLAKE2 输出小端字节
+        i = i + 1
+    }
+    return out
+}
+
+// ---- BLAKE2b（64 位字，12 轮）----
+
+// BLAKE2b 的 G 函数（64 位字，v 表为 [hi,lo] 交错 32 项）。
+func g_b(v: ref table<i64>, a: i64, b: i64, c: i64, d: i64, x_hi: i64, x_lo: i64, y_hi: i64, y_lo: i64) {
+    var ah = v[2 * a]; var al = v[2 * a + 1]
+    var bh = v[2 * b]; var bl = v[2 * b + 1]
+    var ch = v[2 * c]; var cl = v[2 * c + 1]
+    var dh = v[2 * d]; var dl = v[2 * d + 1]
+    var t = add64(ah, al, bh, bl)
+    t = add64(t[0], t[1], x_hi, x_lo)
+    ah = t[0]; al = t[1]           // a += b + x
+    var u = rotr64(dh ^ ah, dl ^ al, 32)
+    dh = u[0]; dl = u[1]           // d = rotr(d ^ a, 32)
+    u = add64(ch, cl, dh, dl)
+    ch = u[0]; cl = u[1]           // c += d
+    u = rotr64(bh ^ ch, bl ^ cl, 24)
+    bh = u[0]; bl = u[1]           // b = rotr(b ^ c, 24)
+    t = add64(ah, al, bh, bl)
+    t = add64(t[0], t[1], y_hi, y_lo)
+    ah = t[0]; al = t[1]           // a += b + y
+    u = rotr64(dh ^ ah, dl ^ al, 16)
+    dh = u[0]; dl = u[1]           // d = rotr(d ^ a, 16)
+    u = add64(ch, cl, dh, dl)
+    ch = u[0]; cl = u[1]           // c += d
+    u = rotr64(bh ^ ch, bl ^ cl, 63)
+    bh = u[0]; bl = u[1]           // b = rotr(b ^ c, 63)
+    v[2 * a] = ah; v[2 * a + 1] = al
+    v[2 * b] = bh; v[2 * b + 1] = bl
+    v[2 * c] = ch; v[2 * c + 1] = cl
+    v[2 * d] = dh; v[2 * d + 1] = dl
+}
+
+// BLAKE2b 对单个 128 字节块压缩；t 为 64 位计数器（tlo_hi/tlo_lo 两个 32 位半分）。
+func compress_b(h: ref table<i64>, msg: string, n: i64, off: i64, tlo_hi: i64, tlo_lo: i64, last: bool) {
+    // 预计算本块 16 个消息字（[hi,lo] 交错 32 项）
+    var m = table_new_i64()
+    var k: i64 = 0
+    while k < 16 {
+        var w = blk_word64(msg, n, off, k)
+        table_push(m, w[0])
+        table_push(m, w[1])
+        k = k + 1
+    }
+    var v = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(v, h[2 * i])
+        table_push(v, h[2 * i + 1])
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        table_push(v, blke_biv[2 * i])
+        table_push(v, blke_biv[2 * i + 1])
+        i = i + 1
+    }
+    v[24] = v[24] ^ tlo_hi       // v[12].hi ^= t 高半分（=0）
+    v[25] = v[25] ^ tlo_lo       // v[12].lo ^= t 低半分
+    if last {
+        v[28] = v[28] ^ 0xFFFFFFFF
+        v[29] = v[29] ^ 0xFFFFFFFF
+    }
+    var round: i64 = 0
+    while round < 12 {          // BLAKE2b 共 12 轮
+        var sr = round
+        if round >= 10 {
+            sr = round - 10     // 第 10/11 轮复用 σ[0]/σ[1]
+        }
+        var base = sr * 16
+        g_b(v, 0, 4, 8, 12, m[2 * blke_sig[base]], m[2 * blke_sig[base] + 1], m[2 * blke_sig[base + 1]], m[2 * blke_sig[base + 1] + 1])
+        g_b(v, 1, 5, 9, 13, m[2 * blke_sig[base + 2]], m[2 * blke_sig[base + 2] + 1], m[2 * blke_sig[base + 3]], m[2 * blke_sig[base + 3] + 1])
+        g_b(v, 2, 6, 10, 14, m[2 * blke_sig[base + 4]], m[2 * blke_sig[base + 4] + 1], m[2 * blke_sig[base + 5]], m[2 * blke_sig[base + 5] + 1])
+        g_b(v, 3, 7, 11, 15, m[2 * blke_sig[base + 6]], m[2 * blke_sig[base + 6] + 1], m[2 * blke_sig[base + 7]], m[2 * blke_sig[base + 7] + 1])
+        g_b(v, 0, 5, 10, 15, m[2 * blke_sig[base + 8]], m[2 * blke_sig[base + 8] + 1], m[2 * blke_sig[base + 9]], m[2 * blke_sig[base + 9] + 1])
+        g_b(v, 1, 6, 11, 12, m[2 * blke_sig[base + 10]], m[2 * blke_sig[base + 10] + 1], m[2 * blke_sig[base + 11]], m[2 * blke_sig[base + 11] + 1])
+        g_b(v, 2, 7, 8, 13, m[2 * blke_sig[base + 12]], m[2 * blke_sig[base + 12] + 1], m[2 * blke_sig[base + 13]], m[2 * blke_sig[base + 13] + 1])
+        g_b(v, 3, 4, 9, 14, m[2 * blke_sig[base + 14]], m[2 * blke_sig[base + 14] + 1], m[2 * blke_sig[base + 15]], m[2 * blke_sig[base + 15] + 1])
+        round = round + 1
+    }
+    i = 0
+    while i < 8 {
+        h[2 * i] = (h[2 * i] ^ v[2 * i] ^ v[2 * i + 16]) & 0xFFFFFFFF
+        h[2 * i + 1] = (h[2 * i + 1] ^ v[2 * i + 1] ^ v[2 * i + 17]) & 0xFFFFFFFF
+        i = i + 1
+    }
+}
+
+// BLAKE2b-512 主入口。计数器 t 为 64 位（tlo_hi/tlo_lo 两个 32 位半分）。
+pub func blake2b(msg: string) -> string {
+    ensure_sig()
+    ensure_biv()
+    var n: i64 = len(msg)
+    var h = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(h, blke_biv[2 * i])
+        table_push(h, blke_biv[2 * i + 1])
+        i = i + 1
+    }
+    h[1] = (h[1] ^ 0x01010040) & 0xFFFFFFFF   // 参数块：h[0] 低 32 位半分 ^= 0x01010000 ^ 64
+    var tlo_hi: i64 = 0
+    var tlo_lo: i64 = 0
+    var pos: i64 = 0
+    while pos + 128 < n {
+        tlo_hi = (tlo_hi + carry32(tlo_lo, 128)) & 0xFFFFFFFF
+        tlo_lo = (tlo_lo + 128) & 0xFFFFFFFF
+        compress_b(h, msg, n, pos, tlo_hi, tlo_lo, false)
+        pos = pos + 128
+    }
+    var rem = n - pos
+    tlo_hi = (tlo_hi + carry32(tlo_lo, rem)) & 0xFFFFFFFF
+    tlo_lo = (tlo_lo + rem) & 0xFFFFFFFF
+    compress_b(h, msg, n, pos, tlo_hi, tlo_lo, true)
+    var out: string = ""
+    i = 0
+    while i < 8 {
+        out = out + hex16(h[2 * i], h[2 * i + 1])   // 小端：先 lo 再 hi
+        i = i + 1
+    }
+    return out
+}
+
+}   // namespace blake
+
+
+
+
