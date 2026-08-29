@@ -5,6 +5,7 @@ type tie<class>
 // 来源：docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6
 // 接口（本期实现 f 与 r 两档；b/x 留待后续，见设计文档锚点）：
 //   tsha.tsha1f(msg: string) -> string   tsha1f-256（快速，B 骨架）→ 64 位十六进制
+//   tsha.tsha1r(msg: string) -> string   tsha1r-128（嵌入式，轻量 SPN）→ 32 位十六进制
 // 逐**字节**处理（str_byte + len），任意 UTF-8 原始字节可哈希。
 //
 // == 结构（快速档 tsha1f-256）==
@@ -26,20 +27,26 @@ type tie<class>
 //
 // == 常量定制（可复现，非 BLAKE2 IV）==
 //   采用"标准种子 + PRNG 扩展固化"：扩展 = SHA-256(SEED || u64be(k)) 计数器流
-//   （k=0,1,2,...），依序取字节填充常量。SEED_F = "TSHA1-2026-f-256-v1"
-//   （IV 8 字 + σ 置换 10×16）。与 BLAKE2 IV（6a09e667...）有意区分（不经异或
-//   参数块继承，常数由种子扩展独立生成）。复现：tests/tsha_probe/gen_vectors.py。
+//   （k=0,1,2,...），依序取字节填充常量。SEED_F = "TSHA1-2026-f-256-v1"（IV 8 字
+//   + σ 置换 10×16）；SEED_R = "TSHA1-2026-r-128-v1"（IV 8 字 + S 盒 16 + 轮常量 16）。
+//   与 BLAKE2 IV（6a09e667...）有意区分（不经异或参数块继承，常数由种子扩展
+//   独立生成）。复现：tests/tsha_probe/gen_vectors.py。
 //
 // == 验证（已知答案向量，已核对生成器）==
 //   tsha1f("")    = 049a7e459a4558bced881efef7b15a0f29a306bd95cd898645df15d9895fcd9e
-//   tsha1f("abc") = 2554dccf0d4425527099e32fba77e75cbc20e0caf7464122ff18d0e87cbe5ce9
-//   tsha1f(1000x'a') = 835fc551435dc4e384746905faeb9633440d53eff5816edee074a8e2dff94a3b
-//   探针：tests/tsha_probe/tsha1f_probe.tie（多向量 + 块边界）。
+//   tsha1f("abc") = 2c3fe6f973eb8ea150c24d8c5a20ea38f0a4d5590c58b868806dacd32eda3cd4
+//   tsha1f(1000xa) = 9f74677d24005bc307237035d0ebacad5ca178b8378938f7b40c7976f1611336
+//   tsha1r("")    = 1d41e39ece695096448cf4947429d6cd
+//   tsha1r("abc") = 2539601d2671289458b7c0683324edd6
+//   探针：tests/tsha_probe/tsha1f_probe.tie 与 tsha1r_probe.tie（多向量 + 块边界）。
 // 备注：命名空间内互调为裸调用，内部函数不加 tsha_ 前缀（同 sha/blake）。
 // ============================================================================
 
 var tsha_fiv: table<i64>;     // tsha1f IV（8 个 32 位字）
 var tsha_fsig: table<i64>;    // tsha1f σ 置换（10 行×16 = 160 项）
+var tsha_riv: table<i64>;     // tsha1r IV（8 个 32 位字）
+var tsha_rsbox: table<i64>;   // tsha1r nibble S 盒（16 项，双射）
+var tsha_rrcon: table<i64>;   // tsha1r 轮常量（16 个 32 位字）
 
 namespace tsha {
 
@@ -320,5 +327,133 @@ pub func tsha1f(msg: string) -> string {
     return out
 }
 
+// ---- tsha1r-128（嵌入式，轻量 SPN Ascon 型）----
+
+// 惰性构建 tsha1r 常量（seed 扩展，见头部）。
+func ensure_riv() {
+    if len(tsha_riv) > 0 {
+        return
+    }
+    var hs = "05fa7659307581dc83ba961333590aecfb10c4287faf9c882f4b33d437988d4a"
+    var i: i64 = 0
+    while i < 8 {
+        table_push(tsha_riv, parse_hex32(substr(hs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+func ensure_rsbox() {
+    if len(tsha_rsbox) > 0 {
+        return
+    }
+    var ss = "26347ecb509f1ad8"
+    var i: i64 = 0
+    while i < 16 {
+        table_push(tsha_rsbox, hex_nibble(str_char(ss, i)))
+        i = i + 1
+    }
+}
+
+func ensure_rrcon() {
+    if len(tsha_rrcon) > 0 {
+        return
+    }
+    var cs = "a66ae08d27c2af20b34c50506573b3e1c34cc528da0a4a9a1037e9b398fa6b45051737570416a8f1adc9ae1d77b4b64d276c3c0be78737ce891aaa050bf89ceb"
+    var i: i64 = 0
+    while i < 16 {
+        table_push(tsha_rrcon, parse_hex32(substr(cs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+// 一轮置换（256 位内态 s[0..7]）：nibble S 盒 -> 旋-异或线性扩散 -> 轮常量 -> trit 扰动。
+func r_perm(s: ref table<i64>, r: i64, Mpn: i64, npn: i64) {
+    // S 盒层：每字 8 个 nibble 独立替换
+    var w2: i64 = 0
+    while w2 < 8 {
+        var x = s[w2]
+        var nx: i64 = 0
+        var nb: i64 = 0
+        while nb < 8 {
+            var idx = (x >> (4 * nb)) & 0xF
+            nx = nx | (tsha_rsbox[idx] << (4 * nb))
+            nb = nb + 1
+        }
+        s[w2] = nx & 0xFFFFFFFF
+        w2 = w2 + 1
+    }
+    // 旋-异或线性扩散（顺序更新，须与参考实现一致）
+    s[0] = s[0] ^ rr32(s[0], 7) ^ rr32(s[1], 19)
+    s[1] = s[1] ^ rr32(s[1], 11) ^ rr32(s[2], 23)
+    s[2] = s[2] ^ rr32(s[2], 13) ^ rr32(s[3], 29)
+    s[3] = s[3] ^ rr32(s[3], 17) ^ rr32(s[1], 31)
+    s[4] = s[4] ^ rr32(s[4], 5) ^ rr32(s[5], 21)
+    s[5] = s[5] ^ rr32(s[5], 3) ^ rr32(s[6], 27)
+    s[6] = s[6] ^ rr32(s[6], 9) ^ rr32(s[7], 15)
+    s[7] = s[7] ^ rr32(s[7], 25) ^ rr32(s[5], 7)
+    s[0] = s[0] ^ s[4]
+    s[1] = s[1] ^ s[5]
+    s[2] = s[2] ^ s[6]
+    s[3] = s[3] ^ s[7]
+    s[4] = s[4] ^ s[0]
+    s[5] = s[5] ^ s[1]
+    s[6] = s[6] ^ s[2]
+    s[7] = s[7] ^ s[3]
+    s[0] = s[0] ^ ((tsha_rrcon[r & 15] + r) & 0xFFFFFFFF)
+    s[2] = s[2] ^ Mpn                              // trit 幅值位平面
+    s[3] = s[3] ^ (npn & 0xFFFFFFFF)                // trit 符号位平面
+}
+
+// tsha1r-128 主入口：128 位速率吸收 + 长度绑定 + 终筛轮，状态压缩到 128 位输出。
+pub func tsha1r(msg: string) -> string {
+    ensure_riv()
+    ensure_rsbox()
+    ensure_rrcon()
+    var n: i64 = len(msg)
+    var s = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(s, tsha_riv[i])
+        i = i + 1
+    }
+    var pos: i64 = 0
+    while pos + 16 <= n {
+        var k: i64 = 0
+        while k < 4 {
+            s[k] = s[k] ^ le_word(msg, n, pos, k)
+            k = k + 1
+        }
+        var (Mpn, npn) = pack_planes(msg, n, pos, 0, 16)
+        var r2: i64 = 0
+        while r2 < 6 {
+            r_perm(s, r2, Mpn, npn)
+            r2 = r2 + 1
+        }
+        pos = pos + 16
+    }
+    // 末块（零填充到 16 字节）+ 长度绑定
+    var k2: i64 = 0
+    while k2 < 4 {
+        s[k2] = s[k2] ^ le_word(msg, n, pos, k2)
+        k2 = k2 + 1
+    }
+    s[7] = s[7] ^ (n & 0xFFFFFFFF)
+    // 末块 trit 位平面（零填充后计算）-> 终筛轮带上扰动，短消息亦激活 trit 层
+    var (Mf, Nf) = pack_planes(msg, n, pos, 0, 16)
+    var rf: i64 = 0
+    while rf < 8 {
+        r_perm(s, rf, Mf, Nf)
+        rf = rf + 1
+    }
+    var out: string = ""
+    var ow: i64 = 0
+    while ow < 4 {
+        out = out + hex8((s[ow] ^ s[ow + 4]) & 0xFFFFFFFF)   // 状态压缩 256->128
+        ow = ow + 1
+    }
+    return out
+}
 }   // namespace tsha
+
+
 
