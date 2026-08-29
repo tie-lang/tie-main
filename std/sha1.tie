@@ -1,0 +1,129 @@
+type tie<class>
+// ============================================================================
+// sha1.tie：标准库——SHA-1（命名空间 sha1）
+// ！！兼容遗留，非安全：SHA-1 已可制造碰撞（SHAttered 等），勿用于密码散列 /
+//    数字签名 / 完整性安全。仅用于与旧系统的互操作 / 遗留数据的指纹对照。！！
+// 接口：sha1.sha1_hex(s: string) -> string   40 位十六进制小写摘要。
+// 逐**字节**处理（str_byte + len），任意 UTF-8 原始字节可哈希。
+//
+// 算法（FIPS 180-1）：初始 H0..H4 + 消息填充（0x80 + 零到 56 字节 + 64 位
+//   大端比特长度）；80 轮（按 0..19/20..39/40..59/60..79 四段选择 f 与常量 K），
+//   消息调度 w[16..79]=rotl(w[i-3]^w[i-8]^w[i-14]^w[i-16],1)；输出 H0..H4 各
+//   4 字节大端 = 40 hex。
+// 全部 32 位字，i64 每步 & 0xFFFFFFFF 恒正；`>>` 对正操作数即逻辑右移（同 sha256）。
+//
+// 标准向量（FIPS 180-1 附录，已核对）：
+//   sha1("")   = da39a3ee5e6b4b0d3255bfef95601890afd80709
+//   sha1("abc")= a9993e364706816aba3e25717850c26c9cd0d89d
+// 探针：tests/hash2_probe/sha1_probe.tie。命名空间内互调为裸调用。
+// ============================================================================
+
+namespace sha1 {
+
+func rl(v: i64, n: i64) -> i64 {
+    return ((v << (n & 31)) | (v >> (32 - (n & 31)))) & 0xFFFFFFFF
+}
+// 填充后消息 pos 处字节：<n 原文，==n 0x80，末 8 字节大端比特长度，其余 0。
+func pad_byte(s: string, n: i64, pad_len: i64, bits_hi: i64, bits_lo: i64, pos: i64) -> i64 {
+    if pos < n {
+        return str_byte(s, pos)
+    }
+    if pos == n {
+        return 0x80
+    }
+    if pos >= pad_len - 8 {
+        var idx = pos - (pad_len - 8)   // 0..7，大端
+        var val: i64 = bits_hi
+        if idx >= 4 {
+            val = bits_lo
+            idx = idx - 4
+        }
+        return (val >> (24 - idx * 8)) & 0xFF
+    }
+    return 0
+}
+func hex8(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var p: i64 = 0
+    while p < 8 {
+        var shift = 28 - p * 4
+        var nib = (v >> shift) & 0xF
+        out = out + str_char(hex, nib)
+        p = p + 1
+    }
+    return out
+}
+// 读填充后消息第 w 个大端 32 位字。
+func W0(s: string, n: i64, pad_len: i64, bits_hi: i64, bits_lo: i64, off: i64, w: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var pos = off + w * 4 + j
+        v = ((v << 8) | pad_byte(s, n, pad_len, bits_hi, bits_lo, pos)) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+// SHA-1 主入口：40 位十六进制小写。
+pub func sha1_hex(msg: string) -> string {
+    var n: i64 = len(msg)
+    var bits: i64 = n * 8
+    var bits_hi = (bits >> 32) & 0xFFFFFFFF
+    var bits_lo = bits & 0xFFFFFFFF
+    var pad_len = ((n + 72) / 64) * 64
+    var num_blocks = pad_len / 64
+    var H0: i64 = 0x67452301
+    var H1: i64 = 0xEFCDAB89
+    var H2: i64 = 0x98BADCFE
+    var H3: i64 = 0x10325476
+    var H4: i64 = 0xC3D2E1F0
+    var blk: i64 = 0
+    while blk < num_blocks {
+        var w = table_new_i64()
+        var i: i64 = 0
+        while i < 16 {
+            table_push(w, W0(msg, n, pad_len, bits_hi, bits_lo, blk * 64, i))
+            i = i + 1
+        }
+        i = 16
+        while i < 80 {
+            table_push(w, rl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1))
+            i = i + 1
+        }
+        var a = H0; var b = H1; var c = H2; var d = H3; var e = H4
+        var t: i64 = 0
+        while t < 80 {
+            var f: i64 = 0
+            var K: i64 = 0x5A827999
+            if t < 20 {
+                f = (b & c) | ((b ^ 0xFFFFFFFF) & d)
+            } else if t < 40 {
+                f = b ^ c ^ d
+                K = 0x6ED9EBA1
+            } else if t < 60 {
+                f = (b & c) | (b & d) | (c & d)
+                K = 0x8F1BBCDC
+            } else {
+                f = b ^ c ^ d
+                K = 0xCA62C1D6
+            }
+            var temp = (rl(a, 5) + f + e + K + w[t]) & 0xFFFFFFFF
+            e = d
+            d = c
+            c = rl(b, 30)
+            b = a
+            a = temp
+            t = t + 1
+        }
+        H0 = (H0 + a) & 0xFFFFFFFF
+        H1 = (H1 + b) & 0xFFFFFFFF
+        H2 = (H2 + c) & 0xFFFFFFFF
+        H3 = (H3 + d) & 0xFFFFFFFF
+        H4 = (H4 + e) & 0xFFFFFFFF
+        blk = blk + 1
+    }
+    return hex8(H0) + hex8(H1) + hex8(H2) + hex8(H3) + hex8(H4)
+}
+
+}   // namespace sha1

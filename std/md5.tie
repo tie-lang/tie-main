@@ -1,0 +1,192 @@
+type tie<class>
+// ============================================================================
+// md5.tie：标准库——MD5（命名空间 md5）
+// ！！兼容遗留，非安全：MD5 已彻底破译（可制造碰撞），勿用于密码散列 / 数字
+//    签名 / 完整性安全。仅用于与旧系统的互操作 / 遗留数据的指纹对照。！！
+// 接口：md5.md5_hex(s: string) -> string   32 位十六进制小写摘要。
+// 逐**字节**处理（str_byte + len），任意 UTF-8 原始字节可哈希。
+//
+// 算法（RFC 1321）：初始 A/B/C/D + 64 项正弦常量 T；消息填充（0x80 + 零到
+//   56 字节 + 64 位小端比特长度）；64 轮分四组 F/G/H/I（⊕/⊥/选择）与轮转表；
+//   每块 16 个小端消息字；输出 A/B/C/D 各 4 字节小端 = 32 hex。
+// 全部 32 位字，i64 每步 & 0xFFFFFFFF 令操作数恒正；`>>` 对正操作数即逻辑右移
+//   （数值安全论证同 sha256/crypto）。
+//
+// 标准向量（RFC 1321 附录，已核对）：
+//   md5("")   = d41d8cd98f00b204e9800998ecf8427e
+//   md5("abc")= 900150983cd24fb0d6963f7d28e17f72
+// 探针：tests/hash2_probe/md5_probe.tie。命名空间内互调为裸调用。
+// ============================================================================
+
+var md5_k: table<i64>;    // 64 项正弦常量 T（32 位）
+var md5_s: table<i64>;     // 64 项轮转量表 s
+
+namespace md5 {
+
+func ensure_k() {
+    if len(md5_k) > 0 {
+        return
+    }
+    var ks = "d76aa478e8c7b756242070dbc1bdceeef57c0faf4787c62aa8304613fd469501" +
+             "698098d88b44f7afffff5bb1895cd7be6b901122fd987193a679438e49b40821" +
+             "f61e2562c040b340265e5a51e9b6c7aad62f105d02441453d8a1e681e7d3fbc8" +
+             "21e1cde6c33707d6f4d50d87455a14eda9e3e905fcefa3f8676f02d98d2a4c8a" +
+             "fffa39428771f6816d9d6122fde5380ca4beea444bdecfa9f6bb4b60bebfbc70" +
+             "289b7ec6eaa127fad4ef308504881d05d9d4d039e6db99e51fa27cf8c4ac5665" +
+             "f4292244432aff97ab9423a7fc93a039655b59c38f0ccc92ffeff47d85845dd1" +
+             "6fa87e4ffe2ce6e0a30143144e0811a1f7537e82bd3af2352ad7d2bbeb86d391"
+    var i: i64 = 0
+    while i < 64 {
+        table_push(md5_k, parse8(substr(ks, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+func ensure_s() {
+    if len(md5_s) > 0 {
+        return
+    }
+    var s = [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+              5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+              4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+              6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21]
+    var i: i64 = 0
+    while i < 64 {
+        table_push(md5_s, s[i])
+        i = i + 1
+    }
+}
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+func parse8(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        v = ((v << 4) | hex_nibble(str_char(s, i))) & 0xFFFFFFFF
+        i = i + 1
+    }
+    return v
+}
+// 32 位循环左移 n。
+func rl(v: i64, n: i64) -> i64 {
+    return ((v << (n & 31)) | (v >> (32 - (n & 31)))) & 0xFFFFFFFF
+}
+// 填充后消息在 pos 处的字节：<n 原文，==n 0x80，末 8 字节小端比特长度，其余 0。
+func pad_byte(s: string, n: i64, pad_len: i64, bits: i64, pos: i64) -> i64 {
+    if pos < n {
+        return str_byte(s, pos)
+    }
+    if pos == n {
+        return 0x80
+    }
+    if pos >= pad_len - 8 {
+        var idx = pos - (pad_len - 8)
+        // 小端：字节 idx → (bits >> (8*idx)) & 0xFF
+        return (bits >> (8 * idx)) & 0xFF
+    }
+    return 0
+}
+// 32 位 → 小端 8 hex（低位字节在前）。
+func hex8_le(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var b: i64 = 0
+    while b < 4 {
+        var hi2 = (v >> (8 * b + 4)) & 0xF
+        var lo = (v >> (8 * b)) & 0xF
+        out = out + str_char(hex, hi2) + str_char(hex, lo)
+        b = b + 1
+    }
+    return out
+}
+// 读填充后消息的第 w 个小端消息字。
+func M_word(s: string, n: i64, pad_len: i64, bits: i64, off: i64, w: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var pos = off + w * 4 + j
+        v = (v | (pad_byte(s, n, pad_len, bits, pos) << (8 * j))) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+// MD5 主入口：32 位十六进制小写。
+pub func md5_hex(msg: string) -> string {
+    ensure_k()
+    ensure_s()
+    var n: i64 = len(msg)
+    var bits: i64 = n * 8
+    var pad_len = ((n + 72) / 64) * 64
+    var num_blocks = pad_len / 64
+    var A: i64 = 0x67452301
+    var B: i64 = 0xefcdab89
+    var C: i64 = 0x98badcfe
+    var D: i64 = 0x10325476
+    var blk: i64 = 0
+    while blk < num_blocks {
+        var a = A; var b = B; var c = C; var d = D
+        var i: i64 = 0
+        while i < 64 {
+            var grp = i / 16
+            var f: i64 = 0
+            var g: i64 = 0
+            // F/G/H/I
+            if grp == 0 {
+                f = (b & c) | ((b ^ 0xFFFFFFFF) & d)
+                g = i
+            } else if grp == 1 {
+                f = (d & b) | ((d ^ 0xFFFFFFFF) & c)
+                g = (5 * i + 1) % 16
+            } else if grp == 2 {
+                f = b ^ c ^ d
+                g = (3 * i + 5) % 16
+            } else {
+                f = c ^ (b | (d ^ 0xFFFFFFFF))
+                g = (7 * i) % 16
+            }
+            var t = (a + f + md5_k[i] + M_word(msg, n, pad_len, bits, blk * 64, g)) & 0xFFFFFFFF
+            a = d
+            d = c
+            c = b
+            b = (b + rl(t, md5_s[i])) & 0xFFFFFFFF
+            i = i + 1
+        }
+        A = (A + a) & 0xFFFFFFFF
+        B = (B + b) & 0xFFFFFFFF
+        C = (C + c) & 0xFFFFFFFF
+        D = (D + d) & 0xFFFFFFFF
+        blk = blk + 1
+    }
+    return hex8_le(A) + hex8_le(B) + hex8_le(C) + hex8_le(D)
+}
+
+
+}   // namespace md5
+
+
+
+
+
+
+
+
+
+
+

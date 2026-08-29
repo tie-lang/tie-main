@@ -1,0 +1,25 @@
+type tie<logic>
+// md5 探针：RFC 1321 向量（空串/abc）+ 块边界。向量来源：Python hashlib.md5。
+// 注意该算法已破译，仅遗留互操作——请勿用于安全场景。
+import "../../std/md5.tie"
+using md5;
+func check(name: string, got: string, want: string) {
+    if got == want { println("PASS " + name) }
+    else { println("FAIL " + name + " got=" + got); println("     want=" + want); exit(1) }
+}
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n { out = out + c; i = i + 1 }
+    return out
+}
+func main() {
+    check("md5 empty", md5.md5_hex(""), "d41d8cd98f00b204e9800998ecf8427e")
+    check("md5 abc", md5.md5_hex("abc"), "900150983cd24fb0d6963f7d28e17f72")
+    check("md5 a55", md5.md5_hex(rep("a", 55)), "ef1772b6dff9a122358552954ad0df65")
+    check("md5 a56", md5.md5_hex(rep("a", 56)), "3b0c8ac703f828b04c6c197006d17218")
+    check("md5 a64", md5.md5_hex(rep("a", 64)), "014842d480b571495a4a0363793f7367")
+    check("md5 a128", md5.md5_hex(rep("a", 128)), "e510683b3f5ffe4093d021808bc6ff70")
+    check("md5 a129", md5.md5_hex(rep("a", 129)), "b325dc1c6f5e7a2b7cf465b9feab7948")
+    println("md5 探针全部通过")
+}

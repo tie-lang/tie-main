@@ -1,0 +1,25 @@
+type tie<logic>
+// sha1 探针：FIPS 180-1 向量（空串/abc）+ 块边界。向量来源：Python hashlib.sha1。
+// 注意该算法已可碰撞，仅遗留互操作——请勿用于安全场景。
+import "../../std/sha1.tie"
+using sha1;
+func check(name: string, got: string, want: string) {
+    if got == want { println("PASS " + name) }
+    else { println("FAIL " + name + " got=" + got); println("     want=" + want); exit(1) }
+}
+func rep(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n { out = out + c; i = i + 1 }
+    return out
+}
+func main() {
+    check("sha1 empty", sha1.sha1_hex(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+    check("sha1 abc", sha1.sha1_hex("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d")
+    check("sha1 a55", sha1.sha1_hex(rep("a", 55)), "c1c8bbdc22796e28c0e15163d20899b65621d65a")
+    check("sha1 a56", sha1.sha1_hex(rep("a", 56)), "c2db330f6083854c99d4b5bfb6e8f29f201be699")
+    check("sha1 a64", sha1.sha1_hex(rep("a", 64)), "0098ba824b5c16427bd7a1122a5a442a25ec644d")
+    check("sha1 a128", sha1.sha1_hex(rep("a", 128)), "ad5b3fdbcb526778c2839d2f151ea753995e26a0")
+    check("sha1 a129", sha1.sha1_hex(rep("a", 129)), "d96debf1bdcbc896e6c134ea76e8141f40d78536")
+    println("sha1 探针全部通过")
+}
