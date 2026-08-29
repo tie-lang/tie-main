@@ -1,0 +1,71 @@
+type tie<logic>
+// trit 优化 L4：三值逻辑单目补全 -t / !t。
+// 语义（平衡三值表示，-1=F/+1=T/0=未知）：Kleene 强 NOT 在 {+1,-1,0} 即平衡取
+// 反（1<T>↔-1<F>，0<未知>→0），所以 !t == -t（两个单目重合）。
+// 逐项断言三值表 + 变量 + 双重取反 + ! 与 - 等价。
+// 期望输出（7 组 PASS）：
+//   PASS neg   (-(-1t)=1t, -(1t)=-1t, -(0t)=0t)
+//   PASS not   (!(-1t)=1t, !(1t)=-1t, !(0t)=0t)
+//   PASS var   (-a / !a 作用于 trit 变量)
+//   PASS dbl   (-(-a)==a, !(!a)==a)
+//   PASS eqiv  (!a == -a 恒成立)
+//   PASS conv  (-to_trit(1) == -1t, to_trit(-7) 后再 ! 得 1t)
+
+// 取反一位 trit（变量路径）
+func negate(t: trit) -> trit { return -t }
+func lnot(t: trit) -> trit { return !t }
+
+func main() {
+    // 单目负号三值表
+    if -(-1t) == 1t && -(1t) == -1t && -(0t) == 0t {
+        println("PASS neg")
+    } else {
+        println("FAIL neg")
+        exit(1)
+    }
+    // 逻辑非三值表（Kleene：-1→1，1→-1，0→0）
+    if !(-1t) == 1t && !(1t) == -1t && !(0t) == 0t {
+        println("PASS not")
+    } else {
+        println("FAIL not")
+        exit(1)
+    }
+    // 变量上操作
+    var a: trit = 1t
+    var b: trit = -1t
+    var c: trit = 0t
+    if -a == -1t && -b == 1t && -c == 0t {
+        println("PASS var")
+    } else {
+        println("FAIL var")
+        exit(1)
+    }
+    // 双重取反还原
+    if -(-a) == a && !(!b) == b {
+        println("PASS dbl")
+    } else {
+        println("FAIL dbl")
+        exit(1)
+    }
+    // ! 与 - 等价（Kleene NOT = 平衡取反）
+    if !a == -a && !b == -b && !c == -c {
+        println("PASS eqiv")
+    } else {
+        println("FAIL eqiv")
+        exit(1)
+    }
+    // 函数参数/返回的单目路径
+    if negate(a) == -1t && negate(b) == 1t && lnot(b) == 1t {
+        println("PASS fn")
+    } else {
+        println("FAIL fn")
+        exit(1)
+    }
+    // 与转换原语协同
+    if -to_trit(1) == -1t && !to_trit(-7) == 1t && to_trit(0) == 0t {
+        println("PASS conv")
+    } else {
+        println("FAIL conv")
+        exit(1)
+    }
+}
