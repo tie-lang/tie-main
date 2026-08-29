@@ -1,0 +1,112 @@
+type tie<logic>
+// ============================================================================
+// ecdsa_p256_probe.tie：BCrypt(CNG) ECDSA P-256 探针（路线 B 可行性验证）。
+// 目标：证明「tie 用户级 unsafe extern 直连 bcrypt.dll」在当前 tiec 可编译、
+// 可链接（-lbcrypt 已在 toolchain 链入命令）、可运行——把「BCrypt extern 链」
+// 从理论评估变成实证。
+// 覆盖：OpenAlgorithmProvider(ECDSA_P256) → SetProperty(CurveName=P-256) →
+// GenerateKeyPair → FinalizeKeyPair → SignHash（固定 32 字节 hash）→
+// VerifySignature（ACCEPT）→ 微变敏感（翻转签名 1 字节 → REJECT）→ 清理。
+// 说明：
+//   - NTSTATUS 成功 = 0（STATUS_SUCCESS），失败为负值（如 0xC000000D）；
+//   - ECDSA 输入的 pbHash 为消息摘要（P-256 配 SHA-256 → 32 字节）。本探针
+//     直接给一段固定 32 字节"摘要"做往返验证（陪路探针，不引入 BCrypt SHA256
+//     哈希链，聚焦 extern 链路本身；真哈希见 ext/ecdsa.tie 的扩展）;
+//   - 全部缓冲用 alloc 原始内存；出参句柄/计数用 addr_of 局部变量。
+// 通过条件：签名验证成功、微变后被拒、函数返回码全 0 → 打印 PASS。
+// ============================================================================
+
+// ---- BCrypt extern（53 位无符号问题全用 i64 承载句柄/指针；u32 承载 ULONG）----
+// pszImplementation 为可空 LPCWSTR：声明为 i64，传 0 = NULL（CreateProcessW 先例同款）
+unsafe extern fn BCryptOpenAlgorithmProvider(ph: ptr<i64>, pszAlgId: ptr<u8>, pszImplementation: i64, dwFlags: u32) -> i32
+unsafe extern fn BCryptSetProperty(hObject: i64, pszProperty: ptr<u8>, pbInput: ptr<u8>, cbInput: u32, dwFlags: u32) -> i32
+unsafe extern fn BCryptGenerateKeyPair(hAlgorithm: i64, phKey: ptr<i64>, dwLength: u32, dwFlags: u32) -> i32
+unsafe extern fn BCryptFinalizeKeyPair(hKey: i64, dwFlags: u32) -> i32
+unsafe extern fn BCryptSignHash(hKey: i64, pPaddingInfo: i64, pbInput: ptr<u8>, cbInput: u32, pbOutput: ptr<u8>, cbOutput: u32, pcbResult: ptr<u32>, dwFlags: u32) -> i32
+unsafe extern fn BCryptVerifySignature(hKey: i64, pPaddingInfo: i64, pbHash: ptr<u8>, cbHash: u32, pbSignature: ptr<u8>, cbSignature: u32, dwFlags: u32) -> i32
+unsafe extern fn BCryptDestroyKey(hKey: i64) -> i32
+unsafe extern fn BCryptCloseAlgorithmProvider(hAlgorithm: i64, dwFlags: u32) -> i32
+
+// ASCII 字符串 → UTF-16LE 字节缓冲（BCrypt 的 LPCWSTR 为 wchar_t*，逐字符写
+// {byte,0} 两个 u8；CreateProcessW 先例同款手拼）。
+unsafe fn widebuf(s: string, out: ptr<u8>) {
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        var cp: i64 = char_code(str_char(s, i))
+        deref_write(ptr_add(out, 2 * i), as_u8(cp & 0xFF))
+        deref_write(ptr_add(out, 2 * i + 1), as_u8(0))
+        i = i + 1
+    }
+    deref_write(ptr_add(out, 2 * n), as_u8(0))
+    deref_write(ptr_add(out, 2 * n + 1), as_u8(0))
+}
+
+// 用 0..255 循环填充 n 字节缓冲（用于固定摘要）
+unsafe fn fill_pattern(buf: ptr<u8>, n: i64) {
+    var i: i64 = 0
+    while i < n {
+        deref_write(ptr_add(buf, i), as_u8(i))
+        i = i + 1
+    }
+}
+
+func main() {
+    unsafe {
+        var alg: i64 = 0
+        var key: i64 = 0
+
+        // 1) 打开 ECDSA_P256 算法提供者（曲线已固定，无需 SetProperty；
+        //    微软示例即此流程）
+        var algId = alloc(64)
+        widebuf("ECDSA_P256", algId)
+        var r1 = BCryptOpenAlgorithmProvider(addr_of(alg), algId, 0, 0)
+        if r1 != 0 {
+            println("FAIL open=0x" + to_string(r1) + " (NTSTATUS 负值 e.g. 0xC000025E=STATUS_NOT_SUPPORTED)")
+            return
+        }
+        // 2) 生成并完成密钥对（256 位；ECDSA_P256 曲线隐含于算法类）
+        var r3 = BCryptGenerateKeyPair(alg, addr_of(key), 256u32, 0)
+        if r3 != 0 {
+            println("FAIL genkey=0x" + to_string(r3))
+            return
+        }
+        var r4 = BCryptFinalizeKeyPair(key, 0)
+        if r4 != 0 {
+            println("FAIL finalize=0x" + to_string(r4))
+            return
+        }
+        // 3) 固定 32 字节摘要 → 签名（输出 64 字节原始 r||s）
+        var hash = alloc(32)
+        fill_pattern(hash, 32)
+        var sig = alloc(64)
+        var siglen: u32 = 0
+        var r5 = BCryptSignHash(key, 0, hash, 32u32, sig, 64u32, addr_of(siglen), 0)
+        if r5 != 0 {
+            println("FAIL sign=0x" + to_string(r5))
+            return
+        }
+        if as_i64(siglen) != 64 {
+            println("FAIL siglen=" + to_string(as_i64(siglen)))
+            return
+        }
+        // 5) 验证：正确签名 → ACCEPT（0 = STATUS_SUCCESS）
+        var r6 = BCryptVerifySignature(key, 0, hash, 32u32, sig, as_u32(as_i64(siglen)), 0)
+        if r6 != 0 {
+            println("FAIL verify=0x" + to_string(r6))
+            return
+        }
+        // 6) 微变敏感：翻转签名首字节 → REJECT
+        var first = as_i64(deref(sig))
+        deref_write(sig, as_u8(first ^ 1))
+        var r7 = BCryptVerifySignature(key, 0, hash, 32u32, sig, as_u32(as_i64(siglen)), 0)
+        if r7 == 0 {
+            println("FAIL 微变未被拒（签名篡改仍 ACCEPT）")
+            return
+        }
+        // 7) 清理
+        BCryptDestroyKey(key)
+        BCryptCloseAlgorithmProvider(alg, 0)
+        println("PASS ecdsa-p256 bcrypt extern 往返（sign 64B / verify ACCEPT / 篡改 REJECT）")
+    }
+}

@@ -1,0 +1,241 @@
+type tie<class>
+// ============================================================================
+// ecdsa.tie：ext——ECDSA P-256 数字签名（命名空间 ecdsa，纯 BCrypt/CNG extern）
+// 用途：NIST P-256 曲线的生成/签名/验签，面向密钥/文档签名场景。
+// 平台：Windows（bcrypt.dll 内建；-lbcrypt 已含于 toolchain 链入命令）。
+// 接口（IO 统一切 **hex 字符串**，因 tie string 不能承载 ≥0x80 原始字节）：
+//   ecdsa.keygen() -> string              生成密钥对 → 私钥 ECCPRIVATEBLOB hex
+//                                        （内含 d + 公钥 x,y；32+64=96 字节 = 192 hex）
+//   ecdsa.sign(key: string, hash: string) -> string
+//        对**32 字节摘要**（P-256 配 SHA-256）签名 → 64 字节原始 r||s 的 hex；失败返回 ""
+//        * 签名输入是消息摘要（调用方先用 SHA-256 等散列 32 字节，再传其 hex 64 位）*
+//   ecdsa.verify(key: string, hash: string, sig: string) -> i64
+//        验证摘要上的签名 → 1=有效 / 0=无效或参数错误
+//   * key 为 keygen() 产出的 ECCPRIVATEBLOB（内含公钥，私钥句柄亦可验签）；
+//     验公钥若只持有 ECCPUBLICBLOB，可将 key 换为该公钥 blob 的 hex。*
+//
+// 算法：NIST P-256（FIPS 186-4）。私有实现位于系统 bcrypt.dll（FIPS 140 已验证），
+// 本文件仅做 tie↔Windows CNG 的结构化 extern 胶水（句柄 + buffer 地址 + 长度）。
+// 备注：CNG 不支持 Ed25519/X25519（仅 NIST P 素数曲线），Curve25519 族见
+// docs/plans/asymmetric-roadmap.md（纯 tie 二期 / libsodium）。
+//
+// 验证：tests/asym_probe/ecdsa_p256_probe.tie 往返（sign→verify ACCEPT、
+// 篡改 1 字节 → REJECT）已实跑通过；本库为该逻辑的可复用类化 + 密钥序列化。
+// 安全警告：生产使用建议——SIGN_HASH 输入必须是密码学强散列（如 SHA-256）输出，
+// 勿把未散列消息直接当 hash 传入；私钥 blob 应妥善保管。所有缓冲为 alloc 原始内存，
+// 错误路径返回 ""/0（NTSTATUS 非成功即失败）。
+// ============================================================================
+
+// ---- BCrypt extern（P-256）：句柄/指针 i64、ULONG u32；可空指针形参 i64 传 0 ----
+unsafe extern fn BCryptOpenAlgorithmProvider(ph: ptr<i64>, pszAlgId: ptr<u8>, pszImplementation: i64, dwFlags: u32) -> i32
+unsafe extern fn BCryptGenerateKeyPair(hAlgorithm: i64, phKey: ptr<i64>, dwLength: u32, dwFlags: u32) -> i32
+unsafe extern fn BCryptFinalizeKeyPair(hKey: i64, dwFlags: u32) -> i32
+unsafe extern fn BCryptExportKey(hKey: i64, hExportKey: i64, pszBlobType: ptr<u8>, pbOutput: ptr<u8>, cbOutput: u32, pcbResult: ptr<u32>, dwFlags: u32) -> i32
+unsafe extern fn BCryptImportKeyPair(hAlgorithm: i64, hImportKey: i64, pszBlobType: ptr<u8>, phKey: ptr<i64>, pbInput: ptr<u8>, cbInput: u32, dwFlags: u32) -> i32
+unsafe extern fn BCryptSignHash(hKey: i64, pPaddingInfo: i64, pbInput: ptr<u8>, cbInput: u32, pbOutput: ptr<u8>, cbOutput: u32, pcbResult: ptr<u32>, dwFlags: u32) -> i32
+unsafe extern fn BCryptVerifySignature(hKey: i64, pPaddingInfo: i64, pbHash: ptr<u8>, cbHash: u32, pbSignature: ptr<u8>, cbSignature: u32, dwFlags: u32) -> i32
+unsafe extern fn BCryptDestroyKey(hKey: i64) -> i32
+unsafe extern fn BCryptCloseAlgorithmProvider(hAlgorithm: i64, dwFlags: u32) -> i32
+
+namespace ecdsa {
+
+// ---- 小工具（命名空间内互调裸调用；hex 思路同 std/encoding / ext/aes）----
+
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// hex 字符串 → 字节表（每两 hex 一字节；输入须偶数长度）
+func hex_to_bytes(h: string) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < len(h) {
+        table_push(out, (hex_nibble(str_char(h, i)) << 4) | hex_nibble(str_char(h, i + 1)))
+        i = i + 2
+    }
+    return out
+}
+
+// 字节表 → hex 字符串（小写，每字节两字符）
+func bytes_to_hex(b: table<i64>) -> string {
+    var digs = "0123456789abcdef"
+    var s = ""
+    var i: i64 = 0
+    while i < len(b) {
+        var v = b[i]
+        s = s + str_char(digs, (v >> 4) & 15) + str_char(digs, v & 15)
+        i = i + 1
+    }
+    return s
+}
+
+// ASCII → UTF-16LE 字节缓冲（BCrypt LPCWSTR；wchar_t* = {byte,0} 手拼）
+unsafe fn widebuf(s: string, out: ptr<u8>) {
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        var cp: i64 = char_code(str_char(s, i))
+        deref_write(ptr_add(out, 2 * i), as_u8(cp & 0xFF))
+        deref_write(ptr_add(out, 2 * i + 1), as_u8(0))
+        i = i + 1
+    }
+    deref_write(ptr_add(out, 2 * n), as_u8(0))
+    deref_write(ptr_add(out, 2 * n + 1), as_u8(0))
+}
+
+// 打开 ECDSA_P256 提供者句柄（失败返回 0）
+unsafe fn open_p256() -> i64 {
+    var alg: i64 = 0
+    var algId = alloc(64)
+    widebuf("ECDSA_P256", algId)
+    if BCryptOpenAlgorithmProvider(addr_of(alg), algId, 0, 0) != 0 {
+        return 0
+    }
+    return alg
+}
+
+// table<i64> 字节 → alloc 缓冲（拷贝，返回 ptr<u8>）
+unsafe fn tbl_to_buf(b: table<i64>) -> ptr<u8> {
+    var p: ptr<u8> = alloc(len(b))
+    var i: i64 = 0
+    while i < len(b) {
+        deref_write(ptr_add(p, i), as_u8(b[i]))
+        i = i + 1
+    }
+    return p
+}
+
+// ---- 主接口 ----
+
+// 生成 P-256 密钥对，返回私钥 ECCPRIVATEBLOB hex（96 字节 = 192 hex）；
+// 失败返回 ""。私钥 blob 内含 x/y（公钥），可序列化保管或后续验签。
+pub func keygen() -> string {
+    unsafe {
+        var alg = open_p256()
+        if alg == 0 {
+            return ""
+        }
+        var key: i64 = 0
+        var ok1 = BCryptGenerateKeyPair(alg, addr_of(key), 256u32, 0)
+        if ok1 != 0 {
+            BCryptCloseAlgorithmProvider(alg, 0)
+            return ""
+        }
+        if BCryptFinalizeKeyPair(key, 0) != 0 {
+            BCryptCloseAlgorithmProvider(alg, 0)
+            return ""
+        }
+        // 单次导出到足够大缓冲（ECC PRIVATE blob ≤ 128B；256 绰绰有余），
+        // pcbResult 回填实际长度——省去两段式（避免 pbOutput=NULL 传 0 给 ptr 形参）
+        var privBlob = alloc(256)
+        var blobType = alloc(64)
+        widebuf("ECCPRIVATEBLOB", blobType)
+        var need: u32 = 0
+        if BCryptExportKey(key, 0, blobType, privBlob, 256u32, addr_of(need), 0) != 0 {
+            BCryptCloseAlgorithmProvider(alg, 0)
+            return ""
+        }
+        var out = table_new_i64()
+        var i: i64 = 0
+        while i < as_i64(need) {
+            table_push(out, as_i64(deref(ptr_add(privBlob, i))))
+            i = i + 1
+        }
+        BCryptDestroyKey(key)
+        BCryptCloseAlgorithmProvider(alg, 0)
+        return bytes_to_hex(out)
+    }
+}
+
+// 对 32 字节摘要签名 → 64 字节原始 r||s 的 hex；失败返回 ""。
+// keyhex = keygen() 的私钥 blob hex；hashhex = 消息摘要（64 hex，须 32 字节）。
+pub func sign(key: string, hash: string) -> string {
+    unsafe {
+        var alg = open_p256()
+        if alg == 0 {
+            return ""
+        }
+        var kh = hex_to_bytes(key)
+        var hh = hex_to_bytes(hash)
+        if len(kh) < 8 || len(hh) != 32 {
+            BCryptCloseAlgorithmProvider(alg, 0)
+            return ""
+        }
+        var blobType = alloc(64)
+        widebuf("ECCPRIVATEBLOB", blobType)
+        var keyH: i64 = 0
+        var kbuf = tbl_to_buf(kh)
+        if BCryptImportKeyPair(alg, 0, blobType, addr_of(keyH), kbuf, as_u32(len(kh)), 0) != 0 {
+            BCryptCloseAlgorithmProvider(alg, 0)
+            return ""
+        }
+        var sig = alloc(64)
+        var hptr = tbl_to_buf(hh)
+        var siglen: u32 = 0
+        if BCryptSignHash(keyH, 0, hptr, 32u32, sig, 64u32, addr_of(siglen), 0) != 0 ||
+            as_i64(siglen) != 64 {
+            BCryptDestroyKey(keyH)
+            BCryptCloseAlgorithmProvider(alg, 0)
+            return ""
+        }
+        var out = table_new_i64()
+        var i: i64 = 0
+        while i < 64 {
+            table_push(out, as_i64(deref(ptr_add(sig, i))))
+            i = i + 1
+        }
+        BCryptDestroyKey(keyH)
+        BCryptCloseAlgorithmProvider(alg, 0)
+        return bytes_to_hex(out)
+    }
+}
+
+// 验证摘要上的签名：1=有效 / 0=无效或参数/句柄错误。
+// keyhex = keygen() 私钥 blob（ECCPRIVATEBLOB，内含公钥）或纯公钥 ECCPUBLICBLOB。
+pub func verify(key: string, hash: string, sig: string) -> i64 {
+    unsafe {
+        var alg = open_p256()
+        if alg == 0 {
+            return 0
+        }
+        var kh = hex_to_bytes(key)
+        var hh = hex_to_bytes(hash)
+        var sh = hex_to_bytes(sig)
+        if len(kh) < 8 || len(hh) != 32 || len(sh) != 64 {
+            BCryptCloseAlgorithmProvider(alg, 0)
+            return 0
+        }
+        // 私钥 blob 优先按 ECCPRIVATEBLOB 导入（内含公钥）；长度不匹配再试 ECCPUBLICBLOB
+        var blobType = alloc(64)
+        widebuf("ECCPRIVATEBLOB", blobType)
+        var keyH: i64 = 0
+        var kbuf = tbl_to_buf(kh)
+        var ok = BCryptImportKeyPair(alg, 0, blobType, addr_of(keyH), kbuf, as_u32(len(kh)), 0)
+        if ok != 0 {
+            // 回退：按公钥 blob 导入
+            var pubType = alloc(64)
+            widebuf("ECCPUBLICBLOB", pubType)
+            ok = BCryptImportKeyPair(alg, 0, pubType, addr_of(keyH), kbuf, as_u32(len(kh)), 0)
+        }
+        if ok != 0 {
+            BCryptCloseAlgorithmProvider(alg, 0)
+            return 0
+        }
+        var hptr = tbl_to_buf(hh)
+        var sptr = tbl_to_buf(sh)
+        var rc = BCryptVerifySignature(keyH, 0, hptr, 32u32, sptr, 64u32, 0)
+        BCryptDestroyKey(keyH)
+        BCryptCloseAlgorithmProvider(alg, 0)
+        return (rc == 0) ? 1 : 0
+    }
+}
+
+}   // namespace ecdsa

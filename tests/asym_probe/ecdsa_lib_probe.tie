@@ -1,0 +1,31 @@
+type tie<logic>
+// ecdsa_lib_probe.tie：ext/ecdsa.tie 库的端到端验证（跨文件 extern 链）。
+// keygen() → sign() → verify() 往返 + 微变敏感（篡改签名 1 字节 → 拒绝）。
+import "../../ext/ecdsa.tie" as ecdsa
+using ecdsa;
+
+func main() {
+    var key = ecdsa.keygen()
+    if len(key) != 208 {   // 104 字节 ECCPRIVATEBLOB（8 头 + X32 + Y32 + d32）= 208 hex
+        println("FAIL keygen len=" + to_string(len(key)))
+        return
+    }
+    // 固定 32 字节摘要的 hex
+    var hash = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    var sig = ecdsa.sign(key, hash)
+    if len(sig) != 128 {   // 64 字节 r||s = 128 hex
+        println("FAIL sign len=" + to_string(len(sig)))
+        return
+    }
+    if ecdsa.verify(key, hash, sig) != 1 {
+        println("FAIL verify ACCEPT")
+        return
+    }
+    // 微变敏感：篡改摘要首字节（00→01），同一签名应被拒
+    var bad = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    if ecdsa.verify(key, bad, sig) != 0 {
+        println("FAIL 篡改未被拒")
+        return
+    }
+    println("PASS ecdsa.lib keygen/sign/verify 往返 + 篡改被拒")
+}
