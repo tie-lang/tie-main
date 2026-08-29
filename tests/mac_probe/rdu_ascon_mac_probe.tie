@@ -1,0 +1,44 @@
+type tie<logic>
+// rdu_ascon_mac 交叉一致性探针：rdu_ascon 版与 std ascon_mac 版输出一致，并复核向量。
+// key 以 32 位 hex 传；msg 为原始字符串。
+// 期望输出：全部 PASS + "rdu_ascon_mac 交叉一致性探针全部通过"。
+import "../../std/ascon_mac.tie"
+import "../../rdu/rdu_ascon_mac.tie"
+
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got + " want=" + want)
+        exit(1)
+    }
+}
+
+func reps(c: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    var k = "000102030405060708090a0b0c0d0e0f"
+    // 空消息
+    check("empty_rdu_std", rdu_ascon.ascon_mac128(k, ""), ascon_mac.ascon_mac128(k, ""))
+    check("empty", rdu_ascon.ascon_mac128(k, ""), "eb1af688825d66bf2d53e135f9323315")
+    // 短文本
+    check("abc_rdu_std", rdu_ascon.ascon_mac128(k, "abc"), ascon_mac.ascon_mac128(k, "abc"))
+    check("abc", rdu_ascon.ascon_mac128(k, "abc"), "7244ecb6734d17a090b20744045f9e38")
+    // 恰一块（32 字节）
+    check("a32_rdu_std", rdu_ascon.ascon_mac128(k, reps("a", 32)), ascon_mac.ascon_mac128(k, reps("a", 32)))
+    check("a32", rdu_ascon.ascon_mac128(k, reps("a", 32)), "64691821cafb75901ebe6dec49af8c49")
+    // 长消息（多块）
+    var long = "Ascon-MAC-128 test message for robust verification."
+    check("long_rdu_std", rdu_ascon.ascon_mac128(k, long), ascon_mac.ascon_mac128(k, long))
+    check("long", rdu_ascon.ascon_mac128(k, long), "98f689e6021161d9d49183f2fe403765")
+
+    println("rdu_ascon_mac 交叉一致性探针全部通过")
+}

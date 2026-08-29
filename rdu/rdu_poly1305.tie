@@ -1,0 +1,320 @@
+type tie<class>
+// ============================================================================
+// rdu_poly1305.tie：嵌入式基础层（rdu）——Poly1305 消息认证码（命名空间 rdu_poly）
+// 定位：rdu = Reusable Device Utils，嵌入式无栈纯标量基础件。本模块为 std/poly1305
+//   的 rdu 版：**无查表、无动态表、无全局可变状态**，仅用标量（i64）与值类型
+//   struct 表达 130 位累加（5×26-bit 肢）。编译产物 .a 零运行时依赖，可在 MCU/裸机
+//   freestanding 直链（逻辑核心本人不依赖表/字符串；仅接口按任务要求以字符串承载
+//   key 的十六进制与 msg 的原始字节，故使用 str_byte/str_char 读取，见接口注）。
+// 接口：rdu_poly.poly1305(key: string, msg: string) -> string
+//   key：32 字节密钥（64 位 hex，前 16=r 后 16=s）；msg：原始字符串。
+//   返回 16 字节标签 → 32 位 hex 小写。
+// 算法（RFC 8439 §2.5）与 std/poly1305.tie 完全一致：r 夹紧 0x0ffffffc...0fffffff、
+//   模 2^130-5 累加（5 肢组合/进位/折 fold）、h+s 低 128 位小端输出。
+// 与 std 版共用验证向量，探针比对两版输出一致。
+// 备注：本模块不 import 任何东西（rdu 零依赖纪律）；值类型 struct 承载 5 肢状态。
+// ============================================================================
+
+// 5 个 26-bit 肢（值类型，纯 i64 字段）。
+struct L5 {
+    var a0: i64
+    var a1: i64
+    var a2: i64
+    var a3: i64
+    var a4: i64
+}
+
+// 4 个 32 位小端字（值类型）。
+struct W4 {
+    var w0: i64
+    var w1: i64
+    var w2: i64
+    var w3: i64
+}
+
+namespace rdu_poly {
+
+// key[.. hex]第 idx 个字节（ASCII hex 对 → 0..255）。
+func byte_at(key: string, idx: i64) -> i64 {
+    var hex = "0123456789abcdef"
+    var hi: i64 = 0
+    var lo: i64 = 0
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(hex, i) == str_char(key, idx * 2) {
+            hi = i
+        }
+        if str_char(hex, i) == str_char(key, idx * 2 + 1) {
+            lo = i
+        }
+        i = i + 1
+    }
+    return (hi << 4) | lo
+}
+
+// 从 key 字节偏移 base 读 16 字节小端 → 4 个 32 位字。
+func words16(key: string, base: i64) -> W4 {
+    var w0: i64 = 0
+    var w1: i64 = 0
+    var w2: i64 = 0
+    var w3: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        w0 = w0 | (byte_at(key, base + j) << (8 * j))
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        w1 = w1 | (byte_at(key, base + 4 + j) << (8 * j))
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        w2 = w2 | (byte_at(key, base + 8 + j) << (8 * j))
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        w3 = w3 | (byte_at(key, base + 12 + j) << (8 * j))
+        j = j + 1
+    }
+    return W4(w0, w1, w2, w3)
+}
+
+// 4 个 32 位小端字 → 5 个 26-bit 肢。
+func limbs(w: W4) -> L5 {
+    var a0 = w.w0 & 0x3ffffff
+    var a1 = ((w.w0 >> 26) & 0x3f) | ((w.w1 & 0xfffff) << 6)
+    var a2 = ((w.w1 >> 20) & 0xfff) | ((w.w2 & 0x3fff) << 12)
+    var a3 = ((w.w2 >> 14) & 0x3ffff) | ((w.w3 & 0xff) << 18)
+    var a4 = (w.w3 >> 8) & 0x3ffffff
+    return L5(a0 & 0x3ffffff, a1 & 0x3ffffff, a2 & 0x3ffffff, a3 & 0x3ffffff, a4 & 0x3ffffff)
+}
+
+// 从 key 解析 s（16 字节，不夹紧）。
+func load_s(key: string) -> L5 {
+    return limbs(words16(key, 16))
+}
+
+// 加载 r（16 字节）并夹紧：r[3,7,11,15]&=0x0f、r[4,8,12]&=0xfc。
+func load_r(key: string) -> L5 {
+    var w = words16(key, 0)
+    w.w0 = w.w0 & 0x0FFFFFFF
+    w.w1 = w.w1 & 0x0FFFFFFC
+    w.w2 = w.w2 & 0x0FFFFFFC
+    w.w3 = w.w3 & 0x0FFFFFFC
+    return limbs(w)
+}
+
+// 消息第 off 起的 cnt 字节一块（16 字节内 + 高位 1）→ 5 肢。
+func block_limbs(msg: string, off: i64, cnt: i64) -> L5 {
+    var w0: i64 = 0
+    var w1: i64 = 0
+    var w2: i64 = 0
+    var w3: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var bx = off + j
+        var byte: i64 = 0
+        if bx < off + cnt {
+            byte = str_byte(msg, bx)
+        }
+        w0 = w0 | (byte << (8 * j))
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        var bx = off + 4 + j
+        var byte: i64 = 0
+        if bx < off + cnt {
+            byte = str_byte(msg, bx)
+        }
+        w1 = w1 | (byte << (8 * j))
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        var bx = off + 8 + j
+        var byte: i64 = 0
+        if bx < off + cnt {
+            byte = str_byte(msg, bx)
+        }
+        w2 = w2 | (byte << (8 * j))
+        j = j + 1
+    }
+    j = 0
+    while j < 4 {
+        var bx = off + 12 + j
+        var byte: i64 = 0
+        if bx < off + cnt {
+            byte = str_byte(msg, bx)
+        }
+        w3 = w3 | (byte << (8 * j))
+        j = j + 1
+    }
+    var t = limbs(W4(w0, w1, w2, w3))
+    if cnt == 16 {
+        t.a4 = t.a4 + 0x1000000   // 2^128 → 肢 4 位 24
+    } else {
+        var wIdx = (8 * cnt) / 32
+        var bit = (8 * cnt) % 32
+        if wIdx == 0 {
+            w0 = w0 | (1 << bit)
+        } else if wIdx == 1 {
+            w1 = w1 | (1 << bit)
+        } else if wIdx == 2 {
+            w2 = w2 | (1 << bit)
+        } else {
+            w3 = w3 | (1 << bit)
+        }
+        t = limbs(W4(w0, w1, w2, w3))
+    }
+    return t
+}
+
+// h = (h + t) * r mod 2^130-5。
+func addmul(h: L5, r: L5, t: L5) -> L5 {
+    var h0 = h.a0 + t.a0
+    var h1 = h.a1 + t.a1
+    var h2 = h.a2 + t.a2
+    var h3 = h.a3 + t.a3
+    var h4 = h.a4 + t.a4
+    var r0 = r.a0; var r1 = r.a1; var r2 = r.a2; var r3 = r.a3; var r4 = r.a4
+    var m = 0x3ffffff
+    var d0 = h0 * r0
+    var d1 = h0 * r1 + h1 * r0
+    var d2 = h0 * r2 + h1 * r1 + h2 * r0
+    var d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0
+    var d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0
+    var d5 = h1 * r4 + h2 * r3 + h3 * r2 + h4 * r1
+    var d6 = h2 * r4 + h3 * r3 + h4 * r2
+    var d7 = h3 * r4 + h4 * r3
+    var d8 = h4 * r4
+    d3 = d3 + 5 * d8
+    d2 = d2 + 5 * d7
+    d1 = d1 + 5 * d6
+    d0 = d0 + 5 * d5
+    var c = d0 >> 26; h0 = d0 & m; d1 = d1 + c
+    c = d1 >> 26; h1 = d1 & m; d2 = d2 + c
+    c = d2 >> 26; h2 = d2 & m; d3 = d3 + c
+    c = d3 >> 26; h3 = d3 & m; d4 = d4 + c
+    c = d4 >> 26; h4 = d4 & m; h0 = h0 + c * 5
+    c = h0 >> 26; h0 = h0 & m; h1 = h1 + c
+    c = h1 >> 26; h1 = h1 & m; h2 = h2 + c
+    c = h2 >> 26; h2 = h2 & m; h3 = h3 + c
+    c = h3 >> 26; h3 = h3 & m; h4 = h4 + c
+    c = h4 >> 26; h4 = h4 & m; h0 = h0 + c * 5
+    return L5(h0, h1, h2, h3, h4)
+}
+
+// 终处理：(h mod P) + s → 标签 5 肢。
+func finish(h: L5, s: L5) -> L5 {
+    var m = 0x3ffffff
+    var h0 = h.a0; var h1 = h.a1; var h2 = h.a2; var h3 = h.a3; var h4 = h.a4
+    var c = h4 >> 26; h4 = h4 & m; h0 = h0 + c * 5
+    c = h0 >> 26; h0 = h0 & m; h1 = h1 + c
+    c = h1 >> 26; h1 = h1 & m; h2 = h2 + c
+    c = h2 >> 26; h2 = h2 & m; h3 = h3 + c
+    c = h3 >> 26; h3 = h3 & m; h4 = h4 + c
+    var g0 = h0 + 5; c = g0 >> 26; g0 = g0 & m
+    var g1 = h1 + c; c = g1 >> 26; g1 = g1 & m
+    var g2 = h2 + c; c = g2 >> 26; g2 = g2 & m
+    var g3 = h3 + c; c = g3 >> 26; g3 = g3 & m
+    var g4 = h4 + c - 0x4000000
+    var useg: i64 = 0
+    if g4 >= 0 {
+        useg = -1
+    }
+    var useh: i64 = -1 - useg
+    g0 = g0 & useg; g1 = g1 & useg; g2 = g2 & useg; g3 = g3 & useg; g4 = g4 & useg
+    h0 = (h0 & useh) | g0
+    h1 = (h1 & useh) | g1
+    h2 = (h2 & useh) | g2
+    h3 = (h3 & useh) | g3
+    h4 = (h4 & useh) | g4
+    var s0 = s.a0; var s1 = s.a1; var s2 = s.a2; var s3 = s.a3; var s4 = s.a4
+    c = h4
+    h4 = s4
+    h0 = h0 + s0
+    var c1 = h0 >> 26; h0 = h0 & m; h1 = h1 + s1 + c1; c1 = h1 >> 26; h1 = h1 & m
+    h2 = h2 + s2 + c1; c1 = h2 >> 26; h2 = h2 & m
+    h3 = h3 + s3 + c1; c1 = h3 >> 26; h3 = h3 & m
+    h4 = h4 + c + c1
+    c1 = h4 >> 26; h4 = h4 & m; h0 = h0 + c1 * 5
+    c1 = h0 >> 26; h0 = h0 & m; h1 = h1 + c1
+    c1 = h1 >> 26; h1 = h1 & m; h2 = h2 + c1
+    c1 = h2 >> 26; h2 = h2 & m; h3 = h3 + c1
+    c1 = h3 >> 26; h3 = h3 & m; h4 = h4 + c1
+    return L5(h0, h1, h2, h3, h4)
+}
+
+// 字节 → 2 位小写 hex。
+func hex2(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, (v >> 4) & 0xF) + str_char(hex, v & 0xF)
+}
+
+// 标签 5 肢 → 16 字节小端 hex。字节 j 位 8j..8j+7（可跨两肢）。
+func hex16(t: L5) -> string {
+    var out: string = ""
+    var j: i64 = 0
+    while j < 16 {
+        var bitlo = 8 * j
+        var li = bitlo / 26
+        var ro = bitlo % 26
+        var v: i64 = 0
+        if li == 0 {
+            v = t.a0
+        } else if li == 1 {
+            v = t.a1
+        } else if li == 2 {
+            v = t.a2
+        } else if li == 3 {
+            v = t.a3
+        } else {
+            v = t.a4
+        }
+        var byte = (v >> ro) & 0xFF
+        var need = ro + 8 - 26
+        if need > 0 {
+            var nxt: i64 = 0
+            if li + 1 == 1 {
+                nxt = t.a1
+            } else if li + 1 == 2 {
+                nxt = t.a2
+            } else if li + 1 == 3 {
+                nxt = t.a3
+            } else if li + 1 == 4 {
+                nxt = t.a4
+            }
+            byte = byte | (((nxt & ((1 << need) - 1)) << (8 - need)) & 0xFF)
+        }
+        out = out + hex2(byte & 0xFF)
+        j = j + 1
+    }
+    return out
+}
+
+// Poly1305 主入口：key=32 字节（64 位 hex），msg=原始字符串，返回 32 位 hex。
+pub func poly1305(key: string, msg: string) -> string {
+    var r = load_r(key)
+    var s = load_s(key)
+    var h = L5(0, 0, 0, 0, 0)
+    var n: i64 = len(msg)
+    var nblocks: i64 = (n + 15) / 16
+    var pos: i64 = 0
+    var b: i64 = 0
+    while b < nblocks {
+        var remb = n - pos
+        var cnt: i64 = 16
+        if remb < 16 {
+            cnt = remb
+        }
+        h = addmul(h, r, block_limbs(msg, pos, cnt))
+        pos = pos + cnt
+        b = b + 1
+    }
+    return hex16(finish(h, s))
+}
+
+}   // namespace rdu_poly

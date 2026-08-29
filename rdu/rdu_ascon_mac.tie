@@ -1,0 +1,223 @@
+type tie<class>
+// ============================================================================
+// rdu_ascon_mac.tie：嵌入式基础层（rdu）——Ascon-MAC-128（命名空间 rdu_ascon）
+// 定位：rdu = Reusable Device Utils，嵌入式无栈纯标量基础件。本模块为 std/ascon_mac
+//   的 rdu 版：**无查找表、无动态表、无全局可变状态**，320 位内态以值类型 struct
+//   （AsconS，10×i64 字段）承载。逻辑核心纯标量（仅位运算/移位/异或），编译产物
+//   .a 零运行时依赖，可在 MCU/裸机 freestanding 直链。
+// 接口：rdu_ascon.ascon_mac128(key: string, msg: string) -> string
+//   key：16 字节密钥（32 位 hex）；msg：原始字符串；返回 32 位 hex。
+//   （与 std 一致，接口承载字符串仅因任务签名要求；核心算法为纯标量。）
+// 算法：与 std/ascon_mac.tie 完全一致（Ascon 320 位 SP 置换，32 字节吸收 +
+//   S4 域分离，前 128 位标签），共用验证向量，探针比对两版输出一致。
+// 备注：本模块不 import 任何东西（rdu 零依赖纪律）。
+// ============================================================================
+
+// 值类型（纯 i64 字段，顶层定义，rdu 无栈纪律要求）。
+// 64 位字（hi/lo 两个 32 位半分）。
+struct Hilo {
+    var hi: i64
+    var lo: i64
+}
+
+// Ascon 320 位内态（5×64 位字，各以 hi/lo 表示）。
+struct AsconS {
+    var x0h: i64
+    var x0l: i64
+    var x1h: i64
+    var x1l: i64
+    var x2h: i64
+    var x2l: i64
+    var x3h: i64
+    var x3l: i64
+    var x4h: i64
+    var x4l: i64
+}
+
+namespace rdu_ascon {
+
+// 64 位逻辑右移 r 位（r 0..63）。
+func lsr64(ah: i64, al: i64, r: i64) -> Hilo {
+    if r == 0 {
+        return Hilo(ah, al)
+    }
+    if r < 32 {
+        return Hilo((ah >> r), ((al >> r) | (ah << (32 - r))))
+    }
+    if r == 32 {
+        return Hilo(0, ah)
+    }
+    return Hilo(0, (ah >> (r - 32)))
+}
+
+// 64 位逻辑左移 r 位（r 0..63）。
+func shl64(ah: i64, al: i64, r: i64) -> Hilo {
+    if r == 0 {
+        return Hilo(ah, al)
+    }
+    if r < 32 {
+        return Hilo(((ah << r) | (al >> (32 - r))), (al << r))
+    }
+    if r == 32 {
+        return Hilo(al, 0)
+    }
+    return Hilo((al << (r - 32)), 0)
+}
+
+// 64 位循环右移 r 位（r 1..63）；结果 hi/lo 各掩码到 32 位（防移位残留高位）。
+func rotr64(ah: i64, al: i64, r: i64) -> Hilo {
+    var a = lsr64(ah, al, r)
+    var b = shl64(ah, al, 64 - r)
+    return Hilo(((a.hi | b.hi) & 0xFFFFFFFF), ((a.lo | b.lo) & 0xFFFFFFFF))
+}
+
+// key[.. hex]第 idx 个字节（ASCII hex 对 → 0..255）。
+func byte_at(key: string, idx: i64) -> i64 {
+    var hex = "0123456789abcdef"
+    var hi: i64 = 0
+    var lo: i64 = 0
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(hex, i) == str_char(key, idx * 2) {
+            hi = i
+        }
+        if str_char(hex, i) == str_char(key, idx * 2 + 1) {
+            lo = i
+        }
+        i = i + 1
+    }
+    return (hi << 4) | lo
+}
+
+// 8 字节大端字的高/低 4 字节。
+func word_hi(key: string, base: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        v = ((v << 8) | byte_at(key, base + j)) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+func word_lo(key: string, base: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        v = ((v << 8) | byte_at(key, base + 4 + j)) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+
+// 读 4 字节大端（跨 原文/0x80 填充）→ 32 位值。
+func be32(msg: string, n: i64, gi: i64) -> i64 {
+    var v: i64 = 0
+    var j: i64 = 0
+    while j < 4 {
+        var g = gi + j
+        var byte: i64 = 0
+        if g < n {
+            byte = str_byte(msg, g)
+        } else if g == n {
+            byte = 0x80
+        }
+        v = ((v << 8) | byte) & 0xFFFFFFFF
+        j = j + 1
+    }
+    return v
+}
+
+// 第 b 个 32 字节块异或进 x0..x3。
+func xor_block(s: AsconS, msg: string, n: i64, b: i64) -> AsconS {
+    var base = b * 32
+    return AsconS(
+        s.x0h ^ be32(msg, n, base), s.x0l ^ be32(msg, n, base + 4),
+        s.x1h ^ be32(msg, n, base + 8), s.x1l ^ be32(msg, n, base + 12),
+        s.x2h ^ be32(msg, n, base + 16), s.x2l ^ be32(msg, n, base + 20),
+        s.x3h ^ be32(msg, n, base + 24), s.x3l ^ be32(msg, n, base + 28),
+        s.x4h, s.x4l)
+}
+
+// Ascon SP 置换 p^rounds。
+func perm(s: AsconS, rounds: i64) -> AsconS {
+    var r: i64 = 12 - rounds
+    var x0h = s.x0h; var x0l = s.x0l
+    var x1h = s.x1h; var x1l = s.x1l
+    var x2h = s.x2h; var x2l = s.x2l
+    var x3h = s.x3h; var x3l = s.x3l
+    var x4h = s.x4h; var x4l = s.x4l
+    while r < 12 {
+        x2l = x2l ^ (0xf0 - 15 * r)
+        x0h = x0h ^ x4h; x0l = x0l ^ x4l
+        x4h = x4h ^ x3h; x4l = x4l ^ x3l
+        x2h = x2h ^ x1h; x2l = x2l ^ x1l
+        var t0h = (0xFFFFFFFF ^ x0h) & x1h; var t0l = (0xFFFFFFFF ^ x0l) & x1l
+        var t1h = (0xFFFFFFFF ^ x1h) & x2h; var t1l = (0xFFFFFFFF ^ x1l) & x2l
+        var t2h = (0xFFFFFFFF ^ x2h) & x3h; var t2l = (0xFFFFFFFF ^ x2l) & x3l
+        var t3h = (0xFFFFFFFF ^ x3h) & x4h; var t3l = (0xFFFFFFFF ^ x3l) & x4l
+        var t4h = (0xFFFFFFFF ^ x4h) & x0h; var t4l = (0xFFFFFFFF ^ x4l) & x0l
+        x0h = x0h ^ t1h; x0l = x0l ^ t1l
+        x1h = x1h ^ t2h; x1l = x1l ^ t2l
+        x2h = x2h ^ t3h; x2l = x2l ^ t3l
+        x3h = x3h ^ t4h; x3l = x3l ^ t4l
+        x4h = x4h ^ t0h; x4l = x4l ^ t0l
+        x1h = x1h ^ x0h; x1l = x1l ^ x0l
+        x0h = x0h ^ x4h; x0l = x0l ^ x4l
+        x3h = x3h ^ x2h; x3l = x3l ^ x2l
+        x2h = x2h ^ 0xFFFFFFFF; x2l = x2l ^ 0xFFFFFFFF
+        var p1 = rotr64(x0h, x0l, 19)
+        var p2 = rotr64(x0h, x0l, 28)
+        x0h = x0h ^ p1.hi ^ p2.hi; x0l = x0l ^ p1.lo ^ p2.lo
+        p1 = rotr64(x1h, x1l, 61)
+        p2 = rotr64(x1h, x1l, 39)
+        x1h = x1h ^ p1.hi ^ p2.hi; x1l = x1l ^ p1.lo ^ p2.lo
+        p1 = rotr64(x2h, x2l, 1)
+        p2 = rotr64(x2h, x2l, 6)
+        x2h = x2h ^ p1.hi ^ p2.hi; x2l = x2l ^ p1.lo ^ p2.lo
+        p1 = rotr64(x3h, x3l, 10)
+        p2 = rotr64(x3h, x3l, 17)
+        x3h = x3h ^ p1.hi ^ p2.hi; x3l = x3l ^ p1.lo ^ p2.lo
+        p1 = rotr64(x4h, x4l, 7)
+        p2 = rotr64(x4h, x4l, 41)
+        x4h = x4h ^ p1.hi ^ p2.hi; x4l = x4l ^ p1.lo ^ p2.lo
+        r = r + 1
+    }
+    return AsconS(x0h & 0xFFFFFFFF, x0l & 0xFFFFFFFF, x1h & 0xFFFFFFFF, x1l & 0xFFFFFFFF,
+        x2h & 0xFFFFFFFF, x2l & 0xFFFFFFFF, x3h & 0xFFFFFFFF, x3l & 0xFFFFFFFF,
+        x4h & 0xFFFFFFFF, x4l & 0xFFFFFFFF)
+}
+
+// 32 位值 → 8 位小写 hex（大端 4 字节）。
+func hex32(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var p: i64 = 0
+    while p < 8 {
+        out = out + str_char(hex, (v >> (28 - p * 4)) & 0xF)
+        p = p + 1
+    }
+    return out
+}
+
+// Ascon-MAC-128 主入口：key=16 字节（32 位 hex），msg=原始字符串，返回 32 位 hex。
+pub func ascon_mac128(key: string, msg: string) -> string {
+    var s = AsconS(0x80808C00, 0x00000080, word_hi(key, 0), word_lo(key, 0),
+        word_hi(key, 8), word_lo(key, 8), 0, 0, 0, 0)
+    s = perm(s, 12)
+    var n: i64 = len(msg)
+    var pad_len: i64 = ((n + 32) / 32) * 32
+    var nblocks: i64 = pad_len / 32
+    var b: i64 = 0
+    while b < nblocks {
+        s = xor_block(s, msg, n, b)
+        if b < nblocks - 1 {
+            s = perm(s, 12)
+        }
+        b = b + 1
+    }
+    s.x4l = s.x4l ^ 1   // S4 低字异或 1（域分离）
+    s = perm(s, 12)
+    return hex32(s.x0h) + hex32(s.x0l) + hex32(s.x1h) + hex32(s.x1l)
+}
+
+}   // namespace rdu_ascon
