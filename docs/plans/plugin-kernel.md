@@ -67,13 +67,13 @@
 
 ---
 
-## S5 blake2 核心库 + 凭证/指纹审计链
+## S5 TSHA1 审计链底座 + 凭证/指纹审计链
 
 | 小任务 | 内容 | 验收 |
 |---|---|---|
-| S5.1 | 核心 `compiler/lib/blake2.tie`：BLAKE2s-256 + BLAKE2b-512 纯 tie 实现 | RFC 官方测试向量探针绿（empty/abc/4096 长度） |
-| S5.2 | 指纹计算：publish 侧递归 BLAKE2s per-file → BLAKE2b tree root，写入 `tie.pkg hash` + lock | 篡改单文件 → 指纹不匹配定位 |
-| S5.3 | 凭证：包内 pubkey + package.sig（Ed25519；先评估纯 tie 实现 vs extern 系统库，评估结论记录在案） | 冒名包负例拦截 |
+| S5.1 | 核心 TSHA1 底座定位：tsha1f（文件指纹）+ tsha1x（包树根）随 `std/tsha1.tie` 交付（f/b/x/r 四档已落库）；核实审计链第①道归属（核心单向依赖约束下在 lib/ 或 std 的取舍记录在案） | TSHA1 官方向量探针绿（empty/abc/边界/48 进制往返） |
+| S5.2 | 指纹计算：publish 侧递归 **tsha1f per-file → tsha1x tree root**，写入 `tie.pkg hash` + lock | 篡改单文件 → 指纹不匹配定位 |
+| S5.3 | 凭证：包内 pubkey + package.sig（**Ed25519 纯 tie 已落库**，std/ed25519.tie，RFC 8032 向量绿） | 冒名包负例拦截 |
 | S5.4 | TOFU：首次 fp 确认 → 固化 tie.lock；同 id 异 fp 拦截 | 冒名重放负例拦截 |
 | S5.5 | 审计链全序接入（①指纹②验签③fp④IR 版本⑤id/version⑥字段⑦依赖⑧仲裁） | 恶意包样例（tests/custom_role 扩展）全拦截 |
 | S5.6 | 回归 + 提交 | 提交一次 |

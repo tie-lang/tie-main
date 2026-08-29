@@ -17,7 +17,7 @@
 | 管理和版本化 | 每个注册模块（插件/包）携带稳定 **id** 与 **version**（双版本：语言版本 + 包版本） |
 | 配置形态 | 开发态 `tie:data`（明文）；分发态 `tie:zd`（压缩变体，体积小 + 增加修改难度） |
 | 凭证 | 每个包自带凭证（类似签名、与代码无关的包属性）；**去中心化**信任锚（无官方 registry 亦安全） |
-| 指纹 | 每次发行以 BLAKE2 家族生成特征记录包中：**单文件 BLAKE2s-256，整包树根 BLAKE2b-512** |
+| 指纹 | 每次发行以 **TSHA1 家族**生成特征记录包中：**单文件 tsha1f，整包树根 tsha1x** |
 
 ## 2. 架构：核心边界
 
@@ -31,7 +31,7 @@ IR/类型内核、安全哈希底座。一切行为一律是注册项。
 ├── registry     通用注册表（名称/字段 → kind → 实现引用）
 ├── auditor      安全审计器（字段白名单 / 未知字段拦截 / 版本+哈希+验签）
 ├── executor     管线执行骨架（按注册的管线数据分派已注册 pass）
-├── lib/blake2   BLAKE2s-256 + BLAKE2b-512（审计链底座，纯 tie 实现）
+├── lib/tsha     TSHA1 族底座：tsha1f（文件指纹）+ tsha1x（包树根，纯 tie 实现）
 ├── tieir 读取器 / dispatch 分派表 / columnar / interner / types
 └── 内建引导集（随二进制嵌入，boot 最先注册——保证自举无外部依赖）
 ```
@@ -94,18 +94,19 @@ IR/类型内核、安全哈希底座。一切行为一律是注册项。
 
 ```
 fingerprint = {
-  perfile: { "src/a.tie": BLAKE2s-256, "data.zd": BLAKE2s-256, ... },  // 单文件哈希
-  root:    BLAKE2b-512(tree_hash)                                      // 包树根哈希，签名对象
+  perfile: { "src/a.tie": tsha1f, "data.zd": tsha1f, ... },  // 单文件哈希
+  root:    tsha1x(tree_hash)                                 // 包树根哈希，签名对象
 }
 ```
 
-- 发行时（`tie publish`）：递归计算 BLAKE2 写入 `tie.pkg hash` + tie.lock 固化
+- 发行时（`tie publish`）：递归计算 TSHA1 写入 `tie.pkg hash` + tie.lock 固化
 - 加载时：加载器重算文件哈希与 fingerprint 比对；不符 → [audit] 拦截（定位到具体文件）
-- **BLAKE2s-256**（32 字节，32 位优化、快）用于单文件级海量小哈希；
-  **BLAKE2b-512**（64 字节，64 位优化、抗碰撞最强）用于整包树根与凭证签名对象
-- 无 MD5/SHA-1 碰撞弱点、无长度扩展攻击面；BLAKE2s/b 共享轮函数（实现量适中）
-- 实现归属：核心 `lib/blake2.tie`（审计链第①道不可绕过；放 std 会破坏核心单向依赖）；
-  发布侧复用同一实现（两侧算法不漂移）
+- **tsha1f**（快速档，B 骨架，速度优先）用于单文件级海量小哈希；
+  **tsha1x**（加强档，f+b 排列组合再算，抗破解最强）用于整包树根与凭证签名对象
+- TSHA1 为 tie 自有安全哈希（ARX + trit 混合），默认 48 进制输出（`_hex` 可选）；
+  tsha1f 干净轻快适批量、tsha1x 强度最高适签名对象（设计见 §6.6）
+- 实现归属：核心 `lib/tsha` / 或随 `std/tsha1.tie` 交付（审计链第①道不可绕过；
+  放 std 会破坏核心单向依赖——以 §6.6 落库位置为准）；发布侧复用同一实现（两侧不漂移）
 
 ### 5.2 凭证（谁发的）——认证，去中心化
 
@@ -116,7 +117,7 @@ tie.pkg（凭证区，包自带）
 ├── publisher: my_pkg_org
 ├── pubkey:    <Ed25519 公钥>       # 随包走（自包含）
 ├── pubkey_fp: a1b2…c3d4 (16B)      # 公钥指纹（身份锚）
-└── package.sig                     # 签名块：私钥对 root(BLAKE2b-512) 的签名
+└── package.sig                     # 签名块：私钥对 root(tsha1x) 的签名
 ```
 
 **验证链（无官方 registry 亦安全）**：
@@ -134,7 +135,7 @@ tie.pkg（凭证区，包自带）
 ### 5.3 验证顺序（完整审计链，任一环失败即拦截）
 
 ```
-① 指纹树重算（BLAKE2s per-file + BLAKE2b root）
+① 指纹树重算（tsha1f per-file + tsha1x root）
 ② 包内验签（pubkey 对 root 签名）
 ③ fp 与 tie.lock 锚一致性（首次 = 提示信任）
 ④ IR 版本 → ⑤ id/version 合法性 → ⑥ 字段白名单 → ⑦ 依赖解析 → ⑧ 注册冲突仲裁
@@ -146,8 +147,8 @@ tie.pkg（凭证区，包自带）
 |---|---|
 | S3.4 三层分离 | 验签 + 指纹 + 字段审计全部收敛进加载器审计链；插件无感知、无回调 |
 | P5c（签名/哈希校验，已定稿未实现） | 本设计即 P5c 落地形态，实现时回填 package-model.md |
-| tieir_ser.hash_bytes（FNV-1a） | 仅保留为 tieir 段完整性低强校验；安全哈希统一走 BLAKE2（职责分离） |
-| std/crypto（crc32/fnv1a） | 非密码学安全，不进安全链；BLAKE2 新建于核心 lib/ |
+| tieir_ser.hash_bytes（FNV-1a） | 仅保留为 tieir 段完整性低强校验；安全哈希统一走 TSHA1（tsha1f/tsha1x，职责分离） |
+| std/crypto（crc32/fnv1a） | 非密码学安全，不进安全链；TSHA1 已落 std/tsha1.tie（f/b/x/r 四档） |
 | ext/codec（zstd/lz4/brotli） | zd 压缩继续用 codec |
 
 ## 6. 落地顺序与验收（对齐先小任务后回归的工作流）
@@ -158,7 +159,7 @@ tie.pkg（凭证区，包自带）
 | S2 | id+version：注册项 schema 表驱动 + 同 id 异 version 仲裁 | 注册冲突负例正确拦截 |
 | S3 | tieir 消费入口：import tieir 包（消费方免前端） | 包 .tieir → 编译运行通过 |
 | S4 | data→zd 发布转换（publish 压缩 + 指纹计算） | zd 包加载运行与 data 等价 |
-| S5 | blake2 核心库（BLAKE2s-256/BLAKE2b-512，验证向量探针）→ 凭证+指纹审计链（指纹树→验签→fp 锚定 lock） | RFC 测试向量探针绿；篡改/冒名包负例全拦截 |
+| S5 | TSHA1 审计链接入（文件 tsha1f + 包树根 tsha1x，验证向量探针）→ 凭证+指纹审计链（指纹树→验签→fp 锚定 lock） | TSHA1 向量探针绿；篡改/冒名包负例全拦截 |
 | S6 | CLI 子命令注册化 + 库树收敛（std/ext/rdu ↔ lib_v1 定位） | 全命令行按注册项分派 |
 
 ## 6.5 安全算法底座（并行于 S1–S6 的前置任务）
@@ -179,7 +180,7 @@ tie.pkg（凭证区，包自带）
 | TSHA 族 | 见 §6.6 | std（核心） |
 
 **执行纪律**：实现委托子代理（每类一个，防上下文过长）；每步自举 + regress-s21 零回归；
-BLAKE2 优先（S5 前置依赖）后按类推进。
+TSHA1 优先（tsha1f 文件指纹 / tsha1x 包树根，审计链前置依赖）后按类推进。
 
 ## 6.6 TSHA（tie 自有哈希，tsha1 代）
 
