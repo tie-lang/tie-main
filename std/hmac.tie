@@ -1,0 +1,328 @@
+type tie<class>
+// ============================================================================
+// hmac.tie：标准库——HMAC-SHA256（基于哈希的消息认证码，命名空间 hmac）
+// 用途：消息完整性 + 来源认证（带密钥的 MAC），供插件审计链与平台鉴权使用。
+// 接口：hmac.hmac_sha256(key: string, msg: string) -> string
+//   返回 64 位十六进制小写标签。
+//
+// == 输入约定（重要）==
+//   key 与 msg 均为**十六进制小写字符串**（字节级的十六进制编码），逐字节参与
+//   计算。HMAC 是字节导向算法（RFC 2104 / RFC 4231），密钥与消息常含非 ASCII
+//   字节（如 RFC 4231 向量 key=0x0b×20、msg=0xdd×50），tie 字符串按 UTF-8 存
+//   储无法直接承载任意 ≥0x80 的原始字节，故约定以十六进制字符串传入——
+//   例：文本 "Hi There" 需传其十六进制 "4869205468657265"。
+//   这是对 sha256/blake2（直接吃原始字符串）的对称泛化：前者对自然字符串友好，
+//   HMAC 向量多为二进制，hex 输入可无损表达任意字节序列。
+//
+// 算法（RFC 2104 / RFC 4231）：
+//   1. keypad = key —— 若 len(key_bytes) > 64（块长 B）：先用 SHA-256 压缩到
+//      32 字节；否则保持原字节；随后**零填充到 64 字节**。
+//   2. ipad = keypad ^ 0x36（64 字节）；opad = keypad ^ 0x5c（64 字节）。
+//   3. inner = SHA-256( ipad || msg )。
+//   4. tag  = SHA-256( opad || inner )，输出 32 字节 → 64 位 hex。
+//
+// 内部 SHA-256 为"字节表版"（操作原始字节表），与 std/sha256.tie 算法一致
+// （FIPS 180-4：K/H 常量 + 0x80 填充 + 64 位大端长度 + 64 轮压缩），但不改写
+// 既有 sha256.tie —— 本模块内自带一份对字节序列直接求哈希的 SHA-256。
+//
+// 标准向量（RFC 4231 前三个，已核对）：
+//   HMAC(0x0b×20, "Hi There")                       = b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7
+//   HMAC("Jefe", "what do ya want for nothing?") = 5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843
+//   HMAC(0xaa×20, 0xdd×50)                          = 773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe
+//   其中 0x0b×20 传 40 位 hex "0b0b...0b"，"Hi There" 传 hex "4869205468657265"。
+// 备注：命名空间内互调为裸调用（Harbor M2.1.6），内部函数不加 hmac_ 前缀。
+// ============================================================================
+
+// 顶层常量（懒构建）：SHA-256 轮常量与初始状态。
+var hm_k: table<i64>;    // 64 个 K 轮常量（32 位）
+var hm_h: table<i64>;    // 初始状态 H[0..7]
+
+namespace hmac {
+
+// 惰性构建 SHA-256 轮常量 K[0..63]（前 64 个素数立方根小数，512 hex 字符）。
+func ensure_k() {
+    if len(hm_k) > 0 {
+        return
+    }
+    var ks = "428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5" +
+             "d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174" +
+             "e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da" +
+             "983e5152a831c66db00327c8bf597fc7c6e00bf3d5a7914706ca635114292967" +
+             "27b70a852e1b21384d2c6dfc53380d13650a7354766a0abb81c2c92e92722c85" +
+             "a2bfe8a1a81a664bc24b8b70c76c51a3d192e819d6990624f40e3585106aa070" +
+             "19a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3" +
+             "748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2"
+    var i: i64 = 0
+    while i < 64 {
+        table_push(hm_k, parse_hex32(substr(ks, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+// 惰性构建初始状态 H[0..7]（前八个素数平方根小数，64 hex 字符）。
+func ensure_h() {
+    if len(hm_h) > 0 {
+        return
+    }
+    var hs = "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19"
+    var i: i64 = 0
+    while i < 8 {
+        table_push(hm_h, parse_hex32(substr(hs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+// 截取字符串 [a, b)（码点区间）——内联实现（不依赖 string.tie）。
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 单字符十六进制数字（0..15）；非十六进制返回 0（仅用于解析内部常量/hex 输入）。
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 解析 8 个 hex 字符为 32 位 i64（恒 <2^32 正数）。
+func parse_hex32(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        v = ((v << 4) | hex_nibble(str_char(s, i))) & 0xFFFFFFFF
+        i = i + 1
+    }
+    return v
+}
+
+// hex 字符串 → 字节表（每 2 位 hex 一个字节 0..255）。
+func hex_to_bytes(h: string) -> table<i64> {
+    var n: i64 = len(h) / 2
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i * 2))
+        var lo = hex_nibble(str_char(h, i * 2 + 1))
+        table_push(t, (hi << 4) | lo)
+        i = i + 1
+    }
+    return t
+}
+
+// 字节 → 2 位小写 hex。
+func hex2(v: i64) -> string {
+    var hex = "0123456789abcdef"
+    return str_char(hex, (v >> 4) & 0xF) + str_char(hex, v & 0xF)
+}
+
+// 字节表 → 连续小写 hex 字符串。
+func hex_bytes(t: table<i64>) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(t) {
+        out = out + hex2(t[i])
+        i = i + 1
+    }
+    return out
+}
+
+// 32 位循环右移 n 位。v 恒 < 2^32 正数 → v>>n 即逻辑右移（见头部数值安全论证）。
+func rr(v: i64, n: i64) -> i64 {
+    return ((v >> n) | (v << (32 - n))) & 0xFFFFFFFF
+}
+
+// 字节表在逻辑填充位置 pos 处的字节值：<n 取表字节，n 处 0x80，长度区取 64 位
+// 大端比特长度的字节（len_hi 高 4 字节、len_lo 低 4 字节），其余补 0。
+func pad_byte(m: table<i64>, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, pos: i64) -> i64 {
+    if pos < n {
+        return m[pos]
+    }
+    if pos == n {
+        return 0x80
+    }
+    if pos >= pad_len - 8 {
+        var idx = pos - (pad_len - 8)
+        var val: i64 = len_hi
+        if idx >= 4 {
+            val = len_lo
+            idx = idx - 4
+        }
+        return (val >> (24 - idx * 8)) & 0xFF
+    }
+    return 0
+}
+
+// 对单个 64 字节消息块做一次 SHA-256 压缩，就地累加状态 h[0..7]。
+// 字节源为字节表 m（跨 原文/填充 用 pad_byte 按全局位置取字节）。
+func compress_block(h: ref table<i64>, m: table<i64>, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, block: i64, w: ref table<i64>) {
+    var i: i64 = 0
+    while i < 16 {
+        var word: i64 = 0
+        var j: i64 = 0
+        while j < 4 {
+            var pos = block * 64 + i * 4 + j
+            var byte: i64 = pad_byte(m, n, pad_len, len_hi, len_lo, pos)
+            word = ((word << 8) | byte) & 0xFFFFFFFF
+            j = j + 1
+        }
+        w[i] = word
+        i = i + 1
+    }
+    i = 16
+    while i < 64 {
+        var s0 = rr(w[i - 15], 7) ^ rr(w[i - 15], 18) ^ (w[i - 15] >> 3)
+        var s1 = rr(w[i - 2], 17) ^ rr(w[i - 2], 19) ^ (w[i - 2] >> 10)
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 0xFFFFFFFF
+        i = i + 1
+    }
+
+    var aa: i64 = h[0]; var bb: i64 = h[1]; var cc: i64 = h[2]; var dd: i64 = h[3]
+    var ee: i64 = h[4]; var ff: i64 = h[5]; var gg: i64 = h[6]; var hh: i64 = h[7]
+    var m32: i64 = 0xFFFFFFFF
+    var t: i64 = 0
+    while t < 64 {
+        var sum1: i64 = rr(ee, 6) ^ rr(ee, 11) ^ rr(ee, 25)
+        var ch: i64 = (ee & ff) ^ ((ee ^ m32) & gg)
+        var t1: i64 = (hh + sum1 + ch + hm_k[t] + w[t]) & m32
+        var sum0: i64 = rr(aa, 2) ^ rr(aa, 13) ^ rr(aa, 22)
+        var maj: i64 = (aa & bb) ^ (aa & cc) ^ (bb & cc)
+        var t2: i64 = (sum0 + maj) & m32
+        hh = gg; gg = ff; ff = ee
+        ee = (dd + t1) & m32
+        dd = cc; cc = bb; bb = aa
+        aa = (t1 + t2) & m32
+        t = t + 1
+    }
+    h[0] = (h[0] + aa) & m32
+    h[1] = (h[1] + bb) & m32
+    h[2] = (h[2] + cc) & m32
+    h[3] = (h[3] + dd) & m32
+    h[4] = (h[4] + ee) & m32
+    h[5] = (h[5] + ff) & m32
+    h[6] = (h[6] + gg) & m32
+    h[7] = (h[7] + hh) & m32
+}
+
+// SHA-256 字节表版：对字节表 m 求摘要，返回 32 字节表（大端）。
+func sha_bytes(m: table<i64>) -> table<i64> {
+    ensure_h()
+    ensure_k()
+    var m32: i64 = 0xFFFFFFFF
+    var n: i64 = len(m)
+    var bits: i64 = n * 8
+    var len_hi: i64 = (bits >> 32) & m32
+    var len_lo: i64 = bits & m32
+    var pad_len: i64 = ((n + 72) / 64) * 64
+    var num_blocks: i64 = pad_len / 64
+
+    var h = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(h, hm_h[i])
+        i = i + 1
+    }
+    var w = table_new_i64()
+    i = 0
+    while i < 64 {
+        table_push(w, 0)
+        i = i + 1
+    }
+    var blk: i64 = 0
+    while blk < num_blocks {
+        compress_block(h, m, n, pad_len, len_hi, len_lo, blk, w)
+        blk = blk + 1
+    }
+    var out = table_new_i64()
+    i = 0
+    while i < 8 {
+        var v = h[i]
+        var b4: i64 = 0
+        while b4 < 4 {
+            table_push(out, (v >> (24 - b4 * 8)) & 0xFF)
+            b4 = b4 + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// 建 keypad 64 字节：key 字节（hex）≤64 时零填充到 64；>64 先 SHA-256 压缩成 32 字节再零填充。
+func build_keypad(key: string) -> table<i64> {
+    var kb = hex_to_bytes(key)
+    var kp = table_new_i64()
+    if len(kb) > 64 {
+        var dig = sha_bytes(kb)
+        var i: i64 = 0
+        while i < 32 {
+            table_push(kp, dig[i])
+            i = i + 1
+        }
+        i = 32
+        while i < 64 {
+            table_push(kp, 0)
+            i = i + 1
+        }
+    } else {
+        var i: i64 = 0
+        while i < 64 {
+            if i < len(kb) {
+                table_push(kp, kb[i])
+            } else {
+                table_push(kp, 0)
+            }
+            i = i + 1
+        }
+    }
+    return kp
+}
+
+// 64 字节表逐字节异或常量 val（ipad=0x36 / opad=0x5c）。
+func xorb(kp: table<i64>, val: i64) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < 64 {
+        table_push(t, kp[i] ^ val)
+        i = i + 1
+    }
+    return t
+}
+
+// 字节表拼接。
+func concat(a: table<i64>, b: table<i64>) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < len(a) {
+        table_push(t, a[i])
+        i = i + 1
+    }
+    i = 0
+    while i < len(b) {
+        table_push(t, b[i])
+        i = i + 1
+    }
+    return t
+}
+
+// HMAC-SHA256 主入口：key / msg 均为十六进制小写字符串，返回 64 位小写 hex。
+pub func hmac_sha256(key: string, msg: string) -> string {
+    var kp = build_keypad(key)
+    var ipad = xorb(kp, 0x36)
+    var opad = xorb(kp, 0x5c)
+    var inner = sha_bytes(concat(ipad, hex_to_bytes(msg)))
+    var outer = sha_bytes(concat(opad, inner))
+    return hex_bytes(outer)
+}
+
+}   // namespace hmac

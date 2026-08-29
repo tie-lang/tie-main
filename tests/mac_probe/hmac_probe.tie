@@ -1,0 +1,54 @@
+type tie<logic>
+// hmac 探针：RFC 4231 前三个验证向量（HMAC-SHA256）。
+// 输入约定：hmac.hmac_sha256 的 key/msg 均为 hex 小写字符串（字节级）。
+// 期望输出：三组 PASS + "hmac 探针全部通过"。
+import "../../std/hmac.tie"
+using hmac;
+
+// 便捷断言：打印 PASS/FAIL 并比较
+func check(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+        println("     want=" + want)
+        exit(1)
+    }
+}
+
+// ASCII 文本 → hex 小写字符串（逐字节）。
+func to_hex(s: string) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    var hex = "0123456789abcdef"
+    while i < len(s) {
+        var b = str_byte(s, i)
+        out = out + str_char(hex, (b >> 4) & 0xF) + str_char(hex, b & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+// 十六进制字节对重复 n 次（拼成连续的 hex 串）。
+func rep2(pair: string, n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + pair
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // RFC 4231 test case 1：key=0x0b×20，msg="Hi There"
+    check("tc1", hmac.hmac_sha256(rep2("0b", 20), to_hex("Hi There")),
+        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+    // RFC 4231 test case 2：key="Jefe"，msg="what do ya want for nothing?"
+    check("tc2", hmac.hmac_sha256(to_hex("Jefe"), to_hex("what do ya want for nothing?")),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+    // RFC 4231 test case 3：key=0xaa×20，msg=0xdd×50
+    check("tc3", hmac.hmac_sha256(rep2("aa", 20), rep2("dd", 50)),
+        "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe")
+    println("hmac 探针全部通过")
+}
