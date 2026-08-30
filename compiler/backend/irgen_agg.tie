@@ -279,6 +279,96 @@ func tig_box_any(v: i64, vty: i64) -> i64 {
     return ir.get_value(ld)
 }
 
+// P2b 拆箱：any 值 v → 目标类型 vty（运行时 tag 检查；不匹配 → 运行时错误）。
+// 与 tig_box_any 的 tag 约定对称：0=i64/整数 1=f64 2=bool 3=string 4=char。
+// 结构：any 值落 alloca → 读 tag@[0] → icmp 期望 tag → 匹配块取 payload@[1]
+//（bool/char 槽存 i64，从 i64 槽 load 后 trunc 还原 i1/i32）；不匹配块
+// printf（含期望类型名 + 实际 tag）+ exit(1)（+ 死 br 满足 terminator）。
+// 供 as_* 内置（T3）调用；返回 payload 值 id，调用后 g_cur_block = 匹配块。
+func tig_unbox_any(v: i64, vty: i64, fname: string) -> i64 {
+    var any_ty = types.named(TK_ANY)
+    var T64 = types.named(TK_I64)
+    // 期望 tag（与 tig_box_any 对称）
+    var exp_tag: i64 = 0
+    if vty == types.named(TK_STR) {
+        exp_tag = 3
+    } else if vty == types.named(TK_F64) {
+        exp_tag = 1
+    } else if vty == types.named(TK_BOOL) {
+        exp_tag = 2
+    } else if vty == types.named(TK_CHAR) {
+        exp_tag = 4
+    }
+    // payload 槽 LLVM 类型：f64 存 double、string 存 ptr；bool/char/i64 存 i64
+    var plty: i64 = T64
+    if vty == types.named(TK_F64) {
+        plty = types.named(TK_F64)
+    } else if vty == types.named(TK_STR) {
+        plty = types.named(TK_STR)
+    }
+    // any 值落 alloca（v 是聚合寄存器，须落内存供 GEP 寻址）
+    var slot = ir.new_inst(g_cur_block, 20, any_ty)
+    ir.add_operand(slot, any_ty, 2)
+    var sp = ir.get_value(slot)
+    var st = ir.new_inst(g_cur_block, 22, -1)
+    ir.add_operand(st, any_ty, 2)
+    ir.add_operand(st, v, 0)
+    ir.add_operand(st, sp, 0)
+    // 读 tag @[0]
+    var g0 = ir.new_inst(g_cur_block, 27, any_ty)  // agg_gep 字段 0
+    ir.add_operand(g0, sp, 0)
+    ir.add_operand(g0, 0, 2)
+    var g0p = ir.get_value(g0)
+    var ld0 = ir.new_inst(g_cur_block, 21, T64)
+    ir.add_operand(ld0, g0p, 0)
+    var tag_v = ir.get_value(ld0)
+    // 期望 tag 常量 + icmp eq（对齐 tig_box_any：常量先存变量再 add_operand）
+    var expv = tig_int_lit_ty(exp_tag, T64)
+    var cmp = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp eq
+    ir.add_operand(cmp, tag_v, 0)
+    ir.add_operand(cmp, expv, 0)
+    ir.add_operand(cmp, 0, 2)  // 比较码 eq
+    var cmp_v = ir.get_value(cmp)
+    // 分支 ok/fail
+    var okblk = ir.new_block(g_cur_func, interner.intern("as.ok"))
+    var failblk = ir.new_block(g_cur_func, interner.intern("as.fail"))
+    var cb = ir.new_inst(g_cur_block, 31, -1)  // cond_br
+    ir.add_operand(cb, cmp_v, 0)
+    ir.add_operand(cb, okblk, 1)
+    ir.add_operand(cb, failblk, 1)
+    // failblk：printf（期望类型名 + 实际 tag）+ exit(1)（+ 死 br 满足 terminator）
+    g_cur_block = failblk
+    var fmt = interner.intern(fname + ": any 值类型不匹配（期望 " + types.type_name(vty) + "，实际 tag=%lld）\n")
+    var pinst = ir.new_inst(g_cur_block, 41, types.named(TK_I32))  // call_vararg
+    ir.add_operand(pinst, fmt, 0)
+    ir.add_operand(pinst, tag_v, 0)
+    var one = tig_int_lit_ty(1, types.named(TK_I64))
+    tig_ext_call1("exit", one, types.named(TK_I64), -1)
+    var db = ir.new_inst(g_cur_block, 30, -1)  // br okblk（死代码）
+    ir.add_operand(db, okblk, 1)
+    // okblk：load payload + bool/char trunc 还原
+    g_cur_block = okblk
+    var g1 = ir.new_inst(g_cur_block, 27, any_ty)  // agg_gep 字段 1
+    ir.add_operand(g1, sp, 0)
+    ir.add_operand(g1, 1, 2)
+    var g1p = ir.get_value(g1)
+    var ld1 = ir.new_inst(g_cur_block, 21, plty)
+    ir.add_operand(ld1, g1p, 0)
+    var pv = ir.get_value(ld1)
+    if vty == types.named(TK_BOOL) {
+        var tr = ir.new_inst(g_cur_block, 37, types.named(TK_BOOL))  // trunc i64→i1
+        ir.add_operand(tr, T64, 2)
+        ir.add_operand(tr, pv, 0)
+        pv = ir.get_value(tr)
+    } else if vty == types.named(TK_CHAR) {
+        var tr2 = ir.new_inst(g_cur_block, 37, types.named(TK_CHAR))  // trunc i64→i32
+        ir.add_operand(tr2, T64, 2)
+        ir.add_operand(tr2, pv, 0)
+        pv = ir.get_value(tr2)
+    }
+    return pv
+}
+
 // struct 名判定（构造调用：Call 名命中 st_keys）
 func is_struct_name(nm: string) -> bool {
     var nid = interner.intern(nm)

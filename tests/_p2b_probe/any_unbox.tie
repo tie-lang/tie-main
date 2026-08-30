@@ -1,0 +1,20 @@
+type tie<logic>
+// P2b 探针：as_* 拆箱（运行时 tag 检查）
+func main() {
+    var x: any = 42
+    var f: any = 3.14
+    var s: any = "hi"
+    var b: any = true
+    var c: any = 'A'
+    println(as_i64(x))
+    println(as_f64(f))
+    println(as_string(s))
+    println(as_bool(b))
+    println(as_char(c))
+    // 异构表读取 + 拆箱
+    var t: table<any> = [1, "a", true, 2.5]
+    println(as_i64(t[0]))
+    println(as_string(t[1]))
+    println(as_bool(t[2]))
+    println(as_f64(t[3]))
+}

@@ -415,6 +415,10 @@ func is_builtin_name(nm: string) -> bool {
     if nm == "len" {
         return true
     }
+    // P2b：any 拆箱转换（运行时 tag 检查；不匹配 → 运行时错误）
+    if nm == "as_i64" || nm == "as_f64" || nm == "as_bool" || nm == "as_string" || nm == "as_char" {
+        return true
+    }
     if nm == "table_new_i64" || nm == "table_new_f64" || nm == "table_new_string" || nm == "table_new_bool" {
         return true
     }
@@ -1034,6 +1038,16 @@ func builtin_expr(nm: string, id: i64) -> i64 {
             return -1
         }
         var at = node_types[call_arg(id, 0)]
+        // P2b：as_i64/as_f64 重载——参数是 any → 拆箱（运行时 tag 检查，
+        // 不匹配 → 运行时错误）；数字 → 下方数值转换
+        if at == types.named(TK_ANY) {
+            var ux = tig_unbox_any(av, as_dst, nm)
+            if ux < 0 {
+                return -1
+            }
+            g_builtin_res = ux
+            return 0
+        }
         if at >= 0 && at != as_dst && (types.is_int(at) || types.is_float(at)) {
             var cv = tig_coerce(av, at, as_dst)
             if cv < 0 {
@@ -1598,6 +1612,31 @@ func builtin_expr(nm: string, id: i64) -> i64 {
             return -1
         }
         g_builtin_res = s21_table_len(v2)
+        return 0
+    }
+    // P2b：any 拆箱（as_bool/as_string/as_char——仅 any 参数；as_i64/as_f64
+    // 已在上方 as_dst 块重载处理）。运行时 tag 检查，不匹配 → 运行时错误退出
+    if nm == "as_bool" || nm == "as_string" || nm == "as_char" {
+        var a0 = call_arg(id, 0)
+        var av = tig_expr(a0)
+        if av < 0 {
+            return -1
+        }
+        var rty: i64 = types.named(TK_I64)
+        if nm == "as_f64" {
+            rty = types.named(TK_F64)
+        } else if nm == "as_bool" {
+            rty = types.named(TK_BOOL)
+        } else if nm == "as_string" {
+            rty = types.named(TK_STR)
+        } else if nm == "as_char" {
+            rty = types.named(TK_CHAR)
+        }
+        var ux = tig_unbox_any(av, rty, nm)
+        if ux < 0 {
+            return -1
+        }
+        g_builtin_res = ux
         return 0
     }
     if nm == "table_new_i64" || nm == "table_new_f64" || nm == "table_new_string" || nm == "table_new_bool" {

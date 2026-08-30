@@ -190,6 +190,29 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_I64)
     }
+    // P2b：any 拆箱转换（as_*：1 参 any → 具体类型；实参类型由调用点检查）
+    if fn_name == "as_i64" || fn_name == "as_f64" || fn_name == "as_bool" ||
+        fn_name == "as_string" || fn_name == "as_char" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = fn_name + "() 期望 1 个参数（any），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        if fn_name == "as_f64" {
+            return types.named(TK_F64)
+        }
+        if fn_name == "as_bool" {
+            return types.named(TK_BOOL)
+        }
+        if fn_name == "as_string" {
+            return types.named(TK_STR)
+        }
+        if fn_name == "as_char" {
+            return types.named(TK_CHAR)
+        }
+        return types.named(TK_I64)
+    }
     if fn_name == "str_len" || fn_name == "str_char" || fn_name == "char_code" {
         if fn_name == "str_len" {
             if nargs != 1 {

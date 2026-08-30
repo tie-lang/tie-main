@@ -400,19 +400,37 @@ pub func infer_call(id: i64) -> i64 {
             g_typed = g_typed + 1
             return node_types[id]
         }
-        // as_* 特殊检查（S1.3）：参数必须是数字（整数/浮点），转换才有意义
+        // as_* 特殊检查（S1.3 数值转换 + P2b any 拆箱重载）：
+        // 数字参数 → 数值转换；any 参数 → 拆箱（运行时 tag 检查）。
+        // as_bool/as_string/as_char 仅支持 any（无数值转换语义）。
+        var as_is_any_only: bool = false
+        if fnm == "as_bool" || fnm == "as_string" || fnm == "as_char" {
+            as_is_any_only = true
+        }
         if fnm == "as_i8" || fnm == "as_i16" || fnm == "as_i32" || fnm == "as_i64" ||
             fnm == "as_u8" || fnm == "as_u16" || fnm == "as_u32" || fnm == "as_u64" ||
             fnm == "as_f32" || fnm == "as_f64" ||
-            fnm == "as_i128" || fnm == "as_u128" {
+            fnm == "as_i128" || fnm == "as_u128" || as_is_any_only {
             var a_ty = infer_expr(args[0])
             if a_ty < 0 {
+                return -1
+            }
+            if a_ty == types.named(TK_ANY) {
+                // P2b：any 拆箱——返回目标类型（br 已由 builtin_call 给定）
+                node_types[id] = br
+                g_typed = g_typed + 1
+                return br
+            }
+            if as_is_any_only {
+                sm_err_line = s_lines[id]
+                sm_err_col = s_cols[id]
+                sm_err_msg = fnm + "() 参数必须是 any，实际是 " + types.type_name(a_ty)
                 return -1
             }
             if !types.is_number(a_ty) {
                 sm_err_line = s_lines[id]
                 sm_err_col = s_cols[id]
-                sm_err_msg = fnm + "() 参数必须是数字（整数/浮点），实际是 " + types.type_name(a_ty)
+                sm_err_msg = fnm + "() 参数必须是数字（整数/浮点）或 any，实际是 " + types.type_name(a_ty)
                 return -1
             }
             node_types[id] = br

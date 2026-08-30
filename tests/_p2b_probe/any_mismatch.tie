@@ -1,0 +1,7 @@
+type tie<logic>
+// P2b 探针：as_* 拆箱 tag 不匹配 → 运行时错误（期望 stderr 提示 + exit 1）
+func main() {
+    var x: any = 42
+    var s = as_string(x)  // 期望运行时错误：期望 string，实际 tag=0
+    println(s)
+}
