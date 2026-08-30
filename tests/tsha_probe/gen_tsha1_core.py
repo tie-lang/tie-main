@@ -62,10 +62,12 @@ def gen_iv_rcon(model):
     return iv, rcon
 
 def gen_bcon():
-    return [_word(_stream(SEED_BSCON)) for _ in range(16)]
+    st = _stream(SEED_BSCON)          # 单流顺序消费（勿用列表推导重建流，否则全等字）
+    return [_word(st) for _ in range(16)]
 
 def gen_xdcon():
-    return [_word(_stream(SEED_XDCON)) for _ in range(16)]
+    st = _stream(SEED_XDCON)
+    return [_word(st) for _ in range(16)]
 
 # ----------------------------------------------------------------------------
 # 位平面原语（与 v1 一致）

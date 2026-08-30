@@ -376,17 +376,16 @@ func ensure_rcb() {
     }
 }
 
-// tsha1b 海绵轨轮常量（16 字）。注：与 gen_tsha1_core.py 逐字一致——
-//   该参考生成器的 gen_bcon 以「每轮重建流」方式取词，故 bcon 实际为 16 个相同字
-//   （各等于 SEED_BS 流第 0 字 e79905e7），此处照实镜像。
+// tsha1b 海绵轨轮常量（16 字，与 gen_tsha1_core.py 逐字一致；SEED_BS 单流顺序取词）。
 func ensure_bcon() {
     if len(tsha_bcon) > 0 {
         return
     }
-    var w = parse_hex32("e79905e7")
+    var hs = "e79905e743406b341d02c2396f3e0a13f9f53a84a0b4867ae67ac4ca2d8079e5" +
+             "10125037577e612b5b2e050f9c654cb9a6d1d4e4729362df9a9a092e7d058bce"
     var i: i64 = 0
     while i < 16 {
-        table_push(tsha_bcon, w)
+        table_push(tsha_bcon, parse_hex32(substr(hs, i * 8, i * 8 + 8)))
         i = i + 1
     }
 }
@@ -419,17 +418,16 @@ func ensure_rcx() {
     }
 }
 
-// tsha1x 轨 D（LFSR）轮常量（16 字）。注：与 gen_tsha1_core.py 逐字一致——
-//   gen_xdcon 同 gen_bcon 之「每轮重建流」取词，故 xdcon 实际为 16 个相同字
-//   （各等于 SEED_XD 流第 0 字 c27f115d），此处照实镜像。
+// tsha1x 轨 D（LFSR）轮常量（16 字，与 gen_tsha1_core.py 逐字一致；SEED_XD 单流顺序取词）。
 func ensure_xdcon() {
     if len(tsha_xdcon) > 0 {
         return
     }
-    var w = parse_hex32("c27f115d")
+    var hs = "c27f115d80045f70a110c54f0a340f344c91b8de5fdd796ab79a5f02be75d471" +
+             "9c4e5b6ccd46f13a0025f5963671e43b97afdbbb546dbf65441798434c5a6e43"
     var i: i64 = 0
     while i < 16 {
-        table_push(tsha_xdcon, w)
+        table_push(tsha_xdcon, parse_hex32(substr(hs, i * 8, i * 8 + 8)))
         i = i + 1
     }
 }
