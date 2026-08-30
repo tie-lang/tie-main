@@ -351,4 +351,126 @@ pub func reduce_string(f: fn(string, string) -> string, init: string, t: table<s
     }
     return acc
 }
+
+// ---------- 表操作（P2d-T2） ----------
+
+// 反转：返回新表（原表不变）。
+pub func reverse_i64(t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = len(t) - 1
+    while i >= 0 {
+        table_push(r, t[i])
+        i = i - 1
+    }
+    return r
+}
+
+// 反转（string）。
+pub func reverse_string(t: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = len(t) - 1
+    while i >= 0 {
+        table_push(r, t[i])
+        i = i - 1
+    }
+    return r
+}
+
+// 格式化打印：`[1, 2, 3]`（空表 → `[]`）。
+pub func to_string_i64(t: table<i64>) -> string {
+    var r: string = "["
+    var i: i64 = 0
+    while i < len(t) {
+        if i > 0 {
+            r = r + ", "
+        }
+        r = r + to_string(t[i])
+        i = i + 1
+    }
+    return r + "]"
+}
+
+// 格式化打印（string）：`[a, b]`。
+pub func to_string_string(t: table<string>) -> string {
+    var r: string = "["
+    var i: i64 = 0
+    while i < len(t) {
+        if i > 0 {
+            r = r + ", "
+        }
+        r = r + t[i]
+        i = i + 1
+    }
+    return r + "]"
+}
+
+// 连接：用分隔符 sep 连接全部字符串元素（空表 → 空串）。
+pub func join(t: table<string>, sep: string) -> string {
+    var r: string = ""
+    var i: i64 = 0
+    while i < len(t) {
+        if i > 0 {
+            r = r + sep
+        }
+        r = r + t[i]
+        i = i + 1
+    }
+    return r
+}
+
+// 求和（空表 → 0）。
+pub func sum_i64(t: table<i64>) -> i64 {
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < len(t) {
+        s = s + t[i]
+        i = i + 1
+    }
+    return s
+}
+
+// 求积（空表 → 1；含 0 元素 → 0）。
+pub func product_i64(t: table<i64>) -> i64 {
+    var p: i64 = 1
+    var i: i64 = 0
+    while i < len(t) {
+        p = p * t[i]
+        i = i + 1
+    }
+    return p
+}
+
+// 最大值（空表返回哨兵 0）。
+pub func max_i64(t: table<i64>) -> i64 {
+    var n: i64 = len(t)
+    if n == 0 {
+        return 0
+    }
+    var m: i64 = t[0]
+    var i: i64 = 1
+    while i < n {
+        if t[i] > m {
+            m = t[i]
+        }
+        i = i + 1
+    }
+    return m
+}
+
+// 最小值（空表返回哨兵 0）。
+pub func min_i64(t: table<i64>) -> i64 {
+    var n: i64 = len(t)
+    if n == 0 {
+        return 0
+    }
+    var m: i64 = t[0]
+    var i: i64 = 1
+    while i < n {
+        if t[i] < m {
+            m = t[i]
+        }
+        i = i + 1
+    }
+    return m
+}
 }
