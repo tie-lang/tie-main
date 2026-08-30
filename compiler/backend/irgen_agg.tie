@@ -113,6 +113,8 @@ func tig_field_access(id: i64) -> i64 {
 
 // 字段赋值（FieldAssign 115）：base.field op= value → 地址 + agg_gep + store。
 // 复合赋值（op ≥ 0）先 load 旧值运算再写回（对齐 tig_compound_assign）。
+// P2a：base 为表下标 t[i]（元素 struct/tuple）→ 读-改-写回槽（OOB 安全：
+// 读越界→零值、写越界→静默），避免写进 tig_agg_addr 的临时副本丢失。
 func tig_field_assign(id: i64) -> i64 {
     var fname = sstate.name_str(id)
     var base = sstate.child(id, 0)
@@ -130,9 +132,39 @@ func tig_field_assign(id: i64) -> i64 {
         return -1
     }
     var fty = agg_field_ty(base_ty, fidx)
-    var addr = tig_agg_addr(base, base_ty)
-    if addr < 0 {
-        return -1
+    var is_idx = s_tags[base] == 13  // t[i] 下标 base
+    var tbl_v: i64 = -1
+    var idx_v: i64 = -1
+    var copy_slot: i64 = -1
+    var addr: i64 = -1
+    if is_idx {
+        // 表下标字段赋值：读元素（OOB→零值）→ 副本改字段 → 末尾写回槽
+        var tnode = sstate.child(base, 0)
+        var inode = sstate.child(base, 1)
+        tbl_v = tig_expr(tnode)
+        if tbl_v < 0 {
+            return -1
+        }
+        idx_v = tig_expr(inode)
+        if idx_v < 0 {
+            return -1
+        }
+        var ok_slot = ir.new_inst(g_cur_block, 20, types.named(TK_I8))  // alloca i8
+        ir.add_operand(ok_slot, types.named(TK_I8), 2)
+        var elem = s21_table_at(tbl_v, idx_v, ir.get_value(ok_slot), base_ty)
+        if elem < 0 {
+            return -1
+        }
+        var alloca = ir.new_inst(g_cur_block, 20, base_ty)  // 副本槽
+        ir.add_operand(alloca, base_ty, 2)
+        copy_slot = ir.get_value(alloca)
+        s21_store(copy_slot, elem, base_ty)
+        addr = copy_slot
+    } else {
+        addr = tig_agg_addr(base, base_ty)
+        if addr < 0 {
+            return -1
+        }
     }
     var gp = ir.new_inst(g_cur_block, 27, base_ty)  // agg_gep
     ir.add_operand(gp, addr, 0)
@@ -156,26 +188,31 @@ func tig_field_assign(id: i64) -> i64 {
         ir.add_operand(st, fty, 2)
         ir.add_operand(st, res, 0)
         ir.add_operand(st, gpp, 0)
-        return 0
-    }
-    var vv = tig_expr(val)
-    if vv < 0 {
-        return -1
-    }
-    // S1.3 窄整数字段：赋值值按字段类型转换（i64 值 → i32 字段）
-    var vt = node_types[val]
-    if vt >= 0 && (types.is_int(vt) || types.is_float(vt)) &&
-        (types.is_int(fty) || types.is_float(fty)) && vt != fty {
-        var cv = tig_coerce(vv, vt, fty)
-        if cv < 0 {
+    } else {
+        var vv = tig_expr(val)
+        if vv < 0 {
             return -1
         }
-        vv = cv
+        // S1.3 窄整数字段：赋值值按字段类型转换（i64 值 → i32 字段）
+        var vt = node_types[val]
+        if vt >= 0 && (types.is_int(vt) || types.is_float(vt)) &&
+            (types.is_int(fty) || types.is_float(fty)) && vt != fty {
+            var cv = tig_coerce(vv, vt, fty)
+            if cv < 0 {
+                return -1
+            }
+            vv = cv
+        }
+        var st2 = ir.new_inst(g_cur_block, 22, -1)  // store
+        ir.add_operand(st2, fty, 2)
+        ir.add_operand(st2, vv, 0)
+        ir.add_operand(st2, gpp, 0)
     }
-    var st2 = ir.new_inst(g_cur_block, 22, -1)  // store
-    ir.add_operand(st2, fty, 2)
-    ir.add_operand(st2, vv, 0)
-    ir.add_operand(st2, gpp, 0)
+    if is_idx {
+        // 写回表槽：读副本完整元素 → s21_table_set（越界静默）
+        var ne = s21_load(copy_slot, base_ty)
+        s21_table_set(tbl_v, idx_v, base_ty, ne)
+    }
     return 0
 }
 

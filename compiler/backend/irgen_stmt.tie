@@ -118,16 +118,12 @@ func tig_index_read(id: i64) -> i64 {
     }
     var suffix = bridge_suffix(elem)
     var ret_ty = types.named(TK_I64)
-    // 嵌套表元素（elem 是 table/map）：元素在动态表中存 ptr，读回必须用
-    // at_string 桥（返回 ptr）——曾按 bridge_suffix 落 at_i64，返回 i64 与
-    // 嵌套表变量的 ptr 槽不符（`var sub = t[i]` → `store ptr %r, ptr %slot`
-    // 但 %r 是 i64，LLVM 拒收）。对齐 tig_table_lit 的按值类型选桥。
-    // S2.4：port 对象元素（table<Drawable>）同样存 ptr，走 string 桥；但
-    // 返回类型标为 K_PORT 本身（= ptr）而非 TK_STR——S2.1 补头逻辑按
-    // ins_ty==TK_STR 判补头，port 对象 ptr 被误补头（strlen 扫描打包对象
-    // {data,vtable} → 崩溃）。嵌套表/映射句柄同理（elem 类型本身 = ptr，
-    // 不补头——补头只服务于真字符串元素）。
-    if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
+    // P2a 复合元素（struct/enum/fn）：返回类型 = 元素类型 id（多字元素类型化
+    // load，供字段访问/方法调用/整体使用）
+    var ekind2 = types.kind(elem)
+    if ekind2 == K_STRUCT || ekind2 == K_ENUM || ekind2 == K_FN {
+        ret_ty = elem
+    } else if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
         suffix = "string"
         ret_ty = elem
     } else if suffix == "string" {
@@ -1473,15 +1469,11 @@ func tig_for_table(id: i64, iter: i64, body: i64) -> i64 {
     }
     var suffix = bridge_suffix(elem)
     var elem_llvm_ty = types.named(TK_I64)
-    // 嵌套表元素（elem 是 table/map，如 `for row in t`，t 为 table<table<i64>>）：
-    // 元素在动态表中存 ptr，for 读行必须用 at_string 桥（返回 ptr）——曾按
-    // bridge_suffix 落 at_i64，返回 i64 与循环变量 ptr 槽不符（`store ptr %r,
-    // ptr %slot` 但 %r 是 i64，LLVM 拒收），导致 tie_table_len 收到 i64。对齐
-    // gen_table_at 3228 行的既有修复（同一约定：表/映射元素 → string 桥）。
-    // 嵌套表/映射/port 元素 → string 桥（存 ptr）；但返回类型用 elem 本身
-    //（= ptr）而非 TK_STR——S2.1 补头按 ins_ty==TK_STR 判补头，句柄/port
-    // 对象被误补头（strlen 扫描 → 崩溃）。真字符串元素保持 TK_STR（需补头）。
-    if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
+    // P2a 复合元素（struct/enum/fn）：循环变量类型 = 元素类型 id（多字元素）
+    var fk2 = types.kind(elem)
+    if fk2 == K_STRUCT || fk2 == K_ENUM || fk2 == K_FN {
+        elem_llvm_ty = elem
+    } else if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
         suffix = "string"
         elem_llvm_ty = elem
     } else if suffix == "string" {

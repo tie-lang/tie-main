@@ -840,9 +840,10 @@ pub func infer_expr(id: i64) -> i64 {
             return -1
         }
         if bk == K_STRUCT {
-            // P8：struct 字段访问的 base 必须可寻址
+            // P8：struct 字段访问的 base 必须可寻址（P2a：表下标 t[i] 放行——
+            // 读走值拷贝、写走读-改-写回，见 irgen_agg tig_field_assign）
             var base_node = sstate.child(id, 0)
-            if !sstate.is_addressable(base_node) {
+            if !sstate.is_addressable(base_node) && s_tags[base_node] != 13 {
                 var cls_name = sstate.struct_name_of(types.low(base))
                 sm_err_line = s_lines[id]
                 sm_err_col = s_cols[id]

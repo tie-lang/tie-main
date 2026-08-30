@@ -927,7 +927,8 @@ pub func eat_assign_op() -> i64 {
     return op
 }
 
-// 表达式是否可寻址（字段赋值 base 校验）：Var 或 FieldAccess 链
+// 表达式是否可寻址（字段赋值 base 校验）：Var / FieldAccess 链 / 表下标 t[i]
+//（P2a：`t[i].field = v` 读-改-写回槽；read 侧走值拷贝）。
 pub func is_addressable_base(id: i64) -> bool {
     if id < 0 {
         return false
@@ -938,6 +939,9 @@ pub func is_addressable_base(id: i64) -> bool {
     }
     if tag == N_FIELD_ACCESS {
         return is_addressable_base(ast.child_at(id, 0))
+    }
+    if tag == N_INDEX {
+        return true
     }
     return false
 }
