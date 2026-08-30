@@ -1,17 +1,21 @@
 type tie<logic>
-// tsha1 位长（state-per-n）输出探针 v2。
-// 覆盖（对照唯一语义源 tests/tsha_probe/gen_tsha1_core.py，
-//           生成脚本 gen_tsha1fr / gen_tsha1bx / gen_tsha1x 取抽样）：
-//   ① 位长集合 {2,3,4,6,8,12,16,24,32,48,64,69,88,92,96,128,144} 各模型 (f/b/x/r)
-//      输出恰好 n 个 base48 符号，并抽样核对与生成器一致。
+// tsha1 位长（state-per-n）输出探针 v2 —— 定长 base48 语义强化版。
+// 覆盖（唯一语义源 tests/tsha_probe/gen_tsha1_core.py）：
+//   ① 位长集合 {2,3,4,6,8,12,16,24,32,48,64,69,88,92,96,128,144} 各模型 (f/b/x/r)、
+//      各消息（空 / "abc" / "a"×1000）base48 输出**恰好 n 符号**——v2 encode 为定长
+//      左补零语义，len==n 恒成立，故直接全部断言。
 //   ② 非法位长 0/46/23/-1 → 返回空串。
-//   ③ 非法 base 0/5/10 → 返回空串（v2 中 base=0 不再回退默认 48）。
-//   ④ base16 输出长度 = ⌊n·698121/1000000⌋·2 字符。
-//   ⑤ 前缀一致性：同一 (model,msg) 下 n=92 输出 == n=96 输出前 92 符号。
-//   ⑥ 同一消息 r 模型摘要与 f/b/x 不同。
-//
-// 注：公开接口的 base 默认参数（48）当前未应用（省略 base 会以 0 传入并判非法），
-//   故一律显式传 base=48/16（与既有 f/b/x/r 探针一致）。
+//   ③ 非法 base 5/10 → 返回空串（base=0 现为「省略 base」的默认兜底→48，见 ⑦，
+//      不再判非法）。
+//   ④ base16 输出长度 = ⌊n·698121/1000000⌋·2 字符（f 全集合 + b/r/x 抽样）。
+//   ⑤ 前缀一致性：f/b/x 的 n=92 与 n=96 同 W=17 即同一状态 → 状态全宽摘要恒相等
+//      （任意消息），故在摘要层断言；再于池长≥96 的消息（a1000）上断言实际符号前缀
+//      n=96 前 92 == n=92。注：定长补零下若池长<96（如 f("abc") 池长 95），n=96
+//      会补前导'0'破坏符号前缀，故符号级用例须选池长≥96 的消息；r 于 92(W=21)/
+//      96(W=22) 换字宽，状态不同无前缀关系，不查。
+//   ⑥ f/b/x/r 同一消息摘要互异（多档分别断言）。
+//   ⑦ 新增默认参数通路：省略 base 的 tsha1f(msg,n) == 显式 base=48 的 tsha1f(msg,n,48)；
+//      显式 base=0 亦经 encode 兜底后 == base=48。
 import "../../std/tsha1.tie"
 using tsha;
 
@@ -99,9 +103,9 @@ func chk_eq(name: string, got: string, want: string) {
     }
 }
 
-// 不等断言；通过累计一次。
-func chk_neq(name: string, a: string, b: string, c: string, d: string) {
-    if a != b && a != c && a != d {
+// 四模型互异断言：a/b/c/d 两两不等；通过累计一次。
+func chk_mutdist(name: string, a: string, b: string, c: string, d: string) {
+    if a != b && a != c && a != d && b != c && b != d && c != d {
         PASS_COUNT[0] = PASS_COUNT[0] + 1
         println("PASS " + name)
     } else {
@@ -110,43 +114,39 @@ func chk_neq(name: string, a: string, b: string, c: string, d: string) {
     }
 }
 
+// 按模型名分派到 tsha 公开四函数（避免嵌套重复调用）。
+func model_hash(m: string, msg: string, n: i64, base: i64) -> string {
+    if m == "f" {
+        return tsha.tsha1f(msg, n, base)
+    }
+    if m == "r" {
+        return tsha.tsha1r(msg, n, base)
+    }
+    if m == "b" {
+        return tsha.tsha1b(msg, n, base)
+    }
+    return tsha.tsha1x(msg, n, base)
+}
+
 func main() {
     init_globals()
     var msg = "abc"
     var m1000 = repeat_char("a", 1000)
-
-    // ① 各模型全位长集合：base48 输出恰好 n 个符号
-    //   （用多块消息 "a"×1000；避免 "abc" 摘要某 n 出现前导 0 使 base48 最小表示
-    //    短于 n——规范 b48 为最小表示截断，前沿 0 会令输出少于 n。）
     var n: i64 = 0
-    for n in N_SET {
-        chk_len("v2 f n=" + radix10(n), tsha.tsha1f(m1000, n, 48), n)
-    }
-    for n in N_SET {
-        chk_len("v2 r n=" + radix10(n), tsha.tsha1r(m1000, n, 48), n)
-    }
-    for n in N_SET {
-        chk_len("v2 b n=" + radix10(n), tsha.tsha1b(m1000, n, 48), n)
-    }
-    for n in N_SET {
-        chk_len("v2 x n=" + radix10(n), tsha.tsha1x(m1000, n, 48), n)
-    }
+    var mn: string = ""
+    var models: table<string> = ["f", "r", "b", "x"]
 
-    // ① 与生成器抽样对照（消息 "abc"，base48 前 n 符号）
-    chk_eq("v2 f abc n=8 ", tsha.tsha1f(msg, 8, 48), "2ryccqyh")
-    chk_eq("v2 f abc n=48", tsha.tsha1f(msg, 48, 48), "87k7LCE7rt6ClFwJEgG2pbiGoHzr9ybzpuhHhhbuJa76vHhL")
-    chk_eq("v2 r abc n=8 ", tsha.tsha1r(msg, 8, 48), "5hb9b7Es")
-    chk_eq("v2 r abc n=48", tsha.tsha1r(msg, 48, 48), "LxJH5Icy4eey941n2165KngDlGDzG8dht3ixJjpJjLCDHBLg")
-    chk_eq("v2 b abc n=8 ", tsha.tsha1b(msg, 8, 48), "3Kijpuqn")
-    chk_eq("v2 b abc n=48", tsha.tsha1b(msg, 48, 48), "CAxDeu6Ix0ty1uq6g1AJLnBcqliytAgx50flpDgqyd388Jvq")
-    chk_eq("v2 x abc n=8 ", tsha.tsha1x(msg, 8, 48), "3wFG26Ko")
-    chk_eq("v2 x abc n=48", tsha.tsha1x(msg, 48, 48), "71eGcu6t9BJy27zlzz363Ac3cpn5ueADihtirA1xDHFov0DL")
-
-    // 多块消息（"a"×1000）各模型抽样对照
-    chk_eq("v2 f a1000 n=8", tsha.tsha1f(m1000, 8, 48), "Fyj42a00")
-    chk_eq("v2 r a1000 n=8", tsha.tsha1r(m1000, 8, 48), "qhJr0J4f")
-    chk_eq("v2 b a1000 n=8", tsha.tsha1b(m1000, 8, 48), "4eq3EcEE")
-    chk_eq("v2 x a1000 n=8", tsha.tsha1x(m1000, 8, 48), "5kLIB7gB")
+    // ① 各模型 × 各消息（空/abc/a1000）：base48 输出恰好 n 符号（定长语义恒成立）
+    for mn in models {
+        for n in N_SET {
+            chk_len("v2 b48 " + mn + " n=" + radix10(n) + " empty",
+                    model_hash(mn, "", n, 48), n)
+            chk_len("v2 b48 " + mn + " n=" + radix10(n) + " abc",
+                    model_hash(mn, msg, n, 48), n)
+            chk_len("v2 b48 " + mn + " n=" + radix10(n) + " a1000",
+                    model_hash(mn, m1000, n, 48), n)
+        }
+    }
 
     // ② 非法位长 → 空串
     chk_len("v2 f n=0  reject", tsha.tsha1f(msg, 0, 48), 0)
@@ -155,54 +155,69 @@ func main() {
     chk_len("v2 b n=-1 reject", tsha.tsha1b(msg, -1, 48), 0)
     chk_len("v2 x n=0  reject", tsha.tsha1x(msg, 0, 48), 0)
 
-    // ③ 非法 base → 空串（0/5/10）
-    chk_len("v2 f n=8 b0  reject", tsha.tsha1f(msg, 8, 0), 0)
+    // ③ 非法 base 5/10 → 空串（base=0 已是默认兜底→48，见 ⑦）
     chk_len("v2 f n=8 b5  reject", tsha.tsha1f(msg, 8, 5), 0)
     chk_len("v2 f n=8 b10 reject", tsha.tsha1f(msg, 8, 10), 0)
-    chk_len("v2 r n=8 b0  reject", tsha.tsha1r(msg, 8, 0), 0)
-    chk_len("v2 b n=8 b5  reject", tsha.tsha1b(msg, 8, 5), 0)
-    chk_len("v2 x n=8 b10 reject", tsha.tsha1x(msg, 8, 10), 0)
+    chk_len("v2 r n=8 b5  reject", tsha.tsha1r(msg, 8, 5), 0)
+    chk_len("v2 b n=8 b10 reject", tsha.tsha1b(msg, 8, 10), 0)
+    chk_len("v2 x n=8 b5  reject", tsha.tsha1x(msg, 8, 5), 0)
 
-    // ④ base16 输出长度 = ⌊n·698121/1000000⌋·2（f 全集合 + 各模型抽样）
+    // ④ base16 长度 = ⌊n·698121/1000000⌋·2（f 全集合 + b/r/x 抽样）
     for n in N_SET {
-        var b0f = (n * 698121) / 1000000
-        chk_len("v2 f b16 n=" + radix10(n), tsha.tsha1f(msg, n, 16), b0f * 2)
+        var b0 = (n * 698121) / 1000000
+        chk_len("v2 f b16 n=" + radix10(n), tsha.tsha1f(msg, n, 16), b0 * 2)
     }
-    var b0b = (48 * 698121) / 1000000
-    chk_len("v2 b b16 n=48", tsha.tsha1b(msg, 48, 16), b0b * 2)
+    var b0b = (8 * 698121) / 1000000
+    chk_len("v2 b b16 n=8  ", tsha.tsha1b(msg, 8, 16), b0b * 2)
+    var b0b2 = (144 * 698121) / 1000000
+    chk_len("v2 b b16 n=144", tsha.tsha1b(msg, 144, 16), b0b2 * 2)
     var b0r = (96 * 698121) / 1000000
-    chk_len("v2 r b16 n=96", tsha.tsha1r(msg, 96, 16), b0r * 2)
+    chk_len("v2 r b16 n=96 ", tsha.tsha1r(msg, 96, 16), b0r * 2)
+    var b0r2 = (48 * 698121) / 1000000
+    chk_len("v2 r b16 n=48 ", tsha.tsha1r(msg, 48, 16), b0r2 * 2)
     var b0x = (64 * 698121) / 1000000
-    chk_len("v2 x b16 n=64", tsha.tsha1x(msg, 64, 16), b0x * 2)
+    chk_len("v2 x b16 n=64 ", tsha.tsha1x(msg, 64, 16), b0x * 2)
+    var b0x2 = (16 * 698121) / 1000000
+    chk_len("v2 x b16 n=16 ", tsha.tsha1x(msg, 16, 16), b0x2 * 2)
 
-    // ⑤ 前缀一致性：n=92 输出 == n=96 输出前 92 符号。
-    //   仅 f/b/x 成立（92 与 96 同 W=17，同一状态）；r 在 92(W=21)/96(W=22) 换字宽，
-    //   状态不同无前缀关系（生成器亦同），故 r 不在此断言。
-    if prefix(tsha.tsha1f(msg, 96, 48), 92) == tsha.tsha1f(msg, 92, 48) {
-        PASS_COUNT[0] = PASS_COUNT[0] + 1
-        println("PASS v2 f prefix96-92")
-    } else {
-        println("FAIL v2 f prefix96-92")
-        exit(1)
-    }
-    if prefix(tsha.tsha1b(msg, 96, 48), 92) == tsha.tsha1b(msg, 92, 48) {
-        PASS_COUNT[0] = PASS_COUNT[0] + 1
-        println("PASS v2 b prefix96-92")
-    } else {
-        println("FAIL v2 b prefix96-92")
-        exit(1)
-    }
-    if prefix(tsha.tsha1x(msg, 96, 48), 92) == tsha.tsha1x(msg, 92, 48) {
-        PASS_COUNT[0] = PASS_COUNT[0] + 1
-        println("PASS v2 x prefix96-92")
-    } else {
-        println("FAIL v2 x prefix96-92")
-        exit(1)
+    // ⑤ 前缀一致性：f/b/x 的 n=92 与 n=96 同 W=17（同一状态）→ 状态全宽摘要恒相等；
+    //   再于池长≥96 的消息（a1000）上断言实际符号前缀 n=96 前 92 == n=92。
+    //   定长补零下池长<96（如 f("abc") 池长 95）会让 n=96 补前导'0'破坏符号前缀，
+    //   故符号级用例选池长足够的消息；r 于 92(W=21)/96(W=22) 换字宽，不查。
+    var pref_models: table<string> = ["f", "b", "x"]
+    var dmsg: table<string> = ["", "abc", "a1000"]
+    var dm: string = ""
+    for mn in pref_models {
+        for dm in dmsg {
+            chk_eq("v2 " + mn + " digest-92==96 " + dm,
+                   tsha.tsha1_digest(mn, dm, 92), tsha.tsha1_digest(mn, dm, 96))
+        }
+        chk_eq("v2 " + mn + " prefix96-92 a1000",
+               prefix(model_hash(mn, m1000, 96, 48), 92),
+               model_hash(mn, m1000, 92, 48))
     }
 
-    // ⑥ 同一消息 r 摘要与 f/b/x 不同
-    chk_neq("v2 r differs f/b/x", tsha.tsha1r(msg, 48, 48),
-            tsha.tsha1f(msg, 48, 48), tsha.tsha1b(msg, 48, 48), tsha.tsha1x(msg, 48, 48))
+    // ⑥ 同一消息 f/b/x/r 摘要两两互异（base48 n=48 / n=8、base16 n=48 三档）
+    chk_mutdist("v2 4-model differ b48 n=48",
+                tsha.tsha1f(msg, 48, 48), tsha.tsha1r(msg, 48, 48),
+                tsha.tsha1b(msg, 48, 48), tsha.tsha1x(msg, 48, 48))
+    chk_mutdist("v2 4-model differ b48 n=8 ",
+                tsha.tsha1f(msg, 8, 48), tsha.tsha1r(msg, 8, 48),
+                tsha.tsha1b(msg, 8, 48), tsha.tsha1x(msg, 8, 48))
+    chk_mutdist("v2 4-model differ b16 n=48",
+                tsha.tsha1f(msg, 48, 16), tsha.tsha1r(msg, 48, 16),
+                tsha.tsha1b(msg, 48, 16), tsha.tsha1x(msg, 48, 16))
+
+    // ⑦ 默认参数通路：省略 base == 显式 base=48；显式 base=0 亦兜底为 48
+    for n in N_SET {
+        chk_eq("v2 f defaultbase n=" + radix10(n),
+               tsha.tsha1f(msg, n), tsha.tsha1f(msg, n, 48))
+    }
+    chk_eq("v2 r defaultbase n=48", tsha.tsha1r(msg, 48), tsha.tsha1r(msg, 48, 48))
+    chk_eq("v2 b defaultbase n=8 ", tsha.tsha1b(msg, 8), tsha.tsha1b(msg, 8, 48))
+    chk_eq("v2 x defaultbase n=96", tsha.tsha1x(msg, 96), tsha.tsha1x(msg, 96, 48))
+    chk_eq("v2 f base0 fallback n=48", tsha.tsha1f(msg, 48, 0), tsha.tsha1f(msg, 48, 48))
+    chk_eq("v2 x base0 fallback n=8 ", tsha.tsha1x(msg, 8, 0), tsha.tsha1x(msg, 8, 48))
 
     println("位长（state-per-n）输出探针 v2 全部通过，PASS 总数=" + radix10(PASS_COUNT[0]))
 }

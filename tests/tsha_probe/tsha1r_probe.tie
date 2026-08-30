@@ -154,9 +154,10 @@ func main() {
     assert_vec("R-a256 n96", rep("a", 256), 96, "15xFwzCf0kmD4HrtAC5z9u8pAz4rrgkjctrh3dE4v9jzEme4grzqkfozvvmoCLpBxHrfdn3qCAu89H89EpCB9p21HmdG2ueg", "e9816b2cf9e21fbae9e6090aefda08cecd86ed991e800881cc7010acea8aebf36e982cf834382859468468dd80032bb5d4d002f7221af22d5404a4cbfd208198d3c090")
     assert_vec("R-a256 n128", rep("a", 256), 128, "xlkf0wpfHqcklBzsvbF9lyejx1BvE19pHxlfqvnuqtKwIejwbywbCtdcd6uh5tve5HDHpqpIl07h184tezlGafucDr743knt28Lil343butl45cC0vrAmbvjnogEfioF", "5fd795b7135820de7218013f4930131c1fa2909dbf861951e7400463947090e5f2f00020d8c00468dfc4ae34dee86c1934d83e0936cc0c7647fadffad6f18ff06e18a2bab980ca2691c6aa26ed489e45905087de04b8a4939c")
     assert_vec("R-a256 n144", rep("a", 256), 144, "2pEv6H7ennH8a2sEdcCDas66AvqCFbkD80b17jf40ioyoHF1tqmbojjl0aJ4r9uDHqysg1HlyovmLE10c1tqKyuj9td2w2Ad2Fb5Iqdarf2b3dclxCC0ayHohc1juaqLBGFHFHH4CtrAFDEj", "a7f9870073043c1e2c8217924dae46f3df40e98d50f041ba802c05d0eb68f9288f1804f33a602861626e9111a94a046a021a614eded8149797b0963349d210b5d5fd548481a0d9819b4265029ad20502bea2c7475d88214b0f04045ec80a4a5a1e282a8f")
-    // 非法位长：一律返回空串
-    check("R illegal n0", tsha.tsha1r("abc", 0, 48), "")
-    check("R illegal n46", tsha.tsha1r("abc", 46, 48), "")
-    check("R illegal n23", tsha.tsha1r("abc", 23, 48), "")
+    // 非法位长 / 非法 base：一律返回空串
+    check("r illegal n0", tsha.tsha1r("abc", 0, 48), "")
+    check("r illegal n46", tsha.tsha1r("abc", 46, 48), "")
+    check("r illegal n23", tsha.tsha1r("abc", 23, 48), "")
+    check("r illegal base5", tsha.tsha1r("abc", 48, 5), "")
     println("tsha1r 探针全部通过")
 }

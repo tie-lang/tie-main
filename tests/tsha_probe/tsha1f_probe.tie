@@ -51,7 +51,7 @@ func main() {
     assert_vec("F-abc n64", "abc", 64, "9wxs9GvI3gFbds8GyADEKz2rcdflicmsx4Keem6u4D2c1AFso5dgBj3Gg6g7ciKo", "84c1c1762742749f91d736206a26f3744d6554ffc7c0da338fa2ab7f8bb2c27436f547d36ce71f9555fb90fc")
     assert_vec("F-abc n69", "abc", 69, "2gds6LBwhzvwrKavoGxJJpvxskqxavwx7gsJIBHhDoHtijqAwapCIo55mei3vG2stilHc", "5b5866d1251148e88226dbcc40248a72158a2cf815127fe3df5b20831783e4f20b9b2d2269bd77790b9c070ace3315ad")
     assert_vec("F-abc n92", "abc", 92, "2qEtujg8EdoddGnnopqFk33c3ngmoqebtJ1q2jn0H00xfw0yyyAz1mLD3Fc2ikknoaBIrithx36sur85LvoDLLBkF77t", "000051221eb79cb10c60023e3947b569dc0b5ea964b90a6b3df3e0a10c18b82f090b66292d27fb95b89fe2023f661e8e44a88dc24291e8ed9fd642f0705a7137")
-    assert_vec("F-abc n96", "abc", 96, "2qEtujg8EdoddGnnopqFk33c3ngmoqebtJ1q2jn0H00xfw0yyyAz1mLD3Fc2ikknoaBIrithx36sur85LvoDLLBkF77tl5h", "000051221eb79cb10c60023e3947b569dc0b5ea964b90a6b3df3e0a10c18b82f090b66292d27fb95b89fe2023f661e8e44a88dc24291e8ed9fd642f0705a7137edb8ae")
+    assert_vec("F-abc n96", "abc", 96, "02qEtujg8EdoddGnnopqFk33c3ngmoqebtJ1q2jn0H00xfw0yyyAz1mLD3Fc2ikknoaBIrithx36sur85LvoDLLBkF77tl5h", "000051221eb79cb10c60023e3947b569dc0b5ea964b90a6b3df3e0a10c18b82f090b66292d27fb95b89fe2023f661e8e44a88dc24291e8ed9fd642f0705a7137edb8ae")
     assert_vec("F-abc n128", "abc", 128, "3L1LyDvhKq2svriBg0iH4Cmq2zjuwFd0Ecbt45juEf1q6iFwjAJLDkgd2hGaBIybbh1lcIivftl36BCdeGgfDIJ4K9vhr0IjCDhfr6KibArDAxhu09KGfmxnwbaH3DCg", "0106d0b49592b8d8287ef5aec12dd9e9d4580e75173be629cff79bb82fc9e94009dd7de1fcc08da8339b13c36a1097bbad00b77e61a503be952f25cfec8f9a2c67e78a7a57f724f6ef27babc84dad9ff17c0b0f5d2f4e35a77")
     assert_vec("F-abc n144", "abc", 144, "1urve5DiDAjmLll9azGl2ExekLJBjut9at5fy0FjdBxd8lLh6LDnpfBgFzqjzG6BLkm81jzrnI9cejaI1K4yL8nHDcsji9aCImj638Ki4jtpbL4Exrv6yBh6Gs9gC6gbdcqLuJmlq4rA6Df7", "09c02df12a7bb8ab27d0ef066ac177b433da5b2ba16a9ba9cd84182d828adf22bde5d7e79d958b331362b702dbfe046ab61a8531ab71f8d0a5226fb1912d17bbfa2e687bfc35449c15804f27f7a2feb4a2d6a0dc4f0b9913b980d5a648e30098f76a4083")
     assert_vec("F-a1000 n2", rep("a", 1000), 2, "37", "2f")
@@ -154,9 +154,10 @@ func main() {
     assert_vec("F-a256 n96", rep("a", 256), 96, "KEkhnwnb9Jg91Bm6eL2wvH8ighstE6s7E3bfr2569ayJ8CFtH3yu956ytuA7Ag7eHakCwlFpzAwlsCqymidzCa6L1I936cGy", "3434aa709e3bc954695ab6c1c6dab81ccb198cb068610741351d3512a1cab64fb2000042babcc13d033607373a96baecf3937d41649f856f537e83e0bf1ce209108bc0")
     assert_vec("F-a256 n128", rep("a", 256), 128, "5f1wDfpxLCmcE8nIflwv4ff2EIKen58Bk8dlBdw5628sJmslmvzkfbvoidJpKaqHyjczvIExl8iCKhGgzsoAGCIFD4iwb96t63js5djbebp4ciKHCv1n6empi4w1dADI", "41c8d8848a1e5c862b0e769dbef4f5d6d7ca414089ae3fc68491199440d62b4cbddbcc9629dc94d846b85621bf1dec79a234978faf338159a5c9f748b76fc1af0eda6149f7a10e6b9b339d650032a240e23ce4f0c957eafad2")
     assert_vec("F-a256 n144", rep("a", 256), 144, "6DtmlAv9r5I09AyC2BjGhsd5lzroAiKEysFaCltg5oqsbh0iuCxgH6GjqkyG1IgHDwdf5xJg4lymswH6qLJG7p8LodrA28lJnnwFi493loKz6x7sBHEnhdxwcIBs87gmA7Dihrm8a0rnmF4g", "28a78845f1df12086bdc4dd079d1bc4d511f045d47305da0317ce6926b7ae391c942cc6229ce3340cc499dfd4c49cc8131f183947c42e7a5b8436bfa1b799122fcfc9d4949bbb18385a8967e60b61ca8cb05f1cb954e48641812cd0c524280dd0faea316")
-    // 非法位长：一律返回空串
-    check("F illegal n0", tsha.tsha1f("abc", 0, 48), "")
-    check("F illegal n46", tsha.tsha1f("abc", 46, 48), "")
-    check("F illegal n23", tsha.tsha1f("abc", 23, 48), "")
+    // 非法位长 / 非法 base：一律返回空串
+    check("f illegal n0", tsha.tsha1f("abc", 0, 48), "")
+    check("f illegal n46", tsha.tsha1f("abc", 46, 48), "")
+    check("f illegal n23", tsha.tsha1f("abc", 23, 48), "")
+    check("f illegal base5", tsha.tsha1f("abc", 48, 5), "")
     println("tsha1f 探针全部通过")
 }
