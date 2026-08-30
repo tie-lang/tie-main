@@ -1,0 +1,108 @@
+type tie<logic>
+
+// ============================================================
+// 集合库验收（P2e）：set 集合 + 表运算深化
+//
+// 覆盖场景：
+//   1. set：add 去重有序、contains 二分、remove、union/intersect/diff（i64+string）
+//   2. 表运算：concat/slice/copy/dedup（i64+string，slice 越界截断）
+//
+// 期望输出（全部 PASS）：
+//   PASS set_i64 / PASS set_str / PASS set_ops / PASS table_ops
+// ============================================================
+
+import "../../std/collection.tie"
+
+func main() {
+    // 1. set i64：去重 + 有序 + 二分 + 移除
+    var s = coll.set_new_i64()
+    coll.set_add_i64(s, 5)
+    coll.set_add_i64(s, 1)
+    coll.set_add_i64(s, 3)
+    coll.set_add_i64(s, 5)
+    var ok1: bool = false
+    if coll.set_size_i64(s) == 3 && coll.set_contains_i64(s, 3) && !coll.set_contains_i64(s, 9) &&
+        s[0] == 1 && s[1] == 3 && s[2] == 5 {
+        ok1 = true
+    }
+    var r1 = coll.set_remove_i64(s, 3)
+    var r2 = coll.set_remove_i64(s, 3)
+    if ok1 && r1 && !r2 && coll.set_size_i64(s) == 2 && !coll.set_contains_i64(s, 3) {
+        println("PASS set_i64")
+    } else {
+        println("FAIL set_i64")
+        exit(1)
+    }
+    // 2. set 集合运算（i64）：union/intersect/diff
+    var a = coll.set_new_i64()
+    coll.set_add_i64(a, 1)
+    coll.set_add_i64(a, 2)
+    coll.set_add_i64(a, 3)
+    var b = coll.set_new_i64()
+    coll.set_add_i64(b, 2)
+    coll.set_add_i64(b, 3)
+    coll.set_add_i64(b, 4)
+    var u = coll.set_union_i64(a, b)      // [1,2,3,4]
+    var it = coll.set_intersect_i64(a, b) // [2,3]
+    var d = coll.set_diff_i64(a, b)       // [1]
+    var ok2: bool = false
+    if len(u) == 4 && len(it) == 2 && len(d) == 1 && u[0] == 1 && u[3] == 4 && it[0] == 2 && d[0] == 1 {
+        ok2 = true
+    }
+    // 3. set string：去重 + 运算
+    var ss = coll.set_new_string()
+    coll.set_add_string(ss, "pear")
+    coll.set_add_string(ss, "apple")
+    coll.set_add_string(ss, "apple")
+    coll.set_add_string(ss, "grape")
+    var sa = coll.set_new_string()
+    coll.set_add_string(sa, "x")
+    coll.set_add_string(sa, "y")
+    var sb = coll.set_new_string()
+    coll.set_add_string(sb, "y")
+    coll.set_add_string(sb, "z")
+    var su = coll.set_union_string(sa, sb)
+    var sd = coll.set_diff_string(sa, sb)
+    var ok3: bool = false
+    if coll.set_size_string(ss) == 3 && coll.set_contains_string(ss, "apple") &&
+        !coll.set_contains_string(ss, "kiwi") && coll.set_remove_string(ss, "grape") &&
+        coll.set_size_string(ss) == 2 && len(su) == 3 && len(sd) == 1 {
+        ok3 = true
+    }
+    if ok2 && ok3 {
+        println("PASS set_ops")
+    } else {
+        println("FAIL set_ops ok2=" + to_string(ok2) + " ok3=" + to_string(ok3))
+        exit(1)
+    }
+    // 4. 表运算：concat/slice/copy/dedup
+    var x: table<i64> = [1, 2, 3]
+    var y: table<i64> = [4, 5]
+    var c = coll.concat_i64(x, y)
+    var sl = coll.slice_i64(c, 1, 4)
+    var cp = coll.copy_i64(x)
+    var dd: table<i64> = [3, 1, 3, 2, 1, 5]
+    var ddu = coll.dedup_i64(dd)
+    var ok4: bool = false
+    if len(c) == 5 && c[4] == 5 && len(sl) == 3 && sl[0] == 2 && sl[2] == 4 &&
+        len(coll.slice_i64(c, 3, 99)) == 2 && len(coll.slice_i64(c, 10, 20)) == 0 &&
+        len(cp) == 3 && len(ddu) == 4 && ddu[0] == 3 && ddu[1] == 1 && ddu[3] == 5 {
+        ok4 = true
+    }
+    // string 表运算
+    var sc = coll.concat_string(["x", "y"], ["z"])
+    var ssl = coll.slice_string(sc, 1, 3)
+    var sdd: table<string> = ["a", "b", "a", "c"]
+    var sddu = coll.dedup_string(sdd)
+    var ok5: bool = false
+    if len(sc) == 3 && len(ssl) == 2 && ssl[0] == "y" && len(coll.copy_string(["m"])) == 1 &&
+        len(sddu) == 3 && sddu[1] == "b" {
+        ok5 = true
+    }
+    if ok4 && ok5 {
+        println("PASS table_ops")
+    } else {
+        println("FAIL table_ops ok4=" + to_string(ok4) + " ok5=" + to_string(ok5))
+        exit(1)
+    }
+}

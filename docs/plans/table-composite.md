@@ -234,5 +234,21 @@ tests/language 全量正例编译+运行 52/52 无回归；自举（tiec 编译�
 map_hof/map_str/map_any）+ 探针 p2d_stats/p2d_pred/p2d_map/p2d_map_any；
 tests/language 全量正例 50/50 无回归；自举零错误。
 
+# 12. P2e：集合库补全（2026-08-31，提交 74a4da0/80a1b96）——已实现
+
+P2d 规划中的 table/set 标准库补全 set 部分，并深化表运算：
+
+| 能力 | 实现 |
+|------|------|
+| set 集合（i64/string） | 载体 = 有序唯一 table；set_new/add（二分判重 + 有序插入）/contains（二分）/remove（二分定位 + ref 重建）/size/to_table + set_union/intersect/diff（双指针归并，O(n+m)） |
+| set 实现要点 | 纯 std 复用 std/sort（contains_i64/index_of_i64/insert_sorted_*）；修改类用 ref 表参数 + 局部表重绑定（T0.3）；tie && 不短路 → 嵌套 if 防护越界 |
+| concat | 拼接两表（新表，原表不变），i64/string |
+| slice | 半开区间 t[start..end)：start 越界空表、end 越界截断，i64/string |
+| copy / dedup | 深拷贝；去重保持首次出现顺序（线性 contains 判重），i64/string |
+
+**验收**：tests/language/table_coll_set_p2e.tie（3 项 PASS：set_i64/set_ops/table_ops）
++ 探针 p2e_set/p2e_ops；tests/language 全量正例 52/52 无回归；自举零错误。
+
+
 
 
