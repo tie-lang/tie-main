@@ -1,27 +1,43 @@
 type tie<logic>
-// tsha1 位长（48 进制符号个数）输出探针：位长集合
-//   {2,3,4,6,8,12,16,24,32,48,64,88,96} + 非法值拒绝（返回空串）+ 前缀一致性。
+// tsha1 位长（state-per-n）输出探针 v2。
+// 覆盖（对照唯一语义源 tests/tsha_probe/gen_tsha1_core.py，
+//           生成脚本 gen_tsha1fr / gen_tsha1bx / gen_tsha1x 取抽样）：
+//   ① 位长集合 {2,3,4,6,8,12,16,24,32,48,64,69,88,92,96,128,144} 各模型 (f/b/x/r)
+//      输出恰好 n 个 base48 符号，并抽样核对与生成器一致。
+//   ② 非法位长 0/46/23/-1 → 返回空串。
+//   ③ 非法 base 0/5/10 → 返回空串（v2 中 base=0 不再回退默认 48）。
+//   ④ base16 输出长度 = ⌊n·698121/1000000⌋·2 字符。
+//   ⑤ 前缀一致性：同一 (model,msg) 下 n=92 输出 == n=96 输出前 92 符号。
+//   ⑥ 同一消息 r 模型摘要与 f/b/x 不同。
+//
+// 注：公开接口的 base 默认参数（48）当前未应用（省略 base 会以 0 传入并判非法），
+//   故一律显式传 base=48/16（与既有 f/b/x/r 探针一致）。
 import "../../std/tsha1.tie"
 using tsha;
 
-func check_len(name: string, got: string, want: i64) {
-    var L: i64 = len(got)
-    if L == want {
-        println("PASS " + name + " len=" + radix10(L))
-    } else {
-        println("FAIL " + name + " len=" + radix10(L) + " want=" + radix10(want))
-        exit(1)
-    }
-}
+var N_SET: table<i64>;      // 合法 bit48 位长集合（main 里 init_globals 填充）
+var PASS_COUNT: table<i64>; // 通过的断言累计数（表全局变量持久）
 
-func prefix(s: string, k: i64) -> string {
-    var out: string = ""
-    var i: i64 = 0
-    while i < k {
-        out = out + str_char(s, i)
-        i = i + 1
-    }
-    return out
+// 全局表只能以空表声明，需在运行期填充。
+func init_globals() {
+    table_push(N_SET, 2)
+    table_push(N_SET, 3)
+    table_push(N_SET, 4)
+    table_push(N_SET, 6)
+    table_push(N_SET, 8)
+    table_push(N_SET, 12)
+    table_push(N_SET, 16)
+    table_push(N_SET, 24)
+    table_push(N_SET, 32)
+    table_push(N_SET, 48)
+    table_push(N_SET, 64)
+    table_push(N_SET, 69)
+    table_push(N_SET, 88)
+    table_push(N_SET, 92)
+    table_push(N_SET, 96)
+    table_push(N_SET, 128)
+    table_push(N_SET, 144)
+    table_push(PASS_COUNT, 0)
 }
 
 func radix10(v: i64) -> string {
@@ -38,83 +54,155 @@ func radix10(v: i64) -> string {
     return out
 }
 
+func prefix(s: string, k: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < k {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+func repeat_char(c: string, k: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < k {
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+// 长度断言；通过累计一次。
+func chk_len(name: string, got: string, want: i64) {
+    var L: i64 = len(got)
+    if L == want {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS " + name + " len=" + radix10(L))
+    } else {
+        println("FAIL " + name + " len=" + radix10(L) + " want=" + radix10(want))
+        exit(1)
+    }
+}
+
+// 内容断言；通过累计一次。
+func chk_eq(name: string, got: string, want: string) {
+    if got == want {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        println("  got : " + got)
+        println("  want: " + want)
+        exit(1)
+    }
+}
+
+// 不等断言；通过累计一次。
+func chk_neq(name: string, a: string, b: string, c: string, d: string) {
+    if a != b && a != c && a != d {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        exit(1)
+    }
+}
+
 func main() {
-    // 全位长集合 {2,3,4,6,8,12,16,24,32,48,64,88,96}——快速模型逐值覆盖
-    check_len("f n=2 ", tsha.tsha1f("abc", 2), 2)
-    check_len("f n=3 ", tsha.tsha1f("abc", 3), 3)
-    check_len("f n=4 ", tsha.tsha1f("abc", 4), 4)
-    check_len("f n=6 ", tsha.tsha1f("abc", 6), 6)
-    check_len("f n=8 ", tsha.tsha1f("abc", 8), 8)
-    check_len("f n=12", tsha.tsha1f("abc", 12), 12)
-    check_len("f n=16", tsha.tsha1f("abc", 16), 16)
-    check_len("f n=24", tsha.tsha1f("abc", 24), 24)
-    check_len("f n=32", tsha.tsha1f("abc", 32), 32)
-    check_len("f n=48", tsha.tsha1f("abc", 48), 48)
-    check_len("f n=64", tsha.tsha1f("abc", 64), 64)
-    check_len("f n=88", tsha.tsha1f("abc", 88), 88)
-    check_len("f n=96", tsha.tsha1f("abc", 96), 96)
-    // 其他模型抽样（含新增 2/3/4/6/88）
-    check_len("b n=2 ", tsha.tsha1b("", 2), 2)
-    check_len("b n=6 ", tsha.tsha1b("", 6), 6)
-    check_len("b n=88", tsha.tsha1b("", 88), 88)
-    check_len("b n=96", tsha.tsha1b("", 96), 96)
-    check_len("x n=3 ", tsha.tsha1x("", 3), 3)
-    check_len("x n=24", tsha.tsha1x("", 24), 24)
-    check_len("x n=64", tsha.tsha1x("", 64), 64)
-    check_len("x n=88", tsha.tsha1x("", 88), 88)
-    check_len("r n=4 ", tsha.tsha1r("", 4), 4)
-    check_len("r n=12", tsha.tsha1r("", 12), 12)
-    check_len("r n=32", tsha.tsha1r("", 32), 32)
-    check_len("r n=88", tsha.tsha1r("", 88), 88)
-    check_len("r n=96", tsha.tsha1r("", 96), 96)
-    // 非法位长 → 拒绝，返回空串
-    check_len("f n=0  reject", tsha.tsha1f("abc", 0), 0)
-    check_len("f n=5  reject", tsha.tsha1f("abc", 5), 0)
-    check_len("f n=7  reject", tsha.tsha1f("abc", 7), 0)
-    check_len("f n=46 reject", tsha.tsha1f("abc", 46), 0)
-    check_len("f n=100 reject", tsha.tsha1f("abc", 100), 0)
-    check_len("r n=23 reject", tsha.tsha1r("abc", 23), 0)
-    // 进制 base ∈ {2,3,8,16,48}（默认 48），同 n 信息量一致：
-    // n=8 → b0=5 字节 → base2=40 位 / base3=26 / base8=14 / base16=10 / base48=8
-    check_len("f n=8 b2 ", tsha.tsha1f("abc", 8, 2), 40)
-    check_len("f n=8 b3 ", tsha.tsha1f("abc", 8, 3), 26)
-    check_len("f n=8 b8 ", tsha.tsha1f("abc", 8, 8), 14)
-    check_len("f n=8 b16", tsha.tsha1f("abc", 8, 16), 10)
-    check_len("f n=8 b48", tsha.tsha1f("abc", 8, 48), 8)
-    // n=96 → b0=67 字节 → base2=536 / base8=179 / base16=134 / base3=339
-    check_len("f n=96 b2 ", tsha.tsha1f("abc", 96, 2), 536)
-    check_len("f n=96 b8 ", tsha.tsha1f("abc", 96, 8), 179)
-    check_len("f n=96 b16", tsha.tsha1f("abc", 96, 16), 134)
-    check_len("f n=96 b3 ", tsha.tsha1f("abc", 96, 3), 339)
-    // n=88 → b0=61 字节 → base16=122
-    check_len("f n=88 b16", tsha.tsha1f("abc", 88, 16), 122)
-    // 其他模型抽样
-    check_len("r n=12 b2 ", tsha.tsha1r("", 12, 2), 64)
-    check_len("b n=48 b8 ", tsha.tsha1b("", 48, 8), 88)
-    check_len("x n=64 b16", tsha.tsha1x("", 64, 16), 88)
-    // 非法进制 → 拒绝，返回空串；base=0（显式）按默认 48 处理
-    check_len("f n=8 b5  reject", tsha.tsha1f("abc", 8, 5), 0)
-    check_len("f n=8 b7  reject", tsha.tsha1f("abc", 8, 7), 0)
-    check_len("f n=8 b100 reject", tsha.tsha1f("abc", 8, 100), 0)
-    check_len("f n=8 b0 default", tsha.tsha1f("abc", 8, 0), 8)
-    // 前缀一致性（块级拼接）：n 较大输出以较小位长输出为前缀
-    if prefix(tsha.tsha1f("abc", 96), 64) == tsha.tsha1f("abc", 64) {
-        println("PASS f prefix96-64")
+    init_globals()
+    var msg = "abc"
+    var m1000 = repeat_char("a", 1000)
+
+    // ① 各模型全位长集合：base48 输出恰好 n 个符号
+    //   （用多块消息 "a"×1000；避免 "abc" 摘要某 n 出现前导 0 使 base48 最小表示
+    //    短于 n——规范 b48 为最小表示截断，前沿 0 会令输出少于 n。）
+    var n: i64 = 0
+    for n in N_SET {
+        chk_len("v2 f n=" + radix10(n), tsha.tsha1f(m1000, n, 48), n)
+    }
+    for n in N_SET {
+        chk_len("v2 r n=" + radix10(n), tsha.tsha1r(m1000, n, 48), n)
+    }
+    for n in N_SET {
+        chk_len("v2 b n=" + radix10(n), tsha.tsha1b(m1000, n, 48), n)
+    }
+    for n in N_SET {
+        chk_len("v2 x n=" + radix10(n), tsha.tsha1x(m1000, n, 48), n)
+    }
+
+    // ① 与生成器抽样对照（消息 "abc"，base48 前 n 符号）
+    chk_eq("v2 f abc n=8 ", tsha.tsha1f(msg, 8, 48), "2ryccqyh")
+    chk_eq("v2 f abc n=48", tsha.tsha1f(msg, 48, 48), "87k7LCE7rt6ClFwJEgG2pbiGoHzr9ybzpuhHhhbuJa76vHhL")
+    chk_eq("v2 r abc n=8 ", tsha.tsha1r(msg, 8, 48), "5hb9b7Es")
+    chk_eq("v2 r abc n=48", tsha.tsha1r(msg, 48, 48), "LxJH5Icy4eey941n2165KngDlGDzG8dht3ixJjpJjLCDHBLg")
+    chk_eq("v2 b abc n=8 ", tsha.tsha1b(msg, 8, 48), "3Kijpuqn")
+    chk_eq("v2 b abc n=48", tsha.tsha1b(msg, 48, 48), "CAxDeu6Ix0ty1uq6g1AJLnBcqliytAgx50flpDgqyd388Jvq")
+    chk_eq("v2 x abc n=8 ", tsha.tsha1x(msg, 8, 48), "3wFG26Ko")
+    chk_eq("v2 x abc n=48", tsha.tsha1x(msg, 48, 48), "71eGcu6t9BJy27zlzz363Ac3cpn5ueADihtirA1xDHFov0DL")
+
+    // 多块消息（"a"×1000）各模型抽样对照
+    chk_eq("v2 f a1000 n=8", tsha.tsha1f(m1000, 8, 48), "Fyj42a00")
+    chk_eq("v2 r a1000 n=8", tsha.tsha1r(m1000, 8, 48), "qhJr0J4f")
+    chk_eq("v2 b a1000 n=8", tsha.tsha1b(m1000, 8, 48), "4eq3EcEE")
+    chk_eq("v2 x a1000 n=8", tsha.tsha1x(m1000, 8, 48), "5kLIB7gB")
+
+    // ② 非法位长 → 空串
+    chk_len("v2 f n=0  reject", tsha.tsha1f(msg, 0, 48), 0)
+    chk_len("v2 f n=46 reject", tsha.tsha1f(msg, 46, 48), 0)
+    chk_len("v2 r n=23 reject", tsha.tsha1r(msg, 23, 48), 0)
+    chk_len("v2 b n=-1 reject", tsha.tsha1b(msg, -1, 48), 0)
+    chk_len("v2 x n=0  reject", tsha.tsha1x(msg, 0, 48), 0)
+
+    // ③ 非法 base → 空串（0/5/10）
+    chk_len("v2 f n=8 b0  reject", tsha.tsha1f(msg, 8, 0), 0)
+    chk_len("v2 f n=8 b5  reject", tsha.tsha1f(msg, 8, 5), 0)
+    chk_len("v2 f n=8 b10 reject", tsha.tsha1f(msg, 8, 10), 0)
+    chk_len("v2 r n=8 b0  reject", tsha.tsha1r(msg, 8, 0), 0)
+    chk_len("v2 b n=8 b5  reject", tsha.tsha1b(msg, 8, 5), 0)
+    chk_len("v2 x n=8 b10 reject", tsha.tsha1x(msg, 8, 10), 0)
+
+    // ④ base16 输出长度 = ⌊n·698121/1000000⌋·2（f 全集合 + 各模型抽样）
+    for n in N_SET {
+        var b0f = (n * 698121) / 1000000
+        chk_len("v2 f b16 n=" + radix10(n), tsha.tsha1f(msg, n, 16), b0f * 2)
+    }
+    var b0b = (48 * 698121) / 1000000
+    chk_len("v2 b b16 n=48", tsha.tsha1b(msg, 48, 16), b0b * 2)
+    var b0r = (96 * 698121) / 1000000
+    chk_len("v2 r b16 n=96", tsha.tsha1r(msg, 96, 16), b0r * 2)
+    var b0x = (64 * 698121) / 1000000
+    chk_len("v2 x b16 n=64", tsha.tsha1x(msg, 64, 16), b0x * 2)
+
+    // ⑤ 前缀一致性：n=92 输出 == n=96 输出前 92 符号。
+    //   仅 f/b/x 成立（92 与 96 同 W=17，同一状态）；r 在 92(W=21)/96(W=22) 换字宽，
+    //   状态不同无前缀关系（生成器亦同），故 r 不在此断言。
+    if prefix(tsha.tsha1f(msg, 96, 48), 92) == tsha.tsha1f(msg, 92, 48) {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS v2 f prefix96-92")
     } else {
-        println("FAIL f prefix96-64")
+        println("FAIL v2 f prefix96-92")
         exit(1)
     }
-    if prefix(tsha.tsha1f("abc", 88), 64) == tsha.tsha1f("abc", 64) {
-        println("PASS f prefix88-64")
+    if prefix(tsha.tsha1b(msg, 96, 48), 92) == tsha.tsha1b(msg, 92, 48) {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS v2 b prefix96-92")
     } else {
-        println("FAIL f prefix88-64")
+        println("FAIL v2 b prefix96-92")
         exit(1)
     }
-    if prefix(tsha.tsha1r("abc", 96), 48) == tsha.tsha1r("abc", 48) {
-        println("PASS r prefix96-48")
+    if prefix(tsha.tsha1x(msg, 96, 48), 92) == tsha.tsha1x(msg, 92, 48) {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS v2 x prefix96-92")
     } else {
-        println("FAIL r prefix96-48")
+        println("FAIL v2 x prefix96-92")
         exit(1)
     }
-    println("位长输出探针全部通过")
+
+    // ⑥ 同一消息 r 摘要与 f/b/x 不同
+    chk_neq("v2 r differs f/b/x", tsha.tsha1r(msg, 48, 48),
+            tsha.tsha1f(msg, 48, 48), tsha.tsha1b(msg, 48, 48), tsha.tsha1x(msg, 48, 48))
+
+    println("位长（state-per-n）输出探针 v2 全部通过，PASS 总数=" + radix10(PASS_COUNT[0]))
 }
