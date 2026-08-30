@@ -1,0 +1,47 @@
+type tie<logic>
+// P1 探针：数据流箭头 -> / <-
+
+func add2(a: i64, b: i64) -> i64 {
+    return a + b
+}
+func inc(x: i64) -> i64 {
+    return x + 1
+}
+func shout(s: string) -> string {
+    return s + "!"
+}
+
+struct Box {
+    var val: i64 = 0
+}
+
+func main() {
+    // 1. 传参（数据作末参）：10 -> add2(5) = add2(5, 10) = 15
+    var r = 10 -> add2(5)
+    println(r)
+    // 2. 链式传参：5 -> inc() -> inc() = inc(inc(5)) = 7
+    var c = 5 -> inc() -> inc()
+    println(c)
+    // 3. 字符串传参
+    var s = "hi" -> shout()
+    println(s)
+    // 4. 函数值传参：f(9)
+    var f: fn(i64) -> i64 = inc
+    var z = 9 -> f
+    println(z)
+    // 5. 箭头赋值：x <- 42 与 42 -> y
+    var x: i64 = 0
+    x <- 42
+    println(x)
+    var y: i64 = 0
+    100 -> y
+    println(y)
+    // 6. 字段赋值：b.val <- 7
+    var b: Box = Box(0)
+    b.val <- 7
+    println(b.val)
+    // 7. 下标赋值：arr[0] <- 9
+    var arr: table<i64> = [1, 2, 3]
+    arr[0] <- 9
+    println(arr[0])
+}

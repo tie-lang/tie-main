@@ -45,7 +45,7 @@ func mk_index(base: i64, index: i64) -> i64 {
 
 // 表达式：三目 → 可选范围 `..`
 pub func parse_expr() -> i64 {
-    var lhs = parse_ternary()
+    var lhs = parse_arrow()
     if lhs < 0 {
         return -1
     }
@@ -62,6 +62,78 @@ pub func parse_expr() -> i64 {
         table_push(kids, end)
         ast.set_children(n, kids)
         return n
+    }
+    return lhs
+}
+
+// P1 数据流箭头（左结合，优先级低于三目）：`a -> f(...)`（传参，数据作末参）
+// 与 `x <- a`（赋值，镜像）。Fwd(->)：数据在 LHS、目标在 RHS；Rev(<-)：
+// 数据在 RHS、目标在 LHS。
+// 脱糖：目标侧是调用（f(...) / obj.m(...) / expr(...)）→ 把数据附加为末参，
+// 改写该调用节点（保持普通调用走既有语义/irgen 通道，无箭头节点残留）；
+// 否则保留 N_BINARY 箭头节点（裸函数引用 → 传参；可赋值 lvalue → 赋值，
+// 由语义层按目标类型分派）。
+// 链式：`a -> f() -> g()` = `(a -> f()) -> g()`（左结合）。
+func parse_arrow() -> i64 {
+    var lhs = parse_ternary()
+    if lhs < 0 {
+        return -1
+    }
+    var d = false
+    while !d {
+        var op: i64 = -1
+        if putil.peek_tag() == lex_arrow {
+            op = B_ARROW_FWD
+        } else if putil.peek_tag() == lex_larrow {
+            op = B_ARROW_REV
+        }
+        if op < 0 {
+            d = true
+        } else {
+            putil.advance()
+            var rhs = parse_ternary()
+            if rhs < 0 {
+                return -1
+            }
+            var data_n = lhs
+            var tgt_n = rhs
+            if op == B_ARROW_REV {
+                data_n = rhs
+                tgt_n = lhs
+            }
+            var ttag = ast.tag(tgt_n)
+            if ttag == N_CALL || ttag == N_METHOD_CALL || ttag == N_CALL_EXPR {
+                // 传参脱糖：附加 data 为调用末参（改写目标调用节点）
+                var kids: table<i64> = table_new_i64()
+                var kk: i64 = 0
+                while kk < ast.child_count(tgt_n) {
+                    table_push(kids, ast.child_at(tgt_n, kk))
+                    kk = kk + 1
+                }
+                table_push(kids, data_n)
+                ast.set_children(tgt_n, kids)
+                lhs = tgt_n
+            } else if ttag == N_INDEX {
+                // 下标赋值脱糖：`arr[i] <- a` / `a -> arr[i]` → N_INDEX_ASSIGN
+                var ia = ast.new_node(N_INDEX_ASSIGN, -1, -1, -1, ast.line(tgt_n), ast.col(tgt_n))
+                var ik: table<i64> = table_new_i64()
+                table_push(ik, tgt_n)
+                table_push(ik, data_n)
+                ast.set_children(ia, ik)
+                lhs = ia
+            } else if ttag == N_FIELD_ACCESS {
+                // 字段赋值脱糖：`obj.f <- a` / `a -> obj.f` → N_FIELD_ASSIGN
+                var fa = ast.new_node(N_FIELD_ASSIGN, ast.name(tgt_n), -1, -1, ast.line(tgt_n), ast.col(tgt_n))
+                var fk: table<i64> = table_new_i64()
+                table_push(fk, ast.child_at(tgt_n, 0))  // base
+                table_push(fk, data_n)
+                ast.set_children(fa, fk)
+                lhs = fa
+            } else {
+                // 保留箭头节点（裸 Var 目标：fn → 传参 / 变量 → 赋值，语义层分派）
+                lhs = mk_binary(op, lhs, rhs)
+            }
+        }
     }
     return lhs
 }

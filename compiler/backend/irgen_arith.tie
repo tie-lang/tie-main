@@ -19,10 +19,77 @@ type tie<class>
 //   - 本文件只含函数与注释，不含顶层全局 var 声明、不含 import——
 //     全局 var 与 import 树均留在 irgen.tie 主文件，避免重复定义。
 namespace irgen {
+// P1 数据流箭头生成（仅裸 Var 目标到达——调用/下标/字段目标已在解析器脱糖）。
+// Fwd(->)：数据=LHS 目标=RHS；Rev(<-)：数据=RHS 目标=LHS。
+// 目标 = 函数类型 → 传参（`f(data)`，data 作唯一实参，tig_call_fn_value）；
+// 目标 = 数据变量 → 赋值 store（对齐 N_ASSIGN 的 tag-103 逻辑）+ 返回数据值。
+func tig_arrow(op: i64, lhs: i64, rhs: i64) -> i64 {
+    var data_n = lhs
+    var tgt_n = rhs
+    if op == B_ARROW_REV {
+        data_n = rhs
+        tgt_n = lhs
+    }
+    var tgt_ty = node_types[tgt_n]
+    if tgt_ty >= 0 && types.is_fn(tgt_ty) {
+        // 传参：f(data)
+        var fv = tig_expr(tgt_n)
+        if fv < 0 {
+            return -1
+        }
+        var dv = tig_expr(data_n)
+        if dv < 0 {
+            return -1
+        }
+        var argvals: table<i64> = table_new_i64()
+        table_push(argvals, dv)
+        return tig_call_fn_value(fv, tgt_ty, argvals)
+    }
+    // 赋值：store 数据值到变量槽 + 返回该值（目标槽须先保存——tig_expr(data)
+    // 会覆盖 g_lookup_* 全局槽）
+    var nm = sstate.name_str(tgt_n)
+    var nid = interner.intern(nm)
+    if scope_get_global(nid) < 0 {
+        sm_err_msg = "箭头赋值目标 '" + nm + "' 未入作用域（函数 " + g_cur_fn_name + "）"
+        return -1
+    }
+    var tgt_alloca = g_lookup_alloca
+    var tgt_global = g_lookup_is_global
+    var tgt_ty2 = g_lookup_ty
+    var dv2 = tig_expr(data_n)
+    if dv2 < 0 {
+        return -1
+    }
+    // S1.3 数字族转换（对齐 N_ASSIGN 的 C2/C3）
+    var vty = node_types[data_n]
+    if vty >= 0 && (types.is_int(vty) || types.is_float(vty)) &&
+        (types.is_int(tgt_ty2) || types.is_float(tgt_ty2)) && vty != tgt_ty2 {
+        var cv = tig_coerce(dv2, vty, tgt_ty2)
+        if cv < 0 {
+            return -1
+        }
+        dv2 = cv
+    }
+    var st = ir.new_inst(g_cur_block, 22, -1)  // store
+    ir.add_operand(st, tgt_ty2, 2)
+    ir.add_operand(st, dv2, 0)
+    if tgt_global > 0 {
+        ir.add_operand(st, tgt_alloca, 3)  // OK_GLOBAL 全局地址（池 id）
+    } else {
+        ir.add_operand(st, tgt_alloca, 0)  // 本地 alloca
+    }
+    return dv2
+}
+
 // 二元运算：生成左右操作数后按 op 生成算术/比较/逻辑/位运算指令。
 // 字符串操作（+ 拼接 / 比较）走运行时桥（str_cat / strcmp），由 node_types 判定。
 // && || 走短路（cond_br + phi 汇合，对齐 Rust ir.rs 短路模式）。
 func tig_binary(op: i64, lhs: i64, rhs: i64) -> i64 {
+    // P1 数据流箭头：非算术/比较——`x <- data` / `data -> x`（裸 Var 目标）。
+    // 目标 = 函数 → 传参（data 作唯一实参）；= 变量 → 赋值 store + 值。
+    if op == B_ARROW_FWD || op == B_ARROW_REV {
+        return tig_arrow(op, lhs, rhs)
+    }
     // trit 判定先行（对齐 Rust tig_binary 分派顺序）：trit 的 &&/|| 是 Kleene
     // min/max（非短路），混合 trit×i64 走 gen_binary_trit——短路分支只服务 bool
     var lhs_t = node_types[lhs]

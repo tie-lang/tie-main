@@ -74,6 +74,8 @@ const lex_hash: i64 = 91;       // # 哈希符（属性语法 `#[name]`）
 const lex_actor: i64 = 92;      // actor 关键字（一期并发：actor 原生语法）
 const lex_async: i64 = 93;      // async 关键字（actor 异步投递方法修饰）
 const lex_goto: i64 = 94;       // goto 关键字（三期：`unsafe goto #x` 无条件跳转，§7.1.5）
+// P1 数据流箭头 `<-`（镜像 `->`）：符号表新增（'<-' = 0x3C 0x2D，介于 '<' 与 '<<' 之间）
+const lex_larrow: i64 = 95;
 
 namespace lextok {
 

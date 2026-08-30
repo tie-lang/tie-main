@@ -196,6 +196,16 @@ pub func parse_expr_or_assign() -> i64 {
     if expr < 0 {
         return -1
     }
+    // P1 箭头赋值已在 parse_expr 内脱糖为语句节点（N_ASSIGN/N_FIELD_ASSIGN/
+    // N_INDEX_ASSIGN）→ 消费语句终止符后直接返回（避免被 N_EXPR_STMT 包裹后
+    // 语义按表达式推断失败；终止符必须在此消费，否则留给下一条语句报「分号开始」）
+    var etag = ast.tag(expr)
+    if etag == N_ASSIGN || etag == N_FIELD_ASSIGN || etag == N_INDEX_ASSIGN {
+        if !putil.expect_stmt_end() {
+            return -1
+        }
+        return expr
+    }
     var op = putil.eat_assign_op()
     if op != -2 {
         var tag = ast.tag(expr)

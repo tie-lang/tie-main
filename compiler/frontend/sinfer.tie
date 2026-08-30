@@ -266,6 +266,65 @@ pub func resolve_call_name(name: string) -> string {
 
 // ==================== 表达式类型推断 ====================
 // infer_expr(id) -> 类型 id；-1 = 错误（g_err_* 已置）
+
+// P1 数据流箭头推断（仅裸 Var 目标到达此处——调用/下标/字段目标已在解析器
+// 脱糖）。Fwd(->)：数据=LHS 目标=RHS；Rev(<-)：数据=RHS 目标=LHS。
+// 目标 = 函数类型 → 传参（`f(data)`，数据作唯一实参）；= 数据变量 → 赋值
+//（类型 = 数据类型，校验可赋值；irgen 侧生成 store + 值）。
+func infer_arrow(id: i64, op: i64) -> i64 {
+    var data_n = sstate.child(id, 0)
+    var tgt_n = sstate.child(id, 1)
+    if op == B_ARROW_REV {
+        data_n = sstate.child(id, 1)
+        tgt_n = sstate.child(id, 0)
+    }
+    var data_ty = infer_expr(data_n)
+    if data_ty < 0 {
+        return -1
+    }
+    if s_tags[tgt_n] != S_N_VAR {
+        sm_err_line = s_lines[id]
+        sm_err_col = s_cols[id]
+        sm_err_msg = "箭头目标必须是函数、调用或可赋值变量（函数 " + g_cur_fn_name + "）"
+        return -1
+    }
+    var t_ty = infer_expr(tgt_n)
+    if t_ty < 0 {
+        return -1
+    }
+    if types.is_fn(t_ty) {
+        // 传参：`f(data)`——校验 1 参 + 数据类型匹配
+        var np = types.fn_nparams_of(t_ty)
+        if np != 1 {
+            sm_err_line = s_lines[id]
+            sm_err_col = s_cols[id]
+            sm_err_msg = "箭头传参要求目标函数恰 1 个参数，实际 " + to_string(np) + " 个（" + types.type_name(t_ty) + "）"
+            return -1
+        }
+        var want = types.fn_param_of(t_ty, 0)
+        if !stype.types_compatible(want, data_ty) && !stype.types_match(want, data_ty, data_n) {
+            sm_err_line = s_lines[id]
+            sm_err_col = s_cols[id]
+            sm_err_msg = "箭头传参实参类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(data_ty)
+            return -1
+        }
+        var frt = types.fn_ret_ty(t_ty)
+        node_types[id] = frt
+        g_typed = g_typed + 1
+        return frt
+    }
+    // 赋值：`x <- data` / `data -> x`——数据类型可赋给目标变量类型
+    if !stype.types_compatible(t_ty, data_ty) && !stype.types_match(t_ty, data_ty, data_n) {
+        sm_err_line = s_lines[id]
+        sm_err_col = s_cols[id]
+        sm_err_msg = "箭头赋值类型不匹配：" + types.type_name(t_ty) + " 与 " + types.type_name(data_ty)
+        return -1
+    }
+    node_types[id] = data_ty
+    g_typed = g_typed + 1
+    return data_ty
+}
+
 pub func infer_expr(id: i64) -> i64 {
     var tag = s_tags[id]
     // 字面量
@@ -461,6 +520,11 @@ pub func infer_expr(id: i64) -> i64 {
     // Binary
     if tag == S_N_BINARY {
         var op = s_vals[id]
+        // P1 数据流箭头：非算术/比较——先分派（裸 Var 目标：fn → 传参 /
+        // 变量 → 赋值；调用/下标/字段目标已在解析器脱糖，不达此处）
+        if op == B_ARROW_FWD || op == B_ARROW_REV {
+            return infer_arrow(id, op)
+        }
         var lhs = infer_expr(sstate.child(id, 0))
         if lhs < 0 {
             return -1

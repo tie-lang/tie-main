@@ -251,6 +251,11 @@ const B_BITOR: i64 = 14;
 const B_BITXOR: i64 = 15;
 const B_SHL: i64 = 16;
 const B_SHR: i64 = 17;
+// P1 数据流箭头：18=Fwd(->) 19=Rev(<-)。Fwd：数据在 LHS、目标在 RHS；
+// Rev：数据在 RHS、目标在 LHS（镜像；目标 = 函数/调用 → 传参（数据作末参）；
+// 目标 = 可赋值 lvalue → 赋值）
+const B_ARROW_FWD: i64 = 18;
+const B_ARROW_REV: i64 = 19;
 
 // 一元：0=Neg 1=Not 2=PreInc 3=PreDec 4=PostInc 5=PostDec
 const U_NEG: i64 = 0;
