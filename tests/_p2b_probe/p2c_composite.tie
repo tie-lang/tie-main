@@ -1,0 +1,83 @@
+type tie<logic>
+// P2c 探针：复合类型装箱（struct/enum/fn → any 堆装箱）+ any_tag
+
+struct Point {
+    var x: i64 = 0
+    var y: i64 = 0
+}
+enum Shape {
+    Circle(i64)
+    Rect(i64, i64)
+}
+func add1(a: i64) -> i64 {
+    return a + 1
+}
+
+func main() {
+    // 1. struct 装箱
+    var p: any = Point(1, 2)
+    var pt = any_tag(p)
+    if pt > 1000000000000 {
+        println("PASS struct box tag=" + to_string(pt))
+    } else {
+        println("FAIL struct tag=" + to_string(pt))
+        exit(1)
+    }
+    // 2. 异构表含 struct
+    var t: table<any> = [Point(3, 4), "label", 42]
+    if len(t) == 3 && as_string(t[1]) == "label" && as_i64(t[2]) == 42 &&
+        any_tag(t[0]) > 1000000000000 {
+        println("PASS mixed table")
+    } else {
+        println("FAIL mixed")
+        exit(1)
+    }
+    // 3. enum 装箱
+    var s: any = Shape.Circle(5)
+    if any_tag(s) > 1000000000000 {
+        println("PASS enum box")
+    } else {
+        println("FAIL enum tag=" + to_string(any_tag(s)))
+        exit(1)
+    }
+    // 4. fn 装箱
+    var f: any = add1
+    if any_tag(f) > 1000000000000 {
+        println("PASS fn box")
+    } else {
+        println("FAIL fn tag=" + to_string(any_tag(f)))
+        exit(1)
+    }
+    // 5. 标量 tag 不受影响
+    var x: any = 42
+    var s2: any = "hi"
+    if any_tag(x) == 0 && any_tag(s2) == 3 {
+        println("PASS scalar tags")
+    } else {
+        println("FAIL scalar tag x=" + to_string(any_tag(x)) + " s=" + to_string(any_tag(s2)))
+        exit(1)
+    }
+    // 6. switch struct 解构取用：case Point(p): 绑定 p
+    var t2: table<any> = [Point(10, 20), "s", 7]
+    var acc: string = ""
+    var k2: i64 = 0
+    while k2 < len(t2) {
+        switch t2[k2] {
+            case Point(p):
+                acc = acc + "pt" + to_string(p.x) + to_string(p.y)
+            case string:
+                acc = acc + "s"
+            case i64:
+                acc = acc + "i"
+            default:
+                acc = acc + "?"
+        }
+        k2 = k2 + 1
+    }
+    if acc == "pt1020si" {
+        println("PASS struct bind")
+    } else {
+        println("FAIL struct bind acc=" + acc)
+        exit(1)
+    }
+}

@@ -437,6 +437,22 @@ pub func infer_call(id: i64) -> i64 {
             g_typed = g_typed + 1
             return br
         }
+        // P2c：any_tag(x)——参数必须是 any
+        if fnm == "any_tag" {
+            var at2 = infer_expr(args[0])
+            if at2 < 0 {
+                return -1
+            }
+            if at2 != types.named(TK_ANY) {
+                sm_err_line = s_lines[id]
+                sm_err_col = s_cols[id]
+                sm_err_msg = "any_tag() 参数必须是 any，实际是 " + types.type_name(at2)
+                return -1
+            }
+            node_types[id] = br
+            g_typed = g_typed + 1
+            return br
+        }
         // table_push 特殊检查（对齐 Rust）：第 1 参数必须表变量 + 动态表 + 元素类型匹配
         if fnm == "table_push" {
             var t0 = s_tags[args[0]]

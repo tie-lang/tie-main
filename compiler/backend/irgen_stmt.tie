@@ -416,6 +416,8 @@ func tig_switch(id: i64) -> i64 {
         while i < npat {
             var pat = sstate.child(pl, i)
             var eq_v: i64 = -1
+            // P2c：struct 绑定标记（case Point(p): → 命中后提取 payload 绑定）
+            var pat_is_bind: bool = false
             if subj_is_any && s_tags[pat] == S_N_TYPE_LIT {
                 // P2b-T4：any 主体类型匹配——case 类型 → 装箱 tag 常量，与提取的
                 // subject tag icmp eq（scheck 已校验可装箱）。body 内用 as_<T>(x)
@@ -444,6 +446,27 @@ func tig_switch(id: i64) -> i64 {
                 ir.add_operand(is_eq3, pv3, 0)
                 ir.add_operand(is_eq3, 0, 2)  // eq
                 eq_v = ir.get_value(is_eq3)
+            } else if subj_is_any && (s_tags[pat] == S_N_VAR || s_tags[pat] == N_CASE_BIND) {
+                // P2c：struct 匹配/绑定——case Point: / case Point(p):
+                //（scheck 已校验是 struct 名）。tag = struct 类型 id 常量。
+                var sref = pat
+                if s_tags[pat] == N_CASE_BIND {
+                    sref = sstate.child(pat, 0)
+                    pat_is_bind = true
+                }
+                var sname2 = sstate.name_str(sref)
+                var sidx2 = sstate.bs_find(st_keys, interner.intern(sname2))
+                if sidx2 < 0 {
+                    sm_err_msg = "case 值 '" + sname2 + "' 不是 struct（函数 " + g_cur_fn_name + "）"
+                    return -1
+                }
+                var s_ty2 = types.struct_of(st_vals[sidx2])
+                var pv4 = tig_int_lit_ty(s_ty2, types.named(TK_I64))
+                var is_eq4 = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))
+                ir.add_operand(is_eq4, any_tag_v, 0)
+                ir.add_operand(is_eq4, pv4, 0)
+                ir.add_operand(is_eq4, 0, 2)  // eq
+                eq_v = ir.get_value(is_eq4)
             } else if subj_is_enum {
                 // 枚举 case：模式 = FieldAccess(Enum.Variant) → 解析为 tag 常量，
                 // 与提取出的 subject tag icmp eq（scheck 已校验变体合法）。
@@ -527,6 +550,22 @@ func tig_switch(id: i64) -> i64 {
                 }
                 var brb = ir.new_inst(g_cur_block, 30, -1)  // br body
                 ir.add_operand(brb, body_blk, 1)
+                g_cur_block = np_blk
+            } else if subj_is_any && pat_is_bind {
+                // P2c：struct 解构——case Point(p): 命中 → 绑定块（从堆 any 盒
+                // 提取 struct → 绑定变量）→ body
+                var sbind_blk = ir.new_block(g_cur_func, interner.intern("sw.sbind"))
+                var cb2 = ir.new_inst(g_cur_block, 31, -1)
+                ir.add_operand(cb2, eq_v, 0)
+                ir.add_operand(cb2, sbind_blk, 1)
+                ir.add_operand(cb2, np_blk, 1)
+                g_cur_block = sbind_blk
+                var sb2 = tig_case_struct_bind_body(subject, subj_ty, pat)
+                if sb2 < 0 {
+                    return -1
+                }
+                var brb2 = ir.new_inst(g_cur_block, 30, -1)  // br body
+                ir.add_operand(brb2, body_blk, 1)
                 g_cur_block = np_blk
             } else {
                 var cb = ir.new_inst(g_cur_block, 31, -1)

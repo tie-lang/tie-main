@@ -226,8 +226,10 @@ func tig_field_assign(id: i64) -> i64 {
 
 // P2b 装箱：具体值 v（vty）→ any {tag, payload} 16 字节值。
 // tag 约定：0=i64/整数 1=f64 2=bool 3=string 4=char（payload 直接存/
-// type-punned；bool/char/窄整数提升为 i64）。复合类型暂不支持（报错）。
-// 拆箱由 as_*（T3）与 switch 类型匹配（T4）按 tag 提取。
+// type-punned；bool/char/窄整数提升为 i64）。
+// P2c 复合类型（struct/enum/fn）：tag = 类型 id（复合 id 远大于标量 0-4），
+// payload = 指向堆上按值拷贝聚合的指针（any 的 8 字节 payload 放不下多字聚合）。
+// 拆箱由 as_*（T3）/switch 类型匹配（T4、P2c 复合 case 绑定）按 tag 提取。
 func tig_box_any(v: i64, vty: i64) -> i64 {
     var any_ty = types.named(TK_ANY)
     var T64 = types.named(TK_I64)
@@ -254,6 +256,20 @@ func tig_box_any(v: i64, vty: i64) -> i64 {
         if vty != T64 {
             pv = s21_zext(v, vty)  // 窄整数 → i64
         }
+    } else if types.kind(vty) == K_STRUCT || types.kind(vty) == K_ENUM || types.kind(vty) == K_FN {
+        // P2c 复合装箱：tag = 类型 id（唯一标识，供 switch 类型匹配）；
+        // 堆分配 type_byte_size 字节按值拷贝聚合，payload = 堆指针（i64）。
+        tag = vty
+        var sz = tig_int_lit_ty(type_byte_size(vty), T64)
+        var hp = s21_raw_alloc_str(sz)
+        if hp < 0 {
+            return -1
+        }
+        s21_store(hp, v, vty)
+        var pi2 = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint → i64
+        ir.add_operand(pi2, hp, 0)
+        pv = ir.get_value(pi2)
+        pty = T64
     } else {
         sm_err_msg = "any 装箱暂不支持类型 " + types.type_name(vty) + "（函数 " + g_cur_fn_name + "）"
         return -1
@@ -515,6 +531,47 @@ func tig_case_bind_body(subject: i64, subj_ty: i64, pat: i64) -> i64 {
     var vap = ir.get_value(va)
     s21_store(vap, bv, pty)
     scope_put(bind_name, vap, pty)
+    return 0
+}
+
+// P2c：any 主体 struct 解构——`case Point(p):` 命中后调用。subject 是 any 值，
+// payload@[1] = 指向堆上按值拷贝的 Point 的指针（i64）→ inttoptr → load struct →
+// 绑定变量 p（alloca + store + scope_put，body 可引用）。
+func tig_case_struct_bind_body(subject: i64, subj_ty: i64, pat: i64) -> i64 {
+    var sref_n = sstate.child(pat, 0)
+    var bind_name = sstate.child(pat, 1)
+    var sname = sstate.name_str(sref_n)
+    var sidx = sstate.bs_find(st_keys, interner.intern(sname))
+    if sidx < 0 {
+        return -1
+    }
+    var s_ty = types.struct_of(st_vals[sidx])
+    var T64 = types.named(TK_I64)
+    // subject any 落 alloca → 读 payload@[1]（堆指针 i64）
+    var saddr = tig_agg_addr(subject, subj_ty)
+    if saddr < 0 {
+        return -1
+    }
+    var g1 = ir.new_inst(g_cur_block, 27, subj_ty)  // agg_gep 下标 1
+    ir.add_operand(g1, saddr, 0)
+    ir.add_operand(g1, 1, 2)
+    var g1p = ir.get_value(g1)
+    var ld1 = ir.new_inst(g_cur_block, 21, T64)
+    ir.add_operand(ld1, g1p, 0)
+    var pv = ir.get_value(ld1)
+    // inttoptr → 堆 ptr → load struct
+    var ip = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr
+    ir.add_operand(ip, pv, 0)
+    var spp = ir.get_value(ip)
+    var ld2 = ir.new_inst(g_cur_block, 21, s_ty)  // load struct
+    ir.add_operand(ld2, spp, 0)
+    var sv = ir.get_value(ld2)
+    // 绑定变量：alloca struct + store + 登记作用域（body 可引用）
+    var va = ir.new_inst(g_cur_block, 20, s_ty)
+    ir.add_operand(va, s_ty, 2)
+    var vap = ir.get_value(va)
+    s21_store(vap, sv, s_ty)
+    scope_put(bind_name, vap, s_ty)
     return 0
 }
 

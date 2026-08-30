@@ -259,6 +259,46 @@ pub func check_switch_case(c: i64, subj_ty: i64) -> i64 {
             i = i + 1
             continue
         }
+        // P2c：any 主体 struct 匹配/绑定——`case Point:`（N_VAR 解析为 struct 名）
+        // 与 `case Point(p):`（N_CASE_BIND 解构，绑定变量类型 = struct）
+        if subj_ty == types.named(TK_ANY) {
+            var bind_id2: i64 = -1
+            var ref2 = p
+            if s_tags[p] == N_CASE_BIND {
+                ref2 = sstate.child(p, 0)
+                bind_id2 = sstate.child(p, 1)
+            }
+            if s_tags[ref2] == S_N_VAR {
+                var sname = sstate.name_str(ref2)
+                var sidx = sstate.bs_find(st_keys, intern.intern(sname))
+                if sidx >= 0 {
+                    // struct 类型匹配（case Point: / case Point(p): 绑定）
+                    var s_ty = types.struct_of(st_vals[sidx])
+                    if bind_id2 >= 0 {
+                        sinfer.lv_insert(bind_id2, s_ty, 0, -1, 0)
+                    }
+                    var key2 = "s:" + sname
+                    var dd: i64 = 0
+                    var dup2: bool = false
+                    while dd < len(g_case_seen) {
+                        if g_case_seen[dd] == key2 {
+                            dup2 = true
+                            break
+                        }
+                        dd = dd + 1
+                    }
+                    if dup2 {
+                        sm_err_line = s_lines[c]
+                        sm_err_col = s_cols[c]
+                        sm_err_msg = "重复的 case 值 " + key2
+                        return -1
+                    }
+                    table_push(g_case_seen, key2)
+                    i = i + 1
+                    continue
+                }
+            }
+        }
         // case 类型匹配 pattern（对齐 Rust）：any 动态对象上匹配可装箱类型
         //（tag 约定见 tig_box_any）；其余静态类型一律报错（须在 infer_expr 前
         // 拦截，因为 infer_expr 对 TypeLit 直接报通用错误）

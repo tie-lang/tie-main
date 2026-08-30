@@ -419,6 +419,10 @@ func is_builtin_name(nm: string) -> bool {
     if nm == "as_i64" || nm == "as_f64" || nm == "as_bool" || nm == "as_string" || nm == "as_char" {
         return true
     }
+    // P2c：any 运行时辅助——any_tag(x) 读 {tag,payload} 的 tag 字段
+    if nm == "any_tag" {
+        return true
+    }
     if nm == "table_new_i64" || nm == "table_new_f64" || nm == "table_new_string" || nm == "table_new_bool" {
         return true
     }
@@ -1637,6 +1641,29 @@ func builtin_expr(nm: string, id: i64) -> i64 {
             return -1
         }
         g_builtin_res = ux
+        return 0
+    }
+    // P2c：any_tag(x) → 读 {tag,payload} 的 tag 字段（标量 0-4 / 复合类型 id）
+    if nm == "any_tag" {
+        var a1 = call_arg(id, 0)
+        var av1 = tig_expr(a1)
+        if av1 < 0 {
+            return -1
+        }
+        var any_ty6 = types.named(TK_ANY)
+        var slot6 = ir.new_inst(g_cur_block, 20, any_ty6)
+        ir.add_operand(slot6, any_ty6, 2)
+        var sp6 = ir.get_value(slot6)
+        var st6 = ir.new_inst(g_cur_block, 22, -1)
+        ir.add_operand(st6, any_ty6, 2)
+        ir.add_operand(st6, av1, 0)
+        ir.add_operand(st6, sp6, 0)
+        var g6 = ir.new_inst(g_cur_block, 27, any_ty6)
+        ir.add_operand(g6, sp6, 0)
+        ir.add_operand(g6, 0, 2)
+        var ld6 = ir.new_inst(g_cur_block, 21, types.named(TK_I64))
+        ir.add_operand(ld6, ir.get_value(g6), 0)
+        g_builtin_res = ir.get_value(ld6)
         return 0
     }
     if nm == "table_new_i64" || nm == "table_new_f64" || nm == "table_new_string" || nm == "table_new_bool" {
