@@ -708,4 +708,255 @@ pub func find_index_string(t: table<string>, value: string) -> i64 {
 pub func contains_string(t: table<string>, value: string) -> bool {
     return find_index_string(t, value) >= 0
 }
+
+// ---------- set 集合（P2e-T1） ----------
+// 载体：有序 table<i64> / table<string>（元素唯一、升序）——纯 std 实现，复用
+// std/sort 的二分查找（contains_i64/index_of_i64）与有序插入（insert_sorted_*）。
+// 集合运算（union/intersect/diff）用双指针归并（两表都升序，O(n+m)）。
+// 修改类函数（set_add_*/set_remove_*）用 ref 表参数 + 局部表重绑定（T0.3）。
+// 注意：tie 的逻辑 && **不短路**，表下标访问用嵌套 if 防护越界（同 heap_pop）。
+
+// 空集合（i64）。
+pub func set_new_i64() -> table<i64> {
+    return table_new_i64()
+}
+
+// 添加：已存在（二分）则不变；否则有序插入保持升序。
+pub func set_add_i64(t: ref table<i64>, v: i64) {
+    if !sort.contains_i64(t, v) {
+        sort.insert_sorted_i64(t, v)
+    }
+}
+
+// 是否含 v（二分，要求升序——set 恒维护升序）。
+pub func set_contains_i64(t: table<i64>, v: i64) -> bool {
+    return sort.contains_i64(t, v)
+}
+
+// 移除：二分定位下标，重建表去元素；返回是否实际移除。
+pub func set_remove_i64(t: ref table<i64>, v: i64) -> bool {
+    var idx = sort.index_of_i64(t, v)
+    if idx < 0 {
+        return false
+    }
+    var nt = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        if i != idx {
+            table_push(nt, t[i])
+        }
+        i = i + 1
+    }
+    t = nt
+    return true
+}
+
+// 元素个数。
+pub func set_size_i64(t: table<i64>) -> i64 {
+    return len(t)
+}
+
+// 转表副本（有序）。
+pub func set_to_table_i64(t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(r, t[i])
+        i = i + 1
+    }
+    return r
+}
+
+// 并集：归并两升序表去重（O(n+m)）。
+pub func set_union_i64(a: table<i64>, b: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    var j: i64 = 0
+    while i < len(a) || j < len(b) {
+        if j >= len(b) {
+            table_push(r, a[i])
+            i = i + 1
+        } else if i >= len(a) {
+            table_push(r, b[j])
+            j = j + 1
+        } else if a[i] < b[j] {
+            table_push(r, a[i])
+            i = i + 1
+        } else if b[j] < a[i] {
+            table_push(r, b[j])
+            j = j + 1
+        } else {
+            // 相等：只推一个
+            table_push(r, a[i])
+            i = i + 1
+            j = j + 1
+        }
+    }
+    return r
+}
+
+// 交集：两升序表共同元素（O(n+m)）。
+pub func set_intersect_i64(a: table<i64>, b: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    var j: i64 = 0
+    while i < len(a) && j < len(b) {
+        if a[i] < b[j] {
+            i = i + 1
+        } else if b[j] < a[i] {
+            j = j + 1
+        } else {
+            table_push(r, a[i])
+            i = i + 1
+            j = j + 1
+        }
+    }
+    return r
+}
+
+// 差集 a \ b：a 有 b 无（O(n+m)）。
+pub func set_diff_i64(a: table<i64>, b: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    var j: i64 = 0
+    while i < len(a) {
+        if j >= len(b) {
+            table_push(r, a[i])
+            i = i + 1
+        } else if a[i] < b[j] {
+            table_push(r, a[i])
+            i = i + 1
+        } else if b[j] < a[i] {
+            j = j + 1
+        } else {
+            i = i + 1
+            j = j + 1
+        }
+    }
+    return r
+}
+
+// ---------- set 集合 string 变体 ----------
+
+// 空集合（string）。
+pub func set_new_string() -> table<string> {
+    return table_new_string()
+}
+
+// 添加（string）：已存在不变；否则有序插入（strcmp 码点序）。
+pub func set_add_string(t: ref table<string>, v: string) {
+    if !sort.contains_string(t, v) {
+        sort.insert_sorted_string(t, v)
+    }
+}
+
+// 是否含 v（string，二分）。
+pub func set_contains_string(t: table<string>, v: string) -> bool {
+    return sort.contains_string(t, v)
+}
+
+// 移除（string）：二分定位 + 重建去元素；返回是否实际移除。
+pub func set_remove_string(t: ref table<string>, v: string) -> bool {
+    var lo: i64 = 0
+    var hi: i64 = len(t) - 1
+    var idx: i64 = -1
+    while lo <= hi {
+        var mid = (lo + hi) / 2
+        if t[mid] == v {
+            idx = mid
+            break
+        }
+        if t[mid] < v {
+            lo = mid + 1
+        } else {
+            hi = mid - 1
+        }
+    }
+    if idx < 0 {
+        return false
+    }
+    var nt = table_new_string()
+    var i: i64 = 0
+    while i < len(t) {
+        if i != idx {
+            table_push(nt, t[i])
+        }
+        i = i + 1
+    }
+    t = nt
+    return true
+}
+
+// 元素个数（string）。
+pub func set_size_string(t: table<string>) -> i64 {
+    return len(t)
+}
+
+// 并集（string）：归并去重。
+pub func set_union_string(a: table<string>, b: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    var j: i64 = 0
+    while i < len(a) || j < len(b) {
+        if j >= len(b) {
+            table_push(r, a[i])
+            i = i + 1
+        } else if i >= len(a) {
+            table_push(r, b[j])
+            j = j + 1
+        } else if a[i] < b[j] {
+            table_push(r, a[i])
+            i = i + 1
+        } else if b[j] < a[i] {
+            table_push(r, b[j])
+            j = j + 1
+        } else {
+            table_push(r, a[i])
+            i = i + 1
+            j = j + 1
+        }
+    }
+    return r
+}
+
+// 交集（string）。
+pub func set_intersect_string(a: table<string>, b: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    var j: i64 = 0
+    while i < len(a) && j < len(b) {
+        if a[i] < b[j] {
+            i = i + 1
+        } else if b[j] < a[i] {
+            j = j + 1
+        } else {
+            table_push(r, a[i])
+            i = i + 1
+            j = j + 1
+        }
+    }
+    return r
+}
+
+// 差集 a \ b（string）。
+pub func set_diff_string(a: table<string>, b: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    var j: i64 = 0
+    while i < len(a) {
+        if j >= len(b) {
+            table_push(r, a[i])
+            i = i + 1
+        } else if a[i] < b[j] {
+            table_push(r, a[i])
+            i = i + 1
+        } else if b[j] < a[i] {
+            j = j + 1
+        } else {
+            i = i + 1
+            j = j + 1
+        }
+    }
+    return r
+}
 }
