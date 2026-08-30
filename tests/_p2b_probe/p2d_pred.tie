@@ -1,0 +1,42 @@
+type tie<logic>
+// P2d-D2 探针：coll 谓词/查找（count_if/any/all/find_index/contains，i64+string）
+
+import "../../std/collection.tie"
+
+func is_even(x: i64) -> bool {
+    return x % 2 == 0
+}
+func gt2(x: i64) -> bool {
+    return x > 2
+}
+func has_a(s: string) -> bool {
+    var i: i64 = 0
+    while i < str_len(s) {
+        if str_char(s, i) == "a" {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func main() {
+    var t: table<i64> = [1, 2, 3, 4, 5]
+    println(coll.count_if_i64(is_even, t)) // 2
+    println(coll.any_i64(gt2, t))          // true
+    println(coll.all_i64(gt2, t))          // false
+    println(coll.find_index_i64(t, 3))     // 2
+    println(coll.find_index_i64(t, 9))     // -1
+    println(coll.contains_i64(t, 4))       // true
+    println(coll.contains_i64(t, 7))       // false
+    // P1 管道
+    println(t -> coll.count_if_i64(is_even)) // 2
+    // string
+    var st: table<string> = ["hello", "world", "banana"]
+    println(coll.count_if_string(has_a, st))   // 1（banana）
+    println(coll.any_string(has_a, st))        // true
+    println(coll.all_string(has_a, st))        // false
+    println(coll.find_index_string(st, "world")) // 1
+    println(coll.contains_string(st, "hello"))   // true
+    println(coll.contains_string(st, "zzz"))     // false
+}

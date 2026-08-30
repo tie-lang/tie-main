@@ -594,4 +594,118 @@ pub func stddev_i64(t: table<i64>) -> f64 {
 pub func stddev_f64(t: table<f64>) -> f64 {
     return sqrt(variance_f64(t))
 }
+
+// ---------- 谓词/查找（P2d-D2） ----------
+// 约定：count_if/any/all 表作末参（P1 管道 `t -> coll.any(f)` 可用）；
+// find_index/contains 线性扫描（无序表即可，O(n)）。
+
+// 计数：f 为真的元素个数。
+pub func count_if_i64(f: fn(i64) -> bool, t: table<i64>) -> i64 {
+    var c: i64 = 0
+    var i: i64 = 0
+    while i < len(t) {
+        if f(t[i]) {
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// 任一：存在 f 为真的元素（短路：命中即返回 true）。
+pub func any_i64(f: fn(i64) -> bool, t: table<i64>) -> bool {
+    var i: i64 = 0
+    while i < len(t) {
+        if f(t[i]) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// 全部：所有元素 f 都为真（空表 → true）。
+pub func all_i64(f: fn(i64) -> bool, t: table<i64>) -> bool {
+    var i: i64 = 0
+    while i < len(t) {
+        if !f(t[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 查找：value 首次出现下标；未找到 -1。
+pub func find_index_i64(t: table<i64>, value: i64) -> i64 {
+    var i: i64 = 0
+    while i < len(t) {
+        if t[i] == value {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 包含：value 是否在表中（线性，无序可用）。
+pub func contains_i64(t: table<i64>, value: i64) -> bool {
+    return find_index_i64(t, value) >= 0
+}
+
+// ---------- string 变体 ----------
+
+// 计数（string）：f 为真的元素个数。
+pub func count_if_string(f: fn(string) -> bool, t: table<string>) -> i64 {
+    var c: i64 = 0
+    var i: i64 = 0
+    while i < len(t) {
+        if f(t[i]) {
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// 任一（string）。
+pub func any_string(f: fn(string) -> bool, t: table<string>) -> bool {
+    var i: i64 = 0
+    while i < len(t) {
+        if f(t[i]) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// 全部（string）：空表 → true。
+pub func all_string(f: fn(string) -> bool, t: table<string>) -> bool {
+    var i: i64 = 0
+    while i < len(t) {
+        if !f(t[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 查找（string）：value 首次出现下标；未找到 -1。
+pub func find_index_string(t: table<string>, value: string) -> i64 {
+    var i: i64 = 0
+    while i < len(t) {
+        if t[i] == value {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 包含（string）：value 是否在表中。
+pub func contains_string(t: table<string>, value: string) -> bool {
+    return find_index_string(t, value) >= 0
+}
 }
