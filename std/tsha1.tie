@@ -60,6 +60,9 @@ var tsha_ivx: table<i64>;    // tsha1x IV（32 字）
 var tsha_rcx: table<i64>;    // tsha1x 轨 A/B 轮常量（16 字）
 var tsha_xdcon: table<i64>;  // tsha1x 轨 D（LFSR）轮常量（16 字）
 
+// 环扩散暂存（复用 scratch，避免每次 ring_mix 堆上分配 S；单线程顺序调用安全）
+var tsha_ring_S: table<i64>;
+
 namespace tsha {
 
 // ---- 通用小工具（库内自足，与 sha/blake 同风格）----
@@ -435,12 +438,6 @@ func ensure_xdcon() {
 // ---- 消息预处理：64 字节块 → 两组 (M,N) 平面 + 24 基调度键（单遍扫描）----
 // 越界字节按 0 处理（等价纯零填充 ljust(64,0)）。
 func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64, m1: i64, n1: i64, skey: i64) {
-    var tvs = table_new_i64()
-    var i: i64 = 0
-    while i < 64 {
-        table_push(tvs, 0)
-        i = i + 1
-    }
     var M0v: i64 = 0
     var N0v: i64 = 0
     var M1v: i64 = 0
@@ -495,17 +492,19 @@ func ring_mix(lanes: ref table<i64>, start: i64, L: i64, r: i64, skey: i64,
     }
     var rA = (r * 3 + (skey & 7)) & 31
     var rB = (r * 7 + ((skey >> 3) & 7)) & 31
-    var S = table_new_i64()
-    var i: i64 = 0
-    while i < 2 * L {
-        table_push(S, 0)
-        i = i + 1
+    // 复用 scratch 作为 S（S 与 lanes 不同源、调用顺序无嵌套），必要时扩容
+    while len(tsha_ring_S) < 2 * L {
+        table_push(tsha_ring_S, 0)
     }
+    var S = tsha_ring_S
+    // 递增式环索引（避免每迭代 % L）：j2=start+(k+2)%L、j3=start+(k+3)%L、kp1=start+(k+1)%L
     var k: i64 = 0
+    var j2r: i64 = (k + 2) % L
+    var j3r: i64 = (k + 3) % L
     while k < L {
         var iw = start + k
-        var j2 = start + ((k + 2) % L)
-        var j3 = start + ((k + 3) % L)
+        var j2 = start + j2r
+        var j3 = start + j3r
         var a = (rA + 5 * k) & 31
         var b = (rB + 7 * k + 3) & 31
         var (sm, sn) = tadd2(lanes[2 * iw], lanes[2 * iw + 1],
@@ -514,22 +513,39 @@ func ring_mix(lanes: ref table<i64>, start: i64, L: i64, r: i64, skey: i64,
                                rotlane(lanes[2 * j3], b, half), rotlane(lanes[2 * j3 + 1], b, half))
         S[2 * k] = sm2
         S[2 * k + 1] = sn2
+        j2r = j2r + 1
+        if j2r >= L {
+            j2r = 0
+        }
+        j3r = j3r + 1
+        if j3r >= L {
+            j3r = 0
+        }
         k = k + 1
     }
     k = 0
     while k < L {
         var iw = start + k
-        lanes[2 * iw] = S[2 * k] & 0xFFFFFFFF
-        lanes[2 * iw + 1] = S[2 * k + 1] & 0xFFFFFFFF
+        lanes[2 * iw] = S[2 * k]
+        lanes[2 * iw + 1] = S[2 * k + 1]
         k = k + 1
     }
     k = 0
+    var k2r: i64 = (k + 2) % L
+    var k1r: i64 = (k + 1) % L
     while k < L {
-        var k2 = (k + 2) % L
-        var (pm, pn) = tmul2(S[2 * k], S[2 * k + 1], S[2 * k2], S[2 * k2 + 1])
-        var i1 = start + ((k + 1) % L)
-        lanes[2 * i1] = (lanes[2 * i1] ^ pm) & 0xFFFFFFFF
-        lanes[2 * i1 + 1] = (lanes[2 * i1 + 1] ^ pn) & 0xFFFFFFFF
+        var (pm, pn) = tmul2(S[2 * k], S[2 * k + 1], S[2 * k2r], S[2 * k2r + 1])
+        var i1 = start + k1r
+        lanes[2 * i1] = lanes[2 * i1] ^ pm
+        lanes[2 * i1 + 1] = lanes[2 * i1 + 1] ^ pn
+        k2r = k2r + 1
+        if k2r >= L {
+            k2r = 0
+        }
+        k1r = k1r + 1
+        if k1r >= L {
+            k1r = 0
+        }
         k = k + 1
     }
     var maj: i64 = 0
@@ -541,27 +557,27 @@ func ring_mix(lanes: ref table<i64>, start: i64, L: i64, r: i64, skey: i64,
         maj = quant3(S[0], S[1], S[0], S[1], S[0], S[1])
     }
     var il = start + (L - 1)
-    lanes[2 * il] = (lanes[2 * il] ^ maj) & 0xFFFFFFFF
-    lanes[2 * il + 1] = (lanes[2 * il + 1] ^ rotlane(maj, (rB + 7) & 31, half)) & 0xFFFFFFFF
+    lanes[2 * il] = lanes[2 * il] ^ maj
+    lanes[2 * il + 1] = lanes[2 * il + 1] ^ rotlane(maj, (rB + 7) & 31, half)
     if inj {
         var i0 = start
         var (sm, sn) = tadd2(lanes[2 * i0], lanes[2 * i0 + 1],
                              rotlane(M0, mA, half), rotlane(N0, mA, half))
-        lanes[2 * i0] = sm & 0xFFFFFFFF
-        lanes[2 * i0 + 1] = sn & 0xFFFFFFFF
+        lanes[2 * i0] = sm
+        lanes[2 * i0 + 1] = sn
         if L >= 2 {
             var i1 = start + 1
             var (sm2, sn2) = tadd2(lanes[2 * i1], lanes[2 * i1 + 1],
                                    rotlane(M1, (mA + 7) & 31, half), rotlane(N1, (mA + 7) & 31, half))
-            lanes[2 * i1] = sm2 & 0xFFFFFFFF
-            lanes[2 * i1 + 1] = sn2 & 0xFFFFFFFF
+            lanes[2 * i1] = sm2
+            lanes[2 * i1 + 1] = sn2
         }
     }
     var i0b = start
-    lanes[2 * i0b] = (lanes[2 * i0b] ^ rcon[rcon_idx & 15]) & 0xFFFFFFFF
+    lanes[2 * i0b] = lanes[2 * i0b] ^ rcon[rcon_idx & 15]
     var ilb = start + (L - 1)
-    lanes[2 * ilb + 1] = (lanes[2 * ilb + 1] ^
-                          rotlane(rcon[(rcon_idx + 1) & 15], (r * 5) & 31, half)) & 0xFFFFFFFF
+    lanes[2 * ilb + 1] = lanes[2 * ilb + 1] ^
+                          rotlane(rcon[(rcon_idx + 1) & 15], (r * 5) & 31, half)
 }
 
 // 轨对耦合：tadd2 写回 a，再 tmul2 异或回 b。
