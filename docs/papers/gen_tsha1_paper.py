@@ -3,8 +3,8 @@
 排版：A4；正文宋体小四(12pt) 1.5 倍行距 + 首行缩进 2 字符；标题黑体三号居中；
 英文 Abstract Times New Roman；表格 Table Grid。
 
-描述对象：std/tsha1.tie 中重构后的 TSHA1 家族——全部模型（f/b/r）统一采用
-「三进制双轨并行 + 最后综合」压缩器，仅轮数与常量不同；tsha1x 为 f+b 排列组合再算。
+描述对象：std/tsha1.tie 中重构后的 TSHA1 家族——f/r 复用「三进制双轨并行 + 最后综合」
+压缩器；b 在双轨基础上增第三轨海绵轨（三轨并行）；tsha1x 独立四轨重构（双轨 + 海绵 + LFSR）。
 本脚本内容与 std/tsha1.tie、std/base48.tie 及其探针生成器逐式对应。
 """
 import os
@@ -203,11 +203,11 @@ def add_vml_arch():
     # 主线：从最左栏中心延伸到最右栏中心（修复左侧悬空断线）
     cx0, cxn = 228, 1272
     shapes.append(_vline_arrow(cx0, 196, cxn, 196, endarrow=False))
-    # 四模型：统一「三进制双轨并行 + 最后综合」，仅轮数/输出字数不同
+    # 四模型：f/r 双轨、b 三轨（含海绵）、x 四轨（含 LFSR），仅轮数/输出字数不同
     cols = [
         (76, 228, "tsha1f-256（快速模型）", ["三进制双轨并行 R_F=12", "trit 位平面（平衡加/乘/多数）", "双轨耦合 + 轮常量，末段 S=4 综合"], "#e8f4f8"),
-        (424, 576, "tsha1b-256（复杂模型）", ["三进制双轨并行 R_B=14", "trit 位平面扩散（同 f 同构）", "双轨耦合 + 轮常量，末段 S=4 综合"], "#f3eef9"),
-        (772, 924, "tsha1x-256（加强模型）", ["f+b 输出排列组合再算", "NX=6 固定序（digest_f/digest_b）", "签名对象级强度"], "#fdeeee"),
+        (424, 576, "tsha1b-256（复杂模型）", ["三轨并行：双轨 + 第三轨海绵 R_B=14", "海绵吸收 / 8 字置换 / 双轨耦合", "末段 S=4 综合"], "#f3eef9"),
+        (772, 924, "tsha1x-256（加强模型）", ["四轨并行：双轨 + 海绵 + LFSR R_X=16", "LFSR 反馈⊕量化门控去线性化", "末段 fin_synth_x S=4 综合"], "#fdeeee"),
         (1120, 1272, "tsha1r-128（轻量模型）", ["三进制双轨并行 R_R=8", "trit 位平面扩散（轮数最少）", "末段 S=4 综合，仅取前 4 字"], "#eef9ef"),
     ]
     for x, cx, name, steps, fill in cols:
@@ -249,23 +249,25 @@ para("（侯杨宝鑫为 TIE 项目团队成员；单位：TIE Language Project�
 heading("摘　要", size=12)
 para("TSHA1 是为自举编程语言 TIE 设计并完全以该语言实现的**新型安全杂凑函数家族**，"
      "包含快速模型 tsha1f、复杂模型 tsha1b、加强模型 tsha1x 与轻量模型 tsha1r。其“新型”体现在"
-     "统一的内核构造：f/b/r 三档模型复用同一套**三进制双轨并行压缩器**（trit 位平面平衡加"
+     "统一的内核构造：f/b/r 共享同一套平衡三进制位平面压缩原语（trit 位平面平衡加 "
      "tadd2、平衡乘 tmul2、majority 量化 quant3、旋转混洗 rrp，全部以 &/^/|/<< 位运算实现，"
      "无逐 trit 模 3 慢点），轨 A 与轨 B 各自四组三进制字并行 R 轮扩散，每轮消息三进制平面"
-     "交替注入两轨并做轨间耦合与轮常量错位注入；整条链压缩完后以 S=4 轮**最后综合**（"
-     "fin_synth）收束并投影回链值，仅轮数（f=12、b=14、r=8）与种子派生常量不同。"
-     "tsha1x 则对 f 与 b 的输出做多次确定性排列组合再算。该家族以统一内核构建四档速度/强度梯度，"
+     "交替注入两轨并做轨间耦合与轮常量错位注入；f 取双轨并行 R_F=12、r 取双轨并行 R_R=8，"
+     "b 在双轨基础上增第三轨海绵轨（消息吸收/8 字置换/与双轨双向耦合，R_B=14）；整条链压缩完后"
+     "以 S=4 轮**最后综合**（fin_synth）收束并投影回链值，仅轮数与种子派生常量不同。"
+     "tsha1x 则独立重构为**四轨并行**（双轨 + 海绵轨 + LFSR 反馈移位轨，R_X=16），以独立常量族"
+     "并以 fin_synth_x 终筛，为签名对象/凭证提供最高强度。该家族以统一压缩原语构建四档速度/强度梯度，"
      "避免多骨架维护面。其安全性来自四类可论证性质：其一，计数器式纯零填充与 64 位长度绑定在"
-     "结构上免疫 Merkle–Damgård 型长度扩展攻击；其二，全部常量（IV 与轮常量）由“标准种子＋"
-     "PRNG 扩展”即 SHA-256(SEED ‖ u64be(k)) 计数器流确定性生成、可复现，杜绝猜测常量与后门"
-     "注入疑虑；其三，自创层严格限于参数、常量、轮数与排列组合序，安全性质可随组合逐一论证；"
-     "其四，三进制平衡加/乘与 majority 的非线性交叠，配合加强模型的排列组合再算，共同抬高"
-     "结构化攻击的破解成本。实现为纯 TIE、零外部依赖，逐**字节**处理任意 UTF-8 原始字节。"
+     "结构上免疫 Merkle–Damgård 型长度扩展攻击；其二，全部常量（IV 与轮常量，含海绵轨/LFSR 轨"
+     "独立常量）由“标准种子＋PRNG 扩展”即 SHA-256(SEED ‖ u64be(k)) 计数器流确定性生成、可复现，"
+     "杜绝猜测常量与后门注入疑虑；其三，自创层严格限于参数、常量、轮数与并行结构，安全性质可随"
+     "组合逐一论证；其四，三进制平衡加/乘与 majority 的非线性交叠，配合加强模型的多轨并行，共同"
+     "抬高结构化攻击的破解成本。实现为纯 TIE、零外部依赖，逐**字节**处理任意 UTF-8 原始字节。"
      "摘要默认输出为自行设计的 Base48（48 符号连续字符集）编码，位长 n 显式指定且仅允许"
      "{2,3,4,6,8,12,16,24,32,48,64,88,96}（48 进制符号个数），不足时按 XOF 流扩展，便于"
      "人类抄写、指纹与审计链标识；同时保留 _hex 变体（内部摘要 64/32 hex）与 {2,3,8,16} "
      "进制换算。探针以跨平台交叉生成的已知答案向量逐字节核对。基准实测（TIE 自写编译器/IR "
-     "执行层）大消息稳态吞吐 tsha1r≈44 MB/s、tsha1f≈33、tsha1b≈30、tsha1x≈15，模型间"
+     "执行层）大消息稳态吞吐 tsha1r≈42 MB/s、tsha1f≈33、tsha1b≈16、tsha1x≈11，模型间"
      "速度差与强度梯度设计相符。该家族已作为插件化内核审计链的指纹与凭证签名哈希底座投入使用。",
      size=12, space_after=6)
 p = para("", size=12, indent=False, space_after=10)
@@ -280,30 +282,34 @@ heading("Abstract", size=12)
 para("TSHA1 is a new family of cryptographic hash functions designed for and fully implemented "
      "in the self-hosting programming language TIE, comprising four variants: tsha1f (fast), "
      "tsha1b (complex), tsha1x (strengthened) and tsha1r (lightweight). Its novelty lies in a "
-     "unified kernel construction rather than a single primitive: the three tiers f/b/r reuse one "
-     "and the same ternary dual-track parallel compressor--balanced-ternary bit-plane primitives "
-     "(balanced add tadd2, balanced multiply tmul2, majority quant3 and rotation mix rrp, all "
-     "expressed in &/^/|/<< with no per-trit mod-3 bottleneck). Track A and Track B each hold four "
-     "ternary words diffused in R rounds; each round injects the message bit-planes alternately "
-     "into the two tracks, with cross-track coupling and offset round-constant injection. After "
-     "the whole chain is compressed, an S=4 final-synthesis round (fin_synth) folds the chain back "
-     "into the hash, differing only in the number of rounds (f=12, b=14, r=8) and the seeded "
-     "constants. tsha1x re-hashes f and b outputs through a fixed permutation chain. Improved "
-     "security is argued on four verifiable grounds: (i) counter-based pure-zero padding with a "
+     "unified construction rather than a single primitive: f/b/r share one set of balanced-ternary "
+     "bit-plane primitives (balanced add tadd2, balanced multiply tmul2, majority quant3 and "
+     "rotation mix rrp, all expressed in &/^/|/<< with no per-trit mod-3 bottleneck). Track A "
+     "and Track B each hold four ternary words diffused in parallel, with cross-track coupling "
+     "and offset round-constant injection; f runs the dual-track kernel for R_F=12 rounds and r "
+     "for R_R=8, while b augments the two tracks with a third sponge track (rate/capacity; "
+     "message absorption, 8-word permutation and bidirectional coupling with the two tracks) "
+     "for R_B=14 rounds. After the whole chain is compressed, an S=4 final-synthesis round "
+     "(fin_synth) folds the chain back into the hash, differing only in the number of rounds "
+     "and the seeded constants. tsha1x is independently re-built as a four-track parallel "
+     "kernel--dual track plus sponge track plus LFSR feedback-shift track, R_X=16--using its own "
+     "seed-derived constant family and a fin_synth_x final synthesis, delivering the highest "
+     "strength for signature objects. Improved security is argued on four verifiable grounds: "
+     "(i) counter-based pure-zero padding with a "
      "64-bit length binding structurally defeats Merkle-Damgard-style length-extension attacks; "
      "(ii) all constants (IV and round constants) are deterministically derived from a standard "
      "seed via PRNG extension (SHA-256(SEED || u64be(k)) counter stream) and are reproducible, "
      "ruling out guess-constant or backdoor concerns; (iii) the self-designed layer is restricted "
      "to parameters/constants/rounds/permutation order, so security can be argued compositionally; "
      "and (iv) the interplay of balanced-ternary add/multiply/majority non-linearity, combined "
-     "with the strengthened variant's permutation re-hashing, raises the cost of structural "
+     "with the strengthened variant's multi-track parallel construction, raises the cost of structural "
      "cryptanalysis. The implementation is pure TIE with no external dependency, processing "
      "arbitrary UTF-8 bytes byte-by-byte; digests default to a purpose-built Base48 alphabet with "
      "an explicit bit-length n drawn from {2,3,4,6,8,12,16,24,32,48,64,88,96} (Base48 symbols), "
      "extended via an XOF stream when short, while _hex variants (64/32) and base {2,3,8,16} "
      "mappings are also provided. Known-answer vectors cross-generated with the platform are "
      "verified byte-for-byte. Benchmarks on the TIE self-hosted execution layer show "
-     "approximately 44/33/30/15 MB/s for r/f/b/x on large messages, matching the intended "
+     "approximately 42/33/16/11 MB/s for r/f/b/x on large messages, matching the intended "
      "hierarchy. TSHA1 has been adopted as the fingerprint and credential-signing hash "
      "foundation of the plug-in kernel audit chain.",
      size=12, space_after=6)
@@ -327,15 +333,17 @@ para("哈希函数是现代密码体系的地基，其安全性直接决定签�
      "交付的安全哈希底座，用于插件审计链的完整性指纹、包树根校验与凭证签名对象绑定。")
 para("本文提出的 TSHA1（全称 TIE Secure Hash Algorithm 1.0，下文简称 TSHA1）正是面向"
      "“新型、更安全”这一目标设计的。"
-     "其**新颖性**体现为统一内核构造：快速/复杂/轻量三档模型全部复用同一套三进制双轨并行"
-     "压缩器（轨 A 与轨 B 四组三进制字并行扩散 + 轨间耦合 + 轮常量错位注入），唯一区别是"
-     "轮数与由种子派生的常量；加强模型 tsha1x 再对 f、b 两档输出做确定性排列组合再算。"
-     "这样既通过调节轮数获得四档速度/强度梯度，又只需维护单一压缩内核，避免多骨架的"
+     "其**新颖性**体现为统一内核构造：f/b/r 共享同一套 trit 位平面压缩原语（平衡加/平衡乘/"
+     "majority/rrp，全位运算）与双轨并行骨架——轨 A 与轨 B 四组三进制字并行扩散 + 轨间耦合 + "
+     "轮常量错位注入，唯一区别是轮数与由种子派生的常量；b 在双轨基础上增第三轨海绵轨；"
+     "加强模型 tsha1x 则独立重构为四轨并行（双轨 + 海绵 + LFSR 反馈移位轨），以 R_X=16 轮"
+     "提供全家族最高强度。"
+     "这样既通过调节轮数与轨道数获得四档速度/强度梯度，又只需维护统一的压缩原语，避免多骨架的"
      "实现与验证面。其**更强的安全性质**可归纳为：(1) 计数器式纯零填充与 64 位长度绑定在"
      "结构上免疫长度扩展攻击；(2) 全部常量由“标准种子＋PRNG 扩展”确定性生成、可复现，"
-     "排除猜测常量与后门注入疑虑；(3) 自创层严格限于参数、常量、轮数与排列组合序，未引入"
+     "排除猜测常量与后门注入疑虑；(3) 自创层严格限于参数、常量、轮数与并行结构，未引入"
      "未经审计的全新结构断言，安全性可组合论证；(4) 三进制平衡加/乘与 majority 非线性交叠，"
-     "配合加强模型的排列组合再算，整体抬高结构化攻击的破解成本；(5) 四模型梯度使同一族可"
+     "配合加强模型的多轨并行，整体抬高结构化攻击的破解成本；(5) 四模型梯度使同一族可"
      "同时满足快速指纹、复杂强度与签名对象级防护。trit 位平面扩散在这一构造中扮演核心扩散"
      "构件角色（§3.1–§3.2），其实现受益于 TIE 语言对平衡三进制的一等支持，但本文的安全主张"
      "不拘泥于三进制本身，而是重视其经位平面化后全部以 &/^/|/<< 实现的工程与安全收益。")
@@ -354,7 +362,7 @@ para("针对上述现状，TSHA1 着力解决以下问题：（1）自持——�
      "运行时依赖，常量按“标准种子＋PRNG 扩展”可复现（§3.7），并随自举闭环交付（§5.1）；"
      "（2）安全机制可论证——抗长度扩展的结构设计（§3.1）、可复现常量（§3.7）、自创层限于"
      "参数/常量/轮数与单一内核的高可验证性（§4），使“更安全”不依赖对未验证结构的断言；"
-     "（3）模型深度——四模型按速度/强度梯度组织，实测 r≈44 > f≈33 > b≈30 > x≈15 MB/s（§5.3），"
+     "（3）模型深度——四模型按速度/强度梯度组织，实测 r≈42 > f≈33 > b≈16 > x≈11 MB/s（§5.3），"
      "单调满足审计链 per-file / 包树根 / 签名对象的三级需求（§6）；（4）适配验证——全部"
      "实现遵循 i64 无溢出论证与逐字节模型，探针以跨平台交叉生成的 KAT 逐字节核对，并与"
      "常规回归体系解耦验证（§5.2）。")
@@ -384,9 +392,10 @@ heading("3　TSHA1 设计")
 
 heading("3.1　总体架构与四模型定位", size=12)
 para("TSHA1 家族采用“同族多模型”策略：f/b/x/r 共享输出编码、验证探针与常量派生框架；"
-     "f/b/r 更共享**同一套三进制双轨并行压缩内核**，仅在轮数与种子派生的 IV/轮常量上区分，"
-     "从而以最小实现面权衡速度与强度（表 1）；tsha1x 不直接压缩，而是对 f、b 的输出做多次"
-     "确定性排列组合再算。家族命名遵循 **tsha1[模型]**；对外接口为 tsha1f/tsha1b/tsha1x/"
+     "f/b/r 共享**同一套 trit 位平面压缩原语与双轨骨架**，仅轮数与种子派生的 IV/轮常量（b 另增"
+     "第三轨海绵轨）不同，从而以最小实现面权衡速度与强度（表 1）；tsha1x 则独立重构为四轨并行"
+     "（双轨 + 海绵 + LFSR），以 R_X=16 提供签名对象级最强档（§3.5）。家族命名遵循 "
+     "**tsha1[模型]**；对外接口为 tsha1f/tsha1b/tsha1x/"
      "tsha1r(msg, n, base)，其中位长 n 显式给出且**只能**取 "
      "{2,3,4,6,8,12,16,24,32,48,64,88,96}——它指输出摘要中 48 进制符号的个数（字符个数，"
      "不是比特数），例如 tsha1f(msg, 8) 恰好输出 8 个 48 进制字符；列表外的值（含 0、46、23）"
@@ -397,36 +406,38 @@ add_table(
     ["模型", "内核/结构", "轮数（S 综合）", "内部摘要", "定位"],
     [
         ["tsha1f", "三进制双轨并行 + 最后综合", "R_F=12（S=4）", "32 B（64 hex）", "快速，海量小文件指纹"],
-        ["tsha1b", "三进制双轨并行 + 最后综合", "R_B=14（S=4）", "32 B（64 hex）", "复杂强度，审计链"],
-        ["tsha1x", "f+b 输出排列组合再算（NX=6）", "—", "32 B（64 hex）", "加强，签名对象/凭证"],
+        ["tsha1b", "三轨并行[双轨+海绵] + 最后综合", "R_B=14（S=4）", "32 B（64 hex）", "复杂强度，审计链"],
+        ["tsha1x", "四轨并行[双轨+海绵+LFSR] + 最后综合", "R_X=16（S=4）", "32 B（64 hex）", "加强，签名对象/凭证"],
         ["tsha1r", "三进制双轨并行 + 最后综合", "R_R=8（S=4）", "16 B（32 hex）", "嵌入式/超小消息"],
     ],
     "表 1　TSHA1 四模型定位（位长 n = 48 进制符号个数，仅允许 {2,3,4,6,8,12,16,24,32,48,64,88,96}）")
 
 # 图 1：家族总体架构（Word 原生绘图对象，箭头由连接线实现，可正常显示）
 add_vml_arch()
-para("图 1　TSHA1 家族总体架构（f/b/r 复用同一三进制双轨并行内核，仅轮数/常量不同；tsha1x 对 f+b 输出排列组合再算）",
+para("图 1　TSHA1 家族总体架构（f/r 复用三进制双轨并行内核；b 增第三轨海绵；tsha1x 四轨并行含 LFSR，均以 S=4 最后综合终筛）",
      zh="黑体", size=10.5, align=WD_ALIGN_PARAGRAPH.CENTER, indent=False, space_after=8)
 
-heading("3.2　统一内核：三进制双轨并行 + 最后综合", size=12)
-para("四模型 f/b/r 复用同一套“三进制双轨并行 + 最后综合”压缩器，仅轮数与常量不同。"
+heading("3.2　统一压缩原语与双轨骨架；b/x 的多轨扩展", size=12)
+para("TSHA1 的全部模型建立在统一的平衡三进制位平面压缩原语之上，f/b/r 共享同一双轨并行骨架，"
+     "仅轮数与常量（b 增第三轨海绵轨、x 独立四轨）不同。"
      "首先是 trit 位平面表示（层内必选设计）：每个 u64 装 32 个 trit，高 32 位为幅值位平面 "
      "M（第 i 位=1 当且仅当第 i 个 trit 非零），低 32 位为符号位平面 N（第 i 位=1 当且仅当第 i 个 trit 为负），"
      "即等价于 (M<<32)|N。TIE 以两个恒 <2^32 的 i64 半字 "
      "(M,N) 表示，因 M、N 均不含符号位，全部扩散运算可表达为 &、^、|、<<，避免逐 trit "
      "模 3 的慢点与条件分支。字节经饱和映射注入位平面：字节高二位 tf=(b>>6)&3 经 to_trit "
      "饱和（0→−1、1→0、2/3→+1）得 trit 值 tv∈{−1,0,+1}。")
-para("压缩器以“三进制双轨并行”为骨架：工作状态 v[0..15] 分为轨 A（v[0..7]）与轨 B"
+para("双轨骨架以“三进制双轨并行”为基：工作状态 v[0..15] 分为轨 A（v[0..7]）与轨 B"
      "（v[8..15]），每两个位平面 (M,N) 构成一个三进制字，两轨各含 4 个三进制字。初始化时"
      "由链值 h 与 IV 经互补旋转载入双轨（轨 A←h、轨 B←rot(h)‖IV，再异或余下 IV 字），注入"
      "64 位计数器 t 的两半（t_lo/t_hi），末块再异或全 1 作终块标记；填充一律纯零（无 "
-     "0x80/无长度位），长度由计数器承载。随后两轨各自独立跑 R 轮（f=12、b=14、r=8）三进制"
+     "0x80/无长度位），长度由计数器承载。随后两轨各自独立跑 R 轮（f=12、r=8）三进制"
      "扩散：每轮由轮序 r 与 24 基调度键 skey 派生错位的移位量（rA/rB/mA/mB），轨内并行做"
      "平衡加 tadd2、平衡乘 tmul2 与 majority 量化 quant3（§A.3.1–A.3.2）；消息三进制平面 "
      "(M0,N0)/(M1,N1) 每轮交替注入两轨（轨 A←M0,N0；轨 B←M1,N1，旋转后平衡加）；随后做轨间"
-     "耦合（隔轨平衡加 / 乘积 / 旋转传播）与轮常量双轨错位注入。整条链压缩完后，末尾统一执行"
+     "耦合（隔轨平衡加 / 乘积 / 旋转传播）与轮常量双轨错位注入。b 在此双轨基础上增第三轨海绵轨"
+     "（§3.4），x 独立重构为四轨并行（§3.5）。整条链压缩完后，末尾统一执行"
      "最后综合 fin_synth：把链值 h 重新载入双轨，跑 S=4 轮一体化收束轮（全 8 字环式平衡加 + "
-     "乘积 + majority），再投影折叠回链值完成终筛。f/b 输出全部 8 字（64 hex）；r 仅取前 "
+     "乘积 + majority），再投影折叠回链值完成终筛。f/b/x 输出全部 8 字（64 hex）；r 仅取前 "
      "4 字（32 hex）。")
 
 heading("3.3　tsha1f：快速模型（三进制双轨，R=12）", size=12)
@@ -451,36 +462,46 @@ _fmla([_t("轨间耦合：(v4,v5)←tadd2(v4,v5,v10,v11)；(v12,v13)←tmul2(v12
 _fmla([_t("轮常量错位注入：v0⊕=RCON"), _sub(_t("F"), _t("")), _t("[r&15])；v9⊕=rrp(RCON"), _sub(_t("F"), _t("")), _t("[(r+1)&15], 5r)")])
 _fmla([_sub(_t("h"), _t("i")), _t(" ← "), _sub(_t("h"), _t("i")), _t(" ⊕ "), _sub(_t("v"), _t("2i")), _t(" ⊕ rrp("), _sub(_t("v"), _t("2i+1")), _t(", 3i)（i=0…7）；末尾 fin_synth(h)；摘要 ← hex8(h0)‖…‖hex8(h7)，64 hex = 256 位")])
 
-heading("3.4　tsha1b：复杂模型（三进制双轨，R=14）", size=12)
-para("tsha1b 是复杂档，与 tsha1f **完全同构**——同样执行 3.2 节的统一内核，唯一区别是轮数"
-     "提高到 R_B=14（不小于 f 的 12，为保守强化）并采用独立种子 SEED_B=“TSHA1-2026-b-256-v1”"
-     "派生的常量族 IV_B/RCON_B。三进制双轨并行（tadd2 平衡加 / tmul2 平衡乘 / quant3 majority "
-     "/ rrp 旋转混洗）为两档共享，σ 置换与 S 盒不再需要（该合并显著降低了实现与验证维护面）。"
-     "其面向签名、密钥绑定与审计链根等高强度场景提供纵深；输出 8 字大端 hex = 64 hex（内部摘要 "
-     "32 字节），整条链压缩后亦经 S=4 最后综合 fin_synth 终筛。")
+heading("3.4　tsha1b：复杂模型（三进制三轨并行，R=14）", size=12)
+para("tsha1b 是复杂档，在 3.2 节双轨骨架基础上**增第三轨海绵轨**，构造三轨并行（R_B=14）："
+     "轨 A 与轨 B 复用 tsha1f 的三进制双轨并行扩散（tadd2 平衡加 / tmul2 平衡乘 / quant3 "
+     "majority / rrp 旋转混洗，全位运算），另设轨 C 海绵轨 v[16..23]（rate=v[16..19]、"
+     "capacity=v[20..23]），每轮对 rate 做消息三进制平面吸收（旋转后平衡加）、8 字环式三进制"
+     "置换与独立海绵轮常量注入，随后与轨 A/B 双向耦合；末块把海绵 capacity 折回链值。常量族由"
+     "独立种子派生：SEED_B=“TSHA1-2026-b-256-v1”→ IV_B/RCON_B，海绵轨用独立常量 RCON_S "
+     "（SEED_S=“TSHA1-2026-b-sponge-v1”）。σ 置换与 S 盒不再需要（该合并显著降低了实现与验证"
+     "维护面）。其面向签名、密钥绑定与审计链根等高强度场景提供纵深；输出 8 字大端 hex = 64 hex"
+     "（内部摘要 32 字节），整条链压缩后亦经 S=4 最后综合 fin_synth 终筛。")
 _fhead("tsha1b 逐步计算式")
-_fmla([_t("tadd2 / tmul2 / quant3 定义（见 §A.3.1–A.3.2），round 结构完全同 3.3 节，仅轮数取 R_B=14、常量取 IV_B / RCON_B")])
-_fmla([_t("块压缩（64 字节/块，14 轮）：基初始化同 tsha1f（v ← 双轨载入、计数器注入、末块标记 v3⊕=0xFFFFFFFF）")])
-_fmla([_t("轮 r=0…13：同 tsha1f 的轨 A/轨 B 并行三进制扩散、消息平面注入、轨间耦合与轮常量错位注入")])
-_fmla([_sub(_t("h"), _t("i")), _t(" ← "), _sub(_t("h"), _t("i")), _t(" ⊕ "), _sub(_t("v"), _t("2i")), _t(" ⊕ rrp("), _sub(_t("v"), _t("2i+1")), _t(", 3i)；末尾 fin_synth(h)；输出 64 hex = 256 位")])
+_fmla([_t("tadd2 / tmul2 / quant3 定义（见 §A.3.1–A.3.2）；轨 A/轨 B round 结构同 3.3 节，仅轮数取 R_B=14、常量取 IV_B / RCON_B")])
+_fmla([_t("块压缩（64 字节/块，14 轮）：工作状态 v[0..23]（双轨 v[0..15] + 海绵轨 v[16..23]）")])
+_fmla([_t("海绵轨 v[16..23]：rate=v[16..19]、capacity=v[20..23]；末块 v[19]⊕=0xFFFFFFFF（海绵 padding 边界）")])
+_fmla([_t("轮 r=0…13：轨 A/轨 B 三进制扩散与消息注入（同 3.2）+ 海绵吸收/8 字置换/独立常量注入 + 三轨双向耦合 + 轨 A/B 轮常量错位注入")])
+_fmla([_t("h_i ← h_i ⊕ v_{2i} ⊕ rrp(v_{2i+1}, 3i) ⊕ rrp(v_{16+2(i&3)}, 7i) ⊕ rrp(v_{17+2(i&3)}, 7i)（三轨折回）；末尾 fin_synth(h)；输出 64 hex = 256 位")])
 
-heading("3.5　tsha1x：加强模型（f+b 排列组合再算）", size=12)
-para("tsha1x 对 tsha1f 与 tsha1b 的输出做多次确定性排列组合再计算：首状态为 "
-     "digest_f(msg)‖digest_b(msg)（128 hex 字符），随后迭代 NX=6 轮，每轮对上一状态分别"
-     "再作 digest_f 与 digest_b，并依固定排列表 PATT（24 个 pick，行主序 "
-     "u0w0u1w1w2u2w3u3u3u0w2w1w0u1w3u2u2w1u0w3w0u3w2u1）选取其 16-hex 四分重新拼接为 "
-     "64-hex 状态，最终取 256 位。由于 b 档现为 14 轮三进制双轨内核，故 x 实际上混合了快速档 "
-     "与高强度档两种异源扩散通道，排列组合次数与顺序全部固化、可复现，显著提高将 f、b 两模型"
-     "级联分解的破解难度。")
+heading("3.5　tsha1x：加强模型（四轨并行，R=16）", size=12)
+para("tsha1x 从 f+b 排列组合范式独立重构为**四轨并行 + 最后综合**（R_X=16，四模型最强）："
+     "工作状态 v[0..31]。轨 A（v[0..7]）与轨 B（v[8..15]）复用 trit 位平面双轨扩散（同 f/b "
+     "同构，常量用独立 x 常量族），轨 C（v[16..23]）为海绵轨（rate/capacity，复用 §3.4 海绵"
+     "语义与独立常量 RCON_S），轨 D（v[24..27]）为 LFSR 反馈移位轨——每轮抽取高位反馈 "
+     "fb=(v27>>16)⊕v25，将消息平面旋转后异或吸收进 v24/v25，经轨 A/B/C 字对的 quant3 门控"
+     "去线性化后移位（d0←d1、d1←d2、d2←d3、d3←fb⊕qx），再与轨 A/B 双向平衡加混写；四轨各自"
+     "注入独立轮常量后进入下一轮。四轨独立、异源的扩散通道（trit 位平面、海绵置换、LFSR 反馈）"
+     "在并联中相互交错，显著抬高将单结构分解的代数/差分攻击成本。末段四轨状态投影折叠回链 h 后"
+     "执行 fin_synth_x（S=4 一体化收束轮）终筛，输出 8 字大端 hex = 64 hex（内部摘要 32 字节）。"
+     "常量族：SEED_X=“TSHA1-2026-x-256-v1”→ IV_X/RCON_X（轨 A/B）；SEED_XD=“TSHA1-2026-x-lfsr-v1”→ "
+     "RCON_XD（轨 D）；轨 C 复用 SEED_S 的 RCON_S。")
 _fhead("tsha1x 逐步计算式")
-_fmla([_t("S"), _sub(_t("0"), _t("")), _t(" ← digest_f(msg) ‖ digest_b(msg)（128 hex 字符）")])
-_fmla([_t("对 i = 0…5：u ← digest_f(S"), _sub(_t("i"), _t("")), _t(")；w ← digest_b(S"), _sub(_t("i"), _t("")), _t(")；u、w 各按 16-hex 分四份 u0..u3、w0..w3")])
-_fmla([_t("依第 i 行固定排列表拼接（行主序）：")])
-_fmla([_t("P0 = [u0w0u1w1]；P1 = [w2u2w3u3]；P2 = [u3u0w2w1]；P3 = [w0u1w3u2]；P4 = [u2w1u0w3]；P5 = [w0u3w2u1]")])
-_fmla([_sub(_t("S"), _t("i+1")), _t(" ← "), _sub(_t("P"), _t("i")), _t("[0] ‖ "), _sub(_t("P"), _t("i")), _t("[1] ‖ "), _sub(_t("P"), _t("i")), _t("[2] ‖ "), _sub(_t("P"), _t("i")), _t("[3]；输出 S6，64 hex = 256 位")])
+_fmla([_t("块压缩（64 字节/块，16 轮）：工作状态 v[0..31]（双轨 v[0..15] + 海绵 v[16..23] + LFSR v[24..27]）")])
+_fmla([_t("轨 D 初始化：v24=h2⊕IV0；v25=h3⊕rr32(IV4,11)；v26=h6⊕IV2；v27=h7⊕rr32(IV6,19)")])
+_fmla([_t("轮 r=0…15：轨 A/轨 B 三进制扩散与消息注入 → 轨 C 海绵吸收/置换/独立常量注入并与 A/B 双向耦合")])
+_fmla([_t("轨 D：sX=(11r+((skey>>18)&7))&31；fb=(v27>>16)⊕v25；v24⊕=rrp(M0,sX)；v25⊕=rrp(N0,sX)；qx=quant3(轨 A/B/C 字对)；d0←d1、d1←d2、d2←d3、d3←fb⊕qx")])
+_fmla([_t("轨 D 与轨 A/B 四向平衡加混写；轨 D⊕=RCON_XD[r&15]、v27⊕=rrp(RCON_XD[(r+4)&15],5r)；轨 A/B⊕=RCON_X[r&15]、v9⊕=rrp(RCON_X[(r+1)&15],5r)")])
+_fmla([_t("四轨投影折回 h：h_i ← h_i ⊕ v_{2i} ⊕ rrp(v_{2i+1},3i) ⊕ rrp(v_{16+2(i&3)},7i) ⊕ rrp(v_{17+2(i&3)},7i) ⊕ rrp(v_{24+2(i&1)},13i) ⊕ rrp(v_{25+2(i&1)},13i)")])
+_fmla([_t("末块海绵 capacity 折回链值后执行 fin_synth_x(h)（S=4 终筛）；输出 64 hex = 256 位")])
 
 heading("3.6　tsha1r：轻量模型（三进制双轨，R=8，128 位）", size=12)
-para("tsha1r 面向嵌入式/受限环境，与 f、b **同为三进制双轨并行内核**，但轮数最少 R_R=8，"
+para("tsha1r 面向嵌入式/受限环境，与 f 同为**三进制双轨并行内核**，但轮数最少 R_R=8，"
      "常量族 IV_R/RCON_R 由 SEED_R=“TSHA1-2026-r-128-v1”派生。其整条链压缩后同样复用 "
      "fin_synth 最后综合终筛，但仅取前 4 字输出（32 hex，内部摘要 16 字节）。轮数最少使单次"
      "固定开销为四模型中最低，适合海量小对象的快速指纹（16 字节 → Base48 23 字符）。")
@@ -493,10 +514,12 @@ _fmla([_t("末尾 fin_synth(h)；摘要 ← hex8(h0)‖hex8(h1)‖hex8(h2)‖hex
 heading("3.7　常量派生", size=12)
 para("为避免任何猜测常量与实现后门争议，全部常量按“标准种子＋PRNG 扩展固化”方式生成："
      "扩展流为 SHA-256(SEED ‖ u64be(k))（k=0,1,2,…）计数器流，依序取字节填充各模型常量。"
-     "各模型均为 IV（8 个 32 位字）+ 轮常量（16 个 32 位字）：SEED_F=“TSHA1-2026-f-256-v1”、"
-     "SEED_R=“TSHA1-2026-r-128-v1”、SEED_B=“TSHA1-2026-b-256-v1”；σ 置换与 S 盒不再需要。"
-     "该过程可复现（tests/tsha_probe/gen_tsha1fr.py 与 gen_tsha1bx.py），且 IV 与 BLAKE2 的 "
-     "6a09e667… 有意区分。")
+     "基础均为 IV（8 个 32 位字）+ 轮常量（16 个 32 位字）：SEED_F=“TSHA1-2026-f-256-v1”、"
+     "SEED_R=“TSHA1-2026-r-128-v1”、SEED_B=“TSHA1-2026-b-256-v1”（b 轨 A/B）；海绵轨 C 用独立"
+     "常量 RCON_S（SEED_S=“TSHA1-2026-b-sponge-v1”）；x 轨 A/B 用 SEED_X=“TSHA1-2026-x-256-v1”、"
+     "轨 D 用 SEED_XD=“TSHA1-2026-x-lfsr-v1”。σ 置换与 S 盒不再需要。"
+     "该过程可复现（tests/tsha_probe/gen_tsha1fr.py、gen_tsha1bx.py 与 gen_tsha1x.py），"
+     "且 IV 与 BLAKE2 的 6a09e667… 有意区分。")
 
 heading("3.8　输出编码与位长机制", size=12)
 para("默认输出使用自行设计的 Base48 编码（std/base48.tie，命名空间 b48）：字符台为 48 符号"
@@ -521,9 +544,9 @@ para("TSHA1“更安全”的主张建立在四类可论证机制上，而非经
      "抗长度扩展（计数器式纯零填充＋64 位长度绑定，末块全 1 标记，§3.2）与抗冲击面收窄"
      "（状态与输出解耦）；(b) 构造层面——三进制平衡加/乘与 majority 三类非线性经 trit 位平面"
      "化后以错位移位在双轨内并行扩散、并以轨间耦合与轮常量错位注入混合，多个异源非线性通道"
-     "交织，显著抬高差分/代数类结构化攻击所需的多轮追踪复杂度；加强模型 x 的 f+b 排列组合"
-     "再算（§3.5）进一步将攻击者对单结构的利用性切割；(c) 信任层面——自创层严格限于参数/"
-     "常量/轮数/排列组合序，f/b/r 共享单一内核使实现可验证面最小，未引入任何未经审计的全新"
+     "交织，显著抬高差分/代数类结构化攻击所需的多轮追踪复杂度；加强模型 x 的异源四轨并行"
+     "（§3.5）进一步将攻击者对单结构的利用性切割；(c) 信任层面——自创层严格限于参数/"
+     "常量/轮数与并行结构，f/b/r 共享统一压缩原语使实现可验证面最小，未引入任何未经审计的全新"
      "结构断言，安全性可随组合逐一论证；(d) 工程层面——常量种子化可复现（§3.7）、实现纯 "
      "TIE 可自举交付（§5.1）、KAT 逐字节核对（§5.2），从源头排除后门注入与实现漂移。")
 para("以下逐点说明安全边界与已知限制：(1) 结构信任边界——自创层未宣称新结构贡献，"
@@ -543,10 +566,11 @@ heading("5　实现与评估")
 heading("5.1　纯 TIE 实现", size=12)
 para("全部算法以 TIE 编写（std/tsha1.tie、std/base48.tie，命名空间 tsha/b48），仅依赖"
      "语言底座原语（str_len/str_char/table 动态表/i64 位运算），零外部运行时依赖；字符串"
-     "按 {ptr,len} 二进制安全模型逐字节读写，支持含 NUL 在内的任意字节输入。f/b/r 复用同一份"
-     "三进制双轨压缩内核（compress_f/compress_r/compress_b 同构）+ 共享 fin_synth，仅通过"
-     "轮数与常量区分，代码复用度高。验证探针（tests/tsha_probe/）以编译-运行方式断言四模型"
-     "全部 KAT 与 hex↔Base48 往返一致，编译零错误；探针独立于常规回归（regress-s21）运行。")
+     "按 {ptr,len} 二进制安全模型逐字节读写，支持含 NUL 在内的任意字节输入。f/r 复用同一份"
+     "三进制双轨压缩内核（compress_f/compress_r 同构）+ 共享 fin_synth，compress_b 在双轨上"
+     "增海绵第三轨，x 用 compress_x 四轨并行与 fin_synth_x；仅轮数与常量区分，代码复用度高。"
+     "验证探针（tests/tsha_probe/，含 gen_tsha1fr.py、gen_tsha1bx.py、gen_tsha1x.py）以编译-运行"
+     "方式断言四模型全部 KAT 与 hex↔Base48 往返一致，编译零错误；探针独立于常规回归（regress-s21）运行。")
 
 heading("5.2　已知答案向量（KAT）", size=12)
 add_table(
@@ -554,16 +578,16 @@ add_table(
     [
         ["空串 \"\"", "45f2029d 37ad41cf 835735aa 3f0c1b64 a2980fe2 64f83d35 08d10119 64713550",
          "35a4dc97 79e6e2e6 5b05790f 491a533f",
-         "2f9d8eda 98c5eb60 aefbda6f 53651c34 70afe366 b056ac88 2e1c36c8 0eeee244",
-         "9477eb60 ebe3330f 1616c0d3 38c32c03 29da5122 6d275c44 36eaca51 5d581e7c"],
+         "afd3b3fc bb903a5a 55f7ce0e 79b83bf1 5edfefbc 495eaec0 82ce9dce 71afe1f8",
+         "157daf00 76845caa 9b1bae59 c40765dd 9dc8bab0 49d59cec 7a1342c6 39fc5d96"],
         ["\"abc\"", "f38e5ae5 a532e478 3578d24c 7ade7a9c fcb1f384 9a295c99 92043c17 9d8d26c0",
          "314db448 edf50a42 64d29b00 bdedca6f",
-         "72ecd6a4 9318633b 3a8ffe8a 80920a67 f1434ec0 0fbb4e13 8fa2cb6b defaa324",
-         "537a393e cb575576 79cedd31 49d185ec 60392fc0 4cdf598f 2304997c 1b306060"],
+         "4bbaea17 4cd4475b 2b17e052 fa3f9f52 3c2cd7c8 10025837 2311bd72 88aa770a",
+         "8baa7531 12e9a18f 8393f912 745d2d40 a17a750c 34d5e970 f6b28484 b53a543b"],
         ["1000×'a'", "27bce163 51ee687d 56541ea8 b0339f01 b9c76931 c5765098 2488e331 ceb54ebd",
          "19f291e4 1241e4bb 89d0c95d 06e2b810",
-         "f29105d9 baa59da0 88f0bba0 6a3cd88f 4d0f4a20 73b54ac6 223686c4 4e805cd0",
-         "f0ac5011 c8719145 46d985ad d6970aa2 9bcad713 d0b4b9ca 2fc649d4 f5cefa44"],
+         "1e9e0841 7fce2c02 189d439d 7ef25aaf d81465d8 7c18ce44 411840ca ee8d45d5",
+         "be64d8ac b64239cf 11b5a13e a3bbf1df 16baa4e1 ee3f5690 ba124cd3 569c2bfa"],
     ],
     "表 2　TSHA1 已知答案向量（KAT，与平台生成器交叉核对，内部摘要 hex）")
 
@@ -576,16 +600,16 @@ para("基准方法：计时原语为秒级粒度，故采用“目标时长循�
 add_table(
     ["模型", "2 KB（hash/s）", "2 KB（MB/s）", "32 KB（hash/s）", "512 KB（hash/s）", "512 KB（MB/s）"],
     [
-        ["tsha1f", "3120", "6", "915", "66", "33"],
-        ["tsha1b", "4389", "8", "808", "60", "30"],
-        ["tsha1x", "1279", "2", "383", "30", "15"],
-        ["tsha1r", "6858", "13", "1228", "88", "44"],
+        ["tsha1f", "3804", "7", "909", "66", "33"],
+        ["tsha1b", "3646", "7", "498", "33", "16"],
+        ["tsha1x", "2992", "5", "332", "23", "11"],
+        ["tsha1r", "6732", "13", "1200", "84", "42"],
     ],
     "表 3　TSHA1 四模型基准实测（目标时长 2s 采样，短消息模型含秒级量化误差）")
-para("观察：(1) 大消息稳态吞吐排序 r≈44 > f≈33 > b≈30 > x≈15 MB/s，与设计模型一致——"
-     "轻量档轮数最少（R_R=8）最快，快速/复杂档次之，加强模型以约 2.2× 时间代价提供最高"
-     "抗破解强度；(2) 短消息（2 KB）单次固定开销排序为 r（6858 hash/s）< b（4389）< f（3120）"
-     "< x（1279），轻量档仍最优——因此海量小文件指纹场景宜选 r，需要更高强度时可换 b；"
+para("观察：(1) 大消息稳态吞吐排序 r≈42 > f≈33 > b≈16 > x≈11 MB/s，与设计模型一致——"
+     "轻量档轮数最少（R_R=8）最快，快速档次之，复杂档因三轨、加强档因四轨（R_X=16）而更慢，"
+     "具更高的抗破解冗余；(2) 短消息（2 KB）单次固定开销排序为 r（6732 hash/s）> f（3804）"
+     "> b（3646）> x（2992），轻量档仍最优——因此海量小文件指纹场景宜选 r，需要更高强度时可换 b；"
      "(3) 绝对吞吐受 TIE 自写编译器/IR 执行层的软件实现约束（无 SIMD），较原生 C（BLAKE2s "
      "可达 GB/s 级）低 2~3 个数量级，但对审计链 per-file 指纹与低频签名对象场景完全充足。")
 
@@ -597,16 +621,17 @@ para("TIE 全平台插件化内核以“核心微内核（机制）+注册表+�
      "单文件级指纹用快速模型 tsha1f，整包树根（即签名对象）用加强模型 tsha1x；凭证区的"
      " Ed25519 纯 TIE 实现（RFC 8032 向量绿）对 tsha1x 树根签名。该分层与基准实测吻合："
      "文件级批量校验取最实惠的快速/轻量模型，跨包完整性/冒名抵御取最高强度模型，二者速度差约 "
-     "2.2× 构成清晰的成本梯度。")
+     "3× 构成清晰的成本梯度。")
 
 # ================= 7 结论 =================
 heading("7　结论与展望")
 para("本文提出了 TSHA1——一个完全以自举语言 TIE 实现的**新型安全杂凑函数家族**。其"
-     "新颖性在于统一的三进制双轨并行内核：f/b/r 复用同一套 trit 位平面双轨并行压缩器（"
-     "平衡加/平衡乘/majority，全位运算）与最后综合，仅轮数与种子派生常量不同，从而以最小"
-     "实现面构建四档速度/强度梯度；tsha1x 再对 f+b 输出做确定性排列组合。更强的安全性质"
+     "新颖性在于统一的平衡三进制位平面压缩原语与双轨骨架：f/r 复用同一套 trit 位平面双轨并行"
+     "压缩器（平衡加/平衡乘/majority，全位运算）与最后综合，b 增第三轨海绵轨，x 独立重构为"
+     "四轨并行（双轨 + 海绵 + LFSR，R_X=16），仅轮数与种子派生常量/并行结构不同，从而以最小"
+     "实现面构建四档速度/强度梯度。更强的安全性质"
      "来自四类可论证机制——结构层面抗长度扩展、构造层面多非线性构件交叠、信任层面自创层"
-     "限于参数/常量/轮数/排列序、工程层面常量可复现与纯 TIE 自举交付。实现为纯 TIE、零外部"
+     "限于参数/常量/轮数与并行结构、工程层面常量可复现与纯 TIE 自举交付。实现为纯 TIE、零外部"
      "依赖，探针逐字节核对 KAT、字节边界全覆盖；基准结果与模型设计一致，并已投入插件化内核"
      "的指纹与凭证签名底座。后续工作包括：严格的差分/雪崩统计检验与独立第三方安全审计；将"
      "位平面扩散与既有 Keccak/Ascon 置换统一为可配置扩散内核以降低维护面；在编译器执行层"
@@ -644,8 +669,9 @@ for i, r in enumerate(refs):
 
 # ================= 附录：统一内核逐步计算公式 =================
 heading("附录　统一内核逐步计算公式（与 std/tsha1.tie 逐式对应）", size=14)
-para("本附录按步给出统一内核（三进制双轨并行 + 最后综合）的逐步计算公式，与标准库实现"
-     "（std/tsha1.tie）逐式对应。记号约定：⊕ 表示按位异或，∧、∨、¬ 分别表示按位与、或、非；"
+para("本附录按步给出统一内核（trit 位平面原语与双轨骨架）的逐步计算公式，与标准库实现"
+     "（std/tsha1.tie）逐式对应；b 在该双轨基础上增海绵第三轨、x 为四轨并行，其增补公式见 "
+     "A.3/A.4。记号约定：⊕ 表示按位异或，∧、∨、¬ 分别表示按位与、或、非；"
      "ROR(n,x) 与 ROL(n,x) 表示对 32 位字 x 循环右移 / 左移 n 位；rrp(x,r)=ROR(r&31,x)；"
      "hex8(w) 把字 w 按大端字节序写成 8 个 hex 字符；A‖B 表示串接。字节 → 调度基础量：字节 b "
      "高两位 tf=(b>>6)&3 经饱和映射 tv(b)∈{−1,0,+1}（0→−1、1→0、2/3→+1），低三位 "
@@ -653,18 +679,19 @@ para("本附录按步给出统一内核（三进制双轨并行 + 最后综合�
      "打包为幅值平面 M（第 i 位=1 ⟺ 第 i 个 trit 非零）与符号平面 N（第 i 位=1 ⟺ 第 i 个 trit "
      "为负），记 (M,N)=Pack(B)。消息 64 字节块派生两组位平面 (M0,N0),(M1,N1) 与 24 基调度键 "
      "skey ← mod(∑_j d(B[j])·24^(63−j), 2^32)。")
-para("**全部常量（每模型 IV 8 字 + 轮常量 16 字）由标准种子 + PRNG 扩展（SHA-256(SEED ‖ "
-     "u64be(k)) 计数器流）确定性派生（§3.7），IV_F/RCON_F、IV_R/RCON_R、IV_B/RCON_B 的具体"
-     "十六进制值见常量生成器（tests/tsha_probe/gen_tsha1fr.py 与 gen_tsha1bx.py）。**")
+para("**全部常量（每模型 IV 8 字 + 轮常量 16 字作基础）由标准种子 + PRNG 扩展（SHA-256(SEED ‖ "
+     "u64be(k)) 计数器流）确定性派生（§3.7）：IV_F/RCON_F、IV_R/RCON_R、IV_B/RCON_B，海绵轨 C 的 "
+     "RCON_S，x 轨 A/B 的 IV_X/RCON_X 与轨 D 的 RCON_XD；具体十六进制值见常量生成器（tests/tsha_probe/"
+     "gen_tsha1fr.py、gen_tsha1bx.py 与 gen_tsha1x.py）。**")
 
-heading("A.1　统一压缩块 compress(h, B, t, last)（f/b/r 共用，仅 R 与常量不同）", size=12)
+heading("A.1　统一双轨骨架 compress(h, B, t, last)（f/r 共用，仅 R 与常量不同）", size=12)
 _fhead("A.1.1　双轨载入与块初始化")
 _fmla([_t("1. 消息平面与 24 基调度键：(M0,N0),(M1,N1) ← Pack(B)（64 字节 → 两组 32-trit 平面）；skey ← mod(∑_j d(B[j])·24^(63−j), 2^32)")])
 _fmla([_t("2. 工作状态 v[0..15]（轨 A=v[0..7]、轨 B=v[8..15]），从链值 h 与 IV 载入：")])
 _fmla([_t("　 v0=h0, v1=ROR(7,h4), v2=h1, v3=ROR(7,h5), v4=h2, v5=ROR(7,h6), v6=h3, v7=ROR(7,h7)")])
 _fmla([_t("　 v8=ROR(13,h0), v9=IV0, v10=ROR(13,h1), v11=IV1, v12=ROR(13,h2), v13=IV2, v14=ROR(13,h3), v15=IV3")])
 _fmla([_t("3. 分块注入：v0⊕=IV4；v2⊕=IV5；v4⊕=IV6；v6⊕=IV7；v1⊕=t_lo；v9⊕=t_hi；若 last 则 v3⊕=0xFFFFFFFF")])
-_fhead("A.1.2　逐轮三进制双轨并行（R 轮，f=12、b=14、r=8）")
+_fhead("A.1.2　逐轮三进制双轨并行（R 轮，f=12、r=8）")
 _fmla([_t("对 r = 0,1,…,R−1（R 见模型）")])
 _fmla([_t("　 a. 移位量：rA=(3r+(skey&7))&31；rB=(7r+((skey>>3)&7))&31；mA=(5r+((skey>>6)&7))&31；mB=(11r+((skey>>9)&7))&31")])
 _fmla([_t("　 b. 轨 A 三进制扩散（balanced add + balanced mul + majority）：")])
@@ -700,27 +727,31 @@ _fmla([_t("A = M0 ∧ ¬N0；B = M1 ∧ ¬N1；C = M2 ∧ ¬N2")])
 _fmla([_t("输出 = (A ∧ B) ∨ (B ∧ C) ∨ (C ∧ A)（三路 majority，+1 计数 ≥ 2 才为 1，含平局→0）")])
 
 heading("A.3　digest_f / digest_b / digest_r 全流程（同为计数器式纯零填充）", size=12)
-_fhead("A.3.1　digest_f(msg)（R=12，常量 IV_F/RCON_F）与 digest_b(msg)（R=14，IV_B/RCON_B）")
-_fmla([_t("1. h ← IVf/b；h0 ← h0 ⊕ 0x01010000 ⊕ 32（256 位参数绑定位）；t ← 0；")])
+_fhead("A.3.1　digest_f(msg)（R=12，常量 IV_F/RCON_F）")
+_fmla([_t("1. h ← IVf；h0 ← h0 ⊕ 0x01010000 ⊕ 32（256 位参数绑定位）；t ← 0；")])
 _fmla([_t("2. 按 64 字节切块；每个完整块：t 累加（t_hi 随进位），compress(h, B, t, false)；")])
 _fmla([_t("3. 末块（不足 64 字节，以 0 填充）：t ← t + rem，compress(h, B, t, true)；")])
 _fmla([_t("4. fin_synth(h)；摘要 ← hex8(h0)‖…‖hex8(h7)（64 hex 字符 = 256 位）")])
-_fhead("A.3.2　digest_r(msg)（R=8，常量 IV_R/RCON_R，128 位）")
+_fhead("A.3.2　digest_b(msg)（R=14，常量 IV_B/RCON_B + 海绵轨 RCON_S）")
+_fmla([_t("1. h ← IVb；h0 ← h0 ⊕ 0x01010000 ⊕ 32（256 位参数绑定位）；sp[0..3]←0；t ← 0；")])
+_fmla([_t("2. 64 字节块迭代：t 累加，compress_b(h, B, t, false, sp)；末块 compress_b(h, B, t, true, sp)；")])
+_fmla([_t("3. compress_b 内：双轨 v[0..15] + 海绵轨 v[16..23]（rate=v[16..19]、capacity=v[20..23]）；14 轮三轨并行；末块 capacity 填回 sp")])
+_fmla([_t("4. 末块海绵 capacity 折回链值：h0⊕=sp0；h1⊕=rr32(sp1,7)；h2⊕=sp2；h3⊕=rr32(sp3,7)")])
+_fmla([_t("5. fin_synth(h)；摘要 ← hex8(h0)‖…‖hex8(h7)（64 hex 字符 = 256 位）")])
+_fhead("A.3.3　digest_r(msg)（R=8，常量 IV_R/RCON_R，128 位）")
 _fmla([_t("1. h ← IVr；h0 ← h0 ⊕ 0x01010000 ⊕ 16（128 位参数绑定位）；t ← 0；")])
 _fmla([_t("2–3. 同 A.3.1 的 64 字节块迭代与末块（纯零填充 + 计数器 + 末块全 1），但 while 迭代 8 轮、常量取 IV_R/RCON_R")])
 _fmla([_t("4. fin_synth(h)；摘要 ← hex8(h0)‖hex8(h1)‖hex8(h2)‖hex8(h3)（仅前 4 字 = 32 hex = 128 位）")])
 
-heading("A.4　tsha1x（加强模型，256 位，f+b 排列组合再算）", size=12)
-_fhead("A.4.1　digest_x(msg) 全流程（NX = 6 轮）")
-_fmla([_t("1. 首状态 S0 ← digest_f(msg) ‖ digest_b(msg)（128 hex 字符）；")])
-_fmla([_t("2. 对 i = 0,1,…,5：")])
-_fmla([_t("　 a. u ← digest_f(Si)；w ← digest_b(Si)（各 64 hex）；")])
-_fmla([_t("　 b. 将 u 与 w 各按 16-hex 分四份：u0,u1,u2,u3 与 w0,w1,w2,w3；")])
-_fmla([_t("　 c. 依第 i 行固定排列表拼接（行主序）：")])
-_fmla([_t("　　　P0 = [u0 w0 u1 w1]；P1 = [w2 u2 w3 u3]；P2 = [u3 u0 w2 w1]")])
-_fmla([_t("　　　P3 = [w0 u1 w3 u2]；P4 = [u2 w1 u0 w3]；P5 = [w0 u3 w2 u1]")])
-_fmla([_t("　 d. S_{i+1} ← P_i[0] ‖ P_i[1] ‖ P_i[2] ‖ P_i[3]（64 hex）；")])
-_fmla([_t("3. 输出 S6（64 hex = 256 位）")])
+heading("A.4　tsha1x（加强模型，256 位，四轨并行含 LFSR，R_X=16）", size=12)
+_fhead("A.4.1　digest_x(msg) 全流程（R_X = 16 轮）")
+_fmla([_t("1. h ← IVx；h0 ← h0 ⊕ 0x01010000 ⊕ 32；sp[0..3]←0；t ← 0；")])
+_fmla([_t("2. 64 字节块迭代（t 累加，compress_x(h, B, t, false, sp)）；末块 compress_x(h, B, t, true, sp)；")])
+_fmla([_t("3. compress_x 内工作状态 v[0..31]：填轨 A（v[0..7]）、轨 B（v[8..15]）、轨 C 海绵（v[16..23]，rate=v[16..19]、capacity=v[20..23]）、轨 D LFSR（v[24..27]）")])
+_fmla([_t("4. 轨 D 初始化 v24=h2⊕IV0；v25=h3⊕rr32(IV4,11)；v26=h6⊕IV2；v27=h7⊕rr32(IV6,19)")])
+_fmla([_t("5. 16 轮四轨并行：轨 A/B 三进制扩散与消息注入 → 轨 C 海绵（吸收/8 字置换/RCON_S/与 A/B 耦合）→ 轨 D（fb 反馈、吸收、quant3 门控移位、与 A/B 四向混写、RCON_XD）→ 轨 A/B⊕RCON_X")])
+_fmla([_t("6. 四轨状态投影折回 h：h_i ← h_i ⊕ v_{2i} ⊕ rrp(v_{2i+1},3i) ⊕ rrp(v_{16+2(i&3)},7i) ⊕ rrp(v_{17+2(i&3)},7i) ⊕ rrp(v_{24+2(i&1)},13i) ⊕ rrp(v_{25+2(i&1)},13i)")])
+_fmla([_t("7. 末块海绵 capacity 折回链值（同 A.3.2 第 4 步）后 fin_synth_x(h)；摘要 ← hex8(h0)‖…‖hex8(h7)（64 hex = 256 位）")])
 
 heading("A.5　输出编码与位长（全族共享）", size=12)
 _fmla([_t("任选一模型：内部十六进制摘要 H（32/16 字节）→ Base48 编码（b48.encode，见 std/base48.tie）：")])
