@@ -403,6 +403,80 @@ func tig_call_indirect(id: i64, nm: string) -> i64 {
     return ir.get_value(inst)
 }
 
+// P2a 调用表达式 `t[0](5)`：被调者为 fn 值表达式（children[0]）。
+// 求被调者 fn 值 → 落 alloca → 提取 env/entry → call_indirect(70)（对齐
+// tig_call_indirect；仅 fn 值来源为表达式而非作用域名字查找）。
+func tig_call_expr(id: i64) -> i64 {
+    var cal = sstate.child(id, 0)
+    var fty = node_types[cal]
+    if fty < 0 || !types.is_fn(fty) {
+        sm_err_msg = "调用表达式要求被调者为函数类型（函数 " + g_cur_fn_name + "）"
+        return -1
+    }
+    var ret_ty = types.fn_ret_ty(fty)
+    var nparams = types.fn_nparams_of(fty)
+    // 求被调者 fn 值 → alloca 聚合
+    var fv = tig_expr(cal)
+    if fv < 0 {
+        return -1
+    }
+    var fa = ir.new_inst(g_cur_block, 20, fty)  // alloca
+    ir.add_operand(fa, fty, 2)
+    var fap = ir.get_value(fa)
+    var st0 = ir.new_inst(g_cur_block, 22, -1)  // store 聚合值
+    ir.add_operand(st0, fty, 2)
+    ir.add_operand(st0, fv, 0)
+    ir.add_operand(st0, fap, 0)
+    // 提取 env（字段 0）与 entry（字段 1）
+    var g0 = ir.new_inst(g_cur_block, 27, fty)  // agg_gep 字段 0
+    ir.add_operand(g0, fap, 0)
+    ir.add_operand(g0, 0, 2)
+    var ld0 = ir.new_inst(g_cur_block, 21, types.named(TK_STR))  // load env ptr
+    ir.add_operand(ld0, ir.get_value(g0), 0)
+    var env_v = ir.get_value(ld0)
+    var g1 = ir.new_inst(g_cur_block, 27, fty)  // agg_gep 字段 1
+    ir.add_operand(g1, fap, 0)
+    ir.add_operand(g1, 1, 2)
+    var ld1 = ir.new_inst(g_cur_block, 21, types.named(TK_STR))  // load entry ptr
+    ir.add_operand(ld1, ir.get_value(g1), 0)
+    var entry_v = ir.get_value(ld1)
+    // 实参求值（children[1..]；fn 参数无 by_ref/变参，普通按值）
+    var nc = sstate.nchild(id)
+    var argvals: table<i64> = table_new_i64()
+    var k: i64 = 1
+    while k < nc {
+        var av = tig_expr(sstate.child(id, k))
+        if av < 0 {
+            return -1
+        }
+        table_push(argvals, av)
+        k = k + 1
+    }
+    // call_indirect(70)：[entry, ret_ty IMM, env, 参数...]
+    var ty70: i64 = -1
+    if ret_ty != types.named(TK_VOID) {
+        ty70 = ret_ty
+    }
+    var inst = ir.new_inst(g_cur_block, 70, ty70)
+    ir.add_operand(inst, entry_v, 0)
+    ir.add_operand(inst, ret_ty, 2)
+    ir.add_operand(inst, env_v, 0)
+    k = 0
+    while k < len(argvals) {
+        var pty = types.named(TK_I64)
+        if k < nparams {
+            pty = types.fn_param_of(fty, k)
+        }
+        ir.add_operand(inst, pty, 2)
+        ir.add_operand(inst, argvals[k], 0)
+        k = k + 1
+    }
+    if ret_ty == types.named(TK_VOID) {
+        return tig_int_lit(0)  // void 结果：哑值（调用方丢弃）
+    }
+    return ir.get_value(inst)
+}
+
 // 命名函数提升：`var f: fn(A) -> R = my_func` → 生成适配器函数
 // adapt_<节点id>（签名 fn(ptr env, A...) -> R，体内 call @my_func + ret，
 // 忽略 env——命名函数无捕获），返回闭包值 {null, @adapt}。

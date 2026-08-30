@@ -200,6 +200,10 @@ const N_GOTO: i64 = 144;
 const N_GUARD_GET: i64 = 145;
 const N_GUARD_USE: i64 = 146;
 const N_GUARD_WITH: i64 = 147;
+// P2a（2026-08-30）fn 元素表：调用表达式 `expr(args)`（fn 值表达式作被调者）
+//   CallExpr[children=[被调者表达式, 实参...]]——`t[0](5)` / `get_fn()(x)`。
+//   语义层要求被调者为 fn 类型；间接调用 entry(env, args...)。
+const N_CALL_EXPR: i64 = 148;
 // S3.3 宏/元编程（三节点，布局约定见 mexpand.tie 头注释）：
 //   MacroDef[name=宏名, val=0, aux=nparams, children=[返回类型, 参数..., 函数体]]
 //     —— 布局与 FnDef 一致但**无泛型槽**（children[0] 即返回类型；形参从 1 起，

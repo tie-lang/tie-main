@@ -1087,6 +1087,10 @@ pub func infer_expr(id: i64) -> i64 {
     if tag == S_N_CALL {
         return infer_call(id)
     }
+    // P2a 调用表达式 `t[0](5)`：被调者为 fn 值表达式
+    if tag == S_N_CALL_EXPR {
+        return infer_call_expr(id)
+    }
     // MethodCall
     if tag == S_N_METHOD_CALL {
         return infer_method_call(id)

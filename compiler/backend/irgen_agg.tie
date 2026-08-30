@@ -610,6 +610,17 @@ func tig_table_lit(id: i64) -> i64 {
         if vt >= 0 {
             elem = vt
         }
+    } else {
+        // P2a 空表 `[]`：按声明元素类型取 esz（node_types[id] = table<T>）。
+        // 曾 i64=8 兜底——复合元素（struct/enum/fn 多字）esz 不匹配 → 后续
+        // push 用编译期 esz 而容器按 8 字节槽扩容/寻址 → 越界写崩溃。
+        var lit_ty = node_types[id]
+        if types.is_table(lit_ty) {
+            var le = types.table_elem(lit_ty)
+            if le > 0 {
+                elem = le
+            }
+        }
     }
     var size = elem_size(elem)
     // 数字实参必须先转值 id（gen_ext_call* 的实参都是值 id，直接传数字

@@ -124,6 +124,10 @@ func tig_expr(id: i64) -> i64 {
         }
         return tig_user_call_from(full, id, aoff)
     }
+    if tag == 148 {
+        // P2a 调用表达式 `t[0](5)`：被调者为 fn 值表达式 → 间接调用
+        return tig_call_expr(id)
+    }
     if tag == 4 {
         // BoolLit → i1 常量（trit 上下文 → i8：true=1 / false=-1，对齐 Rust）
         if node_types[id] == types.named(TK_TRIT) {

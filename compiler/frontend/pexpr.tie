@@ -409,6 +409,24 @@ pub func parse_unary() -> i64 {
                 return -1
             }
             expr = mk_index(expr, index)
+        } else if t == lex_lparen {
+            // P2a 调用表达式：`t[0](5)` / `get_fn()(x)`——被调者为 fn 值表达式
+            //（简单名字调用 `f(5)` 已由 parse_primary N_CALL 处理，不达此处）。
+            putil.advance()
+            var args: table<i64> = table_new_i64()
+            if !parse_args_after_lparen(args) {
+                return -1
+            }
+            var ce = ast.new_node(N_CALL_EXPR, -1, -1, -1, ast.line(expr), ast.col(expr))
+            var cekids: table<i64> = table_new_i64()
+            table_push(cekids, expr)
+            var ck: i64 = 0
+            while ck < len(args) {
+                table_push(cekids, args[ck])
+                ck = ck + 1
+            }
+            ast.set_children(ce, cekids)
+            expr = ce
         } else if t == lex_dot {
             putil.advance()
             var field = -1

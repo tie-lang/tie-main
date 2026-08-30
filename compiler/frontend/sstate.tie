@@ -357,6 +357,7 @@ const S_N_ASM: i64 = 131;           // asm! 内联汇编（S1.2 I1）
 const S_N_TRY: i64 = 133;           // ? 后缀解包（S2.3，与 ast.tie N_TRY 同号）
 const S_N_PANIC: i64 = 134;         // panic 语句（S2.3，与 ast.tie N_PANIC 同号）
 const S_N_FN_LIT: i64 = 132;        // func 字面量（S2.2 闭包，与 ast.tie N_FN_LIT 同号）
+const S_N_CALL_EXPR: i64 = 148;     // 调用表达式（P2a，与 ast.tie N_CALL_EXPR 同号）
 const S_N_FN_TYPE: i64 = 205;       // 函数值类型（S2.2，与 ast.tie N_FN_TYPE 同号）
 // S2.4 port 接口模型（与 ast.tie N_PORT/N_IMPL 同号权威）：
 //   编号 138/139：与 S3.3 宏节点（135-137）错开（整合时统一，见 ast.tie）。

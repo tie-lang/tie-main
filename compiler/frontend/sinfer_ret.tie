@@ -154,6 +154,50 @@ pub func tuple2_of(t0: i64, t1: i64) -> i64 {
     return types.tuple_of(idx)
 }
 
+// P2a 调用表达式 `t[0](5)`：被调者为 fn 值表达式（children[0]）。
+// 校验：被调者类型是 fn；实参个数/类型逐个匹配；返回类型 = fn 返回类型。
+pub func infer_call_expr(id: i64) -> i64 {
+    var cal = sstate.child(id, 0)
+    var fty = infer_expr(cal)
+    if fty < 0 {
+        return -1
+    }
+    if !types.is_fn(fty) {
+        sm_err_line = s_lines[id]
+        sm_err_col = s_cols[id]
+        sm_err_msg = "调用表达式要求被调者为函数类型，实际是 " + types.type_name(fty)
+        return -1
+    }
+    var nc = sstate.nchild(id)
+    var nargs = nc - 1
+    var fn_np = types.fn_nparams_of(fty)
+    if nargs != fn_np {
+        sm_err_line = s_lines[id]
+        sm_err_col = s_cols[id]
+        sm_err_msg = "调用表达式期望 " + to_string(fn_np) + " 个参数，实际 " + to_string(nargs)
+        return -1
+    }
+    var kf: i64 = 1
+    while kf < nc {
+        var want = types.fn_param_of(fty, kf - 1)
+        var at = infer_expr(sstate.child(id, kf))
+        if at < 0 {
+            return -1
+        }
+        if !stype.types_compatible(want, at) && !stype.types_match(want, at, sstate.child(id, kf)) {
+            sm_err_line = s_lines[id]
+            sm_err_col = s_cols[id]
+            sm_err_msg = "调用表达式第 " + to_string(kf) + " 个实参类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(at)
+            return -1
+        }
+        kf = kf + 1
+    }
+    var frt = types.fn_ret_ty(fty)
+    node_types[id] = frt
+    g_typed = g_typed + 1
+    return frt
+}
+
 pub func infer_call(id: i64) -> i64 {
     var fnm = sstate.name_str(id)
     // 实参收集：Call children = [泛型槽(-1或N_TYPE_ARGS), 实参...]，
