@@ -176,6 +176,8 @@ func hex8(v: i64) -> string {
 }
 
 // 平衡三进制（balanced mod 3）两位 trit 相加，位切片实现（全 &/^/|/<<）。
+// A5 掩码最小化（u32 通道铺路）：操作数恒 32 位（lanes/S/rotlane 不变量），
+// 本函数纯 &/|/^ 链位宽不增长 → 删 o_pos/o_neg 的 & 0xFFFFFFFF（KAT 不变）。
 func tadd2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
     var nMa = Ma ^ 0xFFFFFFFF
     var nNa = Na ^ 0xFFFFFFFF
@@ -185,23 +187,25 @@ func tadd2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
     var aN = Ma & Na
     var bP = Mb & nNb
     var bN = Mb & Nb
-    var o_pos = ((nMa & Mb & nNb) | (Ma & nNa & nMb) | (aN & bN)) & 0xFFFFFFFF
-    var o_neg = ((nMa & Mb & Nb) | (Ma & Na & nMb) | (aP & bP)) & 0xFFFFFFFF
+    var o_pos = (nMa & Mb & nNb) | (Ma & nNa & nMb) | (aN & bN)
+    var o_neg = (nMa & Mb & Nb) | (Ma & Na & nMb) | (aP & bP)
     return (o_pos | o_neg, o_neg)
 }
 
 // majority 量化：三组位平面逐 trit 取签，+1 计数 ≥2 则该位为 1（平局→0）。
+// A5：操作数 32 位、纯 &/|/^ → 删结果掩码（KAT 不变）。
 func quant3(m0: i64, n0: i64, m1: i64, n1: i64, m2: i64, n2: i64) -> i64 {
     var A = m0 & (n0 ^ 0xFFFFFFFF)
     var B = m1 & (n1 ^ 0xFFFFFFFF)
     var C = m2 & (n2 ^ 0xFFFFFFFF)
-    return ((A & B) | (B & C) | (C & A)) & 0xFFFFFFFF
+    return (A & B) | (B & C) | (C & A)
 }
 
 // 平衡三进制两位 trit 相乘（±1·±1=±1，0 吸收为 0）。
+// A5：操作数 32 位、纯 &/^ → 删掩码（KAT 不变）。
 func tmul2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
-    var amp = (Ma & Mb) & 0xFFFFFFFF
-    var no = ((Na ^ Nb) & amp) & 0xFFFFFFFF
+    var amp = Ma & Mb
+    var no = (Na ^ Nb) & amp
     return (amp, no)
 }
 
