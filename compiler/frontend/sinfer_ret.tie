@@ -455,6 +455,58 @@ pub func infer_call(id: i64) -> i64 {
             g_typed = g_typed + 1
             return br
         }
+        // P2d-D3：map 高阶——map_keys(m)/map_values(m) 第 1 参必须 map；
+        // map_values 返回类型 = table<map 值类型>（动态，覆盖占位 br）
+        if fnm == "map_keys" || fnm == "map_values" {
+            var mt = infer_expr(args[0])
+            if mt < 0 {
+                return -1
+            }
+            if !types.is_map(mt) {
+                sm_err_line = s_lines[id]
+                sm_err_col = s_cols[id]
+                sm_err_msg = fnm + "() 第 1 个参数必须是 map，实际是 " + types.type_name(mt)
+                return -1
+            }
+            if fnm == "map_values" {
+                var mv_ty: i64 = types.named(TK_I64)
+                var mlv = types.low(mt)
+                if mlv > 0 {
+                    mv_ty = mlv
+                }
+                node_types[id] = types.table_of(mv_ty)
+                g_typed = g_typed + 1
+                return node_types[id]
+            }
+            node_types[id] = br
+            g_typed = g_typed + 1
+            return br
+        }
+        if fnm == "map_contains" {
+            var mct = infer_expr(args[0])
+            if mct < 0 {
+                return -1
+            }
+            if !types.is_map(mct) {
+                sm_err_line = s_lines[id]
+                sm_err_col = s_cols[id]
+                sm_err_msg = "map_contains() 第 1 个参数必须是 map，实际是 " + types.type_name(mct)
+                return -1
+            }
+            var kct = infer_expr(args[1])
+            if kct < 0 {
+                return -1
+            }
+            if kct != types.named(TK_STR) {
+                sm_err_line = s_lines[id]
+                sm_err_col = s_cols[id]
+                sm_err_msg = "map_contains() 第 2 个参数必须是 string，实际是 " + types.type_name(kct)
+                return -1
+            }
+            node_types[id] = br
+            g_typed = g_typed + 1
+            return br
+        }
         // table_push 特殊检查（对齐 Rust）：第 1 参数必须表变量 + 动态表 + 元素类型匹配
         if fnm == "table_push" {
             var t0 = s_tags[args[0]]

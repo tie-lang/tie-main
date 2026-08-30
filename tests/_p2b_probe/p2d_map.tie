@@ -1,0 +1,36 @@
+type tie<logic>
+// P2d-D3 探针：map 高阶（map_keys/map_values/map_contains）
+
+func main() {
+    // i64 值 map
+    var m: map<i64> = ["a": 1, "b": 2, "c": 3]
+    println(len(m)) // 3
+    // map_keys → table<string>（数组模式键升序：a,b,c）
+    var ks = map_keys(m)
+    println(len(ks))
+    println(ks[0])
+    println(ks[1])
+    println(ks[2])
+    // map_values → table<i64>
+    var vs = map_values(m)
+    println(len(vs))
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < len(vs) {
+        sum = sum + vs[i]
+        i = i + 1
+    }
+    println(sum) // 6
+    // map_contains
+    println(map_contains(m, "a")) // true
+    println(map_contains(m, "zz")) // false
+    // string 值 map
+    var sm: map<string> = ["k1": "v1", "k2": "v2"]
+    var sks = map_keys(sm)
+    println(len(sks))
+    var svs = map_values(sm)
+    println(svs[0])
+    println(svs[1])
+    println(map_contains(sm, "k2"))
+    println(map_contains(sm, "nope"))
+}

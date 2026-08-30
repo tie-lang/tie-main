@@ -1,0 +1,28 @@
+type tie<logic>
+// P2d-D3 探针：map<any> 值提取（值槽存堆 any 盒指针 → 解引用还原）
+
+func main() {
+    var m: map<any> = ["k1": 1, "k2": "x"]
+    var ks = map_keys(m)
+    println(len(ks)) // 2
+    var vs = map_values(m)
+    println(len(vs)) // 2
+    // 提取的 any 值拆箱（as_i64 / as_string）
+    var sum: i64 = 0
+    var concat: string = ""
+    var i: i64 = 0
+    while i < len(vs) {
+        var v = vs[i]
+        switch v {
+            case i64:
+                sum = sum + as_i64(v)
+            case string:
+                concat = concat + as_string(v)
+            default:
+                concat = concat + "?"
+        }
+        i = i + 1
+    }
+    println(sum)    // 1
+    println(concat) // x
+}

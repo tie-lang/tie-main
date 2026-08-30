@@ -426,6 +426,10 @@ func is_builtin_name(nm: string) -> bool {
     if nm == "any_tag" {
         return true
     }
+    // P2d-D3：map 高阶——map_keys(m)/map_values(m)/map_contains(m, key)
+    if nm == "map_keys" || nm == "map_values" || nm == "map_contains" {
+        return true
+    }
     if nm == "table_new_i64" || nm == "table_new_f64" || nm == "table_new_string" || nm == "table_new_bool" {
         return true
     }
@@ -1682,6 +1686,39 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         var ld6 = ir.new_inst(g_cur_block, 21, types.named(TK_I64))
         ir.add_operand(ld6, ir.get_value(g6), 0)
         g_builtin_res = ir.get_value(ld6)
+        return 0
+    }
+    // P2d-D3：map 高阶——map_keys(m)→table<string>；map_values(m)→table<V>
+    //（V 从实参 map<string,V> 类型解码）；map_contains(m, key)→bool（不 raise）
+    if nm == "map_keys" || nm == "map_values" {
+        var m0 = call_arg(id, 0)
+        var mv = tig_expr(m0)
+        if mv < 0 {
+            return -1
+        }
+        var m_vty: i64 = types.named(TK_I64)
+        if nm == "map_values" {
+            var m_arg_ty = node_types[m0]
+            if types.is_map(m_arg_ty) {
+                var lv = types.low(m_arg_ty)
+                if lv > 0 {
+                    m_vty = lv
+                }
+            }
+        }
+        g_builtin_res = s21_map_extract(mv, m_vty, nm == "map_keys")
+        return 0
+    }
+    if nm == "map_contains" {
+        var m1 = tig_expr(call_arg(id, 0))
+        if m1 < 0 {
+            return -1
+        }
+        var k1 = tig_expr(call_arg(id, 1))
+        if k1 < 0 {
+            return -1
+        }
+        g_builtin_res = s21_map_contains(m1, k1)
         return 0
     }
     if nm == "table_new_i64" || nm == "table_new_f64" || nm == "table_new_string" || nm == "table_new_bool" {

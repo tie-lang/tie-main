@@ -244,6 +244,30 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_I64)
     }
+    // P2d-D3：map 高阶——map_keys(m)→table<string>；map_values(m)→table<V>
+    //（V 由调用点 infer 从实参 map<string,V> 解码，此处占位 table<i64>）；
+    // map_contains(m, key)→bool（不 raise）
+    if fn_name == "map_keys" || fn_name == "map_values" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = fn_name + "() 期望 1 个参数（map），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        if fn_name == "map_keys" {
+            return types.table_of(types.named(TK_STR))
+        }
+        return types.table_of(types.named(TK_I64))
+    }
+    if fn_name == "map_contains" {
+        if nargs != 2 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "map_contains() 期望 2 个参数（map, key），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_BOOL)
+    }
     if fn_name == "str_len" || fn_name == "str_char" || fn_name == "char_code" {
         if fn_name == "str_len" {
             if nargs != 1 {
