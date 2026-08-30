@@ -1,0 +1,262 @@
+type tie<logic>
+// tsha1 无长度扩展确认 + 边界探针（len_ext probe）。
+//   (a) 无长度扩展：对 200 组随机 (m,x)，x ∈ 1..3 字节（m 长差 1..3），断言
+//       tsha1f(m+x,48,16) != tsha1f(m,48,16)。TSHA1 块压缩为计数器式（纯零填充 +
+//       64 位计数器 t）且状态随输出位长 n，追加字节改变块边界与计数器，理论上 h(m+x)
+//       不能由 h(m) 续算，故两者应不同。
+//   (b) 全零/全一消息边界：对 ""、全零 1/16/64/65/1000B、全一 16/64B，经二进制安全的
+//       string_builder 构造（tie 字符串字面量无法直接承载 0x00/0xFF），断言 4 模型在
+//       n∈{48,69,92} 输出与 python gen_tsha1_core.py 的 encode(model,msg,n,16)
+//       逐字一致（参考值由小脚本 import core dump，本文件内嵌字面量）。
+//   (c) W（字宽）档级边界：f/b/x 的 n=92(64B=128hex) 与 n=96(67B=134hex) 同 W=17 即
+//       同一内部状态 → base16 为同一状态池前缀，n96 前 128 hex == n92 全 128 hex；
+//       f 在 W12→13（n64/69）、W16→17（n88/92）摘要（base16）必不同。
+import "../../std/tsha1.tie"
+using tsha;
+import "../../std/random.tie"
+using rnd;
+
+var PASS_COUNT: table<i64>
+
+func radix10(v: i64) -> string {
+    if v == 0 {
+        return "0"
+    }
+    var digits = "0123456789"
+    var out: string = ""
+    var x = v
+    while x > 0 {
+        out = str_char(digits, x % 10) + out
+        x = x / 10
+    }
+    return out
+}
+
+func chk_ok(name: string) {
+    PASS_COUNT[0] = PASS_COUNT[0] + 1
+    println("PASS " + name)
+}
+
+func chk_fail(name: string, info: string) {
+    println("FAIL " + name + " " + info)
+    exit(1)
+}
+
+func check_eq(name: string, got: string, want: string) {
+    if got == want {
+        chk_ok(name)
+    } else {
+        chk_fail(name, "got=" + got + " want=" + want)
+    }
+}
+
+func check_ne(name: string, a: string, b: string) {
+    if a != b {
+        chk_ok(name)
+    } else {
+        chk_fail(name, "两款摘要相等，长度扩展/档级边界被破坏")
+    }
+}
+
+// 二进制安全重复字节串：n 个值为 b（0..255）的字节。
+func repbyte(b: i64, n: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        sb_append_byte(sb, b)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 随机可打印 ASCII 串（构造消息体用于 (a)，避免涉入不可打印字节字面量）。
+var CHARS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+func gen_msg(n: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + str_char(CHARS, rnd.int(0, 61))
+        i = i + 1
+    }
+    return out
+}
+
+func model_hash(m: string, msg: string, n: i64, base: i64) -> string {
+    if m == "f" {
+        return tsha.tsha1f(msg, n, base)
+    }
+    if m == "r" {
+        return tsha.tsha1r(msg, n, base)
+    }
+    if m == "b" {
+        return tsha.tsha1b(msg, n, base)
+    }
+    return tsha.tsha1x(msg, n, base)
+}
+
+func prefix(s: string, k: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < k {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// (a) 无长度扩展：200 组随机 (m,x)，断言 h(m+x) != h(m)。m 长度 0..77 抽样。
+func len_ext_assert() {
+    var bad: i64 = 0
+    var g: i64 = 0
+    while g < 200 {
+        var mlen = rnd.int(0, 77)
+        var xlen = rnd.int(1, 3)
+        var m = gen_msg(mlen)
+        var x = gen_msg(xlen)
+        var hmx = tsha.tsha1f(m + x, 48, 16)
+        var hm = tsha.tsha1f(m, 48, 16)
+        if hmx == hm {
+            bad = bad + 1
+        }
+        g = g + 1
+    }
+    if bad == 0 {
+        chk_ok("len-ext nonext (200 random m,x)")
+    } else {
+        chk_fail("len-ext nonext", "bad=" + radix10(bad) + "/200")
+    }
+}
+
+// (b) 全零/全一边界：8 条消息 × 4 模型 × n∈{48,69,92} 与参考 encode(model,msg,n,16) 逐字一致。
+// 参考值源：tests/tsha_probe/gen_tsha1_core.py（先跑小脚本 import core dump 内嵌）。
+func boundary_assert() {
+    // 每模块一组：值按 (n48, n69, n92) 排。
+    // 空串/全零1/16/64：f
+    var ef: table<string> = ["40c68f5ad8435b8ede3430297b94da09f8fbd5b6afea8989beaa9d1e3f9584757e",
+        "3b4e42a0f57ce0cd4bf7c0a8198a615d33ab57f7dc74dd651fe59fbf865176ac6618c32f54465688eb89436ba8385454",
+        "081038ea725f3f9707a6870377dfd8551a9fcdc89ad59a8beedcb4397f2ecabc863ba48e6744d50b1313909e5ced085378009aaca5b1d0992f9e8b88152a97b0"]
+    var er: table<string> = ["56996858bf121ab271d6379857b477d04492abb3a5800b95d2fd5bfc59149b948e",
+        "b79153d4dcbc2f38e6d2baba5ec06a3a77e86038c086c2aed178c0a61092bc59b3950920e41885244156433c03926b0b",
+        "e831c89966123d2c7b56ba5146281d1540081128c42cf31d6238087982f815cb3eb067fe867206d347d898d650c16cfa44364a0c8abc529e1ea07f17ee00985c"]
+    var eb: table<string> = ["d4aba1e06c5a2017a77e2bc7ec0899032a6ab7a102fca539c9169593fcf79c4263",
+        "106318303f1343e9be9e60d442d1dd6a616331e1d9a320ea819005b9ceb74fa05d6082e48e6205a6363688b31c6c021f",
+        "0515c882394a652110e7ce2535793cf079325a1628c2e4f6e638b860523813be686adc8efb7b1d84a31ede6b471c61ba55c74d649500d0b4b7cf59fc1ddcf37c"]
+    var ex: table<string> = ["ba18416e02323978f0265249f6e71eaceb4b7ee625059f638da5b9de9b74baa8d4",
+        "2979a008dccf157bf58e95a50698987a6f0a1baa0a5a17bedc8f18e9469bcfb5d525bfe2b8593aa68d79aa9530dd82f6",
+        "88491cf4b4029e3466ecd7278e4f1b018fd78f8529e692c90265d31eb66f5bdbfa6d71d714fdf2cd458eae1c97573b69040caf6413aa11888ddff26432a0d9e2"]
+    // 全零65
+    var z65f: table<string> = ["023246c2a7698f462b3d25af0af2552ed52e9a07152fd3ab92a1c6f72359e70a90",
+        "a4ca91c55b1fed03236558a9b7b7806a13fdc6701fa1d0e63bf79dacb481e396644cef191ec0b8d23b9320c71a7d5ced",
+        "0cc6e64c6a5a791ad8d330e5cbcac5f6d86890e6fed12fae2039ddcd025d8c7d6281138bc63030c77e39a100d617f54691a8dcd1b954c8d86fd07441ebe28fc3"]
+    var z65r: table<string> = ["2611fe058c089a6797ac89061d5a4c1e8d68956f81480c35e3432a3630263a2087",
+        "43a14d902a9631f8ce142673488a6cb915b681408294143f0854605002c4b84289d325307b700491b124479101266375",
+        "bcc5918da09efd43ade6f96fbc4019347d083b94c434cd1a46d40144176c391b5bcc058faf12010b6b40496f1d6165ff6e6e4146c440d3548d4855f4bace3773"]
+    var z65b: table<string> = ["2b6624271851f974279d6fe2c301e577993f550637b2333087dd90bdcb600e36b1",
+        "006aa89cf18b945901af617770ae91b753bbdc149744fbcc35c1ddc0adab92ebe09ffdc4ab898a71832bd4f996e44c11",
+        "ed269289af93a80bb52131510941f90dc3fcf3e973c8cac488feee6b309a10ff3e8f8633e42570f47788ba1a9826d293923a7edf487b6a6664696ad34fe17f27"]
+    var z65x: table<string> = ["014083b0091ec2d5a907e524320f93849150fc3cbf9320c01aad7dd219bddcb13d",
+        "5924029c57acd1e091cb74ea6df93605e935938c34ca9261a51197b66527ccf4c57088bf2c72d45d2ef4c8deecbf2dfb",
+        "157ea36634e918c6905aa2ffd41125216fef25cf9b3fc85145a80cdaaaa746cf1d00776d723126667964af4af5e2b1179b8b73a855cbd65740a726960957eeb8"]
+    // 全零1000
+    var zkf: table<string> = ["92f3f132831f573a731223a545b25e4d513e2763717b7c2ac59193125d3eb5049c",
+        "a467614f83f386ac750dcf0cc64c9f532659953d8d003754f06cccf923fa023e27a68422ba5fbc41a0f45c9502f948da",
+        "63dc0cbce49cf34ff13f8fa0e47dd74299bc7961b263e387ea879d3c26fe854cc8440ee3c6f4b0175165c9bd0416ec8a27c466c19b23e5ad3dca237064fa13d6"]
+    var zkr: table<string> = ["a3016629ea0070a719947e89689a760977bc7714581eff1fcc510fdb531c5df320",
+        "d50787a0e582f615d28256526008065178f0adcaedec762a578a141347fc9c517d4d7b98b6409ad35e703ca92f285d94",
+        "c3955694e0a2744800c878ad3c4ed8ad7320fd6f9b9a9bd00c4083c529f021b5c7064461183e4a4a10347bc4b65957564ad2920347c48b82a65865183fa2203e"]
+    var zkb: table<string> = ["53467f2446acad30204a1f5008ffcb61904a2bd755d9f411b62b72978d2c7bf012",
+        "d62419ca8edcd4552666d0f1a531cf32c87727dc5b0448637aacd956a92b00d743d1ff541aaf2161df33fd04b07c81d5",
+        "a316e70678c2db4a75115f0f3c34ef44cb3a6f9caea2d89c9726c6be299ef89c788b8a137698a84df867fc13ff083b3462a64794b84177854652df887bcfcb0e"]
+    var zkx: table<string> = ["4c591417bfddabf8fbcfb02ef5194f7d43cdd2a05e3c5e0976551a6697072c2a5c",
+        "2020a1a73016543628455765b38d12e5af1c45fca6217a4d8e47723894ccee2a5e4ce813f697036c428b9646ab4f02ef",
+        "6806846670322c1ce8b2cf3dd6e2c4bc81f9347cd6188079ef7f81bfd17eb86911f3212d62612090e0fa260360e8af53f1568ef678dbd137e16fcf131ef1bd8e"]
+    // 全一16
+    var o16f: table<string> = ["b82448883de5710f1cee3dbc804d39e9db23739de733be89248beeee2369aa4d99",
+        "8412c82b6e64c3440b868d746c37d2b6830a676fe89f04875d1b675d6082f3fbb86437291d342a9cf263173c404b5b61",
+        "db1567a879e79c7d46a6b077e87399d08dd8af3d16b275bacb639e3d48a0201813aabf4d803356c8900a7896708f89fbb232437acb825c5ad2f81005dc3d15ce"]
+    var o16r: table<string> = ["76d5e76e3604df0d5c24dd0af1221914ec18d0ccdd1e1108e9b1310d243082bf4c",
+        "09b9d0246cc0c55c0800f7c29a0205faeec881e931d84c7afb50000d4db893c9ee9d4aee1f9406cf510220cde912799f",
+        "d165c5649edcc327ec00dd167f120b100954ac847fb0431dae68017cdfd49d7e3dd226abc3c8068b763c1b46fe0f35cf569647958e820fe36e5c6a7a7272894e"]
+    var o16b: table<string> = ["4813933a36d268dc14cb5bf8f100fbca0fcc8c9eaf3ceeb55b4d6406b072ebc80d",
+        "2049ced2fbfc0f58ced6399f1265d88e5824b6964d06f4f4226d70f2fc8342cd43f46bce748082d41c86f45f4f03a67e",
+        "f868ee357ad2e137c562e3e9452481b9ef05265eb5b6c181bc74cc96eca478d0f40aef0aa6a5a1018156eb7ab8ac99d53fe79e943fd2b15b25010e5b9ca9e196"]
+    var o16x: table<string> = ["891c180038d11b87a18bc9ec81980c11b6fef8e52e14e6c0c80b54360892c1f5e7",
+        "56e18ab0d910f06d59cd73b2363fbaac4ba10ac28f0ea0e0afd5339c3f93b17faad239ad31ebbe2865d3c168b8ee3d6f",
+        "50ed12ab05ea4596aa2258a572ab7fc4f7d5b475a12b9815b9200b3511e84d2dfbbe05a49484940f7d4c1ea16b8b09b19f29a9ebae60fd308c3a54f5360dd17c"]
+    // 全一64
+    var o64f: table<string> = ["21603825988ba5530bc882018038331e147d6cd049ac7c28ed1f4813a3ed7c2e26",
+        "012e407ecc3f54412781cfad3b8d4fa14cc963bc55133dacce4ca308b5f9f46bb193918801c8f37e0b2a2e3a236bc426",
+        "25099b92bb531613c2960e8998236f263b40ad22551e3b968f9839d756bc89ecfe5dd5f59df327ff0fbb930d1731ef3279bff734ff3c33bd5f8fc89e81adda4c"]
+    var o64r: table<string> = ["10e1c9627dd0c9f41ac0cb42ff0a0d44391ac95cf39019f75a2925a9ac80833d23",
+        "c56d840435fc78950f7e61c6e1de219fe91e83c2815e22b051b00a1705fa8381f8e905f86bd485f70d3e11079b9e6245",
+        "18e5e94242481bbf9cd000b2253005aa64c287f3dd4e49b72d34140b91fc80fdf99a593ef6d899a4b7840a2c1b87601e3bd0c01a39e85c36b7e61aab6df8be47"]
+    var o64b: table<string> = ["744ba11656066996cabc5b14a32ea3d2ca2cbd3aecaa79a46a385aec38647eaa23",
+        "940414a0cd49f513e3e1a325ef91de05cf7ccbab92869c787e0c0985b0f0031b206235aa07f2ebeb0d08734318f646fb",
+        "269ea5a86ce81cb10d87019026a685c7a57b582990ced161bfda6aef9cbd808f50252aff8e3e1ccdc0081aa1b57cfbb1355dba32649343e50986bee7ae6a32d2"]
+    var o64x: table<string> = ["1a52681703562eaf11757fab5e9cd38bc527f5f3075c6df529f496a529d4f9d2be",
+        "01215b41299b042ccaa5d7a34b4092edbe03a7924caaed290eca4dcdb66be7897be59b1d41ca8cb31ed02d9e95f4a22c",
+        "9610e463cbe1fa4e6384f5d271d87e307d21866a1de18c118e9b078a23ffddbb83bb212d29736b581bb67c30c48062f3693514b6d6f9e593d916b67fa9c0a667"]
+
+    var ns: table<i64> = [48, 69, 92]
+    var idx: i64 = 0
+    // 空串 + 全零1/16/64（同引用）
+    for idx in 0..3 {
+        var n = ns[idx]
+        check_eq("bndr f empty n" + radix10(n), tsha.tsha1f("", n, 16), ef[idx])
+        check_eq("bndr f zero1  n" + radix10(n), tsha.tsha1f(repbyte(0, 1), n, 16), ef[idx])
+        check_eq("bndr f zero16 n" + radix10(n), tsha.tsha1f(repbyte(0, 16), n, 16), ef[idx])
+        check_eq("bndr f zero64 n" + radix10(n), tsha.tsha1f(repbyte(0, 64), n, 16), ef[idx])
+        check_eq("bndr r empty n" + radix10(n), tsha.tsha1r("", n, 16), er[idx])
+        check_eq("bndr b empty n" + radix10(n), tsha.tsha1b("", n, 16), eb[idx])
+        check_eq("bndr x empty n" + radix10(n), tsha.tsha1x("", n, 16), ex[idx])
+        check_eq("bndr f zero65 n" + radix10(n), tsha.tsha1f(repbyte(0, 65), n, 16), z65f[idx])
+        check_eq("bndr r zero65 n" + radix10(n), tsha.tsha1r(repbyte(0, 65), n, 16), z65r[idx])
+        check_eq("bndr b zero65 n" + radix10(n), tsha.tsha1b(repbyte(0, 65), n, 16), z65b[idx])
+        check_eq("bndr x zero65 n" + radix10(n), tsha.tsha1x(repbyte(0, 65), n, 16), z65x[idx])
+        check_eq("bndr f zero1000 n" + radix10(n), tsha.tsha1f(repbyte(0, 1000), n, 16), zkf[idx])
+        check_eq("bndr r zero1000 n" + radix10(n), tsha.tsha1r(repbyte(0, 1000), n, 16), zkr[idx])
+        check_eq("bndr b zero1000 n" + radix10(n), tsha.tsha1b(repbyte(0, 1000), n, 16), zkb[idx])
+        check_eq("bndr x zero1000 n" + radix10(n), tsha.tsha1x(repbyte(0, 1000), n, 16), zkx[idx])
+        check_eq("bndr f one16 n" + radix10(n), tsha.tsha1f(repbyte(255, 16), n, 16), o16f[idx])
+        check_eq("bndr r one16 n" + radix10(n), tsha.tsha1r(repbyte(255, 16), n, 16), o16r[idx])
+        check_eq("bndr b one16 n" + radix10(n), tsha.tsha1b(repbyte(255, 16), n, 16), o16b[idx])
+        check_eq("bndr x one16 n" + radix10(n), tsha.tsha1x(repbyte(255, 16), n, 16), o16x[idx])
+        check_eq("bndr f one64 n" + radix10(n), tsha.tsha1f(repbyte(255, 64), n, 16), o64f[idx])
+        check_eq("bndr r one64 n" + radix10(n), tsha.tsha1r(repbyte(255, 64), n, 16), o64r[idx])
+        check_eq("bndr b one64 n" + radix10(n), tsha.tsha1b(repbyte(255, 64), n, 16), o64b[idx])
+        check_eq("bndr x one64 n" + radix10(n), tsha.tsha1x(repbyte(255, 64), n, 16), o64x[idx])
+    }
+}
+
+// (c) W 档级边界。
+func w_boundary_assert() {
+    var msg = "abc"
+    var m1000 = gen_msg(1000)
+    check_ne("W f n64!=69 abc", tsha.tsha1f(msg, 64, 16), tsha.tsha1f(msg, 69, 16))
+    check_ne("W f n88!=92 abc", tsha.tsha1f(msg, 88, 16), tsha.tsha1f(msg, 92, 16))
+    check_ne("W f n64!=69 a1000", tsha.tsha1f(m1000, 64, 16), tsha.tsha1f(m1000, 69, 16))
+    var models: table<string> = ["f", "b", "x"]
+    var mn: string = ""
+    for mn in models {
+        var s92 = model_hash(mn, msg, 92, 16)
+        var s96 = model_hash(mn, msg, 96, 16)
+        if len(s96) < len(s92) {
+            chk_fail("W " + mn + " prefix abc", "n96 shorter")
+        }
+        check_eq("W " + mn + " pref96/92 abc", prefix(s96, len(s92)), s92)
+        var t92 = model_hash(mn, m1000, 92, 16)
+        var t96 = model_hash(mn, m1000, 96, 16)
+        if len(t96) < len(t92) {
+            chk_fail("W " + mn + " prefix a1000", "n96 shorter")
+        }
+        check_eq("W " + mn + " pref96/92 a1000", prefix(t96, len(t92)), t92)
+    }
+}
+
+func main() {
+    table_push(PASS_COUNT, 0)
+    len_ext_assert()
+    boundary_assert()
+    w_boundary_assert()
+    println("tsha1_len_ext 探针全部通过，PASS 总数=" + radix10(PASS_COUNT[0]))
+}
