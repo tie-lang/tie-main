@@ -741,7 +741,10 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return 0
     }
     if nm == "memcpy" {
-        // memcpy(dst, src, n) → llvm.memcpy.p0.p0.i64（volatile=false, tail=false）
+        // memcpy(dst, src, n) → libc @memcpy(ptr, ptr, i64)
+        // 走 extern_call + extern_decl 映射（模块头不重复 declare）。
+        // 曾用 llvm.memcpy.p0.p0.i64 内在：user_extern_decl 按调用签名重建
+        // 声明 → 与模块头 4 参声明重复 → opt 报「invalid redefinition」。
         var dst = tig_expr(call_arg(id, 0))
         if dst < 0 {
             return -1
@@ -762,16 +765,12 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         table_push(avs, src)
         table_push(ats, types.named(TK_I64))
         table_push(avs, n)
-        table_push(ats, types.named(TK_BOOL))
-        table_push(avs, tig_int_lit_ty(1, types.named(TK_BOOL)))
-        table_push(ats, types.named(TK_BOOL))
-        table_push(avs, tig_int_lit_ty(0, types.named(TK_BOOL)))
-        tig_ext_call_typed("llvm.memcpy.p0.p0.i64", ats, avs, -1)
+        tig_ext_call_typed("memcpy", ats, avs, -1)
         g_builtin_res = tig_int_lit(0)
         return 0
     }
     if nm == "memset" {
-        // memset(p, val, n) → llvm.memset.p0.i64
+        // memset(p, val, n) → libc @memset(ptr, i8, i64)
         var p = tig_expr(call_arg(id, 0))
         if p < 0 {
             return -1
@@ -784,19 +783,16 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         if n < 0 {
             return -1
         }
+        var val8 = s21_trunc_i8(val)  // val 为 i64 → trunc i8（@memset 第二参 i8）
         var ats: table<i64> = table_new_i64()
         var avs: table<i64> = table_new_i64()
         table_push(ats, types.named(TK_STR))
         table_push(avs, p)
         table_push(ats, types.named(TK_I8))
-        table_push(avs, val)
+        table_push(avs, val8)
         table_push(ats, types.named(TK_I64))
         table_push(avs, n)
-        table_push(ats, types.named(TK_BOOL))
-        table_push(avs, tig_int_lit_ty(1, types.named(TK_BOOL)))
-        table_push(ats, types.named(TK_BOOL))
-        table_push(avs, tig_int_lit_ty(0, types.named(TK_BOOL)))
-        tig_ext_call_typed("llvm.memset.p0.i64", ats, avs, -1)
+        tig_ext_call_typed("memset", ats, avs, -1)
         g_builtin_res = tig_int_lit(0)
         return 0
     }

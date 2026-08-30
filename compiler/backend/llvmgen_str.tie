@@ -302,6 +302,10 @@ func extern_decl(sym: string) -> string {
     if sym == "memcpy" {
         return "declare void @memcpy(ptr, ptr, i64)"
     }
+    // 表容器 tl_tbl 用 libc memset（零化/越界零值；CRT 提供）
+    if sym == "memset" {
+        return "declare void @memset(ptr, i8, i64)"
+    }
     // 批次 7 catch_panic：无条件 declare（emit 头部，带 returns_twice/noreturn
     // 属性），此处不重复 declare（LLVM 拒绝重复定义）。
     if sym == "longjmp" || sym == "_setjmp" || sym == "llvm.frameaddress.p0" {
@@ -611,6 +615,7 @@ func user_extern_decl(sym: string) -> string {
     // redefinition；这些符号声明固定，绝不在此推导。
     if sym == "printf" || sym == "strlen" || sym == "strcmp" ||
         sym == "malloc" || sym == "free" || sym == "memcpy" || sym == "memmove" ||
+        sym == "memset" ||
         sym == "fopen" || sym == "fwrite" || sym == "fread" ||
         sym == "fseek" || sym == "ftell" ||
         sym == "fclose" || sym == "fflush" ||
