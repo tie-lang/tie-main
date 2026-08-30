@@ -176,6 +176,8 @@ func hex8(v: i64) -> string {
 }
 
 // 平衡三进制（balanced mod 3）两位 trit 相加，位切片实现（全 &/^/|/<<）。
+// A5 掩码最小化（u32 通道铺路）：操作数恒 32 位（lanes/S/rotlane 不变量），
+// 本函数纯 &/|/^ 链位宽不增长 → 删 o_pos/o_neg 的 & 0xFFFFFFFF（KAT 不变）。
 func tadd2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
     var nMa = Ma ^ 0xFFFFFFFF
     var nNa = Na ^ 0xFFFFFFFF
@@ -185,23 +187,25 @@ func tadd2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
     var aN = Ma & Na
     var bP = Mb & nNb
     var bN = Mb & Nb
-    var o_pos = ((nMa & Mb & nNb) | (Ma & nNa & nMb) | (aN & bN)) & 0xFFFFFFFF
-    var o_neg = ((nMa & Mb & Nb) | (Ma & Na & nMb) | (aP & bP)) & 0xFFFFFFFF
+    var o_pos = (nMa & Mb & nNb) | (Ma & nNa & nMb) | (aN & bN)
+    var o_neg = (nMa & Mb & Nb) | (Ma & Na & nMb) | (aP & bP)
     return (o_pos | o_neg, o_neg)
 }
 
 // majority 量化：三组位平面逐 trit 取签，+1 计数 ≥2 则该位为 1（平局→0）。
+// A5：操作数 32 位、纯 &/|/^ → 删结果掩码（KAT 不变）。
 func quant3(m0: i64, n0: i64, m1: i64, n1: i64, m2: i64, n2: i64) -> i64 {
     var A = m0 & (n0 ^ 0xFFFFFFFF)
     var B = m1 & (n1 ^ 0xFFFFFFFF)
     var C = m2 & (n2 ^ 0xFFFFFFFF)
-    return ((A & B) | (B & C) | (C & A)) & 0xFFFFFFFF
+    return (A & B) | (B & C) | (C & A)
 }
 
 // 平衡三进制两位 trit 相乘（±1·±1=±1，0 吸收为 0）。
+// A5：操作数 32 位、纯 &/^ → 删掩码（KAT 不变）。
 func tmul2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
-    var amp = (Ma & Mb) & 0xFFFFFFFF
-    var no = ((Na ^ Nb) & amp) & 0xFFFFFFFF
+    var amp = Ma & Mb
+    var no = (Na ^ Nb) & amp
     return (amp, no)
 }
 
@@ -483,15 +487,9 @@ func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64,
         var bits3 = b & 7
         var tf = (b >> 6) & 3
         var t = tf - 1
-        var tv: i64 = 0
-        if t < 0 {
-            tv = -1
-        } else if t == 0 {
-            tv = 0
-        } else {
-            tv = 1
-        }
-        var dig = bits3 * 3 + (tv + 1)
+        // skey 位型与 canonical 核心一致：dig = bits3*3 + (t+1)（t+1==tf∈{0,1,2,3}）。
+        // 不能用 tv 二元钳位（会把 t=2/tf=3 误并为 1，令高两位 11 的字节污染 skey）。
+        var dig = bits3 * 3 + (t + 1)
         skey = (skey * 3 + dig) & 0xFFFFFFFF
         if t != 0 {
             var wv = j / 32
@@ -519,7 +517,8 @@ func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64,
         }
         j = j + 1
     }
-    return (M0v & 0xFFFFFFFF, N0v & 0xFFFFFFFF, M1v & 0xFFFFFFFF, N1v & 0xFFFFFFFF, Pw, skey)
+    // A5-b：M/N 由 1<<bit（bit<32）构成恒 32 位，返回防御掩码可省
+    return (M0v, N0v, M1v, N1v, Pw, skey)
 }
 
 // 位平面吸收（F1-2）：每块一次、compress 轮前调用；16 条 Pw 按锚点字 w%W 平衡加并入 lanes。
@@ -541,8 +540,9 @@ func absorb(lanes: ref table<i64>, Pw: table<i64>, skey: i64, half: bool) {
                 v2 = rrp(Pw[w], a + 17)
             }
             var (sm, sn) = tadd2(lanes[i2], lanes[i2 + 1], v, v2)
-            lanes[i2] = sm & 0xFFFFFFFF
-            lanes[i2 + 1] = sn & 0xFFFFFFFF
+            // A5-b：tadd2 输出恒 32 位（纯 &/|/^ 链），防御性写回掩码可省
+            lanes[i2] = sm
+            lanes[i2 + 1] = sn
         }
         w = w + 1
     }
@@ -649,11 +649,12 @@ func ring_mix(lanes: ref table<i64>, start: i64, L: i64, r: i64, skey: i64,
 // 轨对耦合：tadd2 写回 a，再 tmul2 异或回 b。
 func couple(lanes: ref table<i64>, a: i64, b: i64, half: bool) {
     var (sm, sn) = tadd2(lanes[2 * a], lanes[2 * a + 1], lanes[2 * b], lanes[2 * b + 1])
-    lanes[2 * a] = sm & 0xFFFFFFFF
-    lanes[2 * a + 1] = sn & 0xFFFFFFFF
+    // A5-b：tadd2/tmul2 输出恒 32 位，防御性写回掩码可省
+    lanes[2 * a] = sm
+    lanes[2 * a + 1] = sn
     var (pm, pn) = tmul2(lanes[2 * a], lanes[2 * a + 1], lanes[2 * b], lanes[2 * b + 1])
-    lanes[2 * b] = (lanes[2 * b] ^ pm) & 0xFFFFFFFF
-    lanes[2 * b + 1] = (lanes[2 * b + 1] ^ pn) & 0xFFFFFFFF
+    lanes[2 * b] = lanes[2 * b] ^ pm
+    lanes[2 * b + 1] = lanes[2 * b + 1] ^ pn
 }
 
 // LFSR 轨混洗（x 模型轨 D；interval [td_start, td_start+L)）。
@@ -668,14 +669,16 @@ func lfsr_mix(lanes: ref table<i64>, td_start: i64, L: i64, r: i64,
         var jw = td_start + ((k + 1) % L)
         var s0 = (r * 3 + 5 * k) & 31
         var s1 = (r * 5 + 3 * k) & 31
-        lanes[2 * iw] = (lanes[2 * iw] ^ rotlane(M0, s0, half)) & 0xFFFFFFFF
-        lanes[2 * iw + 1] = (lanes[2 * iw + 1] ^ rotlane(N0, s1, half)) & 0xFFFFFFFF
-        var fb = ((lanes[2 * iw] >> 16) ^ lanes[2 * iw + 1]) & 0xFFFFFFFF
-        lanes[2 * jw] = (lanes[2 * jw] ^ fb) & 0xFFFFFFFF
-        lanes[2 * jw + 1] = (lanes[2 * jw + 1] ^ fb) & 0xFFFFFFFF
-        lanes[2 * jw] = (lanes[2 * jw] ^ rcon[(r + k) & 15]) & 0xFFFFFFFF
-        lanes[2 * jw + 1] = (lanes[2 * jw + 1] ^
-                             rotlane(rcon[(r + k + 8) & 15], (r + 2 * k) & 31, half)) & 0xFFFFFFFF
+        // A5-b：rotlane 输出与 lanes 值恒 32 位，^ 结果 32 位，防御掩码可省；
+        // fb 由 >>16（高 16 位为 0）^ 32 位值组成，亦 32 位
+        lanes[2 * iw] = lanes[2 * iw] ^ rotlane(M0, s0, half)
+        lanes[2 * iw + 1] = lanes[2 * iw + 1] ^ rotlane(N0, s1, half)
+        var fb = (lanes[2 * iw] >> 16) ^ lanes[2 * iw + 1]
+        lanes[2 * jw] = lanes[2 * jw] ^ fb
+        lanes[2 * jw + 1] = lanes[2 * jw + 1] ^ fb
+        lanes[2 * jw] = lanes[2 * jw] ^ rcon[(r + k) & 15]
+        lanes[2 * jw + 1] = lanes[2 * jw + 1] ^
+                             rotlane(rcon[(r + k + 8) & 15], (r + 2 * k) & 31, half)
         k = k + 1
     }
 }
@@ -698,22 +701,23 @@ func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
     }
     i = 0
     while i < W {
-        lanes[2 * i] = h[i] & 0xFFFFFFFF
+        // A5-b：h/iv/rotlane 恒 32 位，^ 结果 32 位，防御掩码可省；& mplan 保留（half 截断）
+        lanes[2 * i] = h[i]
         lanes[2 * i + 1] = rotlane(h[(i + W / 2) % W], 7, half)
         i = i + 1
     }
     i = 0
     while i < W {
-        lanes[2 * i] = (lanes[2 * i] ^ (iv[i % 8] & mplan)) & 0xFFFFFFFF
-        lanes[2 * i + 1] = (lanes[2 * i + 1] ^ (iv[(i + 4) % 8] & mplan)) & 0xFFFFFFFF
+        lanes[2 * i] = lanes[2 * i] ^ (iv[i % 8] & mplan)
+        lanes[2 * i + 1] = lanes[2 * i + 1] ^ (iv[(i + 4) % 8] & mplan)
         i = i + 1
     }
-    lanes[1] = (lanes[1] ^ (t_lo & mplan)) & 0xFFFFFFFF
+    lanes[1] = lanes[1] ^ (t_lo & mplan)
     var hi = 2 * (W / 2) + 1
-    lanes[hi] = (lanes[hi] ^ (t_hi & mplan)) & 0xFFFFFFFF
+    lanes[hi] = lanes[hi] ^ (t_hi & mplan)
     if last {
         var lk = 2 * ((W / 2) % W) + 1
-        lanes[lk] = (lanes[lk] ^ 0xFFFFFFFF) & 0xFFFFFFFF
+        lanes[lk] = lanes[lk] ^ 0xFFFFFFFF
     }
     absorb(lanes, Pw, skey, half)   // F1-2：位平面吸收（IV/计数器混入之后、轮循环之前，每块一次）
     // 轨分配（alloc_tracks 退化）：start/len/kind/rate（kind: 0=dual 1=ring 2=sponge 3=lfsr）
@@ -889,7 +893,7 @@ func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
     // 末块折回链值 h
     i = 0
     while i < W {
-        h[i] = (h[i] ^ lanes[2 * i] ^ rotlane(lanes[2 * i + 1], (i * 3) & 31, half)) & 0xFFFFFFFF
+        h[i] = h[i] ^ lanes[2 * i] ^ rotlane(lanes[2 * i + 1], (i * 3) & 31, half)
         i = i + 1
     }
     fin_synth(h, half)
@@ -930,7 +934,7 @@ func fin_synth(h: ref table<i64>, half: bool) {
     }
     i = 0
     while i < W {
-        lanes[2 * i] = h[i] & 0xFFFFFFFF
+        lanes[2 * i] = h[i]
         lanes[2 * i + 1] = rotlane(h[(i + 1) % W], 7, half)
         i = i + 1
     }
@@ -948,7 +952,7 @@ func fin_synth(h: ref table<i64>, half: bool) {
     }
     i = 0
     while i < W {
-        h[i] = (lanes[2 * i] ^ rotlane(lanes[2 * i + 1], (i * 5) & 31, half)) & 0xFFFFFFFF
+        h[i] = lanes[2 * i] ^ rotlane(lanes[2 * i + 1], (i * 5) & 31, half)
         i = i + 1
     }
 }
@@ -986,7 +990,7 @@ func digest(model: i64, msg: string, nbytes: i64, n: i64) -> string {
         table_push(h, iv[i] & mplan)
         i = i + 1
     }
-    h[0] = (h[0] ^ 0x01010000 ^ 32) & 0xFFFFFFFF
+    h[0] = h[0] ^ 0x01010000 ^ 32
     var bcon: table<i64> = table_new_i64()
     var xdcon: table<i64> = table_new_i64()
     if model == 2 || model == 3 {
