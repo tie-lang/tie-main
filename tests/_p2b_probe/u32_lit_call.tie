@@ -1,0 +1,28 @@
+type tie<logic>
+// U1 bug 修复验证：u32 字面量直接传参（i64 字面量 → u32 形参的缩窄转换）
+
+func quant3_u32(m0: u32, n0: u32, m1: u32, n1: u32, m2: u32, n2: u32) -> u32 {
+    var A = m0 & (n0 ^ 4294967295)
+    var B = m1 & (n1 ^ 4294967295)
+    var C = m2 & (n2 ^ 4294967295)
+    return (A & B) | (B & C) | (C & A)
+}
+
+func add_u32(a: u32, b: u32) -> u32 {
+    return a + b
+}
+
+func main() {
+    // u32 形参 + i64 字面量实参（此前触发 trunc 不支配 bug）
+    var q = quant3_u32(0x0F0F0F0F, 0xF0F0F0F0, 0x33333333, 0xCCCCCCCC, 0x55555555, 0xAAAAAAAA)
+    println(q)
+    // 十进制字面量（超 i32 范围）
+    var q2 = quant3_u32(252645135, 4042322160, 858993459, 3435973836, 1431655765, 2863311530)
+    println(q2)
+    // 加法回绕 + 字面量实参
+    var s = add_u32(4294967295, 1)
+    println(s)
+    // 小字面量（< 2^31，也应正确缩窄）
+    var s2 = add_u32(100, 200)
+    println(s2)
+}

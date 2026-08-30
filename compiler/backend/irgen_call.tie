@@ -94,6 +94,23 @@ func tig_user_call_from(full: string, id: i64, arg_start: i64) -> i64 {
                 av = abx2
             }
         }
+        // S1.3 C2/C3：整数/浮点形参 ≠ 实参表达式类型 → 缩窄/拓宽转换。
+        // 必须在 call 指令创建前完成：tig_coerce 的 trunc/zext/sitofp 会新建
+        // 指令（值编号递增），若放在 call 创建后的操作数循环内调用，转换指令
+        // 编号晚于 call → call 引用其值不支配（LLVM "does not dominate" 拒绝，
+        // 实测 i64 字面量 → u32 形参触发）。
+        if arg_idx < nparams && is_ref_arg == 0 {
+            var ptyc = ptys[arg_idx]
+            var atc = node_types[arg_node]
+            if ptyc >= 0 && atc >= 0 && (types.is_int(ptyc) || types.is_float(ptyc)) &&
+                (types.is_int(atc) || types.is_float(atc)) && ptyc != atc {
+                var acv = tig_coerce(av, atc, ptyc)
+                if acv < 0 {
+                    return -1
+                }
+                av = acv
+            }
+        }
         table_push(argvals, av)
         table_push(argisref, is_ref_arg)
         table_push(argkinds, arg_kind)
@@ -167,18 +184,8 @@ func tig_user_call_from(full: string, id: i64, arg_start: i64) -> i64 {
             } else {
                 pty = ptys[k]
             }
-            // S1.3 C2/C3：形参类型（数字族）≠ 实参表达式类型 → 转换
-            // （调用点拓宽/常量缩窄；语义层已校验合法性，此处只做 IR 转换）
-            var an = sstate.child(id, arg_start + k)
-            var at2 = node_types[an]
-            if pty >= 0 && at2 >= 0 && (types.is_int(pty) || types.is_float(pty)) &&
-                (types.is_int(at2) || types.is_float(at2)) && pty != at2 {
-                var ac = tig_coerce(argvals[k], at2, pty)
-                if ac < 0 {
-                    return -1
-                }
-                argvals[k] = ac
-            }
+            // 数字族缩窄/拓宽转换已在实参生成阶段完成（call 创建前，
+            // 避免 trunc/zext 编号晚于 call → 不支配）；此处 pty 仅作操作数类型。
         }
         ir.add_operand(inst, pty, 2)
         ir.add_operand(inst, argvals[k], argkinds[k])
