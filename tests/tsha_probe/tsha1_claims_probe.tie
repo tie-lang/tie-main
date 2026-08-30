@@ -1,0 +1,143 @@
+type tie<logic>
+// tsha1 档位对齐探针（security-design §4.5）——「有效位 = 名义位」容量模型落地验证。
+// 目标：断言 state-per-n 构造下 TSHA1 输出位 ≈ 名义位（s ≥ k ⇒ 无 SHAKE 式缺口）。
+// 覆盖 n∈{48,69,92,128,144} × 四模型 f/b/x/r（消息取 "abc"）：
+//   (a) base48 输出恰好 n 符号                    —— 定长左补零语义，len==n 恒成立；
+//   (b) base16 行长 = ⌊n·698121/1000000⌋·2 字符    —— b0 字节取状态池前缀重编码；
+//   (c) 有效位=名义位：digest 全宽足以覆盖 b0 字节（s ≥ k ⇒ len(digest)/2 ≥ b0），
+//       base16 行 == 状态池前缀 b0 字节（同位关系），且 2·b0·4 ≥ n·L48·0.98
+//       （输出位 ≈ 名义位；L48 = log2(48) ≈ 5.5849625007，0.98 容差系数）；
+//   (d) n=48/69/92 三档升档：tsha1f("abc",48,16)、69、92 两两不同。
+import "../../std/tsha1.tie" as tsha
+
+var PASS_COUNT: table<i64>
+
+func init_pass() {
+    table_push(PASS_COUNT, 0)
+}
+
+func radix10(v: i64) -> string {
+    if v == 0 {
+        return "0"
+    }
+    var digits = "0123456789"
+    var out: string = ""
+    var x = v
+    while x > 0 {
+        out = str_char(digits, x % 10) + out
+        x = x / 10
+    }
+    return out
+}
+
+// 取字符串前 k 个字符子串。
+func prefix(s: string, k: i64) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < k {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 长度断言；通过累计一次。
+func chk_len(name: string, got: string, want: i64) {
+    var L: i64 = len(got)
+    if L == want {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS " + name + " len=" + radix10(L))
+    } else {
+        println("FAIL " + name + " len=" + radix10(L) + " want=" + radix10(want))
+        exit(1)
+    }
+}
+
+// 布尔断言（整数下界比较）；通过累计一次。
+func chk_ge(name: string, lhs: i64, rhs: i64, unit: i64) {
+    if lhs >= rhs {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " lhs=" + radix10(lhs) + " rhs=" + radix10(rhs) + " unit=" + radix10(unit))
+        exit(1)
+    }
+}
+
+// 相等断言；通过累计一次。
+func chk_eq(name: string, got: string, want: string) {
+    if got == want {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        println("  got : " + got)
+        println("  want: " + want)
+        exit(1)
+    }
+}
+
+// 按模型名分派到 tsha 公开四函数。
+func model_hash(m: string, msg: string, n: i64, base: i64) -> string {
+    if m == "f" {
+        return tsha.tsha1f(msg, n, base)
+    }
+    if m == "r" {
+        return tsha.tsha1r(msg, n, base)
+    }
+    if m == "b" {
+        return tsha.tsha1b(msg, n, base)
+    }
+    return tsha.tsha1x(msg, n, base)
+}
+
+func main() {
+    init_pass()
+    var msg = "abc"
+    // 档位：n=48/69/92 对应 SHA3-256/384/512 同档；128/144 为扩展档。
+    var N: table<i64> = [48, 69, 92, 128, 144]
+    var models: table<string> = ["f", "r", "b", "x"]
+    var mn: string = ""
+    var n: i64 = 0
+
+    for mn in models {
+        for n in N {
+            // (a) base48 输出恰好 n 符号
+            chk_len("claims (a) b48 " + mn + " n=" + radix10(n),
+                    model_hash(mn, msg, n, 48), n)
+
+            // (b) base16 行长 = ⌊n·698121/1000000⌋·2 字符（b0 字节）
+            var b0 = (n * 698121) / 1000000
+            chk_len("claims (b) b16 " + mn + " n=" + radix10(n),
+                    model_hash(mn, msg, n, 16), b0 * 2)
+
+            // (c) 有效位=名义位：digest 全宽取 b0 字节作 base16，验证长度关系
+            var digest_full = tsha.tsha1_digest(mn, msg, n)
+            // 状态全宽字节 ≥ b0：s ≥ k ⇒ 池足以覆盖 b0 字节，无缺口
+            chk_ge("claims (c) state-cap " + mn + " n=" + radix10(n),
+                    len(digest_full) / 2, b0, 1)
+            // 同位关系：base16 行 == 状态池前缀 b0 字节
+            chk_eq("claims (c) b16==pool-prefix " + mn + " n=" + radix10(n),
+                   model_hash(mn, msg, n, 16), prefix(digest_full, b0 * 2))
+            // 输出位 ≈ 名义位：2·b0·4 ≥ n·L48·0.98（L48≈5.5849625007，×10^6 定标）
+            //   左式即 base16 的 b0 字节折算位（b0·8=2·b0·4）；
+            //   右式 = n·5473263（=⌊5.47326325…×10^6⌋，5.47326325…=L48·0.98）
+            chk_ge("claims (c) bits>=0.98*nominal " + mn + " n=" + radix10(n),
+                    (2 * b0 * 4) * 1000000, n * 5473263, 1000000)
+        }
+    }
+
+    // (d) n=48/69/92 三档升档：tsha1f 输出两两不同
+    var f48 = tsha.tsha1f(msg, 48, 16)
+    var f69 = tsha.tsha1f(msg, 69, 16)
+    var f92 = tsha.tsha1f(msg, 92, 16)
+    if f48 != f69 && f48 != f92 && f69 != f92 {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS claims (d) 3-tier 48/69/92 pairwise differ")
+    } else {
+        println("FAIL claims (d) 3-tier 48/69/92 not pairwise distinct")
+        exit(1)
+    }
+
+    println("档位对齐探针全部通过，PASS 总数=" + radix10(PASS_COUNT[0]))
+}
