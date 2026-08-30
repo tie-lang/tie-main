@@ -129,9 +129,10 @@ func fmt_time(t_s: f64) -> string {
 }
 
 // 单配置基准：目标时长循环测速率 + 碰撞时间估算
-//   bits_override > 0 时直接作为有效输出位数（SHA 固定 256/512 用）
+//   eff_override > 0 时直接作为有效输出位数（SHA 固定 256/512 用）；
+//   TSHA1 有效位 = 名义输出位 n·log2(48)（state-per-n：无封顶，仅 r 同此）
 //   每次迭代输入带迭代序号（msg+itoa(iters)），防止 LLVM 把常量输入的哈希吊出循环
-func bench_config(tag: string, msg: string, n: i64, bits_override: i64, state_bits: i64) -> void {
+func bench_config(tag: string, msg: string, n: i64, eff_override: i64) -> void {
     var t0 = time_now()
     var iters: i64 = 0
     while time_now() - t0 < 2 {
@@ -150,13 +151,10 @@ func bench_config(tag: string, msg: string, n: i64, bits_override: i64, state_bi
     var mbs = (len(msg) * iters) / (sec * 1048576)
 
     var eff: f64 = 0.0
-    if bits_override > 0 {
-        eff = as_f64(bits_override)
+    if eff_override > 0 {
+        eff = as_f64(eff_override)
     } else {
         eff = as_f64(n) * 5.5849625007
-        if eff > as_f64(state_bits) {
-            eff = as_f64(state_bits)
-        }
     }
     var E = eff * 0.5
     var ops = pow2f(E)
@@ -167,7 +165,7 @@ func bench_config(tag: string, msg: string, n: i64, bits_override: i64, state_bi
         ops_s = "≈" + itoa(as_i64(ops)) + " 次"
     }
     var line = tag
-    if bits_override == 0 {
+    if eff_override == 0 {
         line = line + " n=" + itoa(n)
     }
     line = line + " 有效" + itoa(as_i64(eff)) + "bit 碰撞" + ops_s +
@@ -187,44 +185,46 @@ func check_kat(name: string, got: string, want: string) {
 
 func main() {
     var msg = rep("a", 65536)
-    println("# TSHA1 四模型 × 输出位长{2,8,16,48,96}（n=48 进制符号数）——64KB 文本，base48 输出，与 SHA 家族对比")
-    println("# 本机实测 2026-08-30；碰撞按生日界 2^(有效输出位数/2) 估算；有效位数 = min(n·log2(48), 内部状态位数)")
-    println("# 正确性自检（KAT 向量）")
-    check_kat("sha256(abc)", sha.sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-    check_kat("sha512(abc)", sha512.sha512("abc"), "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
-    check_kat("blake2s(abc)", blake.blake2s("abc"), "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982")
-    check_kat("tsha1f(abc)", tsha.tsha1f_hex("abc"), "f38e5ae5a532e4783578d24c7ade7a9cfcb1f3849a295c9992043c179d8d26c0")
-    check_kat("tsha1r(empty)", tsha.tsha1r_hex(""), "35a4dc9779e6e2e65b05790f491a533f")
-    check_kat("tsha1b(abc)", tsha.tsha1b_hex("abc"), "4bbaea174cd4475b2b17e052fa3f9f523c2cd7c8100258372311bd7288aa770a")
-    check_kat("tsha1x(abc)", tsha.tsha1x_hex("abc"), "8baa753112e9a18f8393f912745d2d40a17a750c34d5e970f6b28484b53a543b")
+    println("# TSHA1 四模型 × 输出位长{2,3,4,6,8,12,16,24,32,48,64,69,88,92,96,128,144}（抽 11 档）——64KB 文本，base48 输出，与 SHA 家族对比")
+    println("# 本机实测 2026-08-30；碰撞按生日界 2^(有效输出位数/2) 估算；state-per-n：有效位 = 名义输出位 n·log2(48)（无封顶）")
+    println("# 正确性自检（KAT 向量，base16 档）")
+    check_kat("f(abc)@48 b16", tsha.tsha1f("abc", 48, 16), "e87001d27ea7bf5d01d81876de8e5b6940d3e016959dd15cfadf911443a4d81ed4")
+    check_kat("r(empty)@48 b16", tsha.tsha1r("", 48, 16), "8701c07090a8e44bb9b0add7874c3bd7cca8acfd97824ff595596f6afcdaf3c6a1")
+    check_kat("b(abc)@48 b16", tsha.tsha1b("abc", 48, 16), "170509b266806c7ef0bdb96a99683230682bc24b11e131cd713d745cd5b91bb1fd")
+    check_kat("x(abc)@48 b16", tsha.tsha1x("abc", 48, 16), "c84e244302984031ee440e1fdc3e2d5c2bee7ec209c1116382108c0b297ab057af")
+    check_kat("f(abc)@96 b48 len", itoa_s(len(tsha.tsha1f("abc", 96, 48))), "96")
 
-    var ns: table<i64> = [2, 8, 16, 48, 96]
+    var ns: table<i64> = [2, 8, 16, 48, 64, 69, 88, 92, 96, 128, 144]
 
     var i: i64 = 0
     while i < len(ns) {
-        bench_config("f", msg, ns[i], 0, 256)
+        bench_config("f", msg, ns[i], 0)
         i = i + 1
     }
     i = 0
     while i < len(ns) {
-        bench_config("b", msg, ns[i], 0, 256)
+        bench_config("b", msg, ns[i], 0)
         i = i + 1
     }
     i = 0
     while i < len(ns) {
-        bench_config("x", msg, ns[i], 0, 256)
+        bench_config("x", msg, ns[i], 0)
         i = i + 1
     }
     i = 0
     while i < len(ns) {
-        bench_config("r", msg, ns[i], 0, 128)
+        bench_config("r", msg, ns[i], 0)
         i = i + 1
     }
 
     println("# --- SHA 家族对照（同 64KB 文本，原生 hex 输出；有效输出位数 = 内部 256/512 bit）---")
-    bench_config("sha256(256bit)", msg, 0, 256, 256)
-    bench_config("sha512(512bit)", msg, 0, 512, 512)
-    bench_config("blake2s(256bit)", msg, 0, 256, 256)
-    println("# 参考（未实测，仅列理论生日界）：SHA-1 → 2^80、MD5 → 2^64；TSHA1 输出位长可扩展（XOF），但有效安全以内部状态为上限")
+    bench_config("sha256(256bit)", msg, 0, 256)
+    bench_config("sha512(512bit)", msg, 0, 512)
+    bench_config("blake2s(256bit)", msg, 0, 256)
+    println("# 参考（未实测，仅列理论生日界）：SHA-1 → 2^80、MD5 → 2^64；TSHA1 无输出封顶（状态位 ≥ 输出位）")
     println("total_chars=" + itoa(total_chars))
+}
+
+func itoa_s(v: i64) -> string {
+    return to_string(v)
 }
