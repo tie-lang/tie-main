@@ -74,6 +74,31 @@ pub func sort_string(t: ref table<string>) {
     t = ns
 }
 
+// 对无序 f64 表 t 冒泡排序（升序）。ref 回写；算法同 sort_i64。
+pub func sort_f64(t: ref table<f64>) {
+    var ns = table_new_f64()
+    var n: i64 = len(t)
+    var i: i64 = 0
+    while i < n {
+        table_push(ns, t[i])
+        i = i + 1
+    }
+    var a: i64 = 0
+    while a < n {
+        var j: i64 = 0
+        while j < n - 1 - a {
+            if ns[j] > ns[j + 1] {
+                var tmp: f64 = ns[j]
+                ns[j] = ns[j + 1]
+                ns[j + 1] = tmp
+            }
+            j = j + 1
+        }
+        a = a + 1
+    }
+    t = ns
+}
+
 // 有序插入 i64：把 value 插入升序表 t，保持升序。ref 回写调用方。
 // 用局部 ns 从左到右扫描合并（value 在序点插入一次），再 ref 重绑定。
 pub func insert_sorted_i64(t: ref table<i64>, value: i64) {

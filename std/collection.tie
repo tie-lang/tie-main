@@ -20,6 +20,8 @@ type tie<class>
 // 调用：import 后 coll.heap_push(...) / coll.kmp_find(...)；命名空间内互调为
 //   裸调用。命名规范：命名空间内函数不加 coll_ 前缀（Harbor M2.1.6）。
 
+import "./sort.tie"
+
 namespace coll {
 // ---------- 最小堆 ----------
 
@@ -472,5 +474,124 @@ pub func min_i64(t: table<i64>) -> i64 {
         i = i + 1
     }
     return m
+}
+
+// ---------- 统计（P2d-D1） ----------
+// 约定：空表 → 0.0（mean/median/variance/stddev 均返回 0.0）。
+// 中位数复用 std/sort 冒泡（i64→sort_i64，f64→sort_f64）；方差为标准差平方
+//（总体方差 1/n，非样本 1/(n-1)——对全量数据描述性统计的常见选择）。
+
+// 均值（i64 表 → f64）：sum/n；空表 0.0。
+pub func mean_i64(t: table<i64>) -> f64 {
+    var n: i64 = len(t)
+    if n == 0 {
+        return 0.0
+    }
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        s = s + t[i]
+        i = i + 1
+    }
+    return as_f64(s) / as_f64(n)
+}
+
+// 均值（f64 表）：sum/n；空表 0.0。
+pub func mean_f64(t: table<f64>) -> f64 {
+    var n: i64 = len(t)
+    if n == 0 {
+        return 0.0
+    }
+    var s: f64 = 0.0
+    var i: i64 = 0
+    while i < n {
+        s = s + t[i]
+        i = i + 1
+    }
+    return s / as_f64(n)
+}
+
+// 中位数（i64 表 → f64）：升序后取中位；偶数个取中间两数平均；空表 0.0。
+pub func median_i64(t: table<i64>) -> f64 {
+    var n: i64 = len(t)
+    if n == 0 {
+        return 0.0
+    }
+    var c = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(c, t[i])
+        i = i + 1
+    }
+    sort.sort_i64(c)
+    var mid: i64 = n / 2
+    if n % 2 == 1 {
+        return as_f64(c[mid])
+    }
+    return (as_f64(c[mid - 1]) + as_f64(c[mid])) / 2.0
+}
+
+// 中位数（f64 表）：升序后取中位；偶数个取中间两数平均；空表 0.0。
+pub func median_f64(t: table<f64>) -> f64 {
+    var n: i64 = len(t)
+    if n == 0 {
+        return 0.0
+    }
+    var c = table_new_f64()
+    var i: i64 = 0
+    while i < n {
+        table_push(c, t[i])
+        i = i + 1
+    }
+    sort.sort_f64(c)
+    var mid: i64 = n / 2
+    if n % 2 == 1 {
+        return c[mid]
+    }
+    return (c[mid - 1] + c[mid]) / 2.0
+}
+
+// 总体方差（i64 表）：Σ(x-μ)²/n；空表 0.0。
+pub func variance_i64(t: table<i64>) -> f64 {
+    var n: i64 = len(t)
+    if n == 0 {
+        return 0.0
+    }
+    var mu = mean_i64(t)
+    var s: f64 = 0.0
+    var i: i64 = 0
+    while i < n {
+        var d: f64 = as_f64(t[i]) - mu
+        s = s + d * d
+        i = i + 1
+    }
+    return s / as_f64(n)
+}
+
+// 总体方差（f64 表）：Σ(x-μ)²/n；空表 0.0。
+pub func variance_f64(t: table<f64>) -> f64 {
+    var n: i64 = len(t)
+    if n == 0 {
+        return 0.0
+    }
+    var mu = mean_f64(t)
+    var s: f64 = 0.0
+    var i: i64 = 0
+    while i < n {
+        var d: f64 = t[i] - mu
+        s = s + d * d
+        i = i + 1
+    }
+    return s / as_f64(n)
+}
+
+// 标准差（i64 表）：sqrt(方差)；空表 0.0。
+pub func stddev_i64(t: table<i64>) -> f64 {
+    return sqrt(variance_i64(t))
+}
+
+// 标准差（f64 表）：sqrt(方差)；空表 0.0。
+pub func stddev_f64(t: table<f64>) -> f64 {
+    return sqrt(variance_f64(t))
 }
 }
