@@ -1,12 +1,12 @@
 type tie<logic>
-// tsha1r-128 探针：默认输出 base48（23 字符）+ `_hex` 保留 32 位十六进制 +
-//   b48↔hex 往返一致性（decode(tsha1r(msg)) == tsha1r_hex(msg) 字节一致）。
-// 正向向量：空串/abc/1000x'a'/15/16/17/31/32/33/128/256 字节（同 gen_tsha1fr.py）。
-// 说明：tsha1r 内部哈希字节不变（r=128 位=16 字节），仅输出层编码在 base48 与 hex 间切换。
+// TSHA1R-r轻量 探针 v2（state-per-n）：公开接口 tsha.tsha1r(msg,n,base=48)。
+// 语义源：gen_tsha1fr.py（→ gen_tsha1_core.py 唯一定义）。断言：
+//   tsha.tsha1r(msg,n,48) == 生成器 b48 值；tsha.tsha1r(msg,n,16) == 生成器 b16 值。
+// 消息集：empty/abc/a1000/a55/a56/a63/a64/a65/a127/a128/a129/a256。
+// 位长抽检：{2,8,16,48,64,69,92,96,128,144}（文末合法集内 48/69/92/96/128/144 必含）。
+// 非法位长（0/46/23）断言返回空串（无 XOF，非法拒绝）。
 import "../../std/tsha1.tie"
 using tsha;
-import "../../std/base48.tie"
-using b48;
 
 func check(name: string, got: string, want: string) {
     if got == want {
@@ -28,45 +28,135 @@ func rep(c: string, n: i64) -> string {
     return out
 }
 
-func prefix(s: string, k: i64) -> string {
-    var out: string = ""
-    var i: i64 = 0
-    while i < k {
-        out = out + str_char(s, i)
-        i = i + 1
-    }
-    return out
-}
-
-// 断言：tsha1r(msg)==b48（默认 48 进制）、tsha1r_hex(msg)==hex（_hex 可选），
-// 且 b48.decode(b48)==hex（encode 前向一致）、b48.decode(tsha1r(msg))==hex（往返一致）。
-func assert_vec(name: string, msg: string, hex: string) {
-    check(name + " hex", tsha.tsha1r_hex(msg), hex)
-    check(name + " b48p", prefix(tsha.tsha1r(msg, 48), 23), b48.encode(hex))
+func assert_vec(name: string, msg: string, n: i64, b48: string, b16: string) {
+    check(name + " b48", tsha.tsha1r(msg, n, 48), b48)
+    check(name + " b16", tsha.tsha1r(msg, n, 16), b16)
 }
 
 func main() {
-    assert_vec("r empty", "",
-        "35a4dc9779e6e2e65b05790f491a533f")
-    assert_vec("r abc", "abc",
-        "314db448edf50a4264d29b00bdedca6f")
-    assert_vec("r a1000", rep("a", 1000),
-        "19f291e41241e4bb89d0c95d06e2b810")
-    assert_vec("r b15", rep("a", 15),
-        "6145e82ee3d7057151b9a644d2904de6")
-    assert_vec("r b16", rep("a", 16),
-        "94783626c8a19797930aadc989140f17")
-    assert_vec("r b17", rep("a", 17),
-        "aacc0cdd11a0736e43d2c84fbd7ecb96")
-    assert_vec("r b31", rep("a", 31),
-        "fab2a389e4b734efb3e71f367484f094")
-    assert_vec("r b32", rep("a", 32),
-        "75712bcfb49d9594d927f26e8c3b8164")
-    assert_vec("r b33", rep("a", 33),
-        "73908b39393db32f70ec433c35137294")
-    assert_vec("r b128", rep("a", 128),
-        "20b5ea09638a57139543a38390d71431")
-    assert_vec("r b256", rep("a", 256),
-        "5ebfd3e7b87232017a85e1d38c5fcbd1")
+    assert_vec("R n2", "", 2, "6j", "61")
+    assert_vec("R n8", "", 8, "3C2gDCaJ", "a40771afac")
+    assert_vec("R n16", "", 16, "xly00frLxIB6B8K2", "f46b015aec62ef439c149a")
+    assert_vec("R n48", "", 48, "s1z881C7x3z5B118wDqi5o5iJqGrfGit6E01zaqimahEfAd7", "8701c07090a8e44bb9b0add7874c3bd7cca8acfd97824ff595596f6afcdaf3c6a1")
+    assert_vec("R n64", "", 64, "56ro4EqcLfCzKbEJglju0KLgcnc81Kymstmqq4z4tfaCFB7pFFhLw7034Ftq5ase", "21e3701479704aab774e11287c78080e54b0ec13bb8418372058007ec0a60322cd253dccfff803dcffc8d095")
+    assert_vec("R n69", "", 69, "2d82ccGzcA141gzLij6JEpvftztx1byAGLuxct78EtlIBtowJkCdxKHxiGfypyjIojsIi", "2ab9bc8ec8804da100026dcba0f86966a980e38c40464439d82c514297083016d9c714aadc10022fd928817753205ab6")
+    assert_vec("R n92", "", 92, "1IkFE0KagJlyyxumFzjsj180i7JlLBq7nJBi11ivIJdfCbe4z1prqkuiq53B10Cw1FdeuagC1k9e2e1ndx5EIh7rmELC", "8d21d008280043de5c0e4e48bf8a0272bff2ae4aee0e46638ce0126e5c34aba2c0300625e3e2026768221ad2fb2b2365d24613e0e8444b00f74c0afe6e009afd")
+    assert_vec("R n96", "", 96, "88E8d0ul7uDBvC0Bp8fz744n3KyqhqbBH5781Gsa0xz6b9Eqm7isxBEfa30DkgH8JyzCG2LdddB5L6FgA29mduf0z98hzkb9", "239560bd899645ebc45e54b16e32328033629fabb196572da8c4319a68e4a9bd480024e565120961edc60001f7a302b5dc8c09b56e20504669ba44811dfceafbf918c1")
+    assert_vec("R n128", "", 128, "8brlC3K2LIrfLDk548zDsjt2a3c1xLooLiqnlf9pjfziy02sc7jxk8yrlr6I5os0quE202f9ej292FEBHbFboBsxeyAe61ckyggg18J9JLLf3jBjvv1HH80wBcrEJuGu", "179d808ed1eae6b480c2af0414dc0713e2ac43b128049c5b0b8c9023e36cf2f3215609bce4ba9867b938294f507842c2dfbe90d7e2fc91e50e58d2a3db1331f5c79038a24aace18a698820c6fd3e14e1f58c40a7b68c89fa7d")
+    assert_vec("R n144", "", 144, "3BLtqkamjxB2jHmyBHKlDc0n1Ij85tkcGqJjHv5x1yIkfa8AFvChjD6wso1usFId8cEBBxgJaulir5nuLA0xnmdIbhs8dHBD8dLsBrebCCKIpiw5ilJm5t4GtumC8qGEfC7Heb0nDdG53cfi", "fae39f9aab80e270a006a407d06829162eb0470482a091696becb469b9b2d26f3fb00ad03ef881ed0eca11d10fea6bb9e7da8c80a3e6d02480f8980839a0317e522113d2404ae155bac235723bf62ff4ebba6f165f341b6487601918d6a2f04d1ab80083")
+    assert_vec("R-abc n2", "abc", 2, "6j", "61")
+    assert_vec("R-abc n8", "abc", 8, "5hb9b7Es", "e7c571aee7")
+    assert_vec("R-abc n16", "abc", 16, "30qv7qtfn9KBvqrr", "1601015a8680ef43b7a09a")
+    assert_vec("R-abc n48", "abc", 48, "LxJH5Icy4eey941n2165KngDlGDzG8dht3ixJjpJjLCDHBLg", "e5bbc0754384e44af926add6c9b23bd3d094acfbf5964ff7fe256f68bd24f3c462")
+    assert_vec("R-abc n64", "abc", 64, "C1pdfuCm0ClGh3ub40Jd8ba62Dl5cF8BKxCfbfr5DDkI0sdolk0cKaeImemBIG7e", "fae570175ad44aab874a112bbbf4080e571cec115c0e183577e0007c5a0203232c013dce9a5403dc73ead095")
+    assert_vec("R-abc n69", "abc", 69, "83HBt18x2kmefC5Fl6rfqFrob6es5sbeb3ol133K96EL1CEldxhwJzL1H2esBph5zEy2f", "97d1bc8e29844da032226dcb92d8696621b4e38d74f4443969c45142f0f030159bf314a896fa022ca65081776a1c5ab6")
+    assert_vec("R-abc n92", "abc", 92, "3m3vbf0un3LfBgnvwGBD3aKr94BCpxL4ADqmp1grnbDGach3fDFE38kErlf4e0BbEJFwLnpxxm66l1J5xdHoi3IhIvFc", "fd91d009c16043df78e24e4c9ef80275dcbcae4d784846677888126ba4d4aba761d0062749fa0265cb681ad2fc692367766613e1e4544b014e4c0affb7929afd")
+    assert_vec("R-abc n96", "abc", 96, "76ieq27B4Cg5a8pi4Gz8Luhw3ykfmen95JaIe0ft9CfkivDqs6r7Iu0dklE5gla1KnudgiBDuJBEDr0f0fC5dmyo3Bsbt5nH", "1f0360b87f8045ebe65a54b5d87e3285bf8c9fae284e572fdcac319b35d4a9bcb51024e168220963344e0004f6c302b669a009b5fcba5041a85c4482e050eaf98750c1")
+    assert_vec("R-abc n128", "abc", 128, "1l9y5jexyz92lfluvs9o0vtCjKrF9daz315yH41paI6flm9vCE1ytoCazHAGmgB7ubjrL0oml1u3iDhq0Dcu1DepLefennCq7aKrkbn1Bx2Au2kemAHqfm4564Fcst0j", "c64d808ec2c2e6b79042af0735520716306843b466189c5ef45090211cbef2f388cc09bd2df098675c78294e5c8042c29a0490d58a4291e0469ad2a61fd931f50e9838a25a0ce189e94c20c765fa14e6f10440a6c80489fa32")
+    assert_vec("R-abc n144", "abc", 144, "yEsJ7r6JoBmw62ccjElEzdq9DAibnHx0czBgl5a2y48GHrlschzExwDpcK7ChtpJfICcCf33znIGJ7o5baphDdJezaux1zgExJzFqb5lonHwljpv17aImK0Lp7yrrtjh1BA9cKHtwBd79x9r", "30099f9820d0e2726dc6a407e9082916aab44704afa0916963ecb4699182d26f59800ad0141081eda7be11d059926bbbbdd28c807550d020f5649808c2c2317f6b7b13d55bc2e1512e4235760bf22ff6cbfa6f163e741b64c63419183aaef04dec840083")
+    assert_vec("R-a1000 n2", rep("a", 1000), 2, "9D", "95")
+    assert_vec("R-a1000 n8", rep("a", 1000), 8, "qhJr0J4f", "17c36aea3c")
+    assert_vec("R-a1000 n16", rep("a", 1000), 16, "bfyEglj85q11h8Fm", "52c3d40eca48a7726a8c81")
+    assert_vec("R-a1000 n48", rep("a", 1000), 48, "CnflvCHomlHCKhzL6plJA0EbCFBhLdGIzKq5tIteuGt09a8H", "b953ce309a681158ebac28d3f4acc0a770821114fe000a68e6bd0e2596d8f9467d")
+    assert_vec("R-a1000 n64", rep("a", 1000), 64, "d2j0oAhhvLwq1jIAJ716dL88DlhqEGgiD6JeA7byloBAHevoyweblC5FDm73LK1G", "56172809e6243f2320a4131a2e60a30aee9e1e9bd09e46d424e486b5a87833f330e914683d8898c7370e70c8")
+    assert_vec("R-a1000 n69", rep("a", 1000), 69, "cmeu5B4eIe9cnwc6gH48bCffzflL3fw72f0nFBa4gjE9ivvfE8FstC14lIqJ6d3GizKFd", "ea2969c4422c694b7baa792cc7f04509a4964552721a2d5ca48c1c7df9b4ded334a321c46a68a5d88da023a2a4301f9d")
+    assert_vec("R-a1000 n92", rep("a", 1000), 92, "2s0yxDczzEJmFgkIpJFmC7D5Fw6scIwznJFD31D4LjI8En46iwCJ6elGf25LuL1iGzpmesz3b46Kor5plaJtlzDje4dx", "bd59844d999acdb75792949d7020a49bcc06cf7a6500d4c07eb084682bd00d7310f4594e26e01a5fe1f232a2ab1172d9d1902390fc5e46210bf8f6b09b44c81f")
+    assert_vec("R-a1000 n96", rep("a", 1000), 96, "e0elys1fj5iiqul7uqtgaEo4Fn7kd2cre8GbhIi6gn0gDn3kn7Dp1n9qrA6Gvym25ypf2fvzw2xywk6xbsv9dyp4BAtiqv3n", "3ce5c9f830e4d2f5892ae747c23a4d5e4438d59fb97637fcc4e834cc5d5ca44f130e4e0fa6d0c40f462051376d1b47c1f4cc21a324949096f8b61ccf9ba028d4ff8008")
+    assert_vec("R-a1000 n128", rep("a", 1000), 128, "1iw0bk36ha5qcmBbFGCHgjrlzL3639FaHbc0rxb9vzihzgxEFwcp4zH5IDmh77h2kdCJvBcskahswCFpbAD8Jk2mBt8lmFwGmFydd2nymHnB9u8BBL84qD1nnghAL1f3", "bf097b24c3e26c2ac2e66ed2fec238bf54a0a0db1efc46d017cc115abf1ca07c690a061eeb800cd42c6c9b86c87824bdaa9867b4a23a653e053a95b542dd9d8881201dd1b802587328e8949e0a38309ce30868ce2c58a49618")
+    assert_vec("R-a1000 n144", rep("a", 1000), 144, "38lBIqotJD1zlC3Lx76axDx9Jv1pe8xdvrfdf81vdrafB9fDkEEFDuIbeb1awnJ6dImsyp95iuijtjKouvrrpgE0tiFdq8qlrF38mD31DcixDqp70hCcpl8l5B4iJ9E9qxfCo8gaiglkE45d", "d22b38f53c2a5fae8b2848a60c24499c4ef8e502773a0352e27803748168a4f74fea0b28c01c830f7842134109c23a0c5ad6d2189af090e96f0a83bbf404a23e63a5a234b65ceaa2e55aa031feb29161fe18bd057398d05b4a14804248b41fe46bb202aa")
+    assert_vec("R-a55 n2", rep("a", 55), 2, "2f", "23")
+    assert_vec("R-a55 n8", rep("a", 55), 8, "23gBgjmA", "5983fb0774")
+    assert_vec("R-a55 n16", rep("a", 55), 16, "ao1vwiwhmhFnmrLq", "4cb925260c92d5d796dad7")
+    assert_vec("R-a55 n48", rep("a", 55), 48, "n1FtznbvsEL1JEcGobgDsus2CJFajlL1mdwi77t5HEq85Ec0", "6ef168582c621ab372203799d9ac77d1aa98abb2db1c0b95b2675bfee19c9b945c")
+    assert_vec("R-a55 n64", rep("a", 55), 64, "drxfCcCH12h1JD4L5gfob5iiyh21ym2nJDfL7ynjamhfCjxjy7aE426JcjHtA7nm", "599140d6c21c04732a3284405836424654a86f7bb106c7d77460c7f90f408d28fd0126129ba8964e6b02480a")
+    assert_vec("R-a55 n69", rep("a", 55), 69, "9B1qbI1mkom3y5Kevwm8466cB275soz1sJFcmIH3hycaflAedr4owLydHu51mI3GC1mCJ", "b79153d4dcbc2f38e6d2baba5ec06a3a77e860384086c2ae5178c0a69092bc59b3950920e41885244156433c03926b0b")
+    assert_vec("R-a55 n92", rep("a", 55), 92, "383vK0olbi4FkorBmoqi1v6fBFkLlzHyxCo278120vpqbby0r5lmo6yf4wJivm17ubE6lf4H4mDvfz5kD2jx2hJiCr52", "e831c89966123d2c7b56ba5146281d1540081128c42cf31d6238087982f815cb3eb067fe867206d347d898d650c16cfa44364a0c8abc529e1ea07f17ee00985c")
+    assert_vec("R-a55 n96", rep("a", 55), 96, "f6abG1qqnGbaC5yzKl49DA0lvvwDLmEDq7jDixbBDnFvtwlEm4l08ysyvJsIhoLKlv0rf9eavAyCe0se0CtB6v1Lnx4Bmajp", "41c7f28321d0baabb590b37afd1600127e1e2013a11eca765328061f04102287171a56446c7014028c00a1523b156bad96d289e3ac4280eb2a36f2237b006fe559406b")
+    assert_vec("R-a55 n128", rep("a", 55), 128, "1mBLJbiCa47vxw0eAuorAltGGd69gfHLG8u8BzyJ78i7BE279etxbazxl2jw96GHd1ztFKrmmGosgrdkmxjra0z3Fe796j1hhuy2Fho3rhnDD07lJ3EcAtdF36rwslb7", "cadb68aee0ee20a6aa02b4c28d4c3e567ac871464240d00b9164922908f4b2d3eece13997ad689cf8f280a69c2080b54ebaec2789d646a93bb7c6daecfe925aeb6fa0658a42c2a169968363102f66665fa040c7fae8c80a9b0")
+    assert_vec("R-a55 n144", rep("a", 55), 144, "21cslkijAoDorFeu3I99miJI9pKGDGjfwqwdK94Gw619t1zJw7KBx2wjAFq5rpps0kE30tna6ubbphyqG2hBqkezzHkvGGq0KoGHoJ2cF3JDKj6tCzAawwblhHe4Fm3F9ihAJDKIcuG7uAkL", "86154c481cb232fd0622b4f67e463dfbdeaa44aabd22820f9ce8b206f65cdb3e821815f142ea81738b1e6dc3871603c6e82688b12f6e14df6e0a37902d0a7d96aa675212b110cfdcc20a666fca4e367a97d8fb684f6215194bac0757e5ccf7e7e7c0095f")
+    assert_vec("R-a56 n2", rep("a", 56), 2, "2f", "23")
+    assert_vec("R-a56 n8", rep("a", 56), 8, "23gBgjmA", "5983fb0774")
+    assert_vec("R-a56 n16", rep("a", 56), 16, "ao1vwiwhmhFnmrLq", "4cb925260c92d5d796dad7")
+    assert_vec("R-a56 n48", rep("a", 56), 48, "n1FtznbvsEL1JEcGobgDsus2CJFajlL1mdwi77t5HEq85Ec0", "6ef168582c621ab372203799d9ac77d1aa98abb2db1c0b95b2675bfee19c9b945c")
+    assert_vec("R-a56 n64", rep("a", 56), 64, "drxfCcCH12h1JD4L5gfob5iiyh21ym2nJDfL7ynjamhfCjxjy7aE426JcjHtA7nm", "599140d6c21c04732a3284405836424654a86f7bb106c7d77460c7f90f408d28fd0126129ba8964e6b02480a")
+    assert_vec("R-a56 n69", rep("a", 56), 69, "9B1qbI1mkom3y5Kevwm8466cB275soz1sJFcmIH3hycaflAedr4owLydHu51mI3GC1mCJ", "b79153d4dcbc2f38e6d2baba5ec06a3a77e860384086c2ae5178c0a69092bc59b3950920e41885244156433c03926b0b")
+    assert_vec("R-a56 n92", rep("a", 56), 92, "383vK0olbi4FkorBmoqi1v6fBFkLlzHyxCo278120vpqbby0r5lmo6yf4wJivm17ubE6lf4H4mDvfz5kD2jx2hJiCr52", "e831c89966123d2c7b56ba5146281d1540081128c42cf31d6238087982f815cb3eb067fe867206d347d898d650c16cfa44364a0c8abc529e1ea07f17ee00985c")
+    assert_vec("R-a56 n96", rep("a", 56), 96, "f6abG1qqnGbaC5yzKl49DA0lvvwDLmEDq7jDixbBDnFvtwlEm4l08ysyvJsIhoLKlv0rf9eavAyCe0se0CtB6v1Lnx4Bmajp", "41c7f28321d0baabb590b37afd1600127e1e2013a11eca765328061f04102287171a56446c7014028c00a1523b156bad96d289e3ac4280eb2a36f2237b006fe559406b")
+    assert_vec("R-a56 n128", rep("a", 56), 128, "1mBLJbiCa47vxw0eAuorAltGGd69gfHLG8u8BzyJ78i7BE279etxbazxl2jw96GHd1ztFKrmmGosgrdkmxjra0z3Fe796j1hhuy2Fho3rhnDD07lJ3EcAtdF36rwslb7", "cadb68aee0ee20a6aa02b4c28d4c3e567ac871464240d00b9164922908f4b2d3eece13997ad689cf8f280a69c2080b54ebaec2789d646a93bb7c6daecfe925aeb6fa0658a42c2a169968363102f66665fa040c7fae8c80a9b0")
+    assert_vec("R-a56 n144", rep("a", 56), 144, "21cslkijAoDorFeu3I99miJI9pKGDGjfwqwdK94Gw619t1zJw7KBx2wjAFq5rpps0kE30tna6ubbphyqG2hBqkezzHkvGGq0KoGHoJ2cF3JDKj6tCzAawwblhHe4Fm3F9ihAJDKIcuG7uAkL", "86154c481cb232fd0622b4f67e463dfbdeaa44aabd22820f9ce8b206f65cdb3e821815f142ea81738b1e6dc3871603c6e82688b12f6e14df6e0a37902d0a7d96aa675212b110cfdcc20a666fca4e367a97d8fb684f6215194bac0757e5ccf7e7e7c0095f")
+    assert_vec("R-a63 n2", rep("a", 63), 2, "bC", "b3")
+    assert_vec("R-a63 n8", rep("a", 63), 8, "2Actbky0", "772bbb9788")
+    assert_vec("R-a63 n16", rep("a", 63), 16, "hkeup0KaIo7K5FgK", "7f4d01a0dfb4f627f6d0a5")
+    assert_vec("R-a63 n48", rep("a", 63), 48, "C8gd2Hh503qIHL8ooKHK0mrAJr3rImjiHDcChKD9Cjr8Hnh2", "b7d301e5bc6035b4588003ba9b085a8f8a3a9ee353da3cb6b97554abb0968cf58e")
+    assert_vec("R-a63 n64", rep("a", 63), 64, "4H6n0ly9KpkL3LaAxw97vwcva47EFsx9HeHd3aLf9Chkn5DCuEyrj80b5nDyy15x", "205100e2b002be602f8236b001f827a7dddc83af5d9866ec8fb866ac7768fcbd876f0b9701f8ca5047281e6c")
+    assert_vec("R-a63 n69", rep("a", 63), 69, "ciqz2I91EvCHnqFcgwuaB3fLJhqBG8l87BxmDyu5wJLqosjo44ELIjocxtL8Ggb7BzhcI", "e8b1e857fac23b9f2088332c3728272a4e90a3beefe04abbd7e44c2ff5dcef6ac8871c9de0089d99cf2218c931026ac0")
+    assert_vec("R-a63 n92", rep("a", 63), 92, "1ClLnz3yJ85LwG1Dn5be4oEqxECI3LzmlokJLu5l0sup2CxpBzmnd8Iu18e41DvfeL4arAdIrek05CpB4G9DvHA17qb8", "8401b54988da04be7ac0218decf851c16fda9d02bc163258274c501d07b08925341a376d530009415420cb698c052cdf90c840fe5968418f0bd84b0f7fc00135")
+    assert_vec("R-a63 n96", rep("a", 63), 96, "x2ka7oyu8FxGcDl8y9habJj7vlCH4EEqJhDkrhctBHC40d0pK5ELHn2v28wx3hcg43DwAGKgqH93Dyi5lt1CJzG8xnppAtrr", "8fb30b30dca00313e8a823ae07146bff7558b49379d6037ef0844b6ec4e4ac25f2a22f8e6d5021060e08cb30a04f1c0b865a7ad537b8499de7084c5ce3ca5cce3ebefa")
+    assert_vec("R-a63 n128", rep("a", 63), 128, "1763396Buje4rljyj0lube85EjmAI6uvy6hwdarL23i2kxLGlCjyF0a2sAcanjK4mczDsFdwK0supIECf818rdxB263f0CsEDaIEsFGsfdAnCfmkpG0uGtjtIIyarJhF", "9df7a223075212f180982d18acb62831b610fb56b4c62789c4c02a9ecb9802191cb415731eca1781fd807192834414c8e51a90f50242b2f6be5cb9e4819526e1f63444ac4a083780091a273455082350744e6a98d7120e0701")
+    assert_vec("R-a63 n144", rep("a", 63), 144, "1zCFIjAgAcr4LdEpCGh1Feh0dEulK7aEwDvL127azhs7oI80wD6m6Bjrr67678bl0gj0LmdbGq8GDekiguBHKuLDEnlyJKsa5CIymzzB1H1Bhrsho4sI2wLLLccGK13pmfjdgw6CigAt3hKh", "7389b88989ce0d425a68205a57b621706c88a3708f1e0d3deba8000b56e0e02e57720096427c0e26562cd0b30f2c1aa14ecc72b7cd7239d0af3e3a372be86cb2b3c90d28fbe09addb4f092992f64d6bee90ca97ac0a48b2497c00141055c2595e1760d04")
+    assert_vec("R-a64 n2", rep("a", 64), 2, "bs", "b0")
+    assert_vec("R-a64 n8", rep("a", 64), 8, "3rttgmEI", "9aa12e7913")
+    assert_vec("R-a64 n16", rep("a", 64), 16, "x8jK2cddd5huJjzq", "f2650641fa7014725c5231")
+    assert_vec("R-a64 n48", rep("a", 64), 48, "y2ChGIrBd1851f4k18f5j68hBuzdDL806ayhohfldi599Hpy", "a401b39f07da5887ef5250cc875a057efe76ad582f0a17c21a2d17ca2bfcceb8d3")
+    assert_vec("R-a64 n64", rep("a", 64), 64, "dHytdDIeGw5tEefz7AFrbJlBDA445eB1cmClLDbLBsqmCFiw3w54qeq7iuaezCJK", "5bc52323224089c2aa6a011c1ede03944a10f1d4e19c03f25830017eefaeeb6c6b851f1d81284f19651a050b")
+    assert_vec("R-a64 n69", rep("a", 64), 69, "1qlzsFwiI7f4J3r3FILzJz2LmwdrltDgK0Kpw0zAawil6zhBJcGnl1BAm6oiw86oh02Ht", "1d2399249eb00cead630124f695e11786e5afd02c68e495cfca810ce22f090f9c47779d4e35004408ce80920b0003f8d")
+    assert_vec("R-a64 n92", rep("a", 64), 92, "1ote7l0ksrk6p8t5m9gjAI7hqLc09atf5DL2Hx0raGvF2Eie3y4rLJoa0s1xFic9xzHJceHf0kuB9q8B8Hb2pkj9J5hv", "6edd0b904584999eda2418b276e602b5fe54eba4c43c037f58ee01a6e95cbfd50e58005d5a00005f0e5650816f4b117704b26c77d2f60474e60835b7a4506e38")
+    assert_vec("R-a64 n96", rep("a", 64), 96, "oeaekgmqHhHql5vjzdFxf18l4Dc4DopL9v3txHmzblimCia4mJ8aAFFlb20w8lKvJAJ33pi78lekKzkErvnksxlKlD7bm635", "69a30057218015c25c4c145738f00617e53aea553f36177275c60139d2e0af33bca014e7bf3804f591484fbd970900ee346047ef66161b5b39d20bf3dc980edd0a1c7e")
+    assert_vec("R-a64 n128", rep("a", 64), 128, "161dxJrzFAG6FhK15ckyED27k3pebHe0Jf71jnk7nqhuGcBDlb9nsddfFmEo6Fg5oeuuoewIALj4JFL1l91sjh1ed8aA67FJrzlAnr5m13px3H1eKy47z5nhe0rqlwKa", "0339b022e2281936bb082011f3b43a056342b530cf005027c768182552c48d2869424e86ed00041d8f528188d15852398f5433bee5322436385afb62edf3328079b628139a706fec98c2668daf2e365993a08f6bb7e2446287")
+    assert_vec("R-a64 n144", rep("a", 64), 144, "1Gokc5asrDfiKfLBnhx56wp9a2nBIFtAndweJLw4AqEIreeE7kyr7JHjDhin37ckAuBp1Bqkylxlc3jkit9oCwBzyuzClzbAtFFwqDz0fmly9sKvg1JdhIe23vi1phd2EGAihKA7DlGxCie4", "7cc5de9d35a21f7fc5c21366790457591a02ba6bdb8a1a55c7a008552190ad48838e21fbbc6867631800031ebcd00b5a7a3e64cc28b6062b703e37b5f09a6c766a9b623f12a4c15ad0a44064f2140f6a9912e6ecbe100b734e100762fa36e5c72cd40fae")
+    assert_vec("R-a65 n2", rep("a", 65), 2, "1k", "00")
+    assert_vec("R-a65 n8", rep("a", 65), 8, "4fACmL38", "bb337feb27")
+    assert_vec("R-a65 n16", rep("a", 65), 16, "fxmzv7hsKyndw249", "72b1418875f2317af02218")
+    assert_vec("R-a65 n48", rep("a", 65), 48, "rBfqLaCFmok6chct0reDakw9Bf733pgBauoye5gFm0pajh23", "85c312186b34d273d7207248da38545ccacca16f29000be3e07907570552b8542a")
+    assert_vec("R-a65 n64", rep("a", 65), 64, "ypidHD1wbixIAmsCyfl4kIf65alo4K1jCr70BLyJcf6GwDGtigHuztumrzb9a3A2", "e3c964cc8ac48799a6f2afff2cb69ff2494c08bf8b2008c65ea45d06dadabf3c448519b738e8093f2aeae277")
+    assert_vec("R-a65 n69", rep("a", 65), 69, "7CmCic2d2nj7oAbGlqmgpCfLuEh9eni0A5kdGva3C9IHGjAatl4EtK6ojgjlyJ7C1L9j1", "928f705656cc654b27cc864dec1e2f487a82766f39c030271dac0c3760826a5625910c607d700486ba729db642244aff")
+    assert_vec("R-a65 n92", rep("a", 65), 92, "3lc3iBF0sIL8HGFKgwtemgFcmgbJ6qo8Je9eJrqy43ji85hLlrDJ09cwbfw8th8LiB2D8u26dmB5rdC3LGpnz011tKr6", "fc4f823aa2543b3b9e4000e6fd70412e095ee856dbc006455d10142578f2dcb04e743f1058789d4914984f792e1f78fdcd280a501cc8a949ca1e465df1e055fa")
+    assert_vec("R-a65 n96", rep("a", 65), 96, "16njws9hc180x4ej8Ab1CHqhfEs1htEo2fKGqxj2avlIaI06sArhKDrmho7uuty1e62A9nA4lzpD82r7lE1ixfqd7jvp0eDL", "ece7f5a44c28d7718c60f7f217a811f6320691d6e1641f0bf660091f6f0aa2b763243a7abf102e52a83233f281353f44859ef3fa4cbeb39f4536bebd30d052a22a9053")
+    assert_vec("R-a65 n128", rep("a", 65), 128, "1d7Hm1050hzyH70IG8xuL5d2jl71hHx6ngHAz3vBzbmncxouA9to3AEB2Et7L0iH0sgK9xbceynmv3wEcHnsGnK3lljq4lsqsD6n2b2HLvxGyd7pDoIBt38ubKnnFCoj", "af4543718d68311093822ae63a34a25ac17871c0c1de2032f9500c3c9d50384368600c25cd800694d06ca55944e4510673e67bab43fc5c61a7ec040877fb9409f7d0a8151758faba751e886c4e8a094b3128f6c2efe400f325")
+    assert_vec("R-a65 n144", rep("a", 65), 144, "gL6J79l2LwnzvcI4vakG6JDd9utku57H6hAC6avHIoBEaFyaqhb6ungCLGqHufv6wzLD4rBdKm6LD0F6f3sibnJvJ1z429m1umcoCxtaAh78vl1FqLyCjIEn0i0jrtDxKoFd6w0fmwr0npmk", "1769421a9b100de602802002aee470f68aa0dd1f5122535734c821f784d800daf5d2bc54f4001a546d2c1a09e432edb3c67204bb803a2c6c1e626e7cb42027d6ad5d48b2d7c2a6b8c782a337ee64c3186620557a58a2600d50a0633e97d430a24cd85ef2")
+    assert_vec("R-a127 n2", rep("a", 127), 2, "dK", "d4")
+    assert_vec("R-a127 n8", rep("a", 127), 8, "3ti9nne7", "9c37a79326")
+    assert_vec("R-a127 n16", rep("a", 127), 16, "1jfhqzCEK0I2z2kH", "0a3f520ca91e24d681802f")
+    assert_vec("R-a127 n48", rep("a", 127), 48, "HaJjK7tcGJxq64H0jlzmcL6Kdf1qcjd1gi011cqIcceE1kdq", "d029c2bc340a9adb1d929370c0705351846ca3da876c033281b1107b18387cb28f")
+    assert_vec("R-a127 n64", rep("a", 127), 64, "sxyqpKddnsb1utco6tEGJBcpyGpyl0wh2ifqnb405JlanFra44bJK0jK7pCquADs", "bd59c72032e8d3b710cef1fd953e38a4ed58a9a738528ccee670920ae4ac619d912b3db28a0217944a76c657")
+    assert_vec("R-a127 n69", rep("a", 127), 69, "czBgmskFc8JCAhtlchf3yhejHhkq0ED4EB5pndpw87GJExD5JIjw35emB1bsGd59mLADB", "ef6f53617d6c65d59ad465b582dc172d1cda20adf972c0b3cd581093af4c2759bb75472afd5605824c208c44d398551d")
+    assert_vec("R-a127 n92", rep("a", 127), 92, "2a2GLc5LA6CCa8ewsd8eky18twztbo3HGK66Ilxk2go3gyhh0zvJvwAu12ja336a1phqm9FiBCBbHJhGKruxBjoy3HF2", "a1ef95834078ab6672a8921b72300293ffb6ed4242f0012310bc022103dcd439161825d426a004d74d4ec232145f6140e7ce4c5d0ab8985322b809f2597620ce")
+    assert_vec("R-a127 n96", rep("a", 127), 96, "145KItcai71y9K3lc2KczAosaC3f49vpu0wj9Gpuegb65q7vArCty6pz0CEBhwtoiBK86q4w9LbiK0p8hKo2fqy6jEru51br", "e2a19cbe970a857ddc0ea7d27edac9c34f1edc6072ace8a80c5490b4bdd24505937405c9139003c56110c8f14d872496d548025f416800465dfc8ccb4ed62249be7262")
+    assert_vec("R-a127 n128", rep("a", 127), 128, "no6aedA9t6g0FFt5kC025rGAB131GxorfD9bw27ouCpHvctBLzrdLxm1fuAdjDlAALdbjwGCDzLhlJl6pfjxux1gH4zGzn16cCI5CdHhw6F3w8dpatEDic17bgoGg2rI", "435922506350876a5282871ccec6165288b8d238adcc3291bac60cd50a80c8d5db9038dff6c011b57768c72c73f44d05ae76111c14449d918074193e49e719b737242675ff10c38e172443d328945771fc84aa57c18803c426")
+    assert_vec("R-a127 n144", rep("a", 127), 144, "2p6IJw4xBhBFFlFhs89hptqgLFotLKe0zGon9zLhFapyydvHcDffLp0xLkyFe1BkKtApq7rzB99D2j30buHHJK8KF2aGdccsgtIxj05jJtqq5llyq1elgCywe5sLB5IbIIcda21CI4lqJ1DA", "a701a9442f40f14c5eeae774d93ca1c9743c97eeb7dc82fe14f483a8bfa00eb385a28af6337402d6877246a64030b7c270dc03a6a4fa07b34ed06e41d6501eec97d3132559ecd53c30c83f0c608806d5572880c355c832d6ef9c02aa72f09e2a0edc2554")
+    assert_vec("R-a128 n2", rep("a", 128), 2, "1y", "1a")
+    assert_vec("R-a128 n8", rep("a", 128), 8, "bsy21sd5", "0a7338b7e6")
+    assert_vec("R-a128 n16", rep("a", 128), 16, "jjpurDb2pweAedzi", "8dcbe229adc84e16800201")
+    assert_vec("R-a128 n48", rep("a", 128), 48, "rcjAfGwnuIgnvD61slfm5Fqe73Cqu6c1CzjpEa76ahmmACDp", "834340cc33207b32eda870172088602899c0f314c9c26b1e78390b3d2c6427b98b")
+    assert_vec("R-a128 n64", rep("a", 128), 64, "weuwr3oboapcrHb2I7ohuzfK12ufqjyCLCqrvAIpxqBLnomJiA3wL9n4blxnInHC", "d51dc7b955008aa52080b6d7c7f446c4eec6a6fd0f0210b3ee2e1030f34ea85bd8d90398e4d08b06ccb26753")
+    assert_vec("R-a128 n69", rep("a", 128), 69, "cqwp4CmFjgxoldJbK4f2ea8D6bjraKile6ok9x4FLjelHEjhds2H53d3o7qD7GAL39txu", "ebdf890a49b09d588092fca90e622616e738addf3af2d220178086baf3ac2ebf923315cfd402109f05525187e76e1414")
+    assert_vec("R-a128 n92", rep("a", 128), 92, "3fh85elmjfFwy6kJh07LrEwlEGiu2u4si68JAxkk5khifBd758G3B9GHzv6BxyBGybC4HytFtr7yJfosGD7AesmDHaLq", "f34fd11b3c04889480e4a46afcd8106082d8c6a3221a07879b6017a124c8e3bba65a18aad1d894f652c86366905f2727e9c8a70c64282517253a64367d222494")
+    assert_vec("R-a128 n96", rep("a", 128), 96, "sKHmL6zrDg9lyH7wtI9vLK1mchyHaI4w79husx3Fa1eB0ea7jKnuldHskBlxJz4qCw2AochrwjDwlgDCwxsj8d5n7tKdJy8r", "7dfd4c769de0132f62281138e83e1914be2eef7cc6200e51e78002429390c2cf309a2f3ac5a46304b890e3a49c897acffffe22dfd2f077141ea49ad7736082852b4268")
+    assert_vec("R-a128 n128", rep("a", 128), 128, "k9pneAA3ihh6IupmH702olpdesGvCHvHiIKvsKvc1l3s0s58K3ndlod9tlxHajuICByxpsIJEHfu7J4336Ft2K0CovdBcu3KHKnfpIopgmBLF6jdhGk92EHhpwK6s3wb", "39e148527a807b883f9052722bce9777f58ca26e2258c04dac84920f45e232d1c58077752d10104f265610675470fbe514c040119c5e40b17012f543a2157b1bf12c9cddc0e4ce51d064ded6cf8047627fa0e4544c2e06fe86")
+    assert_vec("R-a128 n144", rep("a", 128), 144, "2iLr0k41pz73u7zfKpAbh4fiEvpJI9xnsLlJJ6yaxjxc8Jmj6jCqnIfoz7l8JgH4ltb510HH0Aopzb9m7Fo4ysuGItuzEKrg3InHGmecbKetysrmJK2g4nu7k5zIuGbE5y1AGkELfxp7bfaq", "9e85f5724bb2c972f4a2caf786be1a2be512a3afae0c4e146db004767fda855c369873453098bbc42a8a3bb4508e00a9928e4c4cd18e4722efac7268f1d8ffe4760b93e6b024c36d1f4cf21bf32632af9f12f8b35f1c41f9b9a060fd3192946924b8406c")
+    assert_vec("R-a129 n2", rep("a", 129), 2, "1s", "18")
+    assert_vec("R-a129 n8", rep("a", 129), 8, "5yldrq7J", "f74727d212")
+    assert_vec("R-a129 n16", rep("a", 129), 16, "7ltDygla5Dz6vvCd", "366fbcf1ba006e2a814864")
+    assert_vec("R-a129 n48", rep("a", 129), 48, "Ibb1kkyhhkGf9hqeph1a0HkaJigK2GEGDGaLiuxihoCz0KiD", "d501cdc3a508c4f1fb94d9b9e2d09b3e3aecbf5532d28402736d07faed08ae0828")
+    assert_vec("R-a129 n64", rep("a", 129), 64, "eEjIHjl4f0rsayFjC0snsann08Ideh46izBBI6jmxIsJ20DxvgD7tEJJw5tB4HyC", "61e9a9d4cc50d00a0b02e19e906c059c45cc90d667887e38e95a207168b0a1d016a34c4e38e2045acfd2923e")
+    assert_vec("R-a129 n69", rep("a", 129), 69, "6j3c9p2vFz5vF2wbez1in2qtilxIC2oLK4Bn7mukoji2AI9KxAd46hE54n7cxcjxurIF7", "782dc507d91493ed8e8699bab438e9e12458afa84afed1c5f934c18df91a4be25119314138e81d4ad04ed76be200344c")
+    assert_vec("R-a129 n92", rep("a", 129), 92, "gGJcAGdA2gBzIxfL9l9J1ysyuc0t8AwHl6w43Byd1iGDjyC3oIqB5vFrzrrzywixxpHs2f1EhICFmmDHqicFlffhk7oz", "19cb938eaee49f0571649d2fb6bce82bb0e21873c3086a4197b4ce06f4945d9aef9c2e49eddac81ff8584b16585f5592d1722539e5822503bf107b8acd204612")
+    assert_vec("R-a129 n96", rep("a", 129), 96, "r2KhbkCEFm0mknreK0n8CKmiaxH3FgL0Ik6pLKybEkdqcfs97mBGon2iHI2a33gcCr6vxwIwtG0DKbwuI2EecFrsk94zyhx2", "75a95466aca07878ad601b1dd614911c8630449064fa02dd8a5880fb96e80485791a09fe1d200148a63c91292e0df8162566505f596272b6d16e179209289edad388c4")
+    assert_vec("R-a129 n128", rep("a", 129), 128, "1qoFriq9pF6Gi9v6LCb0wp57f13hoJekDJl818I5wgeC2JuF04yFabvzijJG0yIsyHgnAHhC15c0wAywfbKJidA9gGvk7nJqDys0gcmJ2Bj6lKli7Ltn2oo0kCiomFGB", "d58906b855be1f2d23780b9c0ebe4bdcb392c5cfc590559f88903f6d50a8874ecaaa439418e88236313438339520594e070e01f7223a43f18f4ab66f3861964c87608540a80e4274189e2ac92a88375f68dce218441e065b96")
+    assert_vec("R-a129 n144", rep("a", 129), 144, "3BD5nAm617d5DifdB2AkBhz7qm1ecn6y1BKxtJpvd00eKc5b36FaA2ijIFygGAIjot6tin6gGsppxwy5j0u0Dy1v6m3qp31CtsAt4maFsvmzA0sf9t8x5C498KfIIrgedJIL9q5kx5pnbxJy", "faa51ea2f55a76016c1a643180382422b54a99f834ce53e8ad142e94e7908b1595f25cd0b5e40c3ef70c0bb2501c68dd695ac6230850ca2f42e8901b322a2c041e6d48170570913a65e48064240468e4150850333108637ddd98080411f20c11c7f86b52")
+    assert_vec("R-a256 n2", rep("a", 256), 2, "9t", "92")
+    assert_vec("R-a256 n8", rep("a", 256), 8, "L3kdrdp8", "2a697962a0")
+    assert_vec("R-a256 n16", rep("a", 256), 16, "10Lp9y9FHmwmLI5s", "07750a07ea72029325e626")
+    assert_vec("R-a256 n48", rep("a", 256), 48, "vDfHFtE6s91zI0KytrkFJ2uL8fgBiecAyeJbsmkAK5Cl7ns6", "9939a8e579368fc99d343fe50b2a0cb71732cd5b6cb00ec14c9306777f54b8e0f7")
+    assert_vec("R-a256 n64", rep("a", 256), 64, "ADcz183ze7pl6dtDjEvi0fmvKfDfckmwfyoyqHH43Dwd1Iady6eB2IvB1xGGa8G2", "f2e390917bf0fc992164f601a3503504d98483da51b04b17b7dc3eb5641a88cfab1d68feda084cdf7200d2b6")
+    assert_vec("R-a256 n69", rep("a", 256), 69, "4Cxekxi0rIGjKAeIncq03Iw7t0ubtwIGHjAgwwH0JAp6qjHJAKBGIJ7fka0p6d5o6KLD2", "5a49b1ca21489888206aba01077c1045556ada94e14833d613c8038ab72ec3eff7393e57fa3058f49cb814eabd182692")
+    assert_vec("R-a256 n92", rep("a", 256), 92, "1vsFkhvvmf9znKuuurk5qpBl0hLybJLm4ay5ChiJsL01yevg25uiHGtArz334cuyaKasv73D9i7D69013kiG4emokpxt", "79899aa765981fa55be01a18d3205a532184be7dcf4c0ccf4e644d03fab0b70e6320035db0a08174a06c754deef3087f019003ffa8c0407b9c7e042b2b580db7")
+    assert_vec("R-a256 n96", rep("a", 256), 96, "15xFwzCf0kmD4HrtAC5z9u8pAz4rrgkjctrh3dE4v9jzEme4grzqkfozvvmoCLpBxHrfdn3qCAu89H89EpCB9p21HmdG2ueg", "e9816b2cf9e21fbae9e6090aefda08cecd86ed991e800881cc7010acea8aebf36e982cf834382859468468dd80032bb5d4d002f7221af22d5404a4cbfd208198d3c090")
+    assert_vec("R-a256 n128", rep("a", 256), 128, "xlkf0wpfHqcklBzsvbF9lyejx1BvE19pHxlfqvnuqtKwIejwbywbCtdcd6uh5tve5HDHpqpIl07h184tezlGafucDr743knt28Lil343butl45cC0vrAmbvjnogEfioF", "5fd795b7135820de7218013f4930131c1fa2909dbf861951e7400463947090e5f2f00020d8c00468dfc4ae34dee86c1934d83e0936cc0c7647fadffad6f18ff06e18a2bab980ca2691c6aa26ed489e45905087de04b8a4939c")
+    assert_vec("R-a256 n144", rep("a", 256), 144, "2pEv6H7ennH8a2sEdcCDas66AvqCFbkD80b17jf40ioyoHF1tqmbojjl0aJ4r9uDHqysg1HlyovmLE10c1tqKyuj9td2w2Ad2Fb5Iqdarf2b3dclxCC0ayHohc1juaqLBGFHFHH4CtrAFDEj", "a7f9870073043c1e2c8217924dae46f3df40e98d50f041ba802c05d0eb68f9288f1804f33a602861626e9111a94a046a021a614eded8149797b0963349d210b5d5fd548481a0d9819b4265029ad20502bea2c7475d88214b0f04045ec80a4a5a1e282a8f")
+    // 非法位长：一律返回空串
+    check("R illegal n0", tsha.tsha1r("abc", 0, 48), "")
+    check("R illegal n46", tsha.tsha1r("abc", 46, 48), "")
+    check("R illegal n23", tsha.tsha1r("abc", 23, 48), "")
     println("tsha1r 探针全部通过")
 }
