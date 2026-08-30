@@ -1,0 +1,29 @@
+type tie<logic>
+// P2c 探针：any 运行时辅助（println(any) 打印 + any_tag）
+
+struct Point {
+    var x: i64 = 0
+    var y: i64 = 0
+}
+
+func main() {
+    var x: any = 42
+    var f: any = 3.14
+    var s: any = "hi"
+    var b: any = true
+    var c: any = 'A'
+    var p: any = Point(1, 2)
+    println(x)   // 42
+    println(f)   // 3.140000
+    println(s)   // hi
+    println(b)   // 1
+    println(c)   // A
+    println(p)   // <struct>
+    // 异构表逐元素打印
+    var t: table<any> = [1, "a", true, 2.5]
+    var i: i64 = 0
+    while i < len(t) {
+        println(t[i])
+        i = i + 1
+    }
+}
