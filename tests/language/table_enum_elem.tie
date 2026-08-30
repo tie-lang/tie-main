@@ -1,0 +1,38 @@
+type tie<logic>
+
+// ============================================================
+// 复合元素表验收（P2a）：enum 元素表
+//
+// 覆盖场景：
+//   1. table<Enum> 字面量（tag + payload 多槽元素）
+//   2. 下标读 + switch tag 匹配
+//   3. for 遍历 enum 表
+//
+// 期望输出：
+//   2 / 圆 / 矩形 / 圆 / 矩形
+// ============================================================
+
+enum Shape {
+    Circle(i64)
+    Rect(i64, i64)
+}
+
+func desc(s: Shape) -> string {
+    switch s {
+        case Shape.Circle:
+            return "圆"
+        case Shape.Rect:
+            return "矩形"
+    }
+    return "?"
+}
+
+func main() {
+    var t: table<Shape> = [Shape.Circle(5), Shape.Rect(1, 2)]
+    println(len(t))          // 2
+    println(desc(t[0]))      // 圆
+    println(desc(t[1]))      // 矩形
+    for s in t {
+        println(desc(s))     // 圆 / 矩形
+    }
+}

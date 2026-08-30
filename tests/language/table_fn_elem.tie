@@ -1,0 +1,37 @@
+type tie<logic>
+
+// ============================================================
+// 复合元素表验收（P2a）：fn 函数值元素表
+//
+// 覆盖场景：
+//   1. table<fn(A)->R> 类型声明 + 字面量
+//   2. 调用表元素 t[0](5)（调用表达式，N_CALL_EXPR）
+//   3. 空表 + table_push 追加 fn 值 + 调用
+//   4. 函数返回 fn 再调用 pick(1)(100)
+//
+// 期望输出：
+//   11 / 12 / 6 / 101
+// ============================================================
+
+func add1(x: i64) -> i64 { return x + 1 }
+func add2(x: i64) -> i64 { return x + 2 }
+
+func pick(b: i64) -> fn(i64) -> i64 {
+    if b > 0 {
+        return add1
+    }
+    return add2
+}
+
+func main() {
+    // 1/2. 字面量 + 表元素调用
+    var t: table<fn(i64) -> i64> = [add1, add2]
+    println(t[0](10))        // 11
+    println(t[1](10))        // 12
+    // 3. 空表 + push + 调用
+    var u: table<fn(i64) -> i64> = []
+    table_push(u, add1)
+    println(u[0](5))         // 6
+    // 4. 函数返回 fn 再调用
+    println(pick(1)(100))    // 101
+}

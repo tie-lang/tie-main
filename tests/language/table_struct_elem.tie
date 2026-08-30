@@ -1,0 +1,39 @@
+type tie<logic>
+
+// ============================================================
+// 复合元素表验收（P2a）：struct 元素表
+//
+// 覆盖场景：
+//   1. struct 元素表字面量 + 下标字段读 t[1].x
+//   2. 下标字段写 t[0].y = v（读-改-写回槽）
+//   3. 复合字段赋值 t[1].x += n（写回）
+//   4. for 遍历 struct 表（循环变量字段访问）
+//   5. table_push 追加 struct 元素
+//
+// 期望输出：
+//   3 / 9 / 13 / 10 / 17 / 2
+// ============================================================
+
+struct Point {
+    var x: i64 = 0
+    var y: i64 = 0
+}
+
+func main() {
+    // 1. 字面量 + 下标字段读
+    var t: table<Point> = [Point(1, 2), Point(3, 4)]
+    println(t[1].x)          // 3
+    // 2. 下标字段写（读-改-写回槽）
+    t[0].y = 9
+    println(t[0].y)          // 9
+    // 3. 复合字段赋值（写回）
+    t[1].x += 10
+    println(t[1].x)          // 13
+    // 4. for 遍历 struct 表
+    for p in t {
+        println(p.x + p.y)   // 10 / 17
+    }
+    // 5. table_push 追加 struct 元素
+    table_push(t, Point(5, 6))
+    println(len(t))          // 3
+}
