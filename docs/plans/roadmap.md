@@ -293,6 +293,22 @@ S1.5 移动语义（提前）──────────────┘      
   p2d_nested/p2d_nested_mismatch；tests/language 全量正例编译+运行 52/52 无回归；
   自举（tiec 编译自身 driver.tie）零错误
 
+# P2d 深化：集合库（2026-08-31，提交 de2364d..5740a53）——已实现
+
+在 P2d 基础集合库之上深化：统计 + 谓词查找 + map 高阶（编译器内置）：
+
+- **统计**（coll，std/collection.tie）：mean/median/variance/stddev（i64 与 f64 变体）；
+  中位数复用 sort 冒泡（新增 sort.sort_f64）；总体方差 1/n；空表 → 0.0
+- **谓词/查找**（coll）：count_if/any/all（fn 谓词 HOF，表作末参配合 P1 管道，any 短路、
+  all 空表 true）+ find_index/contains（线性扫描，无序可用；find_index 未找到 -1）
+- **map 高阶**（编译器内置）：map_keys(m)→table<string>；map_values(m)→table<V>
+  （V 从 map<string,V> 解码，map<any> 值槽堆指针解引用还原）；map_contains(m, key)→bool
+  （不 raise；数组二分 / 哈希线性扫描）。三处登记：sbuiltin 返回类型 + sinfer_ret 实参
+  校验 + irgen 分发
+- **验收**：tests/language/table_coll_deep.tie（7 项 PASS：stats/stats_empty/pred/pred_pipe/
+  map_hof/map_str/map_any）+ 探针 p2d_stats/p2d_pred/p2d_map/p2d_map_any；
+  tests/language 全量正例 50/50 无回归；自举零错误
+
 ## 验收总则（每单元）
 
 1. 编译零错误（用户核心关注）

@@ -1,0 +1,136 @@
+type tie<logic>
+
+// ============================================================
+// 表/集合标准库深化验收（P2d 深化）：统计 + 谓词查找 + map 高阶
+//
+// 覆盖场景：
+//   1. 统计 mean/median/variance/stddev（i64 + f64，空表哨兵 0）
+//   2. 谓词 count_if/any/all/find_index/contains（i64 + string，P1 管道）
+//   3. map 高阶 map_keys/map_values/map_contains（i64/string/any 值）
+//
+// 期望输出（全部 PASS）：
+//   PASS stats / PASS pred / PASS map_hof / PASS map_any
+// ============================================================
+
+import "../../std/collection.tie"
+
+func is_even(x: i64) -> bool {
+    return x % 2 == 0
+}
+func gt2(x: i64) -> bool {
+    return x > 2
+}
+func has_a(s: string) -> bool {
+    var i: i64 = 0
+    while i < str_len(s) {
+        if str_char(s, i) == "a" {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func main() {
+    // 1. 统计
+    var t: table<i64> = [1, 2, 3, 4, 5]
+    var m_i = coll.mean_i64(t)       // 3
+    var med_i = coll.median_i64(t)   // 3
+    var v_i = coll.variance_i64(t)   // 2
+    var s_i = coll.stddev_i64(t)     // sqrt(2)
+    var med_e = coll.median_i64([1, 2, 3, 4])  // 2.5
+    var ft: table<f64> = [1.0, 2.0, 3.0, 4.0, 5.0]
+    var m_f = coll.mean_f64(ft)      // 3
+    var v_f = coll.variance_f64(ft)  // 2
+    if m_i > 2.99 && m_i < 3.01 && med_i > 2.99 && med_i < 3.01 &&
+        v_i > 1.99 && v_i < 2.01 && s_i > 1.41 && s_i < 1.42 &&
+        med_e > 2.49 && med_e < 2.51 && m_f > 2.99 && m_f < 3.01 &&
+        v_f > 1.99 && v_f < 2.01 {
+        println("PASS stats")
+    } else {
+        println("FAIL stats")
+        exit(1)
+    }
+    var e: table<i64> = []
+    if coll.mean_i64(e) == 0.0 && coll.median_i64(e) == 0.0 {
+        println("PASS stats_empty")
+    } else {
+        println("FAIL stats_empty")
+        exit(1)
+    }
+    // 2. 谓词/查找
+    var c = coll.count_if_i64(is_even, t)   // 2
+    var a = coll.any_i64(gt2, t)            // true
+    var al = coll.all_i64(gt2, t)           // false
+    var fi = coll.find_index_i64(t, 3)      // 2
+    var ci = coll.contains_i64(t, 4)        // true
+    var st: table<string> = ["hello", "world", "banana"]
+    var cs = coll.count_if_string(has_a, st)  // 1
+    var ans = coll.any_string(has_a, st)      // true
+    var als = coll.all_string(has_a, st)      // false
+    var fis = coll.find_index_string(st, "world") // 1
+    var cis = coll.contains_string(st, "hello")   // true
+    if c == 2 && a && !al && fi == 2 && ci && cs == 1 && ans && !als && fis == 1 && cis {
+        println("PASS pred")
+    } else {
+        println("FAIL pred c=" + to_string(c) + " a=" + to_string(a) + " fi=" + to_string(fi) + " cs=" + to_string(cs))
+        exit(1)
+    }
+    // P1 管道
+    if (t -> coll.count_if_i64(is_even)) == 2 {
+        println("PASS pred_pipe")
+    } else {
+        println("FAIL pred_pipe")
+        exit(1)
+    }
+    // 3. map 高阶（i64 值）
+    var m: map<i64> = ["a": 1, "b": 2, "c": 3]
+    var ks = map_keys(m)
+    var vs = map_values(m)
+    var vsum: i64 = 0
+    var i: i64 = 0
+    while i < len(vs) {
+        vsum = vsum + vs[i]
+        i = i + 1
+    }
+    if len(ks) == 3 && ks[0] == "a" && ks[2] == "c" && vsum == 6 &&
+        map_contains(m, "b") && !map_contains(m, "zz") {
+        println("PASS map_hof")
+    } else {
+        println("FAIL map_hof vsum=" + to_string(vsum))
+        exit(1)
+    }
+    // string 值 map
+    var sm: map<string> = ["k1": "v1", "k2": "v2"]
+    var svs = map_values(sm)
+    if len(svs) == 2 && svs[0] == "v1" && svs[1] == "v2" && map_contains(sm, "k2") {
+        println("PASS map_str")
+    } else {
+        println("FAIL map_str")
+        exit(1)
+    }
+    // 4. map<any> 值提取 + 拆箱
+    var am: map<any> = ["k1": 1, "k2": "x"]
+    var avs = map_values(am)
+    var sum_any: i64 = 0
+    var concat: string = ""
+    i = 0
+    while i < len(avs) {
+        var v = avs[i]
+        switch v {
+            case i64:
+                sum_any = sum_any + as_i64(v)
+            case string:
+                concat = concat + as_string(v)
+            default:
+                concat = concat + "?"
+        }
+        i = i + 1
+    }
+    if sum_any == 1 && concat == "x" {
+        println("PASS map_any")
+    } else {
+        println("FAIL map_any sum=" + to_string(sum_any) + " concat=" + concat)
+        exit(1)
+    }
+}

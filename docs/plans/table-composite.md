@@ -217,4 +217,22 @@ tests/language 全量正例编译+运行 69/69 无回归；P2a/P2b 验收（stru
 + 探针 p2d_hof/p2d_ops/p2d_nested/p2d_nested_mismatch（tag 错 → 运行时错误）；
 tests/language 全量正例编译+运行 52/52 无回归；自举（tiec 编译自身 driver.tie）零错误。
 
+# 11. P2d 深化：集合库（2026-08-31，提交 de2364d/ f5bc0bf/5740a53）——已实现
+
+在 P2d 基础集合库之上深化统计、谓词查找与 map 高阶：
+
+| 能力 | 实现 |
+|------|------|
+| sort_f64 | std/sort.tie 新增 f64 冒泡（与 sort_i64/sort_string 对称，ref 回写） |
+| coll 统计 | mean/median/variance/stddev（i64 与 f64 变体）；中位数复用 sort 冒泡（局部副本）；总体方差 1/n；空表 → 0.0 |
+| coll 谓词 | count_if/any/all（fn 谓词 HOF，表作末参配合 P1 管道；any 短路、all 空表 true）；find_index/contains（线性，无序可用；未找到 -1） |
+| map_keys | 编译器内置：遍历 map 双模式（数组有序 data / 哈希槽跳过空槽）提取键 → table<string>；数组模式键升序 |
+| map_values | 编译器内置：值类型 V 从实参 map\<string,V\> 解码（sinfer 动态返回类型 table\<V\>）；map\<any\> 值槽存堆 any 盒指针 → 解引用还原 |
+| map_contains | 编译器内置：不 raise 的含键判断（数组二分 s21_arr_find / 哈希线性扫描 strcmp），布尔返回 |
+
+**验收**：tests/language/table_coll_deep.tie（7 项 PASS：stats/stats_empty/pred/pred_pipe/
+map_hof/map_str/map_any）+ 探针 p2d_stats/p2d_pred/p2d_map/p2d_map_any；
+tests/language 全量正例 50/50 无回归；自举零错误。
+
+
 
