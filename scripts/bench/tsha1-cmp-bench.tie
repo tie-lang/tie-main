@@ -1,0 +1,230 @@
+type tie<logic>
+// ============================================================================
+// tsha1-cmp-bench.tie —— TSHA1 四模型 × 位长对比基准（含碰撞时间估算 + SHA 家族对照）
+//
+// 场景：一段 64KB 文本，TSHA1 四模型（f/b/x/r）在 base48 输出下，输出位长
+//   n ∈ {2, 8, 16, 48, 96}（n = 48 进制符号个数）的实测速率，
+//   并按生日界估算碰撞所需次数与时间；同文本对照 std 的 sha256 / sha512 / blake2s。
+//
+// 定义（与 std/tsha1.tie 语义一致）：
+//   输出位数    = n * log2(48) ≈ n * 5.5849625 bit
+//   有效输出位数 = min(输出位数, 模型内部状态位数)   —— 截断降安全、扩展不增安全
+//   碰撞生日界   = 2^(有效输出位数 / 2) 次哈希
+//   预计碰撞时间 = 生日界 / 实测速率（次/秒）
+//   内部状态位数：tsha1f/b/x = 256 bit（32 字节）、tsha1r = 128 bit（16 字节）
+//
+// 计时原语 time_now() 为秒级精度，故采用「目标时长循环」测吞吐
+// （重复哈希直到 ≥2s，带迭代上限保护），与 scripts/bench/tsha1-bench.tie 同风格。
+//
+// 运行：tiec scripts/bench/tsha1-cmp-bench.tie -o tsha1-cmp-bench.exe
+//      tsha1-cmp-bench.exe
+// ============================================================================
+
+import "../../std/tsha1.tie" as tsha
+using tsha;
+import "../../std/sha256.tie" as sha
+using sha;
+import "../../std/sha512.tie" as sha512
+using sha512;
+import "../../std/blake2.tie" as blake
+using blake;
+
+var total_chars: i64 = 0;   // 累计输出字符数（被最终 println 消费，防 -O2 消除哈希调用）
+
+func itoa(v: i64) -> string {
+    return to_string(v)
+}
+
+// rep 生成 c 重复 n 次的字符串：StringBuilder 逐字节追加（O(n)）
+func rep(c: string, n: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        sb_append(sb, c)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 统一哈希入口：id 分流到各实现（返回摘要字符串，消费其长度防 DCE）
+func hash_once(id: string, msg: string, n: i64) -> string {
+    if id == "f" {
+        return tsha.tsha1f(msg, n)
+    } else if id == "b" {
+        return tsha.tsha1b(msg, n)
+    } else if id == "x" {
+        return tsha.tsha1x(msg, n)
+    } else if id == "r" {
+        return tsha.tsha1r(msg, n)
+    } else if id == "sha256" {
+        return sha.sha256(msg)
+    } else if id == "sha512" {
+        return sha512.sha512(msg)
+    } else if id == "blake2s" {
+        return blake.blake2s(msg)
+    }
+    return ""
+}
+
+// 2^e（e 可为负与小数）：2^m 整数倍乘（f64）× exp(f·ln2) 泰勒（|f|<1，误差 ~1e-5 量级）
+func pow2f(e: f64) -> f64 {
+    if e < 0.0 {
+        return 1.0 / pow2f(0.0 - e)
+    }
+    var m = as_i64(e)
+    var v: f64 = 1.0
+    var i: i64 = 0
+    while i < m {
+        v = v * 2.0
+        i = i + 1
+    }
+    var f = e - as_f64(m)
+    var x = f * 0.6931471805599453
+    return v * (1.0 + x + (x * x) / 2.0 + (x * x * x) / 6.0 + (x * x * x * x) / 24.0)
+}
+
+// 任意正数 → "m.dd×10^y"（保留 2 位有效小数；过小值用负指数）
+func sci_str(v: f64) -> string {
+    var t = v
+    var y: i64 = 0
+    if t >= 1.0 {
+        while t >= 10.0 {
+            t = t / 10.0
+            y = y + 1
+        }
+    } else {
+        while t < 1.0 {
+            t = t * 10.0
+            y = y - 1
+        }
+    }
+    var m = as_i64(t)
+    var frac = t - as_f64(m)
+    var d1 = as_i64(frac * 10.0)
+    var d2 = as_i64((frac * 10.0 - as_f64(d1)) * 10.0)
+    if d2 < 0 {
+        d2 = 0
+    }
+    return itoa(m) + "." + itoa(d1) + itoa(d2) + "×10^" + itoa(y)
+}
+
+// 时间可读化：秒/分/小时/天/年（年 = 365.25 天）
+func fmt_time(t_s: f64) -> string {
+    if t_s < 1.0 {
+        return "≈" + sci_str(t_s) + " 秒"
+    }
+    if t_s < 60.0 {
+        return "≈" + itoa(as_i64(t_s)) + " 秒"
+    }
+    if t_s < 3600.0 {
+        return "≈" + itoa(as_i64(t_s / 60.0)) + " 分"
+    }
+    if t_s < 86400.0 {
+        return "≈" + itoa(as_i64(t_s / 3600.0)) + " 小时"
+    }
+    if t_s < 31557600.0 {
+        return "≈" + itoa(as_i64(t_s / 86400.0)) + " 天"
+    }
+    return "≈" + sci_str(t_s / 31557600.0) + " 年"
+}
+
+// 单配置基准：目标时长循环测速率 + 碰撞时间估算
+//   bits_override > 0 时直接作为有效输出位数（SHA 固定 256/512 用）
+//   每次迭代输入带迭代序号（msg+itoa(iters)），防止 LLVM 把常量输入的哈希吊出循环
+func bench_config(tag: string, msg: string, n: i64, bits_override: i64, state_bits: i64) -> void {
+    var t0 = time_now()
+    var iters: i64 = 0
+    while time_now() - t0 < 2 {
+        if iters >= 200000 {
+            break
+        }
+        var d = hash_once(tag, msg + itoa(iters), n)
+        total_chars = total_chars + len(d)
+        iters = iters + 1
+    }
+    var sec = time_now() - t0
+    if sec < 1 {
+        sec = 1
+    }
+    var hps = iters / sec
+    var mbs = (len(msg) * iters) / (sec * 1048576)
+
+    var eff: f64 = 0.0
+    if bits_override > 0 {
+        eff = as_f64(bits_override)
+    } else {
+        eff = as_f64(n) * 5.5849625007
+        if eff > as_f64(state_bits) {
+            eff = as_f64(state_bits)
+        }
+    }
+    var E = eff * 0.5
+    var ops = pow2f(E)
+    var t_s = ops / as_f64(hps)
+
+    var ops_s: string = "≈" + sci_str(ops) + " 次"
+    if E < 20.0 {
+        ops_s = "≈" + itoa(as_i64(ops)) + " 次"
+    }
+    var line = tag
+    if bits_override == 0 {
+        line = line + " n=" + itoa(n)
+    }
+    line = line + " 有效" + itoa(as_i64(eff)) + "bit 碰撞" + ops_s +
+        " | 速率=" + itoa(mbs) + "MB/s " + itoa(hps) + "次/s (iters=" + itoa(iters) + " sec=" + itoa(sec) + ")" +
+        " | 预计碰撞时间 " + fmt_time(t_s)
+    println(line)
+}
+
+// 正确性自检 helper
+func check_kat(name: string, got: string, want: string) {
+    if got == want {
+        println("OK   " + name)
+    } else {
+        println("FAIL " + name + " got=" + got)
+    }
+}
+
+func main() {
+    var msg = rep("a", 65536)
+    println("# TSHA1 四模型 × 输出位长{2,8,16,48,96}（n=48 进制符号数）——64KB 文本，base48 输出，与 SHA 家族对比")
+    println("# 本机实测 2026-08-30；碰撞按生日界 2^(有效输出位数/2) 估算；有效位数 = min(n·log2(48), 内部状态位数)")
+    println("# 正确性自检（KAT 向量）")
+    check_kat("sha256(abc)", sha.sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    check_kat("sha512(abc)", sha512.sha512("abc"), "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
+    check_kat("blake2s(abc)", blake.blake2s("abc"), "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982")
+    check_kat("tsha1f(abc)", tsha.tsha1f_hex("abc"), "f38e5ae5a532e4783578d24c7ade7a9cfcb1f3849a295c9992043c179d8d26c0")
+    check_kat("tsha1r(empty)", tsha.tsha1r_hex(""), "35a4dc9779e6e2e65b05790f491a533f")
+    check_kat("tsha1b(abc)", tsha.tsha1b_hex("abc"), "4bbaea174cd4475b2b17e052fa3f9f523c2cd7c8100258372311bd7288aa770a")
+    check_kat("tsha1x(abc)", tsha.tsha1x_hex("abc"), "8baa753112e9a18f8393f912745d2d40a17a750c34d5e970f6b28484b53a543b")
+
+    var ns: table<i64> = [2, 8, 16, 48, 96]
+
+    var i: i64 = 0
+    while i < len(ns) {
+        bench_config("f", msg, ns[i], 0, 256)
+        i = i + 1
+    }
+    i = 0
+    while i < len(ns) {
+        bench_config("b", msg, ns[i], 0, 256)
+        i = i + 1
+    }
+    i = 0
+    while i < len(ns) {
+        bench_config("x", msg, ns[i], 0, 256)
+        i = i + 1
+    }
+    i = 0
+    while i < len(ns) {
+        bench_config("r", msg, ns[i], 0, 128)
+        i = i + 1
+    }
+
+    println("# --- SHA 家族对照（同 64KB 文本，原生 hex 输出；有效输出位数 = 内部 256/512 bit）---")
+    bench_config("sha256(256bit)", msg, 0, 256, 256)
+    bench_config("sha512(512bit)", msg, 0, 512, 512)
+    bench_config("blake2s(256bit)", msg, 0, 256, 256)
+    println("# 参考（未实测，仅列理论生日界）：SHA-1 → 2^80、MD5 → 2^64；TSHA1 输出位长可扩展（XOF），但有效安全以内部状态为上限")
+    println("total_chars=" + itoa(total_chars))
+}
