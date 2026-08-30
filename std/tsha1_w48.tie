@@ -1,0 +1,827 @@
+type tie<class>
+// ============================================================================
+// tsha1_w48.tie：TSHA1 v2 的 n=48 W 特化内核（dual9 / dual11h）——struct 字段承载
+//   lanes，把双轨 ring_mix / 注入 / 末块折回 / fin_synth 对 W=9（f/b/x）与 W=11
+//   （r 半宽 rrp16）全部 unroll 为常数字段访问：零 table 分配、零动态 lanes 索引、
+//   零 unsafe。语义唯源 gen_tsha1_core.py，与 std/tsha1.tie 的通用 compress 逐式一致。
+//   复用 tsha1.tie 的 ensure_* 轮常量/IV 表（由 digest 传入本文件内的 compress_w9/w11）。
+// ============================================================================
+func rrp(v: i64, r: i64) -> i64 {
+    return rr32(v, r & 31)
+}
+
+func rrp16(v: i64, r: i64) -> i64 {
+    return rr32(v & 0xFFFF, r & 15)
+}
+
+func rr32(v: i64, n: i64) -> i64 {
+    return ((v >> n) | (v << (32 - n))) & 0xFFFFFFFF
+}
+
+func tadd2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
+    var nMa = Ma ^ 0xFFFFFFFF
+    var nNa = Na ^ 0xFFFFFFFF
+    var nMb = Mb ^ 0xFFFFFFFF
+    var nNb = Nb ^ 0xFFFFFFFF
+    var aP = Ma & nNa
+    var aN = Ma & Na
+    var bP = Mb & nNb
+    var bN = Mb & Nb
+    var o_pos = ((nMa & Mb & nNb) | (Ma & nNa & nMb) | (aN & bN)) & 0xFFFFFFFF
+    var o_neg = ((nMa & Mb & Nb) | (Ma & Na & nMb) | (aP & bP)) & 0xFFFFFFFF
+    return (o_pos | o_neg, o_neg)
+}
+
+func tmul2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
+    var amp = (Ma & Mb) & 0xFFFFFFFF
+    var no = ((Na ^ Nb) & amp) & 0xFFFFFFFF
+    return (amp, no)
+}
+
+func quant3(m0: i64, n0: i64, m1: i64, n1: i64, m2: i64, n2: i64) -> i64 {
+    var A = m0 & (n0 ^ 0xFFFFFFFF)
+    var B = m1 & (n1 ^ 0xFFFFFFFF)
+    var C = m2 & (n2 ^ 0xFFFFFFFF)
+    return ((A & B) | (B & C) | (C & A)) & 0xFFFFFFFF
+}
+
+func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64, m1: i64, n1: i64, skey: i64) {
+    var M0v: i64 = 0
+    var N0v: i64 = 0
+    var M1v: i64 = 0
+    var N1v: i64 = 0
+    var skey: i64 = 0
+    var j: i64 = 0
+    while j < 64 {
+        var b: i64 = 0
+        if pos + j < nbytes {
+            b = str_byte(msg, pos + j)
+        }
+        var bits3 = b & 7
+        var tf = (b >> 6) & 3
+        var t = tf - 1
+        var tv: i64 = 0
+        if t < 0 {
+            tv = -1
+        } else if t == 0 {
+            tv = 0
+        } else {
+            tv = 1
+        }
+        var dig = bits3 * 3 + (tv + 1)
+        skey = (skey * 24 + dig) & 0xFFFFFFFF
+        if tv != 0 {
+            var wv = j / 32
+            var bit = j % 32
+            if wv == 0 {
+                M0v = M0v | (1 << bit)
+                if tv < 0 {
+                    N0v = N0v | (1 << bit)
+                }
+            } else {
+                M1v = M1v | (1 << bit)
+                if tv < 0 {
+                    N1v = N1v | (1 << bit)
+                }
+            }
+        }
+        j = j + 1
+    }
+    return (M0v & 0xFFFFFFFF, N0v & 0xFFFFFFFF, M1v & 0xFFFFFFFF, N1v & 0xFFFFFFFF, skey)
+}
+
+struct Lanes9 {
+    var M0: i64 = 0
+    var N0: i64 = 0
+    var M1: i64 = 0
+    var N1: i64 = 0
+    var M2: i64 = 0
+    var N2: i64 = 0
+    var M3: i64 = 0
+    var N3: i64 = 0
+    var M4: i64 = 0
+    var N4: i64 = 0
+    var M5: i64 = 0
+    var N5: i64 = 0
+    var M6: i64 = 0
+    var N6: i64 = 0
+    var M7: i64 = 0
+    var N7: i64 = 0
+    var M8: i64 = 0
+    var N8: i64 = 0
+}
+
+struct Lanes11h {
+    var M0: i64 = 0
+    var N0: i64 = 0
+    var M1: i64 = 0
+    var N1: i64 = 0
+    var M2: i64 = 0
+    var N2: i64 = 0
+    var M3: i64 = 0
+    var N3: i64 = 0
+    var M4: i64 = 0
+    var N4: i64 = 0
+    var M5: i64 = 0
+    var N5: i64 = 0
+    var M6: i64 = 0
+    var N6: i64 = 0
+    var M7: i64 = 0
+    var N7: i64 = 0
+    var M8: i64 = 0
+    var N8: i64 = 0
+    var M9: i64 = 0
+    var N9: i64 = 0
+    var M10: i64 = 0
+    var N10: i64 = 0
+}
+
+func ring9_mixA(l: Lanes9, r: i64
+            , skey: i64
+            , M0: i64, N0: i64, M1: i64, N1: i64, mA: i64
+            , rcon: table<i64>, rcon_idx: i64
+            ) -> Lanes9 {
+    var rA = (r * 3 + (skey & 7)) & 31
+    var rB = (r * 7 + ((skey >> 3) & 7)) & 31
+    var (q0m, q0n) = tadd2(l.M0, l.N0,
+                    rrp(l.M2, rA), rrp(l.N2, rA))
+    var (s0m, s0n) = tadd2(q0m, q0n,
+                    rrp(l.M3, (rB + 3) & 31), rrp(l.N3, (rB + 3) & 31))
+    var (q1m, q1n) = tadd2(l.M1, l.N1,
+                    rrp(l.M3, (rA + 5) & 31), rrp(l.N3, (rA + 5) & 31))
+    var (s1m, s1n) = tadd2(q1m, q1n,
+                    rrp(l.M4, (rB + 10) & 31), rrp(l.N4, (rB + 10) & 31))
+    var (q2m, q2n) = tadd2(l.M2, l.N2,
+                    rrp(l.M4, (rA + 10) & 31), rrp(l.N4, (rA + 10) & 31))
+    var (s2m, s2n) = tadd2(q2m, q2n,
+                    rrp(l.M0, (rB + 17) & 31), rrp(l.N0, (rB + 17) & 31))
+    var (q3m, q3n) = tadd2(l.M3, l.N3,
+                    rrp(l.M0, (rA + 15) & 31), rrp(l.N0, (rA + 15) & 31))
+    var (s3m, s3n) = tadd2(q3m, q3n,
+                    rrp(l.M1, (rB + 24) & 31), rrp(l.N1, (rB + 24) & 31))
+    var (q4m, q4n) = tadd2(l.M4, l.N4,
+                    rrp(l.M1, (rA + 20) & 31), rrp(l.N1, (rA + 20) & 31))
+    var (s4m, s4n) = tadd2(q4m, q4n,
+                    rrp(l.M2, (rB + 31) & 31), rrp(l.N2, (rB + 31) & 31))
+    l.M0 = s0m
+    l.N0 = s0n
+    l.M1 = s1m
+    l.N1 = s1n
+    l.M2 = s2m
+    l.N2 = s2n
+    l.M3 = s3m
+    l.N3 = s3n
+    l.M4 = s4m
+    l.N4 = s4n
+    var (p0m, p0n) = tmul2(s0m, s0n, s2m, s2n)
+    l.M1 = (l.M1 ^ p0m) & 0xFFFFFFFF
+    l.N1 = (l.N1 ^ p0n) & 0xFFFFFFFF
+    var (p1m, p1n) = tmul2(s1m, s1n, s3m, s3n)
+    l.M2 = (l.M2 ^ p1m) & 0xFFFFFFFF
+    l.N2 = (l.N2 ^ p1n) & 0xFFFFFFFF
+    var (p2m, p2n) = tmul2(s2m, s2n, s4m, s4n)
+    l.M3 = (l.M3 ^ p2m) & 0xFFFFFFFF
+    l.N3 = (l.N3 ^ p2n) & 0xFFFFFFFF
+    var (p3m, p3n) = tmul2(s3m, s3n, s0m, s0n)
+    l.M4 = (l.M4 ^ p3m) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ p3n) & 0xFFFFFFFF
+    var (p4m, p4n) = tmul2(s4m, s4n, s1m, s1n)
+    l.M0 = (l.M0 ^ p4m) & 0xFFFFFFFF
+    l.N0 = (l.N0 ^ p4n) & 0xFFFFFFFF
+    var maj = quant3(s0m, s0n, s1m, s1n, s2m, s2n)
+    l.M4 = (l.M4 ^ maj) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ rrp(maj, (rB + 7) & 31)) & 0xFFFFFFFF
+    var (im, in2) = tadd2(l.M0, l.N0, rrp(M0, mA), rrp(N0, mA))
+    l.M0 = im
+    l.N0 = in2
+    var (jm, jn2) = tadd2(l.M1, l.N1, rrp(M1, (mA + 7) & 31), rrp(N1, (mA + 7) & 31))
+    l.M1 = jm
+    l.N1 = jn2
+    l.M0 = (l.M0 ^ rcon[rcon_idx & 15]) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ rrp(rcon[(rcon_idx + 1) & 15], (r * 5) & 31)) & 0xFFFFFFFF
+    return l
+}
+
+func ring9_mixB(l: Lanes9, r: i64
+            , skey: i64
+            , M0: i64, N0: i64, M1: i64, N1: i64, mA: i64
+            , rcon: table<i64>, rcon_idx: i64
+            ) -> Lanes9 {
+    var rA = (r * 3 + (skey & 7)) & 31
+    var rB = (r * 7 + ((skey >> 3) & 7)) & 31
+    var (q0m, q0n) = tadd2(l.M5, l.N5,
+                    rrp(l.M7, rA), rrp(l.N7, rA))
+    var (s0m, s0n) = tadd2(q0m, q0n,
+                    rrp(l.M8, (rB + 3) & 31), rrp(l.N8, (rB + 3) & 31))
+    var (q1m, q1n) = tadd2(l.M6, l.N6,
+                    rrp(l.M8, (rA + 5) & 31), rrp(l.N8, (rA + 5) & 31))
+    var (s1m, s1n) = tadd2(q1m, q1n,
+                    rrp(l.M5, (rB + 10) & 31), rrp(l.N5, (rB + 10) & 31))
+    var (q2m, q2n) = tadd2(l.M7, l.N7,
+                    rrp(l.M5, (rA + 10) & 31), rrp(l.N5, (rA + 10) & 31))
+    var (s2m, s2n) = tadd2(q2m, q2n,
+                    rrp(l.M6, (rB + 17) & 31), rrp(l.N6, (rB + 17) & 31))
+    var (q3m, q3n) = tadd2(l.M8, l.N8,
+                    rrp(l.M6, (rA + 15) & 31), rrp(l.N6, (rA + 15) & 31))
+    var (s3m, s3n) = tadd2(q3m, q3n,
+                    rrp(l.M7, (rB + 24) & 31), rrp(l.N7, (rB + 24) & 31))
+    l.M5 = s0m
+    l.N5 = s0n
+    l.M6 = s1m
+    l.N6 = s1n
+    l.M7 = s2m
+    l.N7 = s2n
+    l.M8 = s3m
+    l.N8 = s3n
+    var (p0m, p0n) = tmul2(s0m, s0n, s2m, s2n)
+    l.M6 = (l.M6 ^ p0m) & 0xFFFFFFFF
+    l.N6 = (l.N6 ^ p0n) & 0xFFFFFFFF
+    var (p1m, p1n) = tmul2(s1m, s1n, s3m, s3n)
+    l.M7 = (l.M7 ^ p1m) & 0xFFFFFFFF
+    l.N7 = (l.N7 ^ p1n) & 0xFFFFFFFF
+    var (p2m, p2n) = tmul2(s2m, s2n, s0m, s0n)
+    l.M8 = (l.M8 ^ p2m) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ p2n) & 0xFFFFFFFF
+    var (p3m, p3n) = tmul2(s3m, s3n, s1m, s1n)
+    l.M5 = (l.M5 ^ p3m) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ p3n) & 0xFFFFFFFF
+    var maj = quant3(s0m, s0n, s1m, s1n, s2m, s2n)
+    l.M8 = (l.M8 ^ maj) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ rrp(maj, (rB + 7) & 31)) & 0xFFFFFFFF
+    var (im, in2) = tadd2(l.M5, l.N5, rrp(M0, mA), rrp(N0, mA))
+    l.M5 = im
+    l.N5 = in2
+    var (jm, jn2) = tadd2(l.M6, l.N6, rrp(M1, (mA + 7) & 31), rrp(N1, (mA + 7) & 31))
+    l.M6 = jm
+    l.N6 = jn2
+    l.M5 = (l.M5 ^ rcon[rcon_idx & 15]) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ rrp(rcon[(rcon_idx + 1) & 15], (r * 5) & 31)) & 0xFFFFFFFF
+    return l
+}
+
+func ring9_mixF(l: Lanes9, r: i64
+            , skey: i64
+            ) -> Lanes9 {
+    var rA = (r * 3 + (skey & 7)) & 31
+    var rB = (r * 7 + ((skey >> 3) & 7)) & 31
+    var (q0m, q0n) = tadd2(l.M0, l.N0,
+                    rrp(l.M2, rA), rrp(l.N2, rA))
+    var (s0m, s0n) = tadd2(q0m, q0n,
+                    rrp(l.M3, (rB + 3) & 31), rrp(l.N3, (rB + 3) & 31))
+    var (q1m, q1n) = tadd2(l.M1, l.N1,
+                    rrp(l.M3, (rA + 5) & 31), rrp(l.N3, (rA + 5) & 31))
+    var (s1m, s1n) = tadd2(q1m, q1n,
+                    rrp(l.M4, (rB + 10) & 31), rrp(l.N4, (rB + 10) & 31))
+    var (q2m, q2n) = tadd2(l.M2, l.N2,
+                    rrp(l.M4, (rA + 10) & 31), rrp(l.N4, (rA + 10) & 31))
+    var (s2m, s2n) = tadd2(q2m, q2n,
+                    rrp(l.M5, (rB + 17) & 31), rrp(l.N5, (rB + 17) & 31))
+    var (q3m, q3n) = tadd2(l.M3, l.N3,
+                    rrp(l.M5, (rA + 15) & 31), rrp(l.N5, (rA + 15) & 31))
+    var (s3m, s3n) = tadd2(q3m, q3n,
+                    rrp(l.M6, (rB + 24) & 31), rrp(l.N6, (rB + 24) & 31))
+    var (q4m, q4n) = tadd2(l.M4, l.N4,
+                    rrp(l.M6, (rA + 20) & 31), rrp(l.N6, (rA + 20) & 31))
+    var (s4m, s4n) = tadd2(q4m, q4n,
+                    rrp(l.M7, (rB + 31) & 31), rrp(l.N7, (rB + 31) & 31))
+    var (q5m, q5n) = tadd2(l.M5, l.N5,
+                    rrp(l.M7, (rA + 25) & 31), rrp(l.N7, (rA + 25) & 31))
+    var (s5m, s5n) = tadd2(q5m, q5n,
+                    rrp(l.M8, (rB + 6) & 31), rrp(l.N8, (rB + 6) & 31))
+    var (q6m, q6n) = tadd2(l.M6, l.N6,
+                    rrp(l.M8, (rA + 30) & 31), rrp(l.N8, (rA + 30) & 31))
+    var (s6m, s6n) = tadd2(q6m, q6n,
+                    rrp(l.M0, (rB + 13) & 31), rrp(l.N0, (rB + 13) & 31))
+    var (q7m, q7n) = tadd2(l.M7, l.N7,
+                    rrp(l.M0, (rA + 3) & 31), rrp(l.N0, (rA + 3) & 31))
+    var (s7m, s7n) = tadd2(q7m, q7n,
+                    rrp(l.M1, (rB + 20) & 31), rrp(l.N1, (rB + 20) & 31))
+    var (q8m, q8n) = tadd2(l.M8, l.N8,
+                    rrp(l.M1, (rA + 8) & 31), rrp(l.N1, (rA + 8) & 31))
+    var (s8m, s8n) = tadd2(q8m, q8n,
+                    rrp(l.M2, (rB + 27) & 31), rrp(l.N2, (rB + 27) & 31))
+    l.M0 = s0m
+    l.N0 = s0n
+    l.M1 = s1m
+    l.N1 = s1n
+    l.M2 = s2m
+    l.N2 = s2n
+    l.M3 = s3m
+    l.N3 = s3n
+    l.M4 = s4m
+    l.N4 = s4n
+    l.M5 = s5m
+    l.N5 = s5n
+    l.M6 = s6m
+    l.N6 = s6n
+    l.M7 = s7m
+    l.N7 = s7n
+    l.M8 = s8m
+    l.N8 = s8n
+    var (p0m, p0n) = tmul2(s0m, s0n, s2m, s2n)
+    l.M1 = (l.M1 ^ p0m) & 0xFFFFFFFF
+    l.N1 = (l.N1 ^ p0n) & 0xFFFFFFFF
+    var (p1m, p1n) = tmul2(s1m, s1n, s3m, s3n)
+    l.M2 = (l.M2 ^ p1m) & 0xFFFFFFFF
+    l.N2 = (l.N2 ^ p1n) & 0xFFFFFFFF
+    var (p2m, p2n) = tmul2(s2m, s2n, s4m, s4n)
+    l.M3 = (l.M3 ^ p2m) & 0xFFFFFFFF
+    l.N3 = (l.N3 ^ p2n) & 0xFFFFFFFF
+    var (p3m, p3n) = tmul2(s3m, s3n, s5m, s5n)
+    l.M4 = (l.M4 ^ p3m) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ p3n) & 0xFFFFFFFF
+    var (p4m, p4n) = tmul2(s4m, s4n, s6m, s6n)
+    l.M5 = (l.M5 ^ p4m) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ p4n) & 0xFFFFFFFF
+    var (p5m, p5n) = tmul2(s5m, s5n, s7m, s7n)
+    l.M6 = (l.M6 ^ p5m) & 0xFFFFFFFF
+    l.N6 = (l.N6 ^ p5n) & 0xFFFFFFFF
+    var (p6m, p6n) = tmul2(s6m, s6n, s8m, s8n)
+    l.M7 = (l.M7 ^ p6m) & 0xFFFFFFFF
+    l.N7 = (l.N7 ^ p6n) & 0xFFFFFFFF
+    var (p7m, p7n) = tmul2(s7m, s7n, s0m, s0n)
+    l.M8 = (l.M8 ^ p7m) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ p7n) & 0xFFFFFFFF
+    var (p8m, p8n) = tmul2(s8m, s8n, s1m, s1n)
+    l.M0 = (l.M0 ^ p8m) & 0xFFFFFFFF
+    l.N0 = (l.N0 ^ p8n) & 0xFFFFFFFF
+    var maj = quant3(s0m, s0n, s1m, s1n, s2m, s2n)
+    l.M8 = (l.M8 ^ maj) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ rrp(maj, (rB + 7) & 31)) & 0xFFFFFFFF
+    return l
+}
+
+func ring11_mixA(l: Lanes11h, r: i64
+            , skey: i64
+            , M0: i64, N0: i64, M1: i64, N1: i64, mA: i64
+            , rcon: table<i64>, rcon_idx: i64
+            ) -> Lanes11h {
+    var rA = (r * 3 + (skey & 7)) & 31
+    var rB = (r * 7 + ((skey >> 3) & 7)) & 31
+    var (q0m, q0n) = tadd2(l.M0, l.N0,
+                    rrp16(l.M2, rA), rrp16(l.N2, rA))
+    var (s0m, s0n) = tadd2(q0m, q0n,
+                    rrp16(l.M3, (rB + 3) & 31), rrp16(l.N3, (rB + 3) & 31))
+    var (q1m, q1n) = tadd2(l.M1, l.N1,
+                    rrp16(l.M3, (rA + 5) & 31), rrp16(l.N3, (rA + 5) & 31))
+    var (s1m, s1n) = tadd2(q1m, q1n,
+                    rrp16(l.M4, (rB + 10) & 31), rrp16(l.N4, (rB + 10) & 31))
+    var (q2m, q2n) = tadd2(l.M2, l.N2,
+                    rrp16(l.M4, (rA + 10) & 31), rrp16(l.N4, (rA + 10) & 31))
+    var (s2m, s2n) = tadd2(q2m, q2n,
+                    rrp16(l.M5, (rB + 17) & 31), rrp16(l.N5, (rB + 17) & 31))
+    var (q3m, q3n) = tadd2(l.M3, l.N3,
+                    rrp16(l.M5, (rA + 15) & 31), rrp16(l.N5, (rA + 15) & 31))
+    var (s3m, s3n) = tadd2(q3m, q3n,
+                    rrp16(l.M0, (rB + 24) & 31), rrp16(l.N0, (rB + 24) & 31))
+    var (q4m, q4n) = tadd2(l.M4, l.N4,
+                    rrp16(l.M0, (rA + 20) & 31), rrp16(l.N0, (rA + 20) & 31))
+    var (s4m, s4n) = tadd2(q4m, q4n,
+                    rrp16(l.M1, (rB + 31) & 31), rrp16(l.N1, (rB + 31) & 31))
+    var (q5m, q5n) = tadd2(l.M5, l.N5,
+                    rrp16(l.M1, (rA + 25) & 31), rrp16(l.N1, (rA + 25) & 31))
+    var (s5m, s5n) = tadd2(q5m, q5n,
+                    rrp16(l.M2, (rB + 6) & 31), rrp16(l.N2, (rB + 6) & 31))
+    l.M0 = s0m
+    l.N0 = s0n
+    l.M1 = s1m
+    l.N1 = s1n
+    l.M2 = s2m
+    l.N2 = s2n
+    l.M3 = s3m
+    l.N3 = s3n
+    l.M4 = s4m
+    l.N4 = s4n
+    l.M5 = s5m
+    l.N5 = s5n
+    var (p0m, p0n) = tmul2(s0m, s0n, s2m, s2n)
+    l.M1 = (l.M1 ^ p0m) & 0xFFFFFFFF
+    l.N1 = (l.N1 ^ p0n) & 0xFFFFFFFF
+    var (p1m, p1n) = tmul2(s1m, s1n, s3m, s3n)
+    l.M2 = (l.M2 ^ p1m) & 0xFFFFFFFF
+    l.N2 = (l.N2 ^ p1n) & 0xFFFFFFFF
+    var (p2m, p2n) = tmul2(s2m, s2n, s4m, s4n)
+    l.M3 = (l.M3 ^ p2m) & 0xFFFFFFFF
+    l.N3 = (l.N3 ^ p2n) & 0xFFFFFFFF
+    var (p3m, p3n) = tmul2(s3m, s3n, s5m, s5n)
+    l.M4 = (l.M4 ^ p3m) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ p3n) & 0xFFFFFFFF
+    var (p4m, p4n) = tmul2(s4m, s4n, s0m, s0n)
+    l.M5 = (l.M5 ^ p4m) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ p4n) & 0xFFFFFFFF
+    var (p5m, p5n) = tmul2(s5m, s5n, s1m, s1n)
+    l.M0 = (l.M0 ^ p5m) & 0xFFFFFFFF
+    l.N0 = (l.N0 ^ p5n) & 0xFFFFFFFF
+    var maj = quant3(s0m, s0n, s1m, s1n, s2m, s2n)
+    l.M5 = (l.M5 ^ maj) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ rrp16(maj, (rB + 7) & 31)) & 0xFFFFFFFF
+    var (im, in2) = tadd2(l.M0, l.N0, rrp16(M0, mA), rrp16(N0, mA))
+    l.M0 = im
+    l.N0 = in2
+    var (jm, jn2) = tadd2(l.M1, l.N1, rrp16(M1, (mA + 7) & 31), rrp16(N1, (mA + 7) & 31))
+    l.M1 = jm
+    l.N1 = jn2
+    l.M0 = (l.M0 ^ rcon[rcon_idx & 15]) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ rrp16(rcon[(rcon_idx + 1) & 15], (r * 5) & 31)) & 0xFFFFFFFF
+    return l
+}
+
+func ring11_mixB(l: Lanes11h, r: i64
+            , skey: i64
+            , M0: i64, N0: i64, M1: i64, N1: i64, mA: i64
+            , rcon: table<i64>, rcon_idx: i64
+            ) -> Lanes11h {
+    var rA = (r * 3 + (skey & 7)) & 31
+    var rB = (r * 7 + ((skey >> 3) & 7)) & 31
+    var (q0m, q0n) = tadd2(l.M6, l.N6,
+                    rrp16(l.M8, rA), rrp16(l.N8, rA))
+    var (s0m, s0n) = tadd2(q0m, q0n,
+                    rrp16(l.M9, (rB + 3) & 31), rrp16(l.N9, (rB + 3) & 31))
+    var (q1m, q1n) = tadd2(l.M7, l.N7,
+                    rrp16(l.M9, (rA + 5) & 31), rrp16(l.N9, (rA + 5) & 31))
+    var (s1m, s1n) = tadd2(q1m, q1n,
+                    rrp16(l.M10, (rB + 10) & 31), rrp16(l.N10, (rB + 10) & 31))
+    var (q2m, q2n) = tadd2(l.M8, l.N8,
+                    rrp16(l.M10, (rA + 10) & 31), rrp16(l.N10, (rA + 10) & 31))
+    var (s2m, s2n) = tadd2(q2m, q2n,
+                    rrp16(l.M6, (rB + 17) & 31), rrp16(l.N6, (rB + 17) & 31))
+    var (q3m, q3n) = tadd2(l.M9, l.N9,
+                    rrp16(l.M6, (rA + 15) & 31), rrp16(l.N6, (rA + 15) & 31))
+    var (s3m, s3n) = tadd2(q3m, q3n,
+                    rrp16(l.M7, (rB + 24) & 31), rrp16(l.N7, (rB + 24) & 31))
+    var (q4m, q4n) = tadd2(l.M10, l.N10,
+                    rrp16(l.M7, (rA + 20) & 31), rrp16(l.N7, (rA + 20) & 31))
+    var (s4m, s4n) = tadd2(q4m, q4n,
+                    rrp16(l.M8, (rB + 31) & 31), rrp16(l.N8, (rB + 31) & 31))
+    l.M6 = s0m
+    l.N6 = s0n
+    l.M7 = s1m
+    l.N7 = s1n
+    l.M8 = s2m
+    l.N8 = s2n
+    l.M9 = s3m
+    l.N9 = s3n
+    l.M10 = s4m
+    l.N10 = s4n
+    var (p0m, p0n) = tmul2(s0m, s0n, s2m, s2n)
+    l.M7 = (l.M7 ^ p0m) & 0xFFFFFFFF
+    l.N7 = (l.N7 ^ p0n) & 0xFFFFFFFF
+    var (p1m, p1n) = tmul2(s1m, s1n, s3m, s3n)
+    l.M8 = (l.M8 ^ p1m) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ p1n) & 0xFFFFFFFF
+    var (p2m, p2n) = tmul2(s2m, s2n, s4m, s4n)
+    l.M9 = (l.M9 ^ p2m) & 0xFFFFFFFF
+    l.N9 = (l.N9 ^ p2n) & 0xFFFFFFFF
+    var (p3m, p3n) = tmul2(s3m, s3n, s0m, s0n)
+    l.M10 = (l.M10 ^ p3m) & 0xFFFFFFFF
+    l.N10 = (l.N10 ^ p3n) & 0xFFFFFFFF
+    var (p4m, p4n) = tmul2(s4m, s4n, s1m, s1n)
+    l.M6 = (l.M6 ^ p4m) & 0xFFFFFFFF
+    l.N6 = (l.N6 ^ p4n) & 0xFFFFFFFF
+    var maj = quant3(s0m, s0n, s1m, s1n, s2m, s2n)
+    l.M10 = (l.M10 ^ maj) & 0xFFFFFFFF
+    l.N10 = (l.N10 ^ rrp16(maj, (rB + 7) & 31)) & 0xFFFFFFFF
+    var (im, in2) = tadd2(l.M6, l.N6, rrp16(M0, mA), rrp16(N0, mA))
+    l.M6 = im
+    l.N6 = in2
+    var (jm, jn2) = tadd2(l.M7, l.N7, rrp16(M1, (mA + 7) & 31), rrp16(N1, (mA + 7) & 31))
+    l.M7 = jm
+    l.N7 = jn2
+    l.M6 = (l.M6 ^ rcon[rcon_idx & 15]) & 0xFFFFFFFF
+    l.N10 = (l.N10 ^ rrp16(rcon[(rcon_idx + 1) & 15], (r * 5) & 31)) & 0xFFFFFFFF
+    return l
+}
+
+func ring11_mixF(l: Lanes11h, r: i64
+            , skey: i64
+            ) -> Lanes11h {
+    var rA = (r * 3 + (skey & 7)) & 31
+    var rB = (r * 7 + ((skey >> 3) & 7)) & 31
+    var (q0m, q0n) = tadd2(l.M0, l.N0,
+                    rrp16(l.M2, rA), rrp16(l.N2, rA))
+    var (s0m, s0n) = tadd2(q0m, q0n,
+                    rrp16(l.M3, (rB + 3) & 31), rrp16(l.N3, (rB + 3) & 31))
+    var (q1m, q1n) = tadd2(l.M1, l.N1,
+                    rrp16(l.M3, (rA + 5) & 31), rrp16(l.N3, (rA + 5) & 31))
+    var (s1m, s1n) = tadd2(q1m, q1n,
+                    rrp16(l.M4, (rB + 10) & 31), rrp16(l.N4, (rB + 10) & 31))
+    var (q2m, q2n) = tadd2(l.M2, l.N2,
+                    rrp16(l.M4, (rA + 10) & 31), rrp16(l.N4, (rA + 10) & 31))
+    var (s2m, s2n) = tadd2(q2m, q2n,
+                    rrp16(l.M5, (rB + 17) & 31), rrp16(l.N5, (rB + 17) & 31))
+    var (q3m, q3n) = tadd2(l.M3, l.N3,
+                    rrp16(l.M5, (rA + 15) & 31), rrp16(l.N5, (rA + 15) & 31))
+    var (s3m, s3n) = tadd2(q3m, q3n,
+                    rrp16(l.M6, (rB + 24) & 31), rrp16(l.N6, (rB + 24) & 31))
+    var (q4m, q4n) = tadd2(l.M4, l.N4,
+                    rrp16(l.M6, (rA + 20) & 31), rrp16(l.N6, (rA + 20) & 31))
+    var (s4m, s4n) = tadd2(q4m, q4n,
+                    rrp16(l.M7, (rB + 31) & 31), rrp16(l.N7, (rB + 31) & 31))
+    var (q5m, q5n) = tadd2(l.M5, l.N5,
+                    rrp16(l.M7, (rA + 25) & 31), rrp16(l.N7, (rA + 25) & 31))
+    var (s5m, s5n) = tadd2(q5m, q5n,
+                    rrp16(l.M8, (rB + 6) & 31), rrp16(l.N8, (rB + 6) & 31))
+    var (q6m, q6n) = tadd2(l.M6, l.N6,
+                    rrp16(l.M8, (rA + 30) & 31), rrp16(l.N8, (rA + 30) & 31))
+    var (s6m, s6n) = tadd2(q6m, q6n,
+                    rrp16(l.M9, (rB + 13) & 31), rrp16(l.N9, (rB + 13) & 31))
+    var (q7m, q7n) = tadd2(l.M7, l.N7,
+                    rrp16(l.M9, (rA + 3) & 31), rrp16(l.N9, (rA + 3) & 31))
+    var (s7m, s7n) = tadd2(q7m, q7n,
+                    rrp16(l.M10, (rB + 20) & 31), rrp16(l.N10, (rB + 20) & 31))
+    var (q8m, q8n) = tadd2(l.M8, l.N8,
+                    rrp16(l.M10, (rA + 8) & 31), rrp16(l.N10, (rA + 8) & 31))
+    var (s8m, s8n) = tadd2(q8m, q8n,
+                    rrp16(l.M0, (rB + 27) & 31), rrp16(l.N0, (rB + 27) & 31))
+    var (q9m, q9n) = tadd2(l.M9, l.N9,
+                    rrp16(l.M0, (rA + 13) & 31), rrp16(l.N0, (rA + 13) & 31))
+    var (s9m, s9n) = tadd2(q9m, q9n,
+                    rrp16(l.M1, (rB + 2) & 31), rrp16(l.N1, (rB + 2) & 31))
+    var (q10m, q10n) = tadd2(l.M10, l.N10,
+                    rrp16(l.M1, (rA + 18) & 31), rrp16(l.N1, (rA + 18) & 31))
+    var (s10m, s10n) = tadd2(q10m, q10n,
+                    rrp16(l.M2, (rB + 9) & 31), rrp16(l.N2, (rB + 9) & 31))
+    l.M0 = s0m
+    l.N0 = s0n
+    l.M1 = s1m
+    l.N1 = s1n
+    l.M2 = s2m
+    l.N2 = s2n
+    l.M3 = s3m
+    l.N3 = s3n
+    l.M4 = s4m
+    l.N4 = s4n
+    l.M5 = s5m
+    l.N5 = s5n
+    l.M6 = s6m
+    l.N6 = s6n
+    l.M7 = s7m
+    l.N7 = s7n
+    l.M8 = s8m
+    l.N8 = s8n
+    l.M9 = s9m
+    l.N9 = s9n
+    l.M10 = s10m
+    l.N10 = s10n
+    var (p0m, p0n) = tmul2(s0m, s0n, s2m, s2n)
+    l.M1 = (l.M1 ^ p0m) & 0xFFFFFFFF
+    l.N1 = (l.N1 ^ p0n) & 0xFFFFFFFF
+    var (p1m, p1n) = tmul2(s1m, s1n, s3m, s3n)
+    l.M2 = (l.M2 ^ p1m) & 0xFFFFFFFF
+    l.N2 = (l.N2 ^ p1n) & 0xFFFFFFFF
+    var (p2m, p2n) = tmul2(s2m, s2n, s4m, s4n)
+    l.M3 = (l.M3 ^ p2m) & 0xFFFFFFFF
+    l.N3 = (l.N3 ^ p2n) & 0xFFFFFFFF
+    var (p3m, p3n) = tmul2(s3m, s3n, s5m, s5n)
+    l.M4 = (l.M4 ^ p3m) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ p3n) & 0xFFFFFFFF
+    var (p4m, p4n) = tmul2(s4m, s4n, s6m, s6n)
+    l.M5 = (l.M5 ^ p4m) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ p4n) & 0xFFFFFFFF
+    var (p5m, p5n) = tmul2(s5m, s5n, s7m, s7n)
+    l.M6 = (l.M6 ^ p5m) & 0xFFFFFFFF
+    l.N6 = (l.N6 ^ p5n) & 0xFFFFFFFF
+    var (p6m, p6n) = tmul2(s6m, s6n, s8m, s8n)
+    l.M7 = (l.M7 ^ p6m) & 0xFFFFFFFF
+    l.N7 = (l.N7 ^ p6n) & 0xFFFFFFFF
+    var (p7m, p7n) = tmul2(s7m, s7n, s9m, s9n)
+    l.M8 = (l.M8 ^ p7m) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ p7n) & 0xFFFFFFFF
+    var (p8m, p8n) = tmul2(s8m, s8n, s10m, s10n)
+    l.M9 = (l.M9 ^ p8m) & 0xFFFFFFFF
+    l.N9 = (l.N9 ^ p8n) & 0xFFFFFFFF
+    var (p9m, p9n) = tmul2(s9m, s9n, s0m, s0n)
+    l.M10 = (l.M10 ^ p9m) & 0xFFFFFFFF
+    l.N10 = (l.N10 ^ p9n) & 0xFFFFFFFF
+    var (p10m, p10n) = tmul2(s10m, s10n, s1m, s1n)
+    l.M0 = (l.M0 ^ p10m) & 0xFFFFFFFF
+    l.N0 = (l.N0 ^ p10n) & 0xFFFFFFFF
+    var maj = quant3(s0m, s0n, s1m, s1n, s2m, s2n)
+    l.M10 = (l.M10 ^ maj) & 0xFFFFFFFF
+    l.N10 = (l.N10 ^ rrp16(maj, (rB + 7) & 31)) & 0xFFFFFFFF
+    return l
+}
+
+func fin_synth9(h: ref table<i64>) {
+    var l = Lanes9()
+    l.M0 = h[0] & 0xFFFFFFFF
+    l.N0 = rrp(h[1], 7)
+    l.M1 = h[1] & 0xFFFFFFFF
+    l.N1 = rrp(h[2], 7)
+    l.M2 = h[2] & 0xFFFFFFFF
+    l.N2 = rrp(h[3], 7)
+    l.M3 = h[3] & 0xFFFFFFFF
+    l.N3 = rrp(h[4], 7)
+    l.M4 = h[4] & 0xFFFFFFFF
+    l.N4 = rrp(h[5], 7)
+    l.M5 = h[5] & 0xFFFFFFFF
+    l.N5 = rrp(h[6], 7)
+    l.M6 = h[6] & 0xFFFFFFFF
+    l.N6 = rrp(h[7], 7)
+    l.M7 = h[7] & 0xFFFFFFFF
+    l.N7 = rrp(h[8], 7)
+    l.M8 = h[8] & 0xFFFFFFFF
+    l.N8 = rrp(h[0], 7)
+    var sf: i64 = 0
+    while sf < 4 {
+        l = ring9_mixF(l, sf, 0x13579BDF)
+        sf = sf + 1
+    }
+    h[0] = (l.M0 ^ rrp(l.N0, 0)) & 0xFFFFFFFF
+    h[1] = (l.M1 ^ rrp(l.N1, 5)) & 0xFFFFFFFF
+    h[2] = (l.M2 ^ rrp(l.N2, 10)) & 0xFFFFFFFF
+    h[3] = (l.M3 ^ rrp(l.N3, 15)) & 0xFFFFFFFF
+    h[4] = (l.M4 ^ rrp(l.N4, 20)) & 0xFFFFFFFF
+    h[5] = (l.M5 ^ rrp(l.N5, 25)) & 0xFFFFFFFF
+    h[6] = (l.M6 ^ rrp(l.N6, 30)) & 0xFFFFFFFF
+    h[7] = (l.M7 ^ rrp(l.N7, 3)) & 0xFFFFFFFF
+    h[8] = (l.M8 ^ rrp(l.N8, 8)) & 0xFFFFFFFF
+}
+
+func fin_synth11(h: ref table<i64>) {
+    var l = Lanes11h()
+    l.M0 = h[0] & 0xFFFFFFFF
+    l.N0 = rrp16(h[1], 7)
+    l.M1 = h[1] & 0xFFFFFFFF
+    l.N1 = rrp16(h[2], 7)
+    l.M2 = h[2] & 0xFFFFFFFF
+    l.N2 = rrp16(h[3], 7)
+    l.M3 = h[3] & 0xFFFFFFFF
+    l.N3 = rrp16(h[4], 7)
+    l.M4 = h[4] & 0xFFFFFFFF
+    l.N4 = rrp16(h[5], 7)
+    l.M5 = h[5] & 0xFFFFFFFF
+    l.N5 = rrp16(h[6], 7)
+    l.M6 = h[6] & 0xFFFFFFFF
+    l.N6 = rrp16(h[7], 7)
+    l.M7 = h[7] & 0xFFFFFFFF
+    l.N7 = rrp16(h[8], 7)
+    l.M8 = h[8] & 0xFFFFFFFF
+    l.N8 = rrp16(h[9], 7)
+    l.M9 = h[9] & 0xFFFFFFFF
+    l.N9 = rrp16(h[10], 7)
+    l.M10 = h[10] & 0xFFFFFFFF
+    l.N10 = rrp16(h[0], 7)
+    var sf: i64 = 0
+    while sf < 4 {
+        l = ring11_mixF(l, sf, 0x13579BDF)
+        sf = sf + 1
+    }
+    h[0] = (l.M0 ^ rrp16(l.N0, 0)) & 0xFFFFFFFF
+    h[1] = (l.M1 ^ rrp16(l.N1, 5)) & 0xFFFFFFFF
+    h[2] = (l.M2 ^ rrp16(l.N2, 10)) & 0xFFFFFFFF
+    h[3] = (l.M3 ^ rrp16(l.N3, 15)) & 0xFFFFFFFF
+    h[4] = (l.M4 ^ rrp16(l.N4, 20)) & 0xFFFFFFFF
+    h[5] = (l.M5 ^ rrp16(l.N5, 25)) & 0xFFFFFFFF
+    h[6] = (l.M6 ^ rrp16(l.N6, 30)) & 0xFFFFFFFF
+    h[7] = (l.M7 ^ rrp16(l.N7, 3)) & 0xFFFFFFFF
+    h[8] = (l.M8 ^ rrp16(l.N8, 8)) & 0xFFFFFFFF
+    h[9] = (l.M9 ^ rrp16(l.N9, 13)) & 0xFFFFFFFF
+    h[10] = (l.M10 ^ rrp16(l.N10, 18)) & 0xFFFFFFFF
+}
+
+pub func compress_w9(h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
+            t_lo: i64, t_hi: i64, last: bool,
+            iv: table<i64>, rcon: table<i64>, R: i64) {
+    var (M0, N0, M1, N1, skey) = block_planes_skey(msg, pos, nbytes)
+    var l = Lanes9()
+    l.M0 = h[0] & 0xFFFFFFFF
+    l.N0 = rrp(h[4], 7)
+    l.M1 = h[1] & 0xFFFFFFFF
+    l.N1 = rrp(h[5], 7)
+    l.M2 = h[2] & 0xFFFFFFFF
+    l.N2 = rrp(h[6], 7)
+    l.M3 = h[3] & 0xFFFFFFFF
+    l.N3 = rrp(h[7], 7)
+    l.M4 = h[4] & 0xFFFFFFFF
+    l.N4 = rrp(h[8], 7)
+    l.M5 = h[5] & 0xFFFFFFFF
+    l.N5 = rrp(h[0], 7)
+    l.M6 = h[6] & 0xFFFFFFFF
+    l.N6 = rrp(h[1], 7)
+    l.M7 = h[7] & 0xFFFFFFFF
+    l.N7 = rrp(h[2], 7)
+    l.M8 = h[8] & 0xFFFFFFFF
+    l.N8 = rrp(h[3], 7)
+    l.M0 = (l.M0 ^ (iv[0] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N0 = (l.N0 ^ (iv[4] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.M1 = (l.M1 ^ (iv[1] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N1 = (l.N1 ^ (iv[5] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.M2 = (l.M2 ^ (iv[2] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N2 = (l.N2 ^ (iv[6] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.M3 = (l.M3 ^ (iv[3] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N3 = (l.N3 ^ (iv[7] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.M4 = (l.M4 ^ (iv[4] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ (iv[0] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.M5 = (l.M5 ^ (iv[5] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ (iv[1] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.M6 = (l.M6 ^ (iv[6] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N6 = (l.N6 ^ (iv[2] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.M7 = (l.M7 ^ (iv[7] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N7 = (l.N7 ^ (iv[3] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.M8 = (l.M8 ^ (iv[0] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ (iv[4] & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N0 = (l.N0 ^ (t_lo & 0xFFFFFFFF)) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ (t_hi & 0xFFFFFFFF)) & 0xFFFFFFFF
+    if last {
+        l.N4 = (l.N4 ^ 0xFFFFFFFF) & 0xFFFFFFFF
+    }
+    var mA: i64 = 0
+    var mC: i64 = 0
+    var r: i64 = 0
+    while r < R {
+        mA = (r * 5 + ((skey >> 6) & 7)) & 31
+        mC = (r * 7 + ((skey >> 12) & 7)) & 31
+        l = ring9_mixA(l, r, skey, M0, N0, M1, N1, mA, rcon, r)
+        l = ring9_mixB(l, r, skey, M0, N0, M1, N1, mC, rcon, (r + 8) & 15)
+        r = r + 1
+    }
+    h[0] = (h[0] ^ l.M0 ^ rrp(l.N0, 0)) & 0xFFFFFFFF
+    h[1] = (h[1] ^ l.M1 ^ rrp(l.N1, 3)) & 0xFFFFFFFF
+    h[2] = (h[2] ^ l.M2 ^ rrp(l.N2, 6)) & 0xFFFFFFFF
+    h[3] = (h[3] ^ l.M3 ^ rrp(l.N3, 9)) & 0xFFFFFFFF
+    h[4] = (h[4] ^ l.M4 ^ rrp(l.N4, 12)) & 0xFFFFFFFF
+    h[5] = (h[5] ^ l.M5 ^ rrp(l.N5, 15)) & 0xFFFFFFFF
+    h[6] = (h[6] ^ l.M6 ^ rrp(l.N6, 18)) & 0xFFFFFFFF
+    h[7] = (h[7] ^ l.M7 ^ rrp(l.N7, 21)) & 0xFFFFFFFF
+    h[8] = (h[8] ^ l.M8 ^ rrp(l.N8, 24)) & 0xFFFFFFFF
+    fin_synth9(h)
+}
+
+pub func compress_w11(h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
+            t_lo: i64, t_hi: i64, last: bool,
+            iv: table<i64>, rcon: table<i64>, R: i64) {
+    var (M0, N0, M1, N1, skey) = block_planes_skey(msg, pos, nbytes)
+    var l = Lanes11h()
+    l.M0 = h[0] & 0xFFFFFFFF
+    l.N0 = rrp16(h[5], 7)
+    l.M1 = h[1] & 0xFFFFFFFF
+    l.N1 = rrp16(h[6], 7)
+    l.M2 = h[2] & 0xFFFFFFFF
+    l.N2 = rrp16(h[7], 7)
+    l.M3 = h[3] & 0xFFFFFFFF
+    l.N3 = rrp16(h[8], 7)
+    l.M4 = h[4] & 0xFFFFFFFF
+    l.N4 = rrp16(h[9], 7)
+    l.M5 = h[5] & 0xFFFFFFFF
+    l.N5 = rrp16(h[10], 7)
+    l.M6 = h[6] & 0xFFFFFFFF
+    l.N6 = rrp16(h[0], 7)
+    l.M7 = h[7] & 0xFFFFFFFF
+    l.N7 = rrp16(h[1], 7)
+    l.M8 = h[8] & 0xFFFFFFFF
+    l.N8 = rrp16(h[2], 7)
+    l.M9 = h[9] & 0xFFFFFFFF
+    l.N9 = rrp16(h[3], 7)
+    l.M10 = h[10] & 0xFFFFFFFF
+    l.N10 = rrp16(h[4], 7)
+    l.M0 = (l.M0 ^ (iv[0] & 0xFFFF)) & 0xFFFFFFFF
+    l.N0 = (l.N0 ^ (iv[4] & 0xFFFF)) & 0xFFFFFFFF
+    l.M1 = (l.M1 ^ (iv[1] & 0xFFFF)) & 0xFFFFFFFF
+    l.N1 = (l.N1 ^ (iv[5] & 0xFFFF)) & 0xFFFFFFFF
+    l.M2 = (l.M2 ^ (iv[2] & 0xFFFF)) & 0xFFFFFFFF
+    l.N2 = (l.N2 ^ (iv[6] & 0xFFFF)) & 0xFFFFFFFF
+    l.M3 = (l.M3 ^ (iv[3] & 0xFFFF)) & 0xFFFFFFFF
+    l.N3 = (l.N3 ^ (iv[7] & 0xFFFF)) & 0xFFFFFFFF
+    l.M4 = (l.M4 ^ (iv[4] & 0xFFFF)) & 0xFFFFFFFF
+    l.N4 = (l.N4 ^ (iv[0] & 0xFFFF)) & 0xFFFFFFFF
+    l.M5 = (l.M5 ^ (iv[5] & 0xFFFF)) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ (iv[1] & 0xFFFF)) & 0xFFFFFFFF
+    l.M6 = (l.M6 ^ (iv[6] & 0xFFFF)) & 0xFFFFFFFF
+    l.N6 = (l.N6 ^ (iv[2] & 0xFFFF)) & 0xFFFFFFFF
+    l.M7 = (l.M7 ^ (iv[7] & 0xFFFF)) & 0xFFFFFFFF
+    l.N7 = (l.N7 ^ (iv[3] & 0xFFFF)) & 0xFFFFFFFF
+    l.M8 = (l.M8 ^ (iv[0] & 0xFFFF)) & 0xFFFFFFFF
+    l.N8 = (l.N8 ^ (iv[4] & 0xFFFF)) & 0xFFFFFFFF
+    l.M9 = (l.M9 ^ (iv[1] & 0xFFFF)) & 0xFFFFFFFF
+    l.N9 = (l.N9 ^ (iv[5] & 0xFFFF)) & 0xFFFFFFFF
+    l.M10 = (l.M10 ^ (iv[2] & 0xFFFF)) & 0xFFFFFFFF
+    l.N10 = (l.N10 ^ (iv[6] & 0xFFFF)) & 0xFFFFFFFF
+    l.N0 = (l.N0 ^ (t_lo & 0xFFFF)) & 0xFFFFFFFF
+    l.N5 = (l.N5 ^ (t_hi & 0xFFFF)) & 0xFFFFFFFF
+    if last {
+        l.N5 = (l.N5 ^ 0xFFFFFFFF) & 0xFFFFFFFF
+    }
+    var mA: i64 = 0
+    var mC: i64 = 0
+    var r: i64 = 0
+    while r < R {
+        mA = (r * 5 + ((skey >> 6) & 7)) & 31
+        mC = (r * 7 + ((skey >> 12) & 7)) & 31
+        l = ring11_mixA(l, r, skey, M0, N0, M1, N1, mA, rcon, r)
+        l = ring11_mixB(l, r, skey, M0, N0, M1, N1, mC, rcon, (r + 8) & 15)
+        r = r + 1
+    }
+    h[0] = (h[0] ^ l.M0 ^ rrp16(l.N0, 0)) & 0xFFFFFFFF
+    h[1] = (h[1] ^ l.M1 ^ rrp16(l.N1, 3)) & 0xFFFFFFFF
+    h[2] = (h[2] ^ l.M2 ^ rrp16(l.N2, 6)) & 0xFFFFFFFF
+    h[3] = (h[3] ^ l.M3 ^ rrp16(l.N3, 9)) & 0xFFFFFFFF
+    h[4] = (h[4] ^ l.M4 ^ rrp16(l.N4, 12)) & 0xFFFFFFFF
+    h[5] = (h[5] ^ l.M5 ^ rrp16(l.N5, 15)) & 0xFFFFFFFF
+    h[6] = (h[6] ^ l.M6 ^ rrp16(l.N6, 18)) & 0xFFFFFFFF
+    h[7] = (h[7] ^ l.M7 ^ rrp16(l.N7, 21)) & 0xFFFFFFFF
+    h[8] = (h[8] ^ l.M8 ^ rrp16(l.N8, 24)) & 0xFFFFFFFF
+    h[9] = (h[9] ^ l.M9 ^ rrp16(l.N9, 27)) & 0xFFFFFFFF
+    h[10] = (h[10] ^ l.M10 ^ rrp16(l.N10, 30)) & 0xFFFFFFFF
+    fin_synth11(h)
+}

@@ -48,6 +48,8 @@ type tie<class>
 
 import "./base48.tie"
 using b48;
+import "./tsha1_w48.tie"     // n=48 W 特化内核（dual9 / dual11h），见 std/tsha1_w48.tie
+using tsha1_w48;
 
 var tsha_ivf: table<i64>;    // tsha1f IV（32 个 32 位字，按需取前 W）
 var tsha_rcf: table<i64>;    // tsha1f 轮常量（16 字）
@@ -828,6 +830,27 @@ func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
     fin_synth(h, half)
 }
 
+// n=48 W 特化分派：f/b/x（W=9）走 dual9 内核、r（W=11 半宽）走 dual11h；其余 n 保持通用路径。
+// 轮常量/IV/种子表仍由 digest 选择并传入（复用 ensure_* 表；t_lo/t_hi 计数器语义与通用一致）。
+func compress48(model: i64, n: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
+                t_lo: i64, t_hi: i64, last: bool,
+                iv: table<i64>, rcon: table<i64>, bcon: table<i64>, xdcon: table<i64>,
+                half: bool) {
+    if n == 48 {
+        if model == 0 {
+            compress_w9(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+        } else if model == 2 {
+            compress_w9(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 14)
+        } else if model == 3 {
+            compress_w9(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 16)
+        } else {
+            compress_w11(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        }
+        return
+    }
+    compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half)
+}
+
 // 最后综合（终筛）：S=4 轮全 W 字单环收束（rcon=0 表，skey=0x13579BDF），随后投影。
 func fin_synth(h: ref table<i64>, half: bool) {
     var W = len(h)
@@ -913,13 +936,13 @@ func digest(model: i64, msg: string, nbytes: i64, n: i64) -> string {
     while pos + 64 < nbytes {
         t_hi = (t_hi + ((t_lo + 64) >> 32)) & 0xFFFFFFFF
         t_lo = (t_lo + 64) & 0xFFFFFFFF
-        compress(model, h, msg, pos, nbytes, t_lo, t_hi, false, iv, rcon, bcon, xdcon, half)
+        compress48(model, n, h, msg, pos, nbytes, t_lo, t_hi, false, iv, rcon, bcon, xdcon, half)
         pos = pos + 64
     }
     var rem = nbytes - pos
     t_hi = (t_hi + ((t_lo + rem) >> 32)) & 0xFFFFFFFF
     t_lo = (t_lo + rem) & 0xFFFFFFFF
-    compress(model, h, msg, pos, nbytes, t_lo, t_hi, true, iv, rcon, bcon, xdcon, half)
+    compress48(model, n, h, msg, pos, nbytes, t_lo, t_hi, true, iv, rcon, bcon, xdcon, half)
     var out: string = ""
     i = 0
     while i < W {
