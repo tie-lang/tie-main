@@ -959,4 +959,128 @@ pub func set_diff_string(a: table<string>, b: table<string>) -> table<string> {
     }
     return r
 }
+
+// ---------- 表运算深化（P2e-T2） ----------
+// concat 拼接、slice 切片、copy 深拷贝、dedup 去重（保持首次出现顺序）。
+// 全部返回新表（原表不变）；slice 越界截断；dedup 用线性 contains（O(n²)，保序）。
+
+// 拼接：a 后接 b（新表）。
+pub func concat_i64(a: table<i64>, b: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(a) {
+        table_push(r, a[i])
+        i = i + 1
+    }
+    var j: i64 = 0
+    while j < len(b) {
+        table_push(r, b[j])
+        j = j + 1
+    }
+    return r
+}
+
+// 拼接（string）。
+pub func concat_string(a: table<string>, b: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    while i < len(a) {
+        table_push(r, a[i])
+        i = i + 1
+    }
+    var j: i64 = 0
+    while j < len(b) {
+        table_push(r, b[j])
+        j = j + 1
+    }
+    return r
+}
+
+// 切片 t[start..end)（半开区间）：start 越界返回空；end 越界截断到 len。
+pub func slice_i64(t: table<i64>, start: i64, end: i64) -> table<i64> {
+    var n: i64 = len(t)
+    var s: i64 = start
+    if s < 0 {
+        s = 0
+    }
+    var e: i64 = end
+    if e > n {
+        e = n
+    }
+    var r = table_new_i64()
+    var i: i64 = s
+    while i < e {
+        table_push(r, t[i])
+        i = i + 1
+    }
+    return r
+}
+
+// 切片（string）。
+pub func slice_string(t: table<string>, start: i64, end: i64) -> table<string> {
+    var n: i64 = len(t)
+    var s: i64 = start
+    if s < 0 {
+        s = 0
+    }
+    var e: i64 = end
+    if e > n {
+        e = n
+    }
+    var r = table_new_string()
+    var i: i64 = s
+    while i < e {
+        table_push(r, t[i])
+        i = i + 1
+    }
+    return r
+}
+
+// 深拷贝（i64）。
+pub func copy_i64(t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(r, t[i])
+        i = i + 1
+    }
+    return r
+}
+
+// 深拷贝（string）。
+pub func copy_string(t: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(r, t[i])
+        i = i + 1
+    }
+    return r
+}
+
+// 去重：保留首次出现顺序（线性 contains 判重）。
+pub func dedup_i64(t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        if !contains_i64(r, t[i]) {
+            table_push(r, t[i])
+        }
+        i = i + 1
+    }
+    return r
+}
+
+// 去重（string）。
+pub func dedup_string(t: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    while i < len(t) {
+        if !contains_string(r, t[i]) {
+            table_push(r, t[i])
+        }
+        i = i + 1
+    }
+    return r
+}
 }

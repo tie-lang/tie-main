@@ -1,0 +1,50 @@
+type tie<logic>
+// P2e-T2 探针：coll 表运算深化（concat/slice/copy/dedup，i64+string）
+
+import "../../std/collection.tie"
+
+func main() {
+    var a: table<i64> = [1, 2, 3]
+    var b: table<i64> = [4, 5]
+    // concat
+    var c = coll.concat_i64(a, b) // [1,2,3,4,5]
+    println(len(c))
+    println(c[0])
+    println(c[4])
+    // slice [1..4) → [2,3,4]
+    var sl = coll.slice_i64(c, 1, 4)
+    println(len(sl))
+    println(sl[0])
+    println(sl[2])
+    // slice 越界截断 [3..99) → [4,5]
+    var sl2 = coll.slice_i64(c, 3, 99)
+    println(len(sl2))
+    // slice start 越界 → 空
+    var sl3 = coll.slice_i64(c, 10, 20)
+    println(len(sl3))
+    // copy
+    var cp = coll.copy_i64(a)
+    println(len(cp))
+    // dedup 保持顺序
+    var d: table<i64> = [3, 1, 3, 2, 1, 5]
+    var dd = coll.dedup_i64(d) // [3,1,2,5]
+    println(len(dd))
+    println(dd[0])
+    println(dd[1])
+    println(dd[2])
+    println(dd[3])
+    // string 变体
+    var sa: table<string> = ["x", "y"]
+    var sb: table<string> = ["z"]
+    var sc = coll.concat_string(sa, sb) // [x,y,z]
+    println(len(sc))
+    var ssl = coll.slice_string(sc, 1, 3) // [y,z]
+    println(len(ssl))
+    println(ssl[0])
+    var scp = coll.copy_string(sa)
+    println(len(scp))
+    var sd: table<string> = ["a", "b", "a", "c"]
+    var sdd = coll.dedup_string(sd) // [a,b,c]
+    println(len(sdd))
+    println(sdd[1])
+}
