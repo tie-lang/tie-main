@@ -1,0 +1,129 @@
+type tie<logic>
+// U1 试点：tsha1 位平面数学 u32 化可行性
+// 对比 u32 版（无掩码，回绕）与 i64 版（当前 tsha1 语义，带掩码）：
+//   1. 相同输入 → 输出逐字一致（KAT 等价）
+//   2. 微基准量化收益
+
+// ---- i64 版（当前 tsha1 main 语义，带掩码）----
+func tadd2_i64(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (i64, i64) {
+    var nMa = Ma ^ 0xFFFFFFFF
+    var nNa = Na ^ 0xFFFFFFFF
+    var nMb = Mb ^ 0xFFFFFFFF
+    var nNb = Nb ^ 0xFFFFFFFF
+    var aP = Ma & nNa
+    var aN = Ma & Na
+    var bP = Mb & nNb
+    var bN = Mb & Nb
+    var o_pos = ((nMa & Mb & nNb) | (Ma & nNa & nMb) | (aN & bN)) & 0xFFFFFFFF
+    var o_neg = ((nMa & Mb & Nb) | (Ma & Na & nMb) | (aP & bP)) & 0xFFFFFFFF
+    return (o_pos | o_neg, o_neg)
+}
+func tmul2_i64(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (i64, i64) {
+    var amp = (Ma & Mb) & 0xFFFFFFFF
+    var no = ((Na ^ Nb) & amp) & 0xFFFFFFFF
+    return (amp, no)
+}
+func quant3_i64(m0: i64, n0: i64, m1: i64, n1: i64, m2: i64, n2: i64) -> i64 {
+    var A = m0 & (n0 ^ 0xFFFFFFFF)
+    var B = m1 & (n1 ^ 0xFFFFFFFF)
+    var C = m2 & (n2 ^ 0xFFFFFFFF)
+    return ((A & B) | (B & C) | (C & A)) & 0xFFFFFFFF
+}
+func rr32_i64(v: i64, n: i64) -> i64 {
+    return ((v >> n) | (v << (32 - n))) & 0xFFFFFFFF
+}
+
+// ---- u32 版（无掩码，LLVM i32 回绕）----
+func tadd2_u32(Ma: u32, Na: u32, Mb: u32, Nb: u32) -> (u32, u32) {
+    var nMa = Ma ^ 4294967295
+    var nNa = Na ^ 4294967295
+    var nMb = Mb ^ 4294967295
+    var nNb = Nb ^ 4294967295
+    var aP = Ma & nNa
+    var aN = Ma & Na
+    var bP = Mb & nNb
+    var bN = Mb & Nb
+    var o_pos = (nMa & Mb & nNb) | (Ma & nNa & nMb) | (aN & bN)
+    var o_neg = (nMa & Mb & Nb) | (Ma & Na & nMb) | (aP & bP)
+    return (o_pos | o_neg, o_neg)
+}
+func tmul2_u32(Ma: u32, Na: u32, Mb: u32, Nb: u32) -> (u32, u32) {
+    var amp = Ma & Mb
+    var no = (Na ^ Nb) & amp
+    return (amp, no)
+}
+func quant3_u32(m0: u32, n0: u32, m1: u32, n1: u32, m2: u32, n2: u32) -> u32 {
+    var A = m0 & (n0 ^ 4294967295)
+    var B = m1 & (n1 ^ 4294967295)
+    var C = m2 & (n2 ^ 4294967295)
+    return (A & B) | (B & C) | (C & A)
+}
+func rr32_u32(v: u32, n: u32) -> u32 {
+    return (v >> n) | (v << (32 - n))
+}
+
+func main() {
+    // 1. KAT 等价：固定输入对比
+    var i0: i64 = 0x0F0F0F0F
+    var i1: i64 = 0xF0F0F0F0
+    var i2: i64 = 0x33333333
+    var i3: i64 = 0xCCCCCCCC
+    var (sp_i, sn_i) = tadd2_i64(i0, i1, i2, i3)
+    var (tp_i, tn_i) = tmul2_i64(i0, i1, i2, i3)
+    var q_i = quant3_i64(i0, i1, i2, i3, 0x55555555, 0xAAAAAAAA)
+    var r_i = rr32_i64(i0, 13)
+    // u32 版（十进制字面量，值同）
+    var u0: u32 = 252645135   // 0x0F0F0F0F
+    var u1: u32 = 4042322160  // 0xF0F0F0F0
+    var u2: u32 = 858993459   // 0x33333333
+    var u3: u32 = 3435973836  // 0xCCCCCCCC
+    var u4: u32 = 1431655765  // 0x55555555
+    var u5: u32 = 2863311530  // 0xAAAAAAAA
+    var (sp_u, sn_u) = tadd2_u32(u0, u1, u2, u3)
+    var (tp_u, tn_u) = tmul2_u32(u0, u1, u2, u3)
+    var q_u = quant3_u32(u0, u1, u2, u3, u4, u5)
+    var r_u = rr32_u32(u0, 13)
+    // 对比（u32 值用 as_i64 转 i64 打印对比位模式）
+    var ok: bool = true
+    if as_i64(sp_u) != sp_i { ok = false }
+    if as_i64(sn_u) != sn_i { ok = false }
+    if as_i64(tp_u) != tp_i { ok = false }
+    if as_i64(tn_u) != tn_i { ok = false }
+    if as_i64(q_u) != q_i { ok = false }
+    if as_i64(r_u) != r_i { ok = false }
+    if ok {
+        println("PASS u32==i64 KAT 等价")
+    } else {
+        println("FAIL u32!=i64")
+        println(as_i64(sp_u))
+        println(sp_i)
+        println(as_i64(sn_u))
+        println(sn_i)
+        println(as_i64(r_u))
+        println(r_i)
+        exit(1)
+    }
+    // 2. 微基准：tadd2 循环（u32 vs i64）
+    var t0 = time_now()
+    var k: i64 = 0
+    var acc_i: i64 = 0
+    while k < 2000000000 {
+        var (a1, a2) = tadd2_i64(i0, i1, i2, i3)
+        acc_i = acc_i + a1 + a2
+        k = k + 1
+    }
+    var t1 = time_now()
+    println(acc_i)
+    println(t1 - t0)
+    var t2 = time_now()
+    var l: i64 = 0
+    var acc_u: u32 = 0
+    while l < 2000000000 {
+        var (b1, b2) = tadd2_u32(u0, u1, u2, u3)
+        acc_u = acc_u + b1 + b2
+        l = l + 1
+    }
+    var t3 = time_now()
+    println(acc_u)
+    println(t3 - t2)
+}

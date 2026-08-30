@@ -1,0 +1,17 @@
+type tie<logic>
+// U1 现状验证：u32 类型算术回绕 + LLVM i32 生成
+
+func main() {
+    // u32 回绕：max + 1 = 0
+    var x: u32 = 4294967295
+    var y: u32 = x + 1
+    println(y) // 期望 0
+    // u32 左移回绕
+    var z: u32 = 1 << 31
+    println(z) // 期望 2147483648
+    var w: u32 = z + z
+    println(w) // 期望 0（回绕）
+    // u32 与掩码（i32 上应被 LLVM 消除）
+    var m: u32 = (x + y) & 0xFFFFFFFF
+    println(m)
+}

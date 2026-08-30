@@ -1,0 +1,54 @@
+type tie<logic>
+// U1 收益验证：u32 原生 vs i64+掩码 的位平面运算微基准（time_now 秒级）
+
+func main() {
+    // ---- i64 + 掩码（现状，8 处必要掩码的代表）----
+    var a: i64 = 1234567
+    var s: i64 = 0
+    var t0 = time_now()
+    var i: i64 = 0
+    while i < 3000000000 {
+        s = (s + a) & 0xFFFFFFFF
+        i = i + 1
+    }
+    var t1 = time_now()
+    println(s)
+    println(t1 - t0)
+    // ---- u32 原生（无掩码，回绕语义）----
+    var ua: u32 = 1234567
+    var us: u32 = 0
+    var t2 = time_now()
+    var j: i64 = 0
+    while j < 3000000000 {
+        us = us + ua
+        j = j + 1
+    }
+    var t3 = time_now()
+    println(us)
+    println(t3 - t2)
+    // ---- u32 版位平面数学（tadd2 无掩码） vs i64 版 ----
+    var A: i64 = 0x0F0F0F0F
+    var B: i64 = 0x33333333
+    var C: u32 = 0x0F0F0F0F
+    var D: u32 = 0x33333333
+    var t4 = time_now()
+    var k: i64 = 0
+    var si: i64 = 0
+    while k < 1000000000 {
+        si = si + (A & B) & 0xFFFFFFFF
+        k = k + 1
+    }
+    var t5 = time_now()
+    var t6 = time_now()
+    var l: i64 = 0
+    var su: u32 = 0
+    while l < 1000000000 {
+        su = su + (C & D)
+        l = l + 1
+    }
+    var t7 = time_now()
+    println(si)
+    println(t5 - t4)
+    println(su)
+    println(t7 - t6)
+}
