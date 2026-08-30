@@ -169,9 +169,19 @@ trm_lite.a → 新 tiec。tl_tbl 自身零 table 依赖（纯 unsafe/ptr），�
    - 既有标量/嵌套表回归（全量 tests 回归跑通）
 3. **自举回归**：脚本 regress-driver-lite.ps1 等既有回归通道全绿。
 
-# 7. 范围与后续
+# 8. P2b 异构元素表（2026-08-30，提交 6372e25/6b76954/353e5a2）——已实现
 
-- 本设计范围：P2a 复合元素表 + 表运行时整体迁 trm-lite（一步到位）。
-- 不做：异构元素（P2b，另行设计 any/variant + 运行期标签）；map 运行时
-  迁移；tiec 自身表走 tl_tbl 的彻底自举。
-- 后续：trm 封装 trm_tbl（可选）；标量/复合表进一步统一类型元数据。
+在 P2a 复合元素表基础上新增 `any` 动态类型，支持异构表 `[1, "a", true, 2.5]`：
+
+| 能力 | 实现 |
+|------|------|
+| `any` 类型 | `TK_ANY=23`，LLVM 表示 `{i64, i64}`（tag + payload 16 字节值类型） |
+| 装箱 | `tig_box_any`：tag 约定 0=i64/整数 1=f64 2=bool 3=string 4=char；bool/char/窄整数 zext 进 i64 槽，string 存 ptr，f64 存 double |
+| 异构推断 | sinfer 元素类型不一致 → `table<any>`；表字面量元素类型优先取语义类型 |
+| 拆箱 | `as_i64/as_f64/as_bool/as_string/as_char`：运行时 tag 检查，不匹配 → 运行时错误退出；`as_i64/as_f64` 与既有 S1.3 数值转换族重载（数字转换 / any 拆箱） |
+| switch 类型匹配 | `switch (any) { case i64:/string:/bool:/f64:/char: ... }`：case 类型 → 装箱 tag 常量 icmp；body 内 `as_<T>(x)` 取用 |
+| 存取 | `table<any>` 字面量 / 下标读写 / `table_push` 均自动装箱 |
+
+**验收**：tests/language/table_any_elem.tie（7 项 PASS）+ tests/_p2b_probe/*.tie 探针；
+tests/language 全量正例编译+运行无回归（extern_decl FFI 基线跳过、shift_neg_free 名为 _neg 实为正例除外）。
+

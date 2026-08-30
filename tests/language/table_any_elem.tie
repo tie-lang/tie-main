@@ -1,0 +1,133 @@
+type tie<logic>
+
+// ============================================================
+// 异构元素表验收（P2b）：any 动态类型
+//
+// 覆盖场景：
+//   1. any 变量声明 + 字面量装箱（整数/浮点/bool/string/char）
+//   2. 异构表字面量自动推断 table<any> + len
+//   3. table_push 追加异构元素 + 下标读/写（装箱）
+//   4. as_* 拆箱（运行时 tag 检查）
+//   5. switch 类型匹配取用 any
+//   6. 异构表 for 遍历 + switch 类型分派
+//
+// 期望输出（全部 PASS）：
+//   PASS box / PASS lit len=4 / PASS push / PASS index / PASS unbox /
+//   PASS switch / PASS foreach
+// ============================================================
+
+func main() {
+    // 1. any 变量声明 + 装箱（char 验证用 switch 类型分派——语言不支持 char 直接 ==）
+    var x: any = 42
+    var f: any = 3.14
+    var s: any = "hi"
+    var b: any = true
+    var c: any = 'A'
+    var ck: string = ""
+    switch c {
+        case char:
+            ck = "char"
+        default:
+            ck = "?"
+    }
+    if as_i64(x) == 42 && as_f64(f) > 3.13 && as_f64(f) < 3.15 &&
+        as_string(s) == "hi" && as_bool(b) && ck == "char" {
+        println("PASS box")
+    } else {
+        println("FAIL box")
+        exit(1)
+    }
+    // 2. 异构表字面量自动推断 table<any>
+    var t: table<any> = [1, "a", true, 2.5]
+    if len(t) == 4 {
+        println("PASS lit len=" + to_string(len(t)))
+    } else {
+        println("FAIL lit len=" + to_string(len(t)))
+        exit(1)
+    }
+    // 3. table_push 追加异构元素 + 下标读/写（装箱）
+    table_push(t, 'Z')
+    if len(t) == 5 {
+        var zk: string = ""
+        switch t[4] {
+            case char:
+                zk = "char"
+            default:
+                zk = "?"
+        }
+        if zk == "char" {
+            println("PASS push")
+        } else {
+            println("FAIL push kind=" + zk)
+            exit(1)
+        }
+    } else {
+        println("FAIL push len=" + to_string(len(t)))
+        exit(1)
+    }
+    t[0] = 7
+    if as_i64(t[0]) == 7 {
+        println("PASS index")
+    } else {
+        println("FAIL index")
+        exit(1)
+    }
+    // 4. as_* 拆箱
+    var u: any = 99
+    var w: any = "xyz"
+    if as_i64(u) == 99 && as_string(w) == "xyz" {
+        println("PASS unbox")
+    } else {
+        println("FAIL unbox")
+        exit(1)
+    }
+    // 5. switch 类型匹配取用 any
+    var d: any = 3.5
+    var kind: string = ""
+    switch d {
+        case i64:
+            kind = "int"
+        case f64:
+            kind = "float"
+        case string:
+            kind = "string"
+        default:
+            kind = "other"
+    }
+    if kind == "float" {
+        println("PASS switch")
+    } else {
+        println("FAIL switch kind=" + kind)
+        exit(1)
+    }
+    // 6. 异构表 for 遍历 + switch 类型分派（t = [7, "a", true, 2.5, 'Z']）
+    var n: i64 = 0
+    var acc: string = ""
+    for v in t {
+        switch v {
+            case i64:
+                n = n + 1
+                acc = acc + "i"
+            case string:
+                n = n + 1
+                acc = acc + "s"
+            case bool:
+                n = n + 1
+                acc = acc + "b"
+            case f64:
+                n = n + 1
+                acc = acc + "f"
+            case char:
+                n = n + 1
+                acc = acc + "c"
+            default:
+                acc = acc + "?"
+        }
+    }
+    if n == 5 && acc == "isbfc" {
+        println("PASS foreach")
+    } else {
+        println("FAIL foreach n=" + to_string(n) + " acc=" + acc)
+        exit(1)
+    }
+}
