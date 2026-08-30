@@ -274,8 +274,12 @@ func tig_index_assign(id: i64) -> i64 {
     }
     var suffix = bridge_suffix(elem)
     var pty = types.named(TK_I64)
-    // S2.4：port 对象元素（table<Drawable>）存 ptr → set_string 桥
-    if types.kind(elem) == K_PORT {
+    // P2a 复合元素：槽类型 = 元素类型 id（多字元素类型化 store/load）
+    var elem_k2 = types.kind(elem)
+    if elem_k2 == K_STRUCT || elem_k2 == K_ENUM || elem_k2 == K_FN {
+        pty = elem
+    } else if types.kind(elem) == K_PORT {
+        // S2.4：port 对象元素（table<Drawable>）存 ptr → set_string 桥
         suffix = "string"
         pty = types.named(TK_STR)
     } else if suffix == "string" {

@@ -188,11 +188,12 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
         }
         cmd = cmd + " " + lib + " -lws2_32 -luserenv -lntdll -lbcrypt -ladvapi32 -lole32 -lshell32"
     }
-    // trm-lite 阶段1块2：程序用了轻量执行体内置（spawn/yield/collect）→ 链 trm_lite.a。
+    // trm-lite 阶段1块2：程序用了轻量执行体内置（spawn/yield/collect）或表容器
+    // （P2a：table<T> 运行时已迁 trm-lite tl_tbl）→ 链 trm_lite.a。
     if need_trmlite {
         var tlib = find_trmlite_lib()
         if str_len(tlib) == 0 {
-            tc_err_msg = "程序使用了 trm-lite 轻量执行体内置（spawn/yield/collect），但未找到 trm-lite 静态库。" +
+            tc_err_msg = "程序使用了 trm-lite 运行时（spawn/yield/collect 或表容器 table<T>），但未找到 trm-lite 静态库。" +
                 "请先构建 trm_lite.a（tiec core/runtime/tl_runtime.tie -o trm_lite.a），或设置环境变量 TIE_TRM_LITE_LIB"
             return -1
         }
@@ -336,8 +337,9 @@ func find_trmlite_lib() -> string {
         return env
     }
     var cands = table_new_string()
-    table_push(cands, "..\\..\\trm-lite\\trm_lite.a")
-    table_push(cands, "trm_lite.a")
+    table_push(cands, "..\\..\\trm-lite\\trm_lite.a")  // tiec 位于 compiler/ 时
+    table_push(cands, "..\\trm-lite\\trm_lite.a")      // tiec 从仓库根调用（compiler\tiec.exe）
+    table_push(cands, "trm_lite.a")                    // 当前目录
     var n: i64 = len(cands)
     var i: i64 = 0
     while i < n {

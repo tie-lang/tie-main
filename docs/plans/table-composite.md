@@ -148,6 +148,13 @@ tl_tbl **内部零 table<T>**（纯 unsafe/ptr 裸内存），故：
 
 无环。彻底自举（tiec 自身表也走 tl_tbl）作为后续自举重建步骤，非本阶段必须。
 
+**自举约束（实测）**：trm_lite.a **必须用「表内联 codegen」的 tiec 构建**——
+新 tiec（表→tl_tbl extern）编译 tl_runtime 时，sched/gc 的表用法生成
+`tl_tbl$tbl_*` extern **声明**，与 tl_tbl 的**定义**同模块冲突（opt 报
+invalid redefinition）。构建顺序：旧 tiec（含 memcpy 修复、表内联）→
+trm_lite.a → 新 tiec。tl_tbl 自身零 table 依赖（纯 unsafe/ptr），故其
+逻辑不受此约束。
+
 # 6. 测试方案
 
 1. **trm-lite 单测**：tl_tbl 容器（new/len/ensure/at/set、扩容边界、

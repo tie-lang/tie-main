@@ -488,125 +488,226 @@ func t21_esz(t: i64) -> i64 {
     return s21_load(s21_gep(t, 24, true), types.named(TK_I64))
 }
 
-// 新建空表：分配 32 字节句柄（s21_raw_alloc_str），cap=0 / len=0 / data=null /
-// esz=esz_v，返回句柄指针（TK_STR ptr 值，供后续 at/set/push 以 ptr 引用）
-func s21_table_new(esz_v: i64) -> i64 {
-    var h = s21_raw_alloc_str(tig_int_lit(32))
-    s21_store(s21_gep(h, 0, true), tig_int_lit(0), types.named(TK_I64))    // cap = 0
-    s21_store(s21_gep(h, 8, true), tig_int_lit(0), types.named(TK_I64))    // len = 0
-    s21_store(s21_gep(h, 16, true), tig_int_lit(0), types.named(TK_STR))   // data = null
-    s21_store(s21_gep(h, 24, true), esz_v, types.named(TK_I64))            // esz
-    return h
+// ==================== P2a：表容器运行时迁入 trm-lite（tl_tbl）====================
+// 句柄 = 32 字节 {cap@0, len@8, data@16, esz@24} 原始缓冲——tl_tbl（trm_lite.a）
+// 与旧内联布局完全一致，故 len/data/esz 字段读取（s21_table_len/t21_data/t21_esz）
+// 保留内联；可变操作（new/push/at/set）委托 tl_tbl$tbl_*（g_used_trmlite 置位，
+// toolchain 自动链 trm_lite.a）。句柄在 IR 中为 ptr（TK_STR），tl_tbl extern 以
+// i64 承载指针——本层做 ptrtoint/inttoptr 桥接，调用点签名不变（零改动）。
+
+// ---------- 表元素字节尺寸（编译期；复合元素精确、标量保持既有行为）----------
+// 字段尺寸/对齐按 LLVM 布局（datalayout i64→8，C 兼容，见 llvmgen.emit）。
+func field_size(t: i64) -> i64 {
+    if t == types.named(TK_BOOL) || t == types.named(TK_I8) || t == types.named(TK_U8) || t == types.named(TK_TRIT) {
+        return 1
+    }
+    if t == types.named(TK_I16) || t == types.named(TK_U16) {
+        return 2
+    }
+    if t == types.named(TK_I32) || t == types.named(TK_U32) || t == types.named(TK_CHAR) || t == types.named(TK_F32) {
+        return 4
+    }
+    if t == types.named(TK_I128) || t == types.named(TK_U128) {
+        return 16
+    }
+    return type_byte_size(t)
+}
+func field_align(t: i64) -> i64 {
+    if t == types.named(TK_BOOL) || t == types.named(TK_I8) || t == types.named(TK_U8) || t == types.named(TK_TRIT) {
+        return 1
+    }
+    if t == types.named(TK_I16) || t == types.named(TK_U16) {
+        return 2
+    }
+    if t == types.named(TK_I32) || t == types.named(TK_U32) || t == types.named(TK_CHAR) || t == types.named(TK_F32) {
+        return 4
+    }
+    if t == types.named(TK_I128) || t == types.named(TK_U128) {
+        return 16
+    }
+    return 8
+}
+func type_byte_size(t: i64) -> i64 {
+    var k = types.kind(t)
+    if k == K_STRUCT {
+        var si = t - BASE_STRUCT
+        var off = cls_fldoff[si]
+        var cnt = cls_nfld[si]
+        var sz: i64 = 0
+        var ma: i64 = 1
+        var j: i64 = 0
+        while j < cnt {
+            var fa = field_align(fld_tys[off + j])
+            if fa > ma {
+                ma = fa
+            }
+            var r = sz % fa
+            if r != 0 {
+                sz = sz + (fa - r)
+            }
+            sz = sz + field_size(fld_tys[off + j])
+            j = j + 1
+        }
+        var r2 = sz % ma
+        if r2 != 0 {
+            sz = sz + (ma - r2)
+        }
+        return sz
+    }
+    if k == K_ENUM {
+        // 槽 0 = tag(i64) + payload 槽数 K（en_nslot，全 i64）
+        var eidx = t - BASE_ENUM
+        return 8 + 8 * en_nslot[eidx]
+    }
+    if k == K_FN {
+        return 16  // 闭包 {ptr, ptr}
+    }
+    if k == K_TUPLE {
+        var ti = t - BASE_TUPLE
+        var to = tup_offs[ti]
+        var tn = tup_n[ti]
+        var sz2: i64 = 0
+        var ma2: i64 = 1
+        var j2: i64 = 0
+        while j2 < tn {
+            var fa2 = field_align(tup_tys[to + j2])
+            if fa2 > ma2 {
+                ma2 = fa2
+            }
+            var r3 = sz2 % fa2
+            if r3 != 0 {
+                sz2 = sz2 + (fa2 - r3)
+            }
+            sz2 = sz2 + field_size(tup_tys[to + j2])
+            j2 = j2 + 1
+        }
+        var r4 = sz2 % ma2
+        if r4 != 0 {
+            sz2 = sz2 + (ma2 - r4)
+        }
+        return sz2
+    }
+    if k == K_SLICE {
+        return 16  // {ptr, i64}
+    }
+    if t == types.named(TK_BOOL) {
+        return 1
+    }
+    return 8  // 标量/句柄（保持既有行为）
 }
 
-// 表长度：len(t) = load i64 [t+8]
+// ---------- tl_tbl 调用便捷（实参均 i64；句柄/指针以 i64 承载）----------
+func tl_i64_1(sym: string, v1: i64) -> i64 {
+    var ats: table<i64> = table_new_i64()
+    var avs: table<i64> = table_new_i64()
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v1)
+    return tig_trmlite_call(sym, ats, avs, types.named(TK_I64))
+}
+func tl_i64_2(sym: string, v1: i64, v2: i64) -> i64 {
+    var ats: table<i64> = table_new_i64()
+    var avs: table<i64> = table_new_i64()
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v1)
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v2)
+    return tig_trmlite_call(sym, ats, avs, types.named(TK_I64))
+}
+func tl_i64_3(sym: string, v1: i64, v2: i64, v3: i64) -> i64 {
+    var ats: table<i64> = table_new_i64()
+    var avs: table<i64> = table_new_i64()
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v1)
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v2)
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v3)
+    return tig_trmlite_call(sym, ats, avs, types.named(TK_I64))
+}
+func tl_void_2(sym: string, v1: i64, v2: i64) {
+    var ats: table<i64> = table_new_i64()
+    var avs: table<i64> = table_new_i64()
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v1)
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v2)
+    tig_trmlite_call(sym, ats, avs, -1)
+}
+func tl_void_3(sym: string, v1: i64, v2: i64, v3: i64) {
+    var ats: table<i64> = table_new_i64()
+    var avs: table<i64> = table_new_i64()
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v1)
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v2)
+    table_push(ats, types.named(TK_I64))
+    table_push(avs, v3)
+    tig_trmlite_call(sym, ats, avs, -1)
+}
+
+// 句柄 ptr → i64（ptrtoint，opcode 24）
+func t21_ptri(t: i64) -> i64 {
+    var pi = ir.new_inst(g_cur_block, 24, types.named(TK_I64))
+    ir.add_operand(pi, t, 0)
+    return ir.get_value(pi)
+}
+// i64 → ptr（inttoptr，opcode 25；结果 TK_STR ptr 值）
+func t21_intp(i: i64) -> i64 {
+    var ip = ir.new_inst(g_cur_block, 25, types.named(TK_STR))
+    ir.add_operand(ip, i, 0)
+    return ir.get_value(ip)
+}
+
+// 新建空表：tl_tbl$tbl_new(esz) → i64 → inttoptr → ptr 句柄。
+func s21_table_new(esz_v: i64) -> i64 {
+    g_used_trmlite = true
+    return t21_intp(tl_i64_1("tl_tbl$tbl_new", esz_v))
+}
+
+// 表长度：len(t) = load i64 [t+8]（句柄布局与 tl_tbl 一致，保留内联）
 func s21_table_len(t: i64) -> i64 {
     return s21_load(s21_gep(t, 8, true), types.named(TK_I64))
 }
 
-// 若 need > cap：重新分配 data 缓冲。newcap = cap==0 ? max(8,need) : max(cap+cap/2, need)；
-// 新缓冲大小 = newcap*esz；拷贝旧 len*esz 字节；free 旧 data；更新句柄 data/cap。
-// 生成 if 块后 g_cur_block 推进到汇合块（调用方在汇合后重读 data 继续追加逻辑）。
-func s21_table_grow(h: i64, cap: i64, len: i64, data: i64, esz: i64, need: i64) {
-    var gc = tig_icmp_c(need, cap, 3)  // sgt：need > cap
-    var gt = ir.new_block(g_cur_func, interner.intern("t21.gt"))
-    var ge = ir.new_block(g_cur_func, interner.intern("t21.ge"))
-    var cb = ir.new_inst(g_cur_block, 31, -1)  // cond_br
-    ir.add_operand(cb, gc, 0)
-    ir.add_operand(cb, gt, 1)
-    ir.add_operand(cb, ge, 1)
-    // then：容量增长（1.5x）
-    g_cur_block = gt
-    var half = s21_bin(3, cap, tig_int_lit(2))      // cap/2（sdiv）
-    var base = s21_bin(0, cap, half)                // cap + cap/2
-    var is_z = tig_icmp_c(cap, tig_int_lit(0), 0)   // cap == 0
-    var gb = tig_select_i(is_z, tig_int_lit(8), base, types.named(TK_I64))  // cap==0 → 8，否则 base
-    var c_lt = tig_icmp_c(gb, need, 2)              // gb < need
-    var newcap = tig_select_i(c_lt, need, gb, types.named(TK_I64))  // max(gb, need)
-    // 数据缓冲 = 原始字节区（非 {头,数据,\0} 布局），s21_raw_alloc_str 绕开 TK_STR 扫描；
-    // 缓冲大小 = newcap*esz
-    var nd = s21_raw_alloc_str(s21_bin(2, newcap, esz))  // mul：newcap*esz
-    s21_memcpy_if(nd, data, s21_bin(2, len, esz))        // 拷贝旧 len*esz 字节
-    tig_ext_call1("free", data, types.named(TK_STR), -1) // 释放旧缓冲（null free 合法）
-    s21_store(s21_gep(h, 16, true), nd, types.named(TK_STR))
-    s21_store(s21_gep(h, 0, true), newcap, types.named(TK_I64))
-    var brg = ir.new_inst(g_cur_block, 30, -1)  // br ge
-    ir.add_operand(brg, ge, 1)
-    g_cur_block = ge
-}
-
-// 表追加：读 len → need=len+1 → grow（汇合后重读 data）→ GEP(data, len*esz) store →
-// len = need
+// 表追加：len=tbl_len → need=len+1 → data=tbl_ensure → 地址=data+len*esz →
+// 类型化 store → tbl_set_len。esz 编译期计算（与 tbl_new 传入一致）。
 func s21_table_push(t: i64, elem_llvm_ty: i64, v: i64) {
-    var cap = s21_load(s21_gep(t, 0, true), types.named(TK_I64))
-    var len = s21_load(s21_gep(t, 8, true), types.named(TK_I64))
-    var data = s21_load(s21_gep(t, 16, true), types.named(TK_STR))
+    g_used_trmlite = true
+    var T64 = types.named(TK_I64)
+    var t_i = t21_ptri(t)
+    var len = tl_i64_1("tl_tbl$tbl_len", t_i)
     var need = s21_bin(0, len, tig_int_lit(1))
-    s21_table_grow(t, cap, len, data, t21_esz(t), need)
-    var data2 = t21_data(t)  // 汇合后重读 data（增长分支可能已更新）
-    var off = s21_bin(2, len, t21_esz(t))  // len*esz（字节偏移）
-    var dst = s21_gep(data2, off, false)
-    s21_store(dst, v, elem_llvm_ty)
-    s21_store(s21_gep(t, 8, true), need, types.named(TK_I64))
+    var data = tl_i64_2("tl_tbl$tbl_ensure", t_i, need)
+    var esz = type_byte_size(elem_llvm_ty)
+    var off = s21_bin(2, len, tig_int_lit_ty(esz, T64))
+    var addr = s21_bin(0, data, off)
+    s21_store(t21_intp(addr), v, elem_llvm_ty)
+    tl_void_2("tl_tbl$tbl_set_len", t_i, need)
 }
 
-// 表下标读：读 len/esz → ok = (i < len) 存 ok_ptr（i8）→ 若 ok 则 GEP(data, i*esz)
-// 读元素存槽，否则槽存元素零值；汇合后 load 槽返回。g_cur_block 推进到汇合。
+// 表下标读：tl_tbl$tbl_at(t, i, out) 越界写零 + 返回 ok；结果槽 load 返回。
 func s21_table_at(t: i64, i: i64, ok_ptr: i64, elem_llvm_ty: i64) -> i64 {
-    var len = s21_load(s21_gep(t, 8, true), types.named(TK_I64))
-    var esz = t21_esz(t)
-    var ok = tig_icmp_c(i, len, 2)  // slt：i < len
-    var okb = s21_zext(ok, types.named(TK_BOOL))  // i1 → i64
-    s21_store(ok_ptr, s21_trunc_i8(okb), types.named(TK_I8))  // 越界标志 → 出参 i8
-    // 结果槽（alloca 提升到 entry 由 llvmgen 统一处理）
-    var slot = ir.new_inst(g_cur_block, 20, elem_llvm_ty)  // alloca elem
+    g_used_trmlite = true
+    var T64 = types.named(TK_I64)
+    var t_i = t21_ptri(t)
+    // 结果槽（alloca elem_llvm_ty）
+    var slot = ir.new_inst(g_cur_block, 20, elem_llvm_ty)
     ir.add_operand(slot, elem_llvm_ty, 2)
     var sv = ir.get_value(slot)
-    // 分支：ok → bt（读元素）/ else → be（元素零值）/ 汇合 merge
-    var bt = ir.new_block(g_cur_func, interner.intern("t21.at"))
-    var be = ir.new_block(g_cur_func, interner.intern("t21.ae"))
-    var merge = ir.new_block(g_cur_func, interner.intern("t21.am"))
-    var cbr = ir.new_inst(g_cur_block, 31, -1)  // cond_br
-    ir.add_operand(cbr, ok, 0)
-    ir.add_operand(cbr, bt, 1)
-    ir.add_operand(cbr, be, 1)
-    // then：读元素
-    g_cur_block = bt
-    var data = t21_data(t)
-    var off = s21_bin(2, i, esz)  // i*esz
-    var addr = s21_gep(data, off, false)
-    s21_store(sv, s21_load(addr, elem_llvm_ty), elem_llvm_ty)
-    var br1 = ir.new_inst(g_cur_block, 30, -1)  // br merge
-    ir.add_operand(br1, merge, 1)
-    // else：元素零值
-    g_cur_block = be
-    s21_store(sv, t21_zero(elem_llvm_ty), elem_llvm_ty)
-    var br2 = ir.new_inst(g_cur_block, 30, -1)  // br merge
-    ir.add_operand(br2, merge, 1)
-    // merge：结果 = load 槽
-    g_cur_block = merge
+    var ok = tl_i64_3("tl_tbl$tbl_at", t_i, i, t21_ptri(sv))
+    s21_store(ok_ptr, s21_trunc_i8(ok), types.named(TK_I8))  // 越界标志 → 出参 i8
     return s21_load(sv, elem_llvm_ty)
 }
 
-// 表下标写：读 len/esz → 若 i < len：GEP(data, i*esz) store v；否则静默跳过。
-// g_cur_block 推进到汇合。
+// 表下标写：tl_tbl$tbl_set(t, i, src) 越界静默；值先落槽再传指针整数。
 func s21_table_set(t: i64, i: i64, elem_llvm_ty: i64, v: i64) {
-    var len = s21_load(s21_gep(t, 8, true), types.named(TK_I64))
-    var ok = tig_icmp_c(i, len, 2)  // slt：i < len
-    var bt = ir.new_block(g_cur_func, interner.intern("t21.st"))
-    var be = ir.new_block(g_cur_func, interner.intern("t21.se"))
-    var cb = ir.new_inst(g_cur_block, 31, -1)  // cond_br
-    ir.add_operand(cb, ok, 0)
-    ir.add_operand(cb, bt, 1)
-    ir.add_operand(cb, be, 1)
-    g_cur_block = bt
-    var data = t21_data(t)
-    var off = s21_bin(2, i, t21_esz(t))  // i*esz
-    var addr = s21_gep(data, off, false)
-    s21_store(addr, v, elem_llvm_ty)
-    var br = ir.new_inst(g_cur_block, 30, -1)  // br be
-    ir.add_operand(br, be, 1)
-    g_cur_block = be
+    g_used_trmlite = true
+    var t_i = t21_ptri(t)
+    var slot = ir.new_inst(g_cur_block, 20, elem_llvm_ty)
+    ir.add_operand(slot, elem_llvm_ty, 2)
+    var sv = ir.get_value(slot)
+    s21_store(sv, v, elem_llvm_ty)
+    tl_void_3("tl_tbl$tbl_set", t_i, i, t21_ptri(sv))
 }
 
 // ==================== 字典容器批次 7（去 tie_map_* 桥） ====================

@@ -601,7 +601,12 @@ func tig_table_lit(id: i64) -> i64 {
         // TK_STR 补头逻辑（补头会对 port 对象 ptr 做 strlen → 崩溃）。
         var suffix = bridge_suffix(elem)
         var pty = types.named(TK_I64)
-        if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
+        var elem_k = types.kind(elem)
+        if elem_k == K_STRUCT || elem_k == K_ENUM || elem_k == K_FN {
+            // P2a 复合元素：槽类型 = 元素类型 id（llvmgen 映射 %struct.X/%enum.X/
+            // %fn.N），类型化 store/load 多字元素；esz 由 elem_size 精确计算。
+            pty = elem
+        } else if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
             suffix = "string"
             pty = types.named(TK_STR)
         } else {

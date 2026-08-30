@@ -318,12 +318,10 @@ func bridge_suffix(t: i64) -> string {
     return "i64"
 }
 
-// 元素大小（tie_table_new 参数）：bool=1，其余=8
+// 元素大小（tie_table_new 参数 / 槽字节步长）：复合元素精确尺寸（struct/enum/fn/
+// 元组），标量保持既有行为（bool=1，其余 8）。实现见 irgen_str.tie type_byte_size。
 func elem_size(t: i64) -> i64 {
-    if t == types.named(TK_BOOL) {
-        return 1
-    }
-    return 8
+    return type_byte_size(t)
 }
 
 // Call/MethodCall 实参节点读取（2026-08-14 泛型槽偏移，权威约定见 ast.tie 头）：

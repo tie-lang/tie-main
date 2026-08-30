@@ -1650,7 +1650,11 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         var suffix = bridge_suffix(elem)
         var pty = types.named(TK_I64)
         var vt = node_types[call_arg(id, 1)]
-        if vt >= 0 && (types.is_table(vt) || types.is_map(vt) || vt == types.named(TK_STR)) {
+        var ek = types.kind(elem)
+        if ek == K_STRUCT || ek == K_ENUM || ek == K_FN {
+            // P2a 复合元素：槽类型 = 元素类型 id（多字元素类型化 store）
+            pty = elem
+        } else if vt >= 0 && (types.is_table(vt) || types.is_map(vt) || vt == types.named(TK_STR)) {
             suffix = "string"
             pty = types.named(TK_STR)
         } else if vt >= 0 && (vt == types.named(TK_F64) || vt == types.named(TK_F32)) {
@@ -2133,7 +2137,11 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         }
         var suffix = bridge_suffix(elem)
         var ret_ty = types.named(TK_I64)
-        if suffix == "string" {
+        var ek2 = types.kind(elem)
+        if ek2 == K_STRUCT || ek2 == K_ENUM || ek2 == K_FN {
+            // P2a 复合元素：返回类型 = 元素类型 id（多字元素类型化 load）
+            ret_ty = elem
+        } else if suffix == "string" {
             ret_ty = types.named(TK_STR)
         } else if suffix == "f64" {
             // f64 表元素：返回类型 double（曾落默认 i64 → `call i64 @tie_table_at_f64`
