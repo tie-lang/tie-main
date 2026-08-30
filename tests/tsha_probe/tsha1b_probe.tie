@@ -46,28 +46,28 @@ func assert_vec(name: string, msg: string, hex: string) {
 
 func main() {
     assert_vec("b empty", "",
-        "2f9d8eda98c5eb60aefbda6f53651c3470afe366b056ac882e1c36c80eeee244")
+        "afd3b3fcbb903a5a55f7ce0e79b83bf15edfefbc495eaec082ce9dce71afe1f8")
     assert_vec("b abc", "abc",
-        "72ecd6a49318633b3a8ffe8a80920a67f1434ec00fbb4e138fa2cb6bdefaa324")
+        "4bbaea174cd4475b2b17e052fa3f9f523c2cd7c8100258372311bd7288aa770a")
     assert_vec("b a1000", rep("a", 1000),
-        "f29105d9baa59da088f0bba06a3cd88f4d0f4a2073b54ac6223686c44e805cd0")
+        "1e9e08417fce2c02189d439d7ef25aafd81465d87c18ce44411840caee8d45d5")
     assert_vec("b b55", rep("a", 55),
-        "1e3dbe1449b7375b3b1b6f7d031b70934f968c96113233af84af2a2fa0630311")
+        "2a2ec356a7198db04ef0084c6cdae25d93f4f8db9f65186363b26391c0d00c91")
     assert_vec("b b56", rep("a", 56),
-        "c530e575969686d6a03acae740c24bc9855cc80272dfe83787faab6bdd65db56")
+        "746a71bde603b604f08f2cb5e394d9d51157372a3c869560959bb85fcc1fc442")
     assert_vec("b b63", rep("a", 63),
-        "0646011725973df056a442c4cfa1b8de6e3c4b4b27e7aa910f15871e601f4332")
+        "257d6e18d5dc9ed6a1aa9d106e49db368955745d57d81e5cf8496dd676d9f1e6")
     assert_vec("b b64", rep("a", 64),
-        "3072de987ec8aacdeae13d4e652d316ca1d7ff76707189623e72e38082389d1e")
+        "b4ac50ea09f29c5ae3bfc6ead31dc48e9efe315aa929953beb3ed34e12773129")
     assert_vec("b b65", rep("a", 65),
-        "669b73a20552cb34a366f98a46ca6ca8108adc5ed9051fc7644cd54e861d84a8")
+        "5a248746f64dab2e5ff2a308c4f0ad587a81086e6165ece70eb9adeba64676e0")
     assert_vec("b b127", rep("a", 127),
-        "d1ac1dcafab588098effafe710746c94fd35b34d71fd2f508cd08548e98f1416")
+        "32eee3696d5f0b8adca516b809b598e641b15d1f17a19d16d4dd407857da7762")
     assert_vec("b b128", rep("a", 128),
-        "2f8c217f2260576adb22f20ddd462e6bf98cc44d2816a6ea878caf2ffe74b67f")
+        "903353ceb22d927ff12713eaf434b451d31a2b167d83c67483f2983fc5759bb8")
     assert_vec("b b129", rep("a", 129),
-        "74ae0b73e7b45017bb55c013d9283d7d35de7f2aaddbeb7de6dc859fc0a4f794")
+        "9b61ecf2d72d22d1450a33333f7e37187b039c2b0a3ddae48f5d13c04d6d55bc")
     assert_vec("b b256", rep("a", 256),
-        "73b76b318d141dd686609385550d4abcf9f2c089e3e2cbbba6cd7572e4ddd04d")
+        "616cfff019ac89c57fe5e32bb6ce2cfc634dffbc138702c30b6429bac606f063")
     println("tsha1b 探针全部通过")
 }
