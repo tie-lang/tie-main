@@ -1,0 +1,166 @@
+type tie<logic>
+
+// ============================================================
+// 表/集合标准库验收（P2d）：coll 高阶函数 + 表操作 + 嵌套 table<any>
+//
+// 覆盖场景：
+//   1. 高阶函数 map/filter/reduce/foreach（i64 + string，表作末参配合 P1 管道）
+//   2. 表操作 reverse/to_string/join/sum/product/max/min
+//   3. 嵌套 table<any>：表入 any 装箱 + as_table_* 拆箱（i64/string/异构/表套表）
+//
+// 期望输出（全部 PASS）：
+//   PASS hof / PASS pipe / PASS ops / PASS nested / PASS nested_deep
+// ============================================================
+
+import "../../std/collection.tie"
+
+func double(x: i64) -> i64 {
+    return x * 2
+}
+func is_even(x: i64) -> bool {
+    return x % 2 == 0
+}
+func sum2(a: i64, b: i64) -> i64 {
+    return a + b
+}
+func prod2(a: i64, b: i64) -> i64 {
+    return a * b
+}
+func shout(s: string) -> string {
+    return s + "!"
+}
+func len_gt1(s: string) -> bool {
+    return str_len(s) > 1
+}
+func concat2(a: string, b: string) -> string {
+    return a + b
+}
+
+func main() {
+    // 1. 高阶函数
+    var t: table<i64> = [1, 2, 3, 4]
+    var m = coll.map_i64(double, t)      // [2,4,6,8]
+    var f = coll.filter_i64(is_even, t)  // [2,4]
+    var s = coll.reduce_i64(sum2, 0, t)  // 10
+    var p = coll.reduce_i64(prod2, 1, t) // 24
+    var sum_m: i64 = 0
+    var i: i64 = 0
+    while i < len(m) {
+        sum_m = sum_m + m[i]
+        i = i + 1
+    }
+    var sum_f: i64 = 0
+    i = 0
+    while i < len(f) {
+        sum_f = sum_f + f[i]
+        i = i + 1
+    }
+    if sum_m == 20 && sum_f == 6 && s == 10 && p == 24 {
+        println("PASS hof")
+    } else {
+        println("FAIL hof sum_m=" + to_string(sum_m) + " sum_f=" + to_string(sum_f) + " s=" + to_string(s) + " p=" + to_string(p))
+        exit(1)
+    }
+    // string 变体
+    var st: table<string> = ["a", "bc", "d"]
+    var ms = coll.map_string(shout, st)      // ["a!","bc!","d!"]
+    var fs = coll.filter_string(len_gt1, st) // ["bc"]
+    var cs = coll.reduce_string(concat2, "", st) // "abcd"
+    var mlen: i64 = 0
+    i = 0
+    while i < len(ms) {
+        mlen = mlen + str_len(ms[i])
+        i = i + 1
+    }
+    if mlen == 7 && len(fs) == 1 && cs == "abcd" {
+        println("PASS hof_str")
+    } else {
+        println("FAIL hof_str mlen=" + to_string(mlen) + " flen=" + to_string(len(fs)) + " cs=" + cs)
+        exit(1)
+    }
+    // 2. P1 管道组合
+    var pipe = t -> coll.filter_i64(is_even) -> coll.map_i64(double) // [4,8]
+    var pipe_sum: i64 = 0
+    i = 0
+    while i < len(pipe) {
+        pipe_sum = pipe_sum + pipe[i]
+        i = i + 1
+    }
+    if pipe_sum == 12 {
+        println("PASS pipe")
+    } else {
+        println("FAIL pipe sum=" + to_string(pipe_sum))
+        exit(1)
+    }
+    // 3. 表操作
+    var u: table<i64> = [3, 1, 4, 1, 5]
+    var rv = coll.reverse_i64(u) // [5,1,4,1,3]
+    var rv0: i64 = -1
+    var rv4: i64 = -1
+    if len(rv) == 5 {
+        rv0 = rv[0]
+        rv4 = rv[4]
+    }
+    var ts = coll.to_string_i64(u)
+    var sum_u = coll.sum_i64(u)
+    var prod_u = coll.product_i64(u)
+    var mx = coll.max_i64(u)
+    var mn = coll.min_i64(u)
+    if rv0 == 5 && rv4 == 3 && ts == "[3, 1, 4, 1, 5]" && sum_u == 14 && prod_u == 60 && mx == 5 && mn == 1 {
+        println("PASS ops")
+    } else {
+        println("FAIL ops rv0=" + to_string(rv0) + " rv4=" + to_string(rv4) + " ts=" + ts + " sum=" + to_string(sum_u) + " prod=" + to_string(prod_u) + " max=" + to_string(mx) + " min=" + to_string(mn))
+        exit(1)
+    }
+    var jt: table<string> = ["a", "b", "c"]
+    if coll.join(jt, "-") == "a-b-c" && coll.to_string_string(jt) == "[a, b, c]" {
+        println("PASS join")
+    } else {
+        println("FAIL join")
+        exit(1)
+    }
+    // 4. 嵌套 table<any>：表入 any 装箱 + as_table_* 拆箱
+    var inner_i: table<i64> = [1, 2, 3]
+    var t_any: table<any> = []
+    var x_i: any = inner_i
+    table_push(t_any, x_i)
+    var back_i = as_table_i64(t_any[0])
+    var bsum: i64 = 0
+    i = 0
+    while i < len(back_i) {
+        bsum = bsum + back_i[i]
+        i = i + 1
+    }
+    // 异构外层表：i64 表 + string 表
+    var inner_s: table<string> = ["a", "bb"]
+    var t_mixed: table<any> = []
+    var y_i: any = inner_i
+    var y_s: any = inner_s
+    table_push(t_mixed, y_i)
+    table_push(t_mixed, y_s)
+    var m_i = as_table_i64(t_mixed[0])
+    var m_s = as_table_string(t_mixed[1])
+    if bsum == 6 && len(m_i) == 3 && len(m_s) == 2 && m_s[0] == "a" {
+        println("PASS nested")
+    } else {
+        println("FAIL nested bsum=" + to_string(bsum) + " m_i=" + to_string(len(m_i)) + " m_s=" + to_string(len(m_s)))
+        exit(1)
+    }
+    // 5. 更深嵌套：表套表（table<any> 内再装 table<any>）
+    var inner_any: table<any> = [y_i]
+    var x_a: any = inner_any
+    var t_deep: table<any> = []
+    table_push(t_deep, x_a)
+    var back_a = as_table_any(t_deep[0])
+    var inner_back = as_table_i64(back_a[0])
+    var ok_deep: bool = false
+    if len(back_a) == 1 && len(inner_back) == 3 && inner_back[0] == 1 {
+        ok_deep = true
+    }
+    if ok_deep {
+        println("PASS nested_deep")
+    } else {
+        println("FAIL nested_deep")
+        exit(1)
+    }
+}

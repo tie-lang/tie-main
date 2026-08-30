@@ -201,3 +201,20 @@ tests/language 全量正例编译+运行无回归（extern_decl FFI 基线跳过
 **验收**：tests/language/table_any_deep.tie（8 项 PASS）+ tests/_p2b_probe/p2c_*.tie 探针；
 tests/language 全量正例编译+运行 69/69 无回归；P2a/P2b 验收（struct/fn/enum/any 元素表）全过。
 
+# 10. P2d 表/集合标准库（2026-08-30，提交 8f32a05/18cea7d/20e0235）——已实现
+
+在 P1 数据流箭头 + P2b/P2c any 异构表基础上，为表补充集合标准库与嵌套能力：
+
+| 能力 | 实现 |
+|------|------|
+| coll 高阶函数 | std/collection.tie 新增 map_i64/map_string、filter_i64/filter_string、reduce_i64/reduce_string、foreach_i64；**表作末参**（`t -> coll.map(f)` = `coll.map(f, t)` 配合 P1 管道）；fn 值参数走 S2.2 命名函数/闭包 |
+| coll 表操作 | reverse_i64/reverse_string、to_string_i64/to_string_string（`[1, 2, 3]`，空表 `[]`）、join（分隔符连接，空表空串）、sum_i64（空 0）、product_i64（空 1）、max_i64/min_i64（空哨兵 0） |
+| 嵌套 table\<any\> 装箱 | tig_box_any 表/映射分支：tag=精确表/映射类型 id，payload=ptrtoint(表 ptr)——表是引用类型（句柄在指针后），8 字节 payload 直接容纳，**无堆拷贝** |
+| 嵌套 table\<any\> 拆箱 | tig_unbox_any inttoptr 还原表值；运行时 tag 检查（期望=请求表类型 id），不匹配 → 运行时错误退出 |
+| as_table_\* 内置 | as_table_i64/string/bool/f64/char/any 六个（sbuiltin 返回类型 + sinfer_ret 实参必须 any + irgen 拆箱三处登记）；返回 table_of(元素)，精确匹配装箱 tag |
+
+**验收**：tests/language/table_coll_p2d.tie（7 项 PASS：hof/hof_str/pipe/ops/join/nested/nested_deep）
++ 探针 p2d_hof/p2d_ops/p2d_nested/p2d_nested_mismatch（tag 错 → 运行时错误）；
+tests/language 全量正例编译+运行 52/52 无回归；自举（tiec 编译自身 driver.tie）零错误。
+
+

@@ -276,6 +276,23 @@ S1.5 移动语义（提前）──────────────┘      
 - **验收**：tests/language/dataflow_arrow.tie（7 项 PASS）+ 探针 p1_arrow.tie；
   tests/language 全量正例 70/70 无回归
 
+# P2d 表/集合标准库（2026-08-30，提交 8f32a05..20e0235）——已实现
+
+在 P1 数据流箭头 + P2b/P2c any 异构表基础上，为表（table）补充集合标准库与嵌套能力：
+
+- **coll 高阶函数**（std/collection.tie，表作末参配合 P1 管道）：
+  map_i64/map_string、filter_i64/filter_string、reduce_i64/reduce_string、
+  foreach_i64（fn 值参数，S2.2 命名函数/闭包均可传）
+- **coll 表操作**：reverse_i64/reverse_string、to_string_i64/to_string_string（`[1, 2, 3]`）、
+  join（分隔符连接）、sum_i64/product_i64/max_i64/min_i64（空表约定）
+- **嵌套 table\<any\>**（编译器）：tig_box_any 表/映射分支——tag=精确表/映射类型 id，
+  payload=ptrtoint(表 ptr)（引用类型 8 字节直接容纳，无堆拷贝）；
+  tig_unbox_any inttoptr 还原表值 + 运行时 tag 检查（不匹配 → 运行时错误退出）；
+  新增 as_table_i64/string/bool/f64/char/any 六个拆箱内置（sbuiltin/sinfer_ret/irgen 三处登记）
+- **验收**：tests/language/table_coll_p2d.tie（7 项 PASS）+ 探针 p2d_hof/p2d_ops/
+  p2d_nested/p2d_nested_mismatch；tests/language 全量正例编译+运行 52/52 无回归；
+  自举（tiec 编译自身 driver.tie）零错误
+
 ## 验收总则（每单元）
 
 1. 编译零错误（用户核心关注）
