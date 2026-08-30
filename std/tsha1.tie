@@ -459,13 +459,20 @@ func ensure_xdcon() {
     }
 }
 
-// ---- 消息预处理：64 字节块 → 两组 (M,N) 平面 + 24 基调度键（单遍扫描）----
+// ---- 消息预处理：64 字节块 → 两组 (M,N) 平面 + Pw 位平面 + 3 基调度键（单遍扫描）----
 // 越界字节按 0 处理（等价纯零填充 ljust(64,0)）。
-func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64, m1: i64, n1: i64, skey: i64) {
+// 3 为奇数乘子：3^k mod 2^32 恒非零 → 64 位低 3 位全部贡献（原 24^k 在 k≥11 湮灭）。
+func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64, m1: i64, n1: i64, pw: table<i64>, skey: i64) {
     var M0v: i64 = 0
     var N0v: i64 = 0
     var M1v: i64 = 0
     var N1v: i64 = 0
+    var Pw = table_new_i64()
+    var kk: i64 = 0
+    while kk < 16 {
+        table_push(Pw, 0)
+        kk = kk + 1
+    }
     var skey: i64 = 0
     var j: i64 = 0
     while j < 64 {
@@ -485,25 +492,60 @@ func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64,
             tv = 1
         }
         var dig = bits3 * 3 + (tv + 1)
-        skey = (skey * 24 + dig) & 0xFFFFFFFF
-        if tv != 0 {
+        skey = (skey * 3 + dig) & 0xFFFFFFFF
+        if t != 0 {
             var wv = j / 32
             var bit = j % 32
-            if wv == 0 {
-                M0v = M0v | (1 << bit)
-                if tv < 0 {
-                    N0v = N0v | (1 << bit)
+            if t > 0 {
+                if wv == 0 {
+                    M0v = M0v | (1 << bit)
+                } else {
+                    M1v = M1v | (1 << bit)
                 }
             } else {
-                M1v = M1v | (1 << bit)
-                if tv < 0 {
+                if wv == 0 {
+                    N0v = N0v | (1 << bit)
+                } else {
                     N1v = N1v | (1 << bit)
                 }
             }
         }
+        // ★8 位完整注入平面：位 i 平面按 w 分两个 32 位字（16 条），位位置 j&31
+        var biti: i64 = 0
+        while biti < 8 {
+            var pi = biti * 2 + (j / 32)
+            Pw[pi] = Pw[pi] | (((b >> biti) & 1) << (j % 32))
+            biti = biti + 1
+        }
         j = j + 1
     }
-    return (M0v & 0xFFFFFFFF, N0v & 0xFFFFFFFF, M1v & 0xFFFFFFFF, N1v & 0xFFFFFFFF, skey)
+    return (M0v & 0xFFFFFFFF, N0v & 0xFFFFFFFF, M1v & 0xFFFFFFFF, N1v & 0xFFFFFFFF, Pw, skey)
+}
+
+// 位平面吸收（F1-2）：每块一次、compress 轮前调用；16 条 Pw 按锚点字 w%W 平衡加并入 lanes。
+func absorb(lanes: ref table<i64>, Pw: table<i64>, skey: i64, half: bool) {
+    var W = len(lanes) / 2
+    var w: i64 = 0
+    while w < 16 {
+        if Pw[w] != 0 {
+            var a = (w * 5 + ((skey >> (w & 7)) & 7)) & 31
+            var an = w % W
+            var i2 = 2 * an
+            var v: i64 = 0
+            var v2: i64 = 0
+            if half {
+                v = rrp16(Pw[w], a)
+                v2 = rrp16(Pw[w], a + 17)
+            } else {
+                v = rrp(Pw[w], a)
+                v2 = rrp(Pw[w], a + 17)
+            }
+            var (sm, sn) = tadd2(lanes[i2], lanes[i2 + 1], v, v2)
+            lanes[i2] = sm & 0xFFFFFFFF
+            lanes[i2 + 1] = sn & 0xFFFFFFFF
+        }
+        w = w + 1
+    }
 }
 
 // ---- 通用环式扩散（值语义唯一定义；idx 为连续区间 [start, start+L)）----
@@ -643,7 +685,7 @@ func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
               t_lo: i64, t_hi: i64, last: bool,
               iv: table<i64>, rcon: table<i64>, bcon: table<i64>, xdcon: table<i64>, half: bool) {
     var W = len(h)
-    var (M0, N0, M1, N1, skey) = block_planes_skey(msg, pos, nbytes)
+    var (M0, N0, M1, N1, Pw, skey) = block_planes_skey(msg, pos, nbytes)
     var lanes = table_new_i64()
     var i: i64 = 0
     while i < 2 * W {
@@ -673,6 +715,7 @@ func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
         var lk = 2 * ((W / 2) % W) + 1
         lanes[lk] = (lanes[lk] ^ 0xFFFFFFFF) & 0xFFFFFFFF
     }
+    absorb(lanes, Pw, skey, half)   // F1-2：位平面吸收（IV/计数器混入之后、轮循环之前，每块一次）
     // 轨分配（alloc_tracks 退化）：start/len/kind/rate（kind: 0=dual 1=ring 2=sponge 3=lfsr）
     var t_start = table_new_i64()
     var t_len = table_new_i64()

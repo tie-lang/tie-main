@@ -154,29 +154,40 @@ def alloc_tracks(model, W):
 # 消息预处理：单遍 trit 化（planes + skey 一次扫描）
 # ----------------------------------------------------------------------------
 def block_planes_skey(blk):
-    tvs = [0] * 64
     M = [0, 0]
     N = [0, 0]
+    Pw = [0] * 16
     skey = 0
     for j in range(64):
         b = blk[j]
-        bits3 = b & 7
         tf = (b >> 6) & 3
         t = tf - 1
-        tv = -1 if t < 0 else (0 if t == 0 else 1)
-        tvs[j] = tv
-        dig = bits3 * 3 + (tv + 1)
-        skey = (skey * 24 + dig) & M32
-    for p in range(64):
-        tv = tvs[p]
-        if tv == 0:
+        if t != 0:
+            w = j >> 5
+            p = j & 31
+            if t > 0:
+                M[w] |= (1 << p)
+            else:
+                N[w] |= (1 << p)
+        dig = (b & 7) * 3 + (t + 1)
+        skey = (skey * 3 + dig) & M32     # ★3 为奇数乘子：3^k mod 2^32 恒非零 → 64 位低 3 位全部贡献
+        for biti in range(8):
+            Pw[biti * 2 + (j >> 5)] |= ((b >> biti) & 1) << (j & 31)   # ★8 位完整注入平面（16 条 32 位字）
+    return M[0], N[0], M[1], N[1], Pw, skey
+
+# 位平面吸收（F1-2）：每块一次、compress 轮前调用；16 条 Pw 按锚点字 w%W 平衡加并入 lanes。
+def absorb(lanes, Pw, skey, half):
+    for w in range(16):
+        if Pw[w] == 0:
             continue
-        w = p // 32
-        bit = p % 32
-        M[w] |= (1 << bit)
-        if tv < 0:
-            N[w] |= (1 << bit)
-    return M, N, skey, tvs
+        a = (w * 5 + ((skey >> (w & 7)) & 7)) & 31
+        an = (w % (len(lanes) // 2))            # 锚点字 w%W（<W 时确定叠加）
+        i2 = 2 * an
+        v = rrp16(Pw[w], a) if half else rrp(Pw[w], a)
+        v2 = rrp16(Pw[w], a + 17) if half else rrp(Pw[w], a + 17)
+        s = tadd2(lanes[i2], lanes[i2 + 1], v, v2)
+        lanes[i2] = s[0] & M32
+        lanes[i2 + 1] = s[1] & M32
 
 # ----------------------------------------------------------------------------
 # 通用环式扩散（值语义的唯一定义）
@@ -294,8 +305,7 @@ def fin_synth(h, half):
 # ----------------------------------------------------------------------------
 def compress(model, h, blk, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half):
     W = len(h)
-    Mp, Np, skey, _ = block_planes_skey(blk)
-    M0, N0, M1, N1 = Mp[0], Np[0], Mp[1], Np[1]
+    M0, N0, M1, N1, Pw, skey = block_planes_skey(blk)
     lanes = [0] * (2 * W)
     mplan = (0xFFFF if half else M32)
     for i in range(W):
@@ -310,6 +320,8 @@ def compress(model, h, blk, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half):
     if last:
         lk = 2 * ((W // 2) % W) + 1
         lanes[lk] = (lanes[lk] ^ M32) & M32
+
+    absorb(lanes, Pw, skey, half)   # F1-2：位平面吸收（IV/计数器混入之后、轮循环之前，每块一次）
 
     tracks = alloc_tracks(model, W)
     R = {'f': 12, 'r': 8, 'b': 14, 'x': 16}[model]
