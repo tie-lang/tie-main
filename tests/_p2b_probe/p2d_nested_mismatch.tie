@@ -1,0 +1,9 @@
+type tie<logic>
+// P2d-T3 负例：拆箱 tag 不匹配 → 运行时错误（box table<i64>，拆箱 table<string>）
+
+func main() {
+    var inner_i: table<i64> = [1, 2]
+    var x: any = inner_i
+    var wrong = as_table_string(x)
+    println(len(wrong))
+}

@@ -270,6 +270,14 @@ func tig_box_any(v: i64, vty: i64) -> i64 {
         ir.add_operand(pi2, hp, 0)
         pv = ir.get_value(pi2)
         pty = T64
+    } else if types.is_table(vty) || types.is_map(vty) {
+        // P2d 嵌套表：table/map 值是 ptr（引用类型，句柄在指针后）——tag =
+        // 表/映射类型 id，payload = ptrtoint(表 ptr)（8 字节直接容纳，无需堆拷贝）
+        tag = vty
+        var pi3 = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint → i64
+        ir.add_operand(pi3, v, 0)
+        pv = ir.get_value(pi3)
+        pty = T64
     } else {
         sm_err_msg = "any 装箱暂不支持类型 " + types.type_name(vty) + "（函数 " + g_cur_fn_name + "）"
         return -1
@@ -330,7 +338,7 @@ func tig_map_any_heapbox(v: i64, vty: i64) -> i64 {
 func tig_unbox_any(v: i64, vty: i64, fname: string) -> i64 {
     var any_ty = types.named(TK_ANY)
     var T64 = types.named(TK_I64)
-    // 期望 tag（与 tig_box_any 对称）
+    // 期望 tag（与 tig_box_any 对称）：标量族 0-4；复合/表/映射 = 类型 id
     var exp_tag: i64 = 0
     if vty == types.named(TK_STR) {
         exp_tag = 3
@@ -340,6 +348,9 @@ func tig_unbox_any(v: i64, vty: i64, fname: string) -> i64 {
         exp_tag = 2
     } else if vty == types.named(TK_CHAR) {
         exp_tag = 4
+    } else if types.is_table(vty) || types.is_map(vty) {
+        // P2d 嵌套表：tag = 表/映射类型 id（payload 存 ptrtoint）
+        exp_tag = vty
     }
     // payload 槽 LLVM 类型：f64 存 double、string 存 ptr；bool/char/i64 存 i64
     var plty: i64 = T64
@@ -397,6 +408,12 @@ func tig_unbox_any(v: i64, vty: i64, fname: string) -> i64 {
     var ld1 = ir.new_inst(g_cur_block, 21, plty)
     ir.add_operand(ld1, g1p, 0)
     var pv = ir.get_value(ld1)
+    // P2d 嵌套表：payload 是 ptrtoint(表 ptr) → inttoptr 还原为表值（ptr）
+    if types.is_table(vty) || types.is_map(vty) {
+        var ip2 = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr
+        ir.add_operand(ip2, pv, 0)
+        pv = ir.get_value(ip2)
+    }
     if vty == types.named(TK_BOOL) {
         var tr = ir.new_inst(g_cur_block, 37, types.named(TK_BOOL))  // trunc i64→i1
         ir.add_operand(tr, T64, 2)

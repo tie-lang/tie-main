@@ -416,7 +416,10 @@ func is_builtin_name(nm: string) -> bool {
         return true
     }
     // P2b：any 拆箱转换（运行时 tag 检查；不匹配 → 运行时错误）
-    if nm == "as_i64" || nm == "as_f64" || nm == "as_bool" || nm == "as_string" || nm == "as_char" {
+    // P2d：as_table_* 拆箱为元素化表（tag = 精确表类型 id，须与装箱时一致）
+    if nm == "as_i64" || nm == "as_f64" || nm == "as_bool" || nm == "as_string" || nm == "as_char" ||
+        nm == "as_table_i64" || nm == "as_table_string" || nm == "as_table_bool" ||
+        nm == "as_table_f64" || nm == "as_table_char" || nm == "as_table_any" {
         return true
     }
     // P2c：any 运行时辅助——any_tag(x) 读 {tag,payload} 的 tag 字段
@@ -1619,8 +1622,11 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return 0
     }
     // P2b：any 拆箱（as_bool/as_string/as_char——仅 any 参数；as_i64/as_f64
-    // 已在上方 as_dst 块重载处理）。运行时 tag 检查，不匹配 → 运行时错误退出
-    if nm == "as_bool" || nm == "as_string" || nm == "as_char" {
+    // 已在上方 as_dst 块重载处理）。P2d：as_table_* 拆箱为对应元素类型表
+    //（返回表值 ptr，tag = 精确表类型 id，与装箱时的 tag 一致才匹配）。
+    if nm == "as_bool" || nm == "as_string" || nm == "as_char" ||
+        nm == "as_table_i64" || nm == "as_table_string" || nm == "as_table_bool" ||
+        nm == "as_table_f64" || nm == "as_table_char" || nm == "as_table_any" {
         var a0 = call_arg(id, 0)
         var av = tig_expr(a0)
         if av < 0 {
@@ -1635,6 +1641,18 @@ func builtin_expr(nm: string, id: i64) -> i64 {
             rty = types.named(TK_STR)
         } else if nm == "as_char" {
             rty = types.named(TK_CHAR)
+        } else if nm == "as_table_i64" {
+            rty = types.table_of(types.named(TK_I64))
+        } else if nm == "as_table_string" {
+            rty = types.table_of(types.named(TK_STR))
+        } else if nm == "as_table_bool" {
+            rty = types.table_of(types.named(TK_BOOL))
+        } else if nm == "as_table_f64" {
+            rty = types.table_of(types.named(TK_F64))
+        } else if nm == "as_table_char" {
+            rty = types.table_of(types.named(TK_CHAR))
+        } else if nm == "as_table_any" {
+            rty = types.table_of(types.named(TK_ANY))
         }
         var ux = tig_unbox_any(av, rty, nm)
         if ux < 0 {

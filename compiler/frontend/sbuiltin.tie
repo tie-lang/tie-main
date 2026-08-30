@@ -191,8 +191,11 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         return types.named(TK_I64)
     }
     // P2b：any 拆箱转换（as_*：1 参 any → 具体类型；实参类型由调用点检查）
+    // P2d：as_table_* 拆箱为元素化表（返回 table_of(元素)，tag = 精确表类型 id）
     if fn_name == "as_i64" || fn_name == "as_f64" || fn_name == "as_bool" ||
-        fn_name == "as_string" || fn_name == "as_char" {
+        fn_name == "as_string" || fn_name == "as_char" ||
+        fn_name == "as_table_i64" || fn_name == "as_table_string" || fn_name == "as_table_bool" ||
+        fn_name == "as_table_f64" || fn_name == "as_table_char" || fn_name == "as_table_any" {
         if nargs != 1 {
             sm_err_line = s_lines[call_node]
             sm_err_col = s_cols[call_node]
@@ -210,6 +213,24 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         if fn_name == "as_char" {
             return types.named(TK_CHAR)
+        }
+        if fn_name == "as_table_i64" {
+            return types.table_of(types.named(TK_I64))
+        }
+        if fn_name == "as_table_string" {
+            return types.table_of(types.named(TK_STR))
+        }
+        if fn_name == "as_table_bool" {
+            return types.table_of(types.named(TK_BOOL))
+        }
+        if fn_name == "as_table_f64" {
+            return types.table_of(types.named(TK_F64))
+        }
+        if fn_name == "as_table_char" {
+            return types.table_of(types.named(TK_CHAR))
+        }
+        if fn_name == "as_table_any" {
+            return types.table_of(types.named(TK_ANY))
         }
         return types.named(TK_I64)
     }

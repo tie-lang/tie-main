@@ -1,0 +1,50 @@
+type tie<logic>
+// P2d-T3 验收：嵌套 table<any>——表入 any 装箱 + as_table_* 拆箱
+// 流程：内层表（i64/string/any）→ 装箱进 any → 推入外层 table<any>
+//       → 下标取出 any → as_table_* 拆箱还原 → 逐元素校验。
+
+func main() {
+    // 1. 内层 i64 表装箱入 table<any>，拆箱还原
+    var inner_i: table<i64> = [1, 2, 3]
+    var t_any: table<any> = []
+    var x_i: any = inner_i
+    table_push(t_any, x_i)
+    // 下标读出 any → 拆箱为 table<i64>
+    var back_i = as_table_i64(t_any[0])
+    println(len(back_i))
+    var i: i64 = 0
+    while i < len(back_i) {
+        println(back_i[i])
+        i = i + 1
+    }
+
+    // 2. 内层 string 表装箱入 table<any>，拆箱还原
+    var inner_s: table<string> = ["a", "bb"]
+    var x_s: any = inner_s
+    table_push(t_any, x_s)
+    var back_s = as_table_string(t_any[1])
+    i = 0
+    while i < len(back_s) {
+        println(back_s[i])
+        i = i + 1
+    }
+
+    // 3. 异构：同一外层表同时装 i64 表与 string 表（tag 各自精确匹配）
+    var y_i: any = inner_i
+    var y_s: any = inner_s
+    var t_mixed: table<any> = [y_i, y_s]
+    var m_i = as_table_i64(t_mixed[0])
+    println(len(m_i))
+    var m_s = as_table_string(t_mixed[1])
+    println(len(m_s))
+
+    // 4. 内层 table<any>（更深嵌套：表套表）
+    var inner_any: table<any> = [y_i]
+    var x_a: any = inner_any
+    table_push(t_any, x_a)
+    var back_a = as_table_any(t_any[2])
+    println(len(back_a))
+    var inner_back = as_table_i64(back_a[0])
+    println(len(inner_back))
+    println(inner_back[0])
+}

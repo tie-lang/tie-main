@@ -404,7 +404,9 @@ pub func infer_call(id: i64) -> i64 {
         // 数字参数 → 数值转换；any 参数 → 拆箱（运行时 tag 检查）。
         // as_bool/as_string/as_char 仅支持 any（无数值转换语义）。
         var as_is_any_only: bool = false
-        if fnm == "as_bool" || fnm == "as_string" || fnm == "as_char" {
+        if fnm == "as_bool" || fnm == "as_string" || fnm == "as_char" ||
+            fnm == "as_table_i64" || fnm == "as_table_string" || fnm == "as_table_bool" ||
+            fnm == "as_table_f64" || fnm == "as_table_char" || fnm == "as_table_any" {
             as_is_any_only = true
         }
         if fnm == "as_i8" || fnm == "as_i16" || fnm == "as_i32" || fnm == "as_i64" ||
