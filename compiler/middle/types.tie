@@ -88,6 +88,9 @@ const TK_MAP: i64 = 20;
 // 新类型索引 < 100 不破坏编码；tykw_names 按索引对齐（见 ensure_tykw_names）。
 const TK_I128: i64 = 21;
 const TK_U128: i64 = 22;
+// P2b（2026-08-30）异构表动态元素类型：`any` = {tag, payload} 16 字节值类型。
+// LLVM 表示 = {i64, i64}（tag + payload）；标量 ≤8B 存 payload，复合堆装箱。
+const TK_ANY: i64 = 23;
 
 // 高位基数常量（= 1<<40 / 2<<40 / 3<<40 / 4<<40 / 5<<40 / 6<<40，
 // 写死字面量避免运行期位移）
@@ -742,6 +745,8 @@ func ensure_tykw_names() {
     // 批次 2（i128/u128）：索引 21/22 对齐 TK_I128/TK_U128
     table_push(tykw_names, "i128")
     table_push(tykw_names, "u128")
+    // P2b：索引 23 对齐 TK_ANY（异构表动态元素类型）
+    table_push(tykw_names, "any")
 }
 
 // 类型 id -> 名字（递归）：Named 查 tykw_names；Table/Map 递归

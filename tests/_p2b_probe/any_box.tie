@@ -1,0 +1,14 @@
+type tie<logic>
+// P2b 探针：any 装箱 + 异构表（T2）
+func main() {
+    var x: any = 1
+    var f: any = 3.14
+    var s: any = "hi"
+    var b: any = true
+    var t: table<any> = [1, "a", true, 2.5]
+    println(len(t))          // 4
+    var u: table<any> = []
+    table_push(u, 42)
+    table_push(u, "xyz")
+    println(len(u))          // 2
+}

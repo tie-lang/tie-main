@@ -590,6 +590,9 @@ func type_byte_size(t: i64) -> i64 {
     if k == K_SLICE {
         return 16  // {ptr, i64}
     }
+    if t == types.named(TK_ANY) {
+        return 16  // P2b 动态元素：{tag: i64, payload: i64}
+    }
     if t == types.named(TK_BOOL) {
         return 1
     }

@@ -626,6 +626,7 @@ pub func typekw_index(s: string) -> i64 {
         case "map": return 20
         case "i128": return 21
         case "u128": return 22
+        case "any": return 23
         default: return -1
     }
 }

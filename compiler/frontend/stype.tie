@@ -244,6 +244,10 @@ pub func types_compatible(a: i64, b: i64) -> bool {
     if b == TK_TEXT && (a == TK_STR || a == TK_CHAR) {
         return true
     }
+    // P2b any 动态类型：目标侧接受一切（装箱）；反向（any→具体）须显式转换
+    if a == TK_ANY {
+        return true
+    }
     if a == TK_MISC && !types.is_wide(b) {
         return true
     }

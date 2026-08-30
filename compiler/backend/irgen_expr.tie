@@ -1655,8 +1655,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         var pty = types.named(TK_I64)
         var vt = node_types[call_arg(id, 1)]
         var ek = types.kind(elem)
-        if ek == K_STRUCT || ek == K_ENUM || ek == K_FN {
-            // P2a 复合元素：槽类型 = 元素类型 id（多字元素类型化 store）
+        if ek == K_STRUCT || ek == K_ENUM || ek == K_FN || elem == types.named(TK_ANY) {
+            // P2a/P2b 复合元素：槽类型 = 元素类型 id（多字元素类型化 store）
             pty = elem
         } else if vt >= 0 && (types.is_table(vt) || types.is_map(vt) || vt == types.named(TK_STR)) {
             suffix = "string"
@@ -1668,6 +1668,17 @@ func builtin_expr(nm: string, id: i64) -> i64 {
             pty = types.named(TK_STR)
         } else if suffix == "bool" {
             pty = types.named(TK_BOOL)
+        }
+        if pty == types.named(TK_ANY) {
+            // P2b 异构元素装箱：推入值 → any {tag, payload}
+            var vt4 = node_types[call_arg(id, 1)]
+            if vt4 >= 0 && vt4 != types.named(TK_ANY) {
+                var bx = tig_box_any(x, vt4)
+                if bx < 0 {
+                    return -1
+                }
+                x = bx
+            }
         }
         s21_table_push(t, pty, x)
         g_builtin_res = tig_int_lit(0)  // void 结果：哑值（调用方丢弃）

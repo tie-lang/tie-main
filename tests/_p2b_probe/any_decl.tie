@@ -1,0 +1,6 @@
+type tie<logic>
+// P2b 探针：any 类型声明
+func main() {
+    var x: any = 1
+    println(len("x"))
+}

@@ -939,10 +939,9 @@ pub func infer_expr(id: i64) -> i64 {
                 elem_ty = vt
             } else {
                 if vt != elem_ty && !(types.is_int(vt) && types.is_int(elem_ty)) && !(types.is_float(vt) && types.is_float(elem_ty)) {
-                    sm_err_line = s_lines[id]
-                    sm_err_col = s_cols[id]
-                    sm_err_msg = "表元素类型不一致：" + types.type_name(elem_ty) + " 与 " + types.type_name(vt)
-                    return -1
+                    // P2b 异构元素：类型不一致（非同类收窄）→ 推断为 any 动态
+                    // 类型（`[1, "a", true]` → table<any>；装箱在 irgen 层完成）
+                    elem_ty = types.named(TK_ANY)
                 }
             }
             i3 = i3 + 1

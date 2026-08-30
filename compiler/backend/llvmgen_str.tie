@@ -44,6 +44,10 @@ func llvm_ty(t: i64) -> string {
         // udiv/icmp 均类型参数化，llvm_ty 映射后自动支持）
         return "i128"
     }
+    if t == TK_ANY {
+        // P2b 动态元素：{tag: i64, payload: i64}（16 字节值类型）
+        return "{ i64, i64 }"
+    }
     if t == TK_F32 {
         return "float"
     }

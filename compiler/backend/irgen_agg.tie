@@ -216,6 +216,69 @@ func tig_field_assign(id: i64) -> i64 {
     return 0
 }
 
+// P2b 装箱：具体值 v（vty）→ any {tag, payload} 16 字节值。
+// tag 约定：0=i64/整数 1=f64 2=bool 3=string 4=char（payload 直接存/
+// type-punned；bool/char/窄整数提升为 i64）。复合类型暂不支持（报错）。
+// 拆箱由 as_*（T3）与 switch 类型匹配（T4）按 tag 提取。
+func tig_box_any(v: i64, vty: i64) -> i64 {
+    var any_ty = types.named(TK_ANY)
+    var T64 = types.named(TK_I64)
+    var slot = ir.new_inst(g_cur_block, 20, any_ty)  // alloca {i64,i64}
+    ir.add_operand(slot, any_ty, 2)
+    var sp = ir.get_value(slot)
+    var tag: i64 = 0
+    var pv: i64 = v
+    var pty: i64 = T64
+    if vty == types.named(TK_STR) {
+        tag = 3
+        pty = types.named(TK_STR)  // 存 ptr（type-punned 进 i64 槽）
+    } else if vty == types.named(TK_F64) {
+        tag = 1
+        pty = types.named(TK_F64)  // 存 double（8 字节 type-punned）
+    } else if vty == types.named(TK_BOOL) {
+        tag = 2
+        pv = s21_zext(v, types.named(TK_BOOL))  // i1 → i64
+    } else if vty == types.named(TK_CHAR) {
+        tag = 4
+        pv = s21_zext(v, types.named(TK_CHAR))  // i32 → i64
+    } else if types.is_int(vty) {
+        tag = 0
+        if vty != T64 {
+            pv = s21_zext(v, vty)  // 窄整数 → i64
+        }
+    } else {
+        sm_err_msg = "any 装箱暂不支持类型 " + types.type_name(vty) + "（函数 " + g_cur_fn_name + "）"
+        return -1
+    }
+    // tag 常量须先于 store 生成：ir_ops 是全局线性缓冲，指令操作数切片由
+    // (ops_off, cnt) 界定——若内联调用 tig_int_lit_ty（其内部 add_operand 也会
+    // 推入 ir_ops），会交错进 s0 的操作数切片，导致 tag store 值/地址错位
+    //（曾生成 `store i64 0, ptr %const_i` 前向引用错误）。对齐 tig_enum_construct
+    // 的同款正确写法：常量先存变量，再逐项 add_operand。
+    var tagv = tig_int_lit_ty(tag, T64)
+    // tag @ [0]
+    var g0 = ir.new_inst(g_cur_block, 27, any_ty)  // agg_gep 字段 0
+    ir.add_operand(g0, sp, 0)
+    ir.add_operand(g0, 0, 2)
+    var g0p = ir.get_value(g0)
+    var s0 = ir.new_inst(g_cur_block, 22, -1)  // store tag
+    ir.add_operand(s0, T64, 2)
+    ir.add_operand(s0, tagv, 0)
+    ir.add_operand(s0, g0p, 0)
+    // payload @ [1]
+    var g1 = ir.new_inst(g_cur_block, 27, any_ty)  // agg_gep 字段 1
+    ir.add_operand(g1, sp, 0)
+    ir.add_operand(g1, 1, 2)
+    var s1 = ir.new_inst(g_cur_block, 22, -1)  // store payload
+    ir.add_operand(s1, pty, 2)
+    ir.add_operand(s1, pv, 0)
+    ir.add_operand(s1, ir.get_value(g1), 0)
+    // load any 值
+    var ld = ir.new_inst(g_cur_block, 21, any_ty)
+    ir.add_operand(ld, sp, 0)
+    return ir.get_value(ld)
+}
+
 // struct 名判定（构造调用：Call 名命中 st_keys）
 func is_struct_name(nm: string) -> bool {
     var nid = interner.intern(nm)
@@ -603,23 +666,24 @@ func tig_table_lit(id: i64) -> i64 {
         return s21_map_new()
     }
     var elem: i64 = types.named(TK_I64)
-    if nc > 0 {
-        var cell = sstate.child(id, 0)
-        var val = sstate.child(cell, 1)
-        var vt = node_types[val]
-        if vt >= 0 {
-            elem = vt
+    // P2b 异构表：字面量语义类型（sinfer 已登记 node_types[id] = table<elem>）
+    // 是元素类型的权威来源——`[1,"a",true]` → table<any>，取 elem=any 使逐
+    // 元素装箱分支命中；若只按首元素推断会取 i64，bool/string 元素跳过装箱
+    //（`store i64 %i1` 类型错）。空表 `[]` 的 esz 也由此获得（曾 i64=8 兜底，
+    // 复合元素多字 esz 不匹配 → 越界写崩溃）。未登记/非参数化才回退首元素。
+    var lit_ty2 = node_types[id]
+    if types.is_table(lit_ty2) {
+        var le2 = types.table_elem(lit_ty2)
+        if le2 > 0 {
+            elem = le2
         }
-    } else {
-        // P2a 空表 `[]`：按声明元素类型取 esz（node_types[id] = table<T>）。
-        // 曾 i64=8 兜底——复合元素（struct/enum/fn 多字）esz 不匹配 → 后续
-        // push 用编译期 esz 而容器按 8 字节槽扩容/寻址 → 越界写崩溃。
-        var lit_ty = node_types[id]
-        if types.is_table(lit_ty) {
-            var le = types.table_elem(lit_ty)
-            if le > 0 {
-                elem = le
-            }
+    }
+    if elem == types.named(TK_I64) && nc > 0 {
+        var cell0 = sstate.child(id, 0)
+        var val0 = sstate.child(cell0, 1)
+        var vt0 = node_types[val0]
+        if vt0 >= 0 {
+            elem = vt0
         }
     }
     var size = elem_size(elem)
@@ -650,9 +714,9 @@ func tig_table_lit(id: i64) -> i64 {
         var suffix = bridge_suffix(elem)
         var pty = types.named(TK_I64)
         var elem_k = types.kind(elem)
-        if elem_k == K_STRUCT || elem_k == K_ENUM || elem_k == K_FN {
-            // P2a 复合元素：槽类型 = 元素类型 id（llvmgen 映射 %struct.X/%enum.X/
-            // %fn.N），类型化 store/load 多字元素；esz 由 elem_size 精确计算。
+        if elem_k == K_STRUCT || elem_k == K_ENUM || elem_k == K_FN || elem == types.named(TK_ANY) {
+            // P2a/P2b 复合元素：槽类型 = 元素类型 id（llvmgen 映射 %struct.X/%enum.X/
+            // %fn.N / {i64,i64}），类型化 store/load 多字元素；esz 由 elem_size 精确计算。
             pty = elem
         } else if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
             suffix = "string"
@@ -669,6 +733,17 @@ func tig_table_lit(id: i64) -> i64 {
                 pty = types.named(TK_STR)
             } else if suffix == "bool" {
                 pty = types.named(TK_BOOL)
+            }
+        }
+        if pty == types.named(TK_ANY) {
+            // P2b 异构元素装箱：元素值 → any {tag, payload}
+            var vt2 = node_types[val]
+            if vt2 >= 0 && vt2 != types.named(TK_ANY) {
+                var bx = tig_box_any(v, vt2)
+                if bx < 0 {
+                    return -1
+                }
+                v = bx
             }
         }
         s21_table_push(t, pty, v)

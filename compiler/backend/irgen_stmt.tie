@@ -121,7 +121,7 @@ func tig_index_read(id: i64) -> i64 {
     // P2a 复合元素（struct/enum/fn）：返回类型 = 元素类型 id（多字元素类型化
     // load，供字段访问/方法调用/整体使用）
     var ekind2 = types.kind(elem)
-    if ekind2 == K_STRUCT || ekind2 == K_ENUM || ekind2 == K_FN {
+    if ekind2 == K_STRUCT || ekind2 == K_ENUM || ekind2 == K_FN || elem == types.named(TK_ANY) {
         ret_ty = elem
     } else if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
         suffix = "string"
@@ -272,7 +272,7 @@ func tig_index_assign(id: i64) -> i64 {
     var pty = types.named(TK_I64)
     // P2a 复合元素：槽类型 = 元素类型 id（多字元素类型化 store/load）
     var elem_k2 = types.kind(elem)
-    if elem_k2 == K_STRUCT || elem_k2 == K_ENUM || elem_k2 == K_FN {
+    if elem_k2 == K_STRUCT || elem_k2 == K_ENUM || elem_k2 == K_FN || elem == types.named(TK_ANY) {
         pty = elem
     } else if types.kind(elem) == K_PORT {
         // S2.4：port 对象元素（table<Drawable>）存 ptr → set_string 桥
@@ -309,6 +309,17 @@ func tig_index_assign(id: i64) -> i64 {
         v = tig_expr(val)
         if v < 0 {
             return -1
+        }
+    }
+    // P2b 异构元素装箱：表<any> 下标写，值须 box 为 any
+    if pty == types.named(TK_ANY) {
+        var vt6 = node_types[val]
+        if vt6 >= 0 && vt6 != types.named(TK_ANY) {
+            var bx = tig_box_any(v, vt6)
+            if bx < 0 {
+                return -1
+            }
+            v = bx
         }
     }
     s21_table_set(t, iv, pty, v)  // 下标写：越界静默跳过（不追加）
@@ -773,7 +784,12 @@ func tig_stmt(id: i64) -> i64 {
                 // FloatLit 适配 f32 声明：按 f32 生成常量（S1.3，默认 f64）
                 iv = tig_float_lit_ty(s_names[init], types.named(TK_F32))
             } else if s_tags[init] == 0 {
-                iv = tig_int_lit_ty(s_vals[init], ty)
+                // P2b：any 声明的整数字面量先按 i64 生成，装箱在后续统一处理
+                var lit_ty = ty
+                if lit_ty == types.named(TK_ANY) {
+                    lit_ty = types.named(TK_I64)
+                }
+                iv = tig_int_lit_ty(s_vals[init], lit_ty)
             } else if s_tags[init] == 14 && types.kind(ty) == K_TUPLE {
                 // 元组字面量 + 元组类型标注：按目标类型构造（(i32,i64) 标注 +
                 // (7,8) 字面量——语义层推断字面量为 (i64,i64)，不按目标类型
@@ -798,6 +814,17 @@ func tig_stmt(id: i64) -> i64 {
             }
             if iv < 0 {
                 return -1
+            }
+            // P2b any 装箱：声明类型 any 且初始化值是具体类型 → box 为 {tag,payload}
+            if ty == types.named(TK_ANY) {
+                var it5 = node_types[init]
+                if it5 >= 0 && it5 != types.named(TK_ANY) {
+                    var bx = tig_box_any(iv, it5)
+                    if bx < 0 {
+                        return -1
+                    }
+                    iv = bx
+                }
             }
             var store = ir.new_inst(g_cur_block, 22, -1)  // store
             ir.add_operand(store, ty, 2)
@@ -1471,7 +1498,7 @@ func tig_for_table(id: i64, iter: i64, body: i64) -> i64 {
     var elem_llvm_ty = types.named(TK_I64)
     // P2a 复合元素（struct/enum/fn）：循环变量类型 = 元素类型 id（多字元素）
     var fk2 = types.kind(elem)
-    if fk2 == K_STRUCT || fk2 == K_ENUM || fk2 == K_FN {
+    if fk2 == K_STRUCT || fk2 == K_ENUM || fk2 == K_FN || elem == types.named(TK_ANY) {
         elem_llvm_ty = elem
     } else if types.is_table(elem) || types.is_map(elem) || types.kind(elem) == K_PORT {
         suffix = "string"
