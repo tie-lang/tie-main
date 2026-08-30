@@ -73,6 +73,9 @@ var tsha_rrcon: table<i64>;   // tsha1r 轮常量（16 个 32 位字）
 var tsha_biv: table<i64>;     // tsha1b IV（8 个 32 位字）
 var tsha_brcon: table<i64>;   // tsha1b 轮常量（16 个 32 位字）
 var tsha_bscon: table<i64>;   // tsha1b 海绵轨轮常量（16 个 32 位字，§2.2）
+var tsha_xiv: table<i64>;     // tsha1x IV（8 个 32 位字，§3.4 独立 x 常量族）
+var tsha_xrcon: table<i64>;   // tsha1x 轨 A/B 轮常量（16 个 32 位字，§3.4）
+var tsha_xdcon: table<i64>;   // tsha1x 轨 D（LFSR）轮常量（16 个 32 位字，§3.3/§3.4）
 
 namespace tsha {
 
@@ -782,6 +785,49 @@ func ensure_bscon() {
     }
 }
 
+// tsha1x IV（8 个 32 位字，独立 x 常量族前 8 字；§3.4）。
+// 派生：SEED_X = "TSHA1-2026-x-256-v1"，SHA-256(SEED_X || u64be(k)) 计数器流取前 8 字。
+func ensure_xiv() {
+    if len(tsha_xiv) > 0 {
+        return
+    }
+    var hs = "d34fedc1c5edd4e0be1a07f00ff130a4ed184e7073f63944802c2725e000be1b"
+    var i: i64 = 0
+    while i < 8 {
+        table_push(tsha_xiv, parse_hex32(substr(hs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+// tsha1x 轨 A/B 轮常量（16 个 32 位字，SEED_X 扩展第 8..23 字，位于 IV 之后；§3.4）。
+func ensure_xrcon() {
+    if len(tsha_xrcon) > 0 {
+        return
+    }
+    var cs = "538c1260d3b124748a9865f37080f89716606bd6af06efb3448f5ad1295aa23f" +
+             "7a91d48bd0e14aa0ffbcab9cc01e6237b60d55d084117caa74e7a2faa4ef02d6"
+    var i: i64 = 0
+    while i < 16 {
+        table_push(tsha_xrcon, parse_hex32(substr(cs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+// tsha1x 轨 D（LFSR）轮常量（16 个 32 位字，独立种子扩展第 0..15 字；§3.3/§3.4）。
+// 派生：SEED_XD = "TSHA1-2026-x-lfsr-v1"，SHA-256(SEED_XD || u64be(k)) 计数器流取前 16 字。
+func ensure_xdcon() {
+    if len(tsha_xdcon) > 0 {
+        return
+    }
+    var cs = "c27f115d80045f70a110c54f0a340f344c91b8de5fdd796ab79a5f02be75d471" +
+             "9c4e5b6ccd46f13a0025f5963671e43b97afdbbb546dbf65441798434c5a6e43"
+    var i: i64 = 0
+    while i < 16 {
+        table_push(tsha_xdcon, parse_hex32(substr(cs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
 // 平衡三进制（balanced mod 3）两位 trit 相加，位切片实现（无进位，作扩散混合）。
 // 入参/出参均为位平面 (M 幅值, N 符号)，运算全走 &/^/|/<<（~ 用 xor 掩码替代，保 i64 正）。
 func tadd2(Ma: i64, Na: i64, Mb: i64, Nb: i64) -> (mo: i64, no: i64) {
@@ -1068,54 +1114,281 @@ pub func tsha1b_hex(msg: string) -> string {
     return digest_b(msg)
 }
 
-// ---- tsha1x-256（加强模型，f+b 排列组合再算）----
-// 设计（docs/superpowers/specs/2026-08-29-plugin-kernel-design.md §6.6）：
-//   对 f 与 b 的输出做多次排列组合再计算：首状态 = digest_f(msg) ‖ digest_b(msg)
-//   （128 hex），随后 NX=6 轮固定排列混合（排列表见下），每轮对上一 hex 状态再分别做
-//   digest_f 与 digest_b，并按排列表 pick 其 16-hex 四分重新拼接回 64-hex 状态，最终
-//   取 256 位（64 hex）。设计自由度在"排列组合次数/序"，全部固定、可复现。
-//   排列组合表 PATT（行=轮，列=拼接位置，u 取 digest_f 的四分、w 取 digest_b 的四分，
-//   四分索引 0..3 = hex[16k..16k+16)）：
-//     u0 w0 u1 w1 | w2 u2 w3 u3 | u3 u0 w2 w1 | w0 u1 w3 u2 | u2 w1 u0 w3 | w0 u3 w2 u1
-//   复现：tests/tsha_probe/gen_tsha1bx.py。输出 256 位（32 字节 → b48 46 字符）。
+// ---- tsha1x-256（加强模型，四轨独立重构 + 最后综合）----
+// 设计（docs/superpowers/specs/2026-08-30-tsha1-tri-quad-track-design.md §3）：
+//   脱胎于 f/b 排列组合，独立重构为四轨并行（R_X=16 轮，四模型最高），工作状态 v[0..31]：
+//     · 轨 A（v[0..7]）与轨 B（v[8..15]）：三进制位平面双轨（复用 f/b 压缩器同构，
+//       常量用独立 x 常量族 tsha_xiv/tsha_xrcon，SEED_X = "TSHA1-2026-x-256-v1"）；
+//     · 轨 C（v[16..23]）：海绵轨（rate=v[16..19]、capacity=v[20..23]，复用 §2 海绵语义，
+//       常量复用 SEED_S 的 tsha_bscon）；
+//     · 轨 D（v[24..27]，v[28..31] 保留综合暂存）：LFSR 反馈移位轨（第四种算法，
+//       反馈 ⊕ 量化门 quant3 复合去线性化），常量 tsha_xdcon（SEED_XD = "TSHA1-2026-x-lfsr-v1"）；
+//   末段：四轨状态投影折叠 → fin_synth_x（S=4 一体化收束终筛）→ 64 hex（32 字节）。
+//   复现：tests/tsha_probe/gen_tsha1x.py。输出 256 位（32 字节 → b48 46 字符）。
 //   向量（与 f/b 模型独立，确定性自检）：tests/tsha_probe/tsha1x_probe.tie。
 
-// tsha1x-256 内部哈希：f+b 排列组合（NX=6 轮，固定排列表）。
-func digest_x(msg: string) -> string {
-    // 固定排列组合表（24 个 pick，行主序，每行 = "u?"/"w?" 拼接返回 64 hex）
-    var patt = "u0w0u1w1w2u2w3u3u3u0w2w1w0u1w3u2u2w1u0w3w0u3w2u1"
-    var state = digest_f(msg) + digest_b(msg)      // 首状态 128 hex
+// 单 64 字节块压缩（四轨并行：轨 A/B 三进制双轨 + 轨 C 海绵 + 轨 D LFSR）。
+// 末块（last=True）时把海绵 capacity v[20..23] 填回 sp（4 字），供 digest 终筛前折回链值。
+func compress_x(h: ref table<i64>, msg: string, n: i64, off: i64, t_lo: i64, t_hi: i64, last: bool, sp: table) {
+    var (M0, N0, M1, N1) = block_planes(msg, n, off)
+    var skey = block_skey(msg, n, off)
+    var iv = tsha_xiv
+    var v = table_new_i64()
     var i: i64 = 0
-    while i < 6 {
-        var u = digest_f(state)                     // 64 hex
-        var w2 = digest_b(state)                    // 64 hex
-        var out: string = ""
-        var c: i64 = 0
-        while c < 4 {
-            var pos = i * 8 + c * 2
-            var spec = substr(patt, pos, pos + 2)
-            var src = str_char(spec, 0)
-            var q = str_byte(spec, 1) - 48          // 四分索引 '0'..'3'
-            var s = q * 16
-            if src == "u" {
-                out = out + substr(u, s, s + 16)
-            } else {
-                out = out + substr(w2, s, s + 16)
-            }
-            c = c + 1
-        }
-        state = out
+    while i < 32 {
+        table_push(v, 0)
         i = i + 1
     }
-    return state                                    // 64 hex = 256 位
+    // ---- 初始化轨 A/B（双轨；链值 h / IV / 计数器 / 末块）----
+    v[0] = h[0] & 0xFFFFFFFF; v[1] = rr32(h[4], 7)
+    v[2] = h[1] & 0xFFFFFFFF; v[3] = rr32(h[5], 7)
+    v[4] = h[2] & 0xFFFFFFFF; v[5] = rr32(h[6], 7)
+    v[6] = h[3] & 0xFFFFFFFF; v[7] = rr32(h[7], 7)
+    v[8] = rr32(h[0], 13); v[9] = iv[0] & 0xFFFFFFFF
+    v[10] = rr32(h[1], 13); v[11] = iv[1] & 0xFFFFFFFF
+    v[12] = rr32(h[2], 13); v[13] = iv[2] & 0xFFFFFFFF
+    v[14] = rr32(h[3], 13); v[15] = iv[3] & 0xFFFFFFFF
+    v[0] = (v[0] ^ iv[4]) & 0xFFFFFFFF
+    v[2] = (v[2] ^ iv[5]) & 0xFFFFFFFF
+    v[4] = (v[4] ^ iv[6]) & 0xFFFFFFFF
+    v[6] = (v[6] ^ iv[7]) & 0xFFFFFFFF
+    v[1] = (v[1] ^ t_lo) & 0xFFFFFFFF
+    v[9] = (v[9] ^ t_hi) & 0xFFFFFFFF
+    if last {
+        v[3] = (v[3] ^ 0xFFFFFFFF) & 0xFFFFFFFF
+    }
+    // ---- 初始化轨 C 海绵（rate/capacity 由链值 h 与 IV 派生，同 §2.1）----
+    v[16] = h[0] & 0xFFFFFFFF; v[17] = rr32(h[4], 7)
+    v[18] = h[1] & 0xFFFFFFFF; v[19] = rr32(h[5], 13)
+    v[20] = iv[0] & 0xFFFFFFFF; v[21] = rr32(iv[4], 7)
+    v[22] = iv[1] & 0xFFFFFFFF; v[23] = rr32(iv[5], 13)
+    if last {
+        v[19] = (v[19] ^ 0xFFFFFFFF) & 0xFFFFFFFF   // 末块海绵 padding 边界
+    }
+    // ---- 初始化轨 D（LFSR，v[24..27]；d0..d3 = h 与 IV 的线性混合，固定且可复现）----
+    v[24] = (h[2] ^ iv[0]) & 0xFFFFFFFF
+    v[25] = (h[3] ^ rr32(iv[4], 11)) & 0xFFFFFFFF
+    v[26] = (h[6] ^ iv[2]) & 0xFFFFFFFF
+    v[27] = (h[7] ^ rr32(iv[6], 19)) & 0xFFFFFFFF
+    // ---- 四轨并行轮（R_X=16）----
+    var r: i64 = 0
+    while r < 16 {
+        var rA = (r * 3 + (skey & 7)) & 31
+        var rB = (r * 7 + ((skey >> 3) & 7)) & 31
+        var mA = (r * 5 + ((skey >> 6) & 7)) & 31
+        var mB = (r * 11 + ((skey >> 9) & 7)) & 31
+        // -- 轨 A 并行三进制扩散 --
+        var (s0m, s0n) = tadd2(v[0], v[1], rrp(v[2], rA), rrp(v[3], rA))
+        var (s1m, s1n) = tadd2(v[2], v[3], rrp(v[4], rA + 5), rrp(v[5], rA + 5))
+        var (s2m, s2n) = tadd2(v[4], v[5], rrp(v[6], rA + 9), rrp(v[7], rA + 9))
+        var (s3m, s3n) = tadd2(v[6], v[7], rrp(v[0], rA + 13), rrp(v[1], rA + 13))
+        var (p1m, p1n) = tmul2(s0m, s0n, s2m, s2n)
+        var (p2m, p2n) = tmul2(s1m, s1n, s3m, s3n)
+        var majA = quant3(s0m, s0n, s1m, s1n, s2m, s2n)
+        v[0] = s0m & 0xFFFFFFFF; v[1] = s0n & 0xFFFFFFFF
+        v[2] = (s1m ^ p1m) & 0xFFFFFFFF; v[3] = (s1n ^ p1n) & 0xFFFFFFFF
+        v[4] = (s2m ^ p2m) & 0xFFFFFFFF; v[5] = (s2n ^ p2n) & 0xFFFFFFFF
+        v[6] = (s3m ^ majA) & 0xFFFFFFFF; v[7] = (s3n ^ rrp(majA, rA + 7)) & 0xFFFFFFFF
+        // -- 轨 B 并行三进制扩散 --
+        var (u0m, u0n) = tadd2(v[8], v[9], rrp(v[10], rB), rrp(v[11], rB))
+        var (u1m, u1n) = tadd2(v[10], v[11], rrp(v[12], rB + 4), rrp(v[13], rB + 4))
+        var (u2m, u2n) = tadd2(v[12], v[13], rrp(v[14], rB + 8), rrp(v[15], rB + 8))
+        var (u3m, u3n) = tadd2(v[14], v[15], rrp(v[8], rB + 12), rrp(v[9], rB + 12))
+        var (q1m, q1n) = tmul2(u0m, u0n, u2m, u2n)
+        var (q2m, q2n) = tmul2(u1m, u1n, u3m, u3n)
+        var majB = quant3(u0m, u0n, u1m, u1n, u2m, u2n)
+        v[8] = u0m & 0xFFFFFFFF; v[9] = u0n & 0xFFFFFFFF
+        v[10] = (u1m ^ q1m) & 0xFFFFFFFF; v[11] = (u1n ^ q1n) & 0xFFFFFFFF
+        v[12] = (u2m ^ q2m) & 0xFFFFFFFF; v[13] = (u2n ^ q2n) & 0xFFFFFFFF
+        v[14] = (u3m ^ majB) & 0xFFFFFFFF; v[15] = (u3n ^ rrp(majB, rB + 6)) & 0xFFFFFFFF
+        // -- 消息平面注入（轨 A ← M0,N0；轨 B ← M1,N1，旋转后平衡加）--
+        var (im0, in0) = tadd2(v[0], v[1], rrp(M0, mA), rrp(N0, mA))
+        v[0] = im0 & 0xFFFFFFFF; v[1] = in0 & 0xFFFFFFFF
+        var (jm0, jn0) = tadd2(v[8], v[9], rrp(M1, mB), rrp(N1, mB))
+        v[8] = jm0 & 0xFFFFFFFF; v[9] = jn0 & 0xFFFFFFFF
+        // -- 轨间耦合（隔轨平衡加 / 乘积 / 旋转传播）--
+        var (cm0, cn0) = tadd2(v[4], v[5], v[10], v[11])
+        v[4] = cm0 & 0xFFFFFFFF; v[5] = cn0 & 0xFFFFFFFF
+        var (dm0, dn0) = tmul2(v[12], v[13], v[0], v[1])
+        v[12] = dm0 & 0xFFFFFFFF; v[13] = dn0 & 0xFFFFFFFF
+        var (em0, en0) = tadd2(v[14], v[15], rrp(v[6], r * 3), rrp(v[7], r * 3))
+        v[14] = em0 & 0xFFFFFFFF; v[15] = en0 & 0xFFFFFFFF
+        // ==== 轨 C 海绵处理（§2.3：吸收 → 海绵置换 → 海绵常量注入 → 双轨耦合）====
+        var sA = (r * 3 + ((skey >> 12) & 7)) & 31
+        var sB = (r * 7 + ((skey >> 15) & 7)) & 31
+        var (a0m, a0n) = tadd2(v[16], v[17], rrp(M0, sA), rrp(N0, sA))
+        v[16] = a0m & 0xFFFFFFFF; v[17] = a0n & 0xFFFFFFFF
+        var (a1m, a1n) = tadd2(v[18], v[19], rrp(M1, sB), rrp(N1, sB))
+        v[18] = a1m & 0xFFFFFFFF; v[19] = a1n & 0xFFFFFFFF
+        var (sp0m, sp0n) = tadd2(v[16], v[17], rrp(v[18], sA + 1), rrp(v[19], sA + 1))
+        var (sp1m, sp1n) = tadd2(v[18], v[19], rrp(v[20], sA + 5), rrp(v[21], sA + 5))
+        var (sp2m, sp2n) = tadd2(v[20], v[21], rrp(v[22], sB + 2), rrp(v[23], sB + 2))
+        var (sp3m, sp3n) = tadd2(v[22], v[23], rrp(v[16], sB + 6), rrp(v[17], sB + 6))
+        var (sp1p1m, sp1p1n) = tmul2(sp0m, sp0n, sp2m, sp2n)
+        var (sp2p2m, sp2p2n) = tmul2(sp1m, sp1n, sp3m, sp3n)
+        var mjs = quant3(sp0m, sp0n, sp1m, sp1n, sp2m, sp2n)
+        v[16] = sp0m & 0xFFFFFFFF; v[17] = sp0n & 0xFFFFFFFF
+        v[18] = (sp1m ^ sp1p1m) & 0xFFFFFFFF; v[19] = (sp1n ^ sp1p1n) & 0xFFFFFFFF
+        v[20] = (sp2m ^ sp2p2m) & 0xFFFFFFFF; v[21] = (sp2n ^ sp2p2n) & 0xFFFFFFFF
+        v[22] = (sp3m ^ mjs) & 0xFFFFFFFF; v[23] = (sp3n ^ rrp(mjs, sA + 7)) & 0xFFFFFFFF
+        // 轨 C 轮常量注入（海绵轨独立常量，复用 tsha_bscon）
+        v[16] = (v[16] ^ tsha_bscon[r & 15]) & 0xFFFFFFFF
+        v[19] = (v[19] ^ rrp(tsha_bscon[(r + 3) & 15], r * 3)) & 0xFFFFFFFF
+        // 与轨 A/B 双向耦合（海绵 rate 出 → 轨 A/B；轨 A/B 回填 capacity）
+        var (c0m, c0n) = tadd2(v[0], v[1], rrp(v[16], r * 5), rrp(v[17], r * 5))
+        v[0] = c0m & 0xFFFFFFFF; v[1] = c0n & 0xFFFFFFFF
+        var (c1m, c1n) = tadd2(v[8], v[9], rrp(v[18], r * 7), rrp(v[19], r * 7))
+        v[8] = c1m & 0xFFFFFFFF; v[9] = c1n & 0xFFFFFFFF
+        var (c2m, c2n) = tadd2(v[20], v[21], rrp(v[4], r * 11), rrp(v[5], r * 11))
+        v[20] = c2m & 0xFFFFFFFF; v[21] = c2n & 0xFFFFFFFF
+        var (c3m, c3n) = tadd2(v[22], v[23], rrp(v[12], r * 13), rrp(v[13], r * 13))
+        v[22] = c3m & 0xFFFFFFFF; v[23] = c3n & 0xFFFFFFFF
+        // ==== 轨 D（LFSR）处理（§3.3：反馈 → 吸收 → 移位[quant3 门控] → 与轨 A/B 耦合）====
+        var sX = (r * 11 + ((skey >> 18) & 7)) & 31
+        var fb = ((v[27] >> 16) ^ v[25]) & 0xFFFFFFFF        // 反馈：抽取高位混合
+        v[24] = (v[24] ^ rrp(M0, sX)) & 0xFFFFFFFF            // 吸收：消息平面注入 d0
+        v[25] = (v[25] ^ rrp(N0, sX)) & 0xFFFFFFFF            // 吸收：消息平面注入 d1
+        var qx = quant3(v[0], v[1], v[8], v[9], v[16], v[17]) // 非线性门控（轨 A/B/C 字对）
+        var nd0 = v[25]; var nd1 = v[26]; var nd2 = v[27]
+        var nd3 = (fb ^ qx) & 0xFFFFFFFF
+        v[24] = nd0 & 0xFFFFFFFF; v[25] = nd1 & 0xFFFFFFFF
+        v[26] = nd2 & 0xFFFFFFFF; v[27] = nd3 & 0xFFFFFFFF
+        // 与轨 A/B 双向耦合（四向平衡加混写，写回两侧）
+        var (x0m, x0n) = tadd2(v[24], v[2], rrp(v[16], sX), rrp(v[8], sX))
+        v[24] = x0m & 0xFFFFFFFF; v[2] = x0n & 0xFFFFFFFF
+        var (x1m, x1n) = tadd2(v[25], v[6], rrp(v[17], sX + 1), rrp(v[9], sX + 1))
+        v[25] = x1m & 0xFFFFFFFF; v[6] = x1n & 0xFFFFFFFF
+        var (x2m, x2n) = tadd2(v[26], v[10], rrp(v[18], sX + 2), rrp(v[11], sX + 2))
+        v[26] = x2m & 0xFFFFFFFF; v[10] = x2n & 0xFFFFFFFF
+        var (x3m, x3n) = tadd2(v[27], v[14], rrp(v[19], sX + 3), rrp(v[15], sX + 3))
+        v[27] = x3m & 0xFFFFFFFF; v[14] = x3n & 0xFFFFFFFF
+        // 轮常量注入（轨 D 用 tsha_xdcon；轨 A/B 用 tsha_xrcon）
+        v[24] = (v[24] ^ tsha_xdcon[r & 15]) & 0xFFFFFFFF
+        v[27] = (v[27] ^ rrp(tsha_xdcon[(r + 4) & 15], r * 5)) & 0xFFFFFFFF
+        v[0] = (v[0] ^ tsha_xrcon[r & 15]) & 0xFFFFFFFF
+        v[9] = (v[9] ^ rrp(tsha_xrcon[(r + 1) & 15], r * 5)) & 0xFFFFFFFF
+        r = r + 1
+    }
+    // 四轨状态投影折回链值 h（轨 A/B 双轨 + 轨 C 海绵 rate + 轨 D 投影，见 §3.2）
+    i = 0
+    while i < 8 {
+        h[i] = (h[i] ^ v[2 * i] ^ rrp(v[2 * i + 1], i * 3)
+                ^ rrp(v[16 + (i & 3) * 2], i * 7) ^ rrp(v[17 + (i & 3) * 2], i * 7)
+                ^ rrp(v[24 + (i & 1) * 2], i * 13) ^ rrp(v[25 + (i & 1) * 2], i * 13)) & 0xFFFFFFFF
+        i = i + 1
+    }
+    // 末块：把海绵 capacity v[20..23] 填回 sp（供 digest 终筛前折回链值，§2.5）
+    if last {
+        sp[0] = v[20] & 0xFFFFFFFF; sp[1] = v[21] & 0xFFFFFFFF
+        sp[2] = v[22] & 0xFFFFFFFF; sp[3] = v[23] & 0xFFFFFFFF
+    }
+}
+
+// tsha1x 最后综合（终筛）：与 f/b/r 同构的 S=4 一体化收束轮，把链值 h 投影回 8 字。
+func fin_synth_x(h: ref table<i64>) {
+    var v = table_new_i64()
+    var i: i64 = 0
+    while i < 16 {
+        table_push(v, 0)
+        i = i + 1
+    }
+    v[0] = h[0] & 0xFFFFFFFF; v[1] = rr32(h[4], 7)
+    v[2] = h[1] & 0xFFFFFFFF; v[3] = rr32(h[5], 7)
+    v[4] = h[2] & 0xFFFFFFFF; v[5] = rr32(h[6], 7)
+    v[6] = h[3] & 0xFFFFFFFF; v[7] = rr32(h[7], 7)
+    v[8] = rr32(h[0], 13); v[9] = rr32(h[4], 13)
+    v[10] = rr32(h[1], 13); v[11] = rr32(h[5], 13)
+    v[12] = rr32(h[2], 13); v[13] = rr32(h[6], 13)
+    v[14] = rr32(h[3], 13); v[15] = rr32(h[7], 13)
+    var sf: i64 = 0
+    while sf < 4 {
+        var tmp = table_new_i64()
+        var k0: i64 = 0
+        while k0 < 16 {
+            table_push(tmp, 0)
+            k0 = k0 + 1
+        }
+        var t: i64 = 0
+        while t < 8 {
+            var t1 = (t + 1) & 7
+            var t2 = (t + 2) & 7
+            var t3 = (t + 3) & 7
+            var t4 = (t + 4) & 7
+            var rot = (sf * 3 + t * 5) & 31
+            var (am, an) = tadd2(v[2 * t], v[2 * t + 1], rrp(v[2 * t1], rot), rrp(v[2 * t1 + 1], rot))
+            var (pm, pn) = tmul2(v[2 * t3], v[2 * t3 + 1], rrp(v[2 * t4], rot + 1), rrp(v[2 * t4 + 1], rot + 1))
+            var mj = quant3(v[2 * t], v[2 * t + 1], v[2 * t2], v[2 * t2 + 1], am, an)
+            tmp[2 * t] = (am ^ pm ^ mj) & 0xFFFFFFFF
+            tmp[2 * t + 1] = (an ^ pn ^ rrp(mj, rot + 3)) & 0xFFFFFFFF
+            t = t + 1
+        }
+        var jj: i64 = 0
+        while jj < 16 {
+            v[jj] = tmp[jj]
+            jj = jj + 1
+        }
+        sf = sf + 1
+    }
+    i = 0
+    while i < 8 {
+        h[i] = (h[i] ^ v[2 * i] ^ rl32(v[2 * i + 1], (i * 7) & 31)) & 0xFFFFFFFF
+        i = i + 1
+    }
+}
+
+// tsha1x-256 内部哈希：计数器式（纯零填充），R_X=16 四轨并行压缩，末块海绵 capacity
+// 折回链值后跑 fin_synth_x 最后综合终筛，输出 8 字大端 hex = 64 hex。
+func digest_x(msg: string) -> string {
+    ensure_xiv()
+    ensure_xrcon()
+    ensure_bscon()
+    ensure_xdcon()
+    var n: i64 = len(msg)
+    var h = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(h, tsha_xiv[i])
+        i = i + 1
+    }
+    h[0] = h[0] ^ 0x01010000 ^ 32
+    var sp = table_new_i64()
+    var spk: i64 = 0
+    while spk < 4 {
+        table_push(sp, 0)
+        spk = spk + 1
+    }
+    var t_lo: i64 = 0
+    var t_hi: i64 = 0
+    var pos: i64 = 0
+    while pos + 64 < n {
+        t_hi = (t_hi + carry32(t_lo, 64)) & 0xFFFFFFFF
+        t_lo = (t_lo + 64) & 0xFFFFFFFF
+        compress_x(h, msg, n, pos, t_lo, t_hi, false, sp)
+        pos = pos + 64
+    }
+    var rem = n - pos
+    t_hi = (t_hi + carry32(t_lo, rem)) & 0xFFFFFFFF
+    t_lo = (t_lo + rem) & 0xFFFFFFFF
+    compress_x(h, msg, n, pos, t_lo, t_hi, true, sp)
+    // 末块海绵 capacity 折回链值（终筛前，§2.5）
+    h[0] = (h[0] ^ sp[0]) & 0xFFFFFFFF; h[1] = (h[1] ^ rr32(sp[1], 7)) & 0xFFFFFFFF
+    h[2] = (h[2] ^ sp[2]) & 0xFFFFFFFF; h[3] = (h[3] ^ rr32(sp[3], 7)) & 0xFFFFFFFF
+    fin_synth_x(h)            // 最后综合（终筛）
+    var out: string = ""
+    i = 0
+    while i < 8 {
+        out = out + hex8(h[i])
+        i = i + 1
+    }
+    return out
 }
 
 // tsha1x（加强）：输出 n 个符号（n ∈ {2,3,4,6,8,12,16,24,32,48,64,88,96}，48 进制下的位数）；
 // base 指定输出进制 {2,3,8,16,48}，默认 48（信息量同 n 的 48 进制一致）。
-// 验证向量（用 gen_tsha1bx.py 生成，与 f/b 模型独立；b 为三进制双轨并行 + 最后综合版）：
-//   tsha1x("")    = 9477eb60ebe3330f1616c0d338c32c0329da51226d275c4436eaca515d581e7c
-//   tsha1x("abc") = 537a393ecb57557679cedd3149d185ec60392fc04cdf598f2304997c1b306060
-//   tsha1x(1000xa) = f0ac5011c871914546d985add6970aa29bcad713d0b4b9ca2fc649d4f5cefa44
+// 验证向量（用 gen_tsha1x.py 生成，与 f/b 模型独立；四轨并行 + 最后综合版，R_X=16）：
+//   tsha1x("")    = 157daf0076845caa9b1bae59c40765dd9dc8bab049d59cec7a1342c639fc5d96
+//   tsha1x("abc") = 8baa753112e9a18f8393f912745d2d40a17a750c34d5e970f6b28484b53a543b
+//   tsha1x(1000xa) = be64d8acb64239cf11b5a13ea3bbf1df16baa4e1ee3f5690ba124cd3569c2bfa
 pub func tsha1x(msg: string, n: i64, base: i64 = 48) -> string {
     return fit48(digest_x(msg), n, base, digest_x)
 }
