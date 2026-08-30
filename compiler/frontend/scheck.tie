@@ -259,15 +259,34 @@ pub func check_switch_case(c: i64, subj_ty: i64) -> i64 {
             i = i + 1
             continue
         }
-        // case 类型匹配 pattern（对齐 Rust）：仅宽类型/动态容器对象上有意义，
-        // 当前 switch subject 限定静态类型 → 一律报错（须在 infer_expr 前拦截，
-        // 因为 infer_expr 对 TypeLit 直接报通用错误）
+        // case 类型匹配 pattern（对齐 Rust）：any 动态对象上匹配可装箱类型
+        //（tag 约定见 tig_box_any）；其余静态类型一律报错（须在 infer_expr 前
+        // 拦截，因为 infer_expr 对 TypeLit 直接报通用错误）
         if s_tags[p] == S_N_TYPE_LIT {
             var tynode = sstate.child(p, 0)
-            var tyname = types.type_name(sgen.parse_generic_type_node(tynode))
+            var tmatch_ty = sgen.parse_generic_type_node(tynode)
+            var tyname = types.type_name(tmatch_ty)
+            if subj_ty == types.named(TK_ANY) {
+                // P2b：any 主体类型匹配——case 类型必须可装箱
+                //（整数/浮点/bool/string/char；装箱 tag 见 tig_box_any）
+                var boxable: bool = false
+                if types.is_int(tmatch_ty) || types.is_float(tmatch_ty) ||
+                    tmatch_ty == types.named(TK_BOOL) || tmatch_ty == types.named(TK_STR) ||
+                    tmatch_ty == types.named(TK_CHAR) {
+                    boxable = true
+                }
+                if !boxable {
+                    sm_err_line = s_lines[c]
+                    sm_err_col = s_cols[c]
+                    sm_err_msg = "case 类型匹配（" + tyname + "）不是可装箱类型（整数/浮点/bool/string/char）"
+                    return -1
+                }
+                i = i + 1
+                continue
+            }
             sm_err_line = s_lines[c]
             sm_err_col = s_cols[c]
-            sm_err_msg = "case 类型匹配（" + tyname + "）仅支持宽类型或动态容器对象，当前 switch 对象是静态类型 " + types.type_name(subj_ty)
+            sm_err_msg = "case 类型匹配（" + tyname + "）仅支持 any 动态类型，当前 switch 对象是 " + types.type_name(subj_ty)
             return -1
         }
         var pt = sinfer.infer_expr(p)
@@ -947,10 +966,11 @@ pub func check_stmt(s: i64) -> i64 {
         if subj < 0 {
             return -1
         }
-        if !types.is_number(subj) && !types.is_bool_like(subj) && subj != TK_STR && subj != TK_CHAR && types.kind(subj) != K_ENUM {
+        // P2b：switch 对象新增 any 动态类型（case 类型匹配，见 check_switch_case）
+        if !types.is_number(subj) && !types.is_bool_like(subj) && subj != TK_STR && subj != TK_CHAR && types.kind(subj) != K_ENUM && subj != types.named(TK_ANY) {
             sm_err_line = s_lines[s]
             sm_err_col = s_cols[s]
-            sm_err_msg = "switch 对象仅支持数字、布尔、字符、字符串或枚举类型，实际是 " + types.type_name(subj)
+            sm_err_msg = "switch 对象仅支持数字、布尔、字符、字符串、枚举或 any 类型，实际是 " + types.type_name(subj)
             return -1
         }
         var ncases = s_aux[s]

@@ -1,0 +1,46 @@
+type tie<logic>
+// P2b 探针：switch 类型匹配取用 any（case i64:/string:/bool:/f64: → body 内 as_* 取用）
+func main() {
+    var x: any = 42
+    switch x {
+        case i64:
+            println("i64 " + to_string(as_i64(x)))
+        case string:
+            println("string " + as_string(x))
+        default:
+            println("other")
+    }
+    var s: any = "hi"
+    switch s {
+        case i64:
+            println("int")
+        case string:
+            println("str " + as_string(s))
+        default:
+            println("other")
+    }
+    var b: any = true
+    switch b {
+        case bool:
+            println("bool")
+        default:
+            println("other")
+    }
+    var t: table<any> = [1, "a", true, 2.5]
+    var i: i64 = 0
+    while i < len(t) {
+        switch t[i] {
+            case i64:
+                println("int " + to_string(as_i64(t[i])))
+            case string:
+                println("str " + as_string(t[i]))
+            case bool:
+                println("bool")
+            case f64:
+                println("f64 " + to_string(as_f64(t[i])))
+            default:
+                println("other")
+        }
+        i = i + 1
+    }
+}

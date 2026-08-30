@@ -337,10 +337,12 @@ func tig_switch(id: i64) -> i64 {
         return -1
     }
     // subject 类型分派：字符串 → strcmp 比较链；整数/char → icmp 比较链；
-    // 枚举 → 提取 tag（槽 0）后与 case 的 tag 常量 icmp 比较
+    // 枚举 → 提取 tag（槽 0）后与 case 的 tag 常量 icmp 比较；
+    // any → 提取 tag（槽 0）后与 case 类型的装箱 tag icmp 比较（P2b-T4）
     var subj_is_str = node_types[subject] == types.named(TK_STR)
     var subj_ty = node_types[subject]
     var subj_is_enum = types.kind(subj_ty) == K_ENUM
+    var subj_is_any = subj_ty == types.named(TK_ANY)
     var enum_tag_v: i64 = -1
     if subj_is_enum {
         // 枚举 subject：tig_agg_addr(subject) → agg_gep 下标 0 → load i64（tag）
@@ -355,6 +357,21 @@ func tig_switch(id: i64) -> i64 {
         var eld = ir.new_inst(g_cur_block, 21, types.named(TK_I64))
         ir.add_operand(eld, egpp, 0)
         enum_tag_v = ir.get_value(eld)
+    }
+    var any_tag_v: i64 = -1
+    if subj_is_any {
+        // any subject：同样提取 tag@[0]（对齐枚举；tag 约定见 tig_box_any）
+        var aaddr = tig_agg_addr(subject, subj_ty)
+        if aaddr < 0 {
+            return -1
+        }
+        var agp = ir.new_inst(g_cur_block, 27, subj_ty)
+        ir.add_operand(agp, aaddr, 0)
+        ir.add_operand(agp, 0, 2)
+        var agpp = ir.get_value(agp)
+        var ald = ir.new_inst(g_cur_block, 21, types.named(TK_I64))
+        ir.add_operand(ald, agpp, 0)
+        any_tag_v = ir.get_value(ald)
     }
     var ncases = s_aux[id]
     var exit_blk = ir.new_block(g_cur_func, interner.intern("sw.exit"))
@@ -372,7 +389,35 @@ func tig_switch(id: i64) -> i64 {
         while i < npat {
             var pat = sstate.child(pl, i)
             var eq_v: i64 = -1
-            if subj_is_enum {
+            if subj_is_any && s_tags[pat] == S_N_TYPE_LIT {
+                // P2b-T4：any 主体类型匹配——case 类型 → 装箱 tag 常量，与提取的
+                // subject tag icmp eq（scheck 已校验可装箱）。body 内用 as_<T>(x)
+                // 取用（tag 已匹配，as_* 不会触发运行时错误）
+                var tynode = sstate.child(pat, 0)
+                var cmt = types.named(s_vals[tynode])  // N_NAMED_TYPE val = typekw 索引
+                var exp_tag2: i64 = -1
+                if types.is_int(cmt) {
+                    exp_tag2 = 0  // 整数族统一 tag 0（窄整数装箱已 zext 进 i64）
+                } else if types.is_float(cmt) {
+                    exp_tag2 = 1
+                } else if cmt == types.named(TK_BOOL) {
+                    exp_tag2 = 2
+                } else if cmt == types.named(TK_STR) {
+                    exp_tag2 = 3
+                } else if cmt == types.named(TK_CHAR) {
+                    exp_tag2 = 4
+                }
+                if exp_tag2 < 0 {
+                    sm_err_msg = "case 类型匹配（" + types.type_name(cmt) + "）不是可装箱类型（函数 " + g_cur_fn_name + "）"
+                    return -1
+                }
+                var pv3 = tig_int_lit_ty(exp_tag2, types.named(TK_I64))
+                var is_eq3 = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))
+                ir.add_operand(is_eq3, any_tag_v, 0)
+                ir.add_operand(is_eq3, pv3, 0)
+                ir.add_operand(is_eq3, 0, 2)  // eq
+                eq_v = ir.get_value(is_eq3)
+            } else if subj_is_enum {
                 // 枚举 case：模式 = FieldAccess(Enum.Variant) → 解析为 tag 常量，
                 // 与提取出的 subject tag icmp eq（scheck 已校验变体合法）。
                 // 不可用 tig_expr(pat)——FieldAccess 枚举分支会构造聚合值。
