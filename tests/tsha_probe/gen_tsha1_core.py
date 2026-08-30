@@ -408,14 +408,20 @@ def pool_from_digest(hexstr):
     return hexstr
 
 def encode(model, msg, n, base=48):
-    """对外：输出 n 个符号（48 进制口径）。base48 → 截断池；其他进制先取 b0 字节再重编码。"""
+    """对外：输出 n 个符号（48 进制口径；定长，不足前导 '0' 补足）。
+    base48 → 大数最小表示 left-pad 到 n；其他进制先取 b0 字节再重编码。"""
     if not is_bits48(n):
         return ''
+    if base <= 0:
+        base = 48                      # 跨模块默认参数不可靠：省略 base 时兜底
     if not is_base_ok(base):
         return ''
     hexstr = digest(model, msg, n)
     if base == 48:
-        return b48_encode(hexstr)[:n]
+        s = b48_encode(hexstr)
+        if len(s) < n:
+            return '0' * (n - len(s)) + s
+        return s[:n]
     b0 = (n * 698121) // 1000000          # ⌊n·L48/8⌋ 字节
     pool = hexstr
     if len(pool) // 2 < b0:               # 状态不足 → 拒绝（无 XOF）

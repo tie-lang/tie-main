@@ -963,7 +963,11 @@ func encode(model: i64, msg: string, n: i64, base: i64) -> string {
     if !is_bits48(n) {
         return ""
     }
-    if !is_base_ok(base) {
+    var b = base
+    if b <= 0 {
+        b = 48            // 跨模块默认参数补齐不可靠：省略 base 以 0 传入时自兜底
+    }
+    if !is_base_ok(b) {
         return ""
     }
     var nbytes: i64 = len(msg)
@@ -971,8 +975,19 @@ func encode(model: i64, msg: string, n: i64, base: i64) -> string {
     if hexstr == "" {
         return ""
     }
-    if base == 48 {
+    if b == 48 {
         var full = b48_min(hexstr)
+        var fl = len(full)
+        if fl < n {
+            // 定长输出：不足 n 符号时前导 '0' 补足（'0' 为 48 进制字符集首位）
+            var pad: string = ""
+            var k: i64 = 0
+            while k < n - fl {
+                pad = pad + "0"
+                k = k + 1
+            }
+            return pad + full
+        }
         return substr(full, 0, n)
     }
     var b0 = (n * 698121) / 1000000
@@ -981,11 +996,11 @@ func encode(model: i64, msg: string, n: i64, base: i64) -> string {
         return ""
     }
     var bb48 = substr(pool, 0, b0 * 2)
-    if base == 16 {
+    if b == 16 {
         return bb48
     }
-    var m = base_chars(b0, base)
-    return pad_radix(bb48, base, m)
+    var m = base_chars(b0, b)
+    return pad_radix(bb48, b, m)
 }
 
 // ---- 公开 API ----
