@@ -1,0 +1,121 @@
+type tie<logic>
+
+// ============================================================
+// 异构元素表深化验收（P2c）：any 一等值类型 + 复合装箱 + 运行时辅助
+//
+// 覆盖场景：
+//   1. struct 装箱 + switch 解构绑定取用（case Point(p):）
+//   2. any 作函数参数/返回值 + switch 分派
+//   3. table<any> struct 字段（嵌入式）+ any 直接字段
+//   4. map<any> 异构值读写
+//   5. println(any) 运行时打印
+//   6. any_tag 取类型标识
+//
+// 期望输出（全部 PASS，附 println(any) 打印行）：
+//   PASS struct_bind / PASS func_any / PASS ret_any / PASS field /
+//   PASS map_any / <struct> / 42 / 42 / PASS print / PASS tag
+// ============================================================
+
+struct Point {
+    var x: i64 = 0
+    var y: i64 = 0
+}
+struct Bag {
+    var name: string = ""
+    var items: table<any> = []
+}
+struct Holder {
+    var v: any
+}
+
+func kind(v: any) -> string {
+    var r: string = "?"
+    switch v {
+        case i64:
+            r = "int"
+        case string:
+            r = "str"
+        case Point(p):
+            r = "pt"
+        default:
+            r = "?"
+    }
+    return r
+}
+func wrap(v: i64) -> any {
+    return v
+}
+
+func main() {
+    // 1. struct 装箱 + switch 解构绑定
+    var t: table<any> = [Point(3, 4), "a", 42]
+    var acc: string = ""
+    var i: i64 = 0
+    while i < len(t) {
+        switch t[i] {
+            case Point(p):
+                acc = acc + "pt" + to_string(p.x + p.y)
+            case string:
+                acc = acc + "s"
+            case i64:
+                acc = acc + "i"
+            default:
+                acc = acc + "?"
+        }
+        i = i + 1
+    }
+    if acc == "pt7si" {
+        println("PASS struct_bind")
+    } else {
+        println("FAIL struct_bind acc=" + acc)
+        exit(1)
+    }
+    // 2. any 函数参数/返回值 + switch 分派
+    if kind(Point(1, 2)) == "pt" && kind("x") == "str" && kind(9) == "int" {
+        println("PASS func_any")
+    } else {
+        println("FAIL func_any")
+        exit(1)
+    }
+    var w = wrap(7)
+    if as_i64(w) == 7 {
+        println("PASS ret_any")
+    } else {
+        println("FAIL ret_any")
+        exit(1)
+    }
+    // 3. table<any> 字段 + any 直接字段
+    var b: Bag = Bag("box", [1, "a", true])
+    var h: Holder = Holder(5)
+    if len(b.items) == 3 && as_i64(b.items[0]) == 1 && as_string(b.items[1]) == "a" &&
+        as_i64(h.v) == 5 {
+        println("PASS field")
+    } else {
+        println("FAIL field")
+        exit(1)
+    }
+    // 4. map<any>
+    var m: map<any> = ["k1": 1, "k2": "x"]
+    m["k3"] = true
+    if as_i64(m["k1"]) == 1 && as_string(m["k2"]) == "x" && as_bool(m["k3"]) {
+        println("PASS map_any")
+    } else {
+        println("FAIL map_any")
+        exit(1)
+    }
+    // 5. println(any) 运行时打印（打印行在前，PASS print 在后）
+    var p1: any = Point(1, 2)
+    var x1: any = 42
+    println(p1)   // <struct>
+    println(x1)   // 42
+    println("PASS print")
+    // 6. any_tag
+    var x2: any = 42
+    var s2: any = "hi"
+    if any_tag(x2) == 0 && any_tag(s2) == 3 && any_tag(p1) > 1000000000000 {
+        println("PASS tag")
+    } else {
+        println("FAIL tag")
+        exit(1)
+    }
+}

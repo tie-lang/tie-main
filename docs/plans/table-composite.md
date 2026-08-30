@@ -185,3 +185,19 @@ trm_lite.a → 新 tiec。tl_tbl 自身零 table 依赖（纯 unsafe/ptr），�
 **验收**：tests/language/table_any_elem.tie（7 项 PASS）+ tests/_p2b_probe/*.tie 探针；
 tests/language 全量正例编译+运行无回归（extern_decl FFI 基线跳过、shift_neg_free 名为 _neg 实为正例除外）。
 
+# 9. P2c 异构元素表深化（2026-08-30，提交 2dac1c9/1e447d2/d11cfa5）——已实现
+
+在 P2b 基础上深化 `any` 一等值类型 + 复合装箱 + 运行时辅助：
+
+| 能力 | 实现 |
+|------|------|
+| 复合装箱 | struct/enum/fn → any：tag = 类型 id（复合 id 远大于标量 0-4），堆分配 type_byte_size 字节按值拷贝聚合，payload = 堆指针 |
+| 复合解构 | `switch (any) { case Point(p): }` 绑定提取（镜像枚举 `case Ok(v):`）；`case Point:` 裸类型匹配；scheck 校验 + irgen 提取 |
+| any 一等值 | 函数参数/返回值自动装箱（return/实参/var 槽）；struct 字段（构造/赋值/嵌入式 table<any>）自动装箱 |
+| map<any> | 异构值推断 map<any>；值槽存堆 any 盒指针（容器 16 字节条目布局不变）；读写自动装箱/还原 |
+| 运行时辅助 | `any_tag(x)` 取 tag；`println(any)` 按 tag 运行时分派打印（标量值 / <struct>/<enum>/<fn>） |
+| any 零值 | 全零聚合 {tag:0, payload:0}（t21_zero/tig_default_val；直接 `tig_int_lit_ty(0,any)` 生成非法 `add {i64,i64}`） |
+
+**验收**：tests/language/table_any_deep.tie（8 项 PASS）+ tests/_p2b_probe/p2c_*.tie 探针；
+tests/language 全量正例编译+运行 69/69 无回归；P2a/P2b 验收（struct/fn/enum/any 元素表）全过。
+
