@@ -1,0 +1,80 @@
+type tie<logic>
+// P2d 探针：coll 高阶函数（map/filter/reduce/foreach）
+
+import "../../std/collection.tie"
+
+func double(x: i64) -> i64 {
+    return x * 2
+}
+func is_even(x: i64) -> bool {
+    return x % 2 == 0
+}
+func sum2(a: i64, b: i64) -> i64 {
+    return a + b
+}
+func prod2(a: i64, b: i64) -> i64 {
+    return a * b
+}
+func shout(s: string) -> string {
+    return s + "!"
+}
+func len_gt1(s: string) -> bool {
+    return str_len(s) > 1
+}
+func concat2(a: string, b: string) -> string {
+    return a + b
+}
+func emit(v: i64, i: i64) -> i64 {
+    println(v)
+    return 0
+}
+
+func main() {
+    var t: table<i64> = [1, 2, 3, 4]
+    // map
+    var m = coll.map_i64(double, t)
+    var i: i64 = 0
+    while i < len(m) {
+        println(m[i])
+        i = i + 1
+    }
+    // filter
+    var f = coll.filter_i64(is_even, t)
+    i = 0
+    while i < len(f) {
+        println(f[i])
+        i = i + 1
+    }
+    // reduce
+    var s = coll.reduce_i64(sum2, 0, t)
+    println(s)
+    var p = coll.reduce_i64(prod2, 1, t)
+    println(p)
+    // foreach（带 index）
+    coll.foreach_i64(emit, t)
+    // string map
+    var st: table<string> = ["a", "bc", "d"]
+    var ms = coll.map_string(shout, st)
+    i = 0
+    while i < len(ms) {
+        println(ms[i])
+        i = i + 1
+    }
+    // string filter
+    var fs = coll.filter_string(len_gt1, st)
+    i = 0
+    while i < len(fs) {
+        println(fs[i])
+        i = i + 1
+    }
+    // string reduce
+    var cs = coll.reduce_string(concat2, "", st)
+    println(cs)
+    // P1 管道：t -> coll.filter(f) -> coll.map(f)
+    var pipe = t -> coll.filter_i64(is_even) -> coll.map_i64(double)
+    i = 0
+    while i < len(pipe) {
+        println(pipe[i])
+        i = i + 1
+    }
+}

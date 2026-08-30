@@ -27,26 +27,36 @@ namespace coll {
 // 上浮：从新元素位置开始，与父节点比较，比父小则交换，逐级上移。
 // 修改类函数用 ref 表参数（T0.3）：内容写回调用方实参槽。
 pub func heap_push(t: ref table<i64>, v: i64) {
-    table_push(t, v)
-    var i: i64 = len(t) - 1
+    // 局部表 + push + 上浮 + rebind（规避同模块混合 i64/string 表的 ref push
+    // 元素类型推断缺陷——直接 table_push(ref参数, v) 会误选 string 桥）
+    var nt = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(nt, t[i])
+        i = i + 1
+    }
+    table_push(nt, v)
+    var j: i64 = len(nt) - 1
     var up: bool = true
     while up {
         // 已到根：上浮结束
-        if i == 0 {
+        if j == 0 {
             up = false
         } else {
-            var p: i64 = (i - 1) / 2
+            var p: i64 = (j - 1) / 2
             // 比父小则交换（最小堆），否则堆序已满足
-            if t[i] < t[p] {
-                var tmp: i64 = t[i]
-                t[i] = t[p]
-                t[p] = tmp
-                i = p
+            if nt[j] < nt[p] {
+                var tmp: i64 = nt[j]
+                nt[j] = nt[p]
+                nt[p] = tmp
+                j = p
             } else {
                 up = false
             }
         }
     }
+    // 重绑定写回调用方（ref 语义，T0.3）
+    t = nt
 }
 
 // 取出堆顶并删除：空堆返回哨兵 0。删除 = 末元素放根 + 下沉调整。
@@ -123,8 +133,16 @@ pub func heap_size(t: table<i64>) -> i64 {
 // ---------- 栈 ----------
 
 // 入栈：追加到表尾（表尾即栈顶）。修改类函数用 ref 表参数（T0.3）。
+// 局部表 + push + rebind（规避同模块混合表的 ref push 推断缺陷，同 heap_push）。
 pub func stack_push(t: ref table<i64>, v: i64) {
-    table_push(t, v)
+    var nt = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(nt, t[i])
+        i = i + 1
+    }
+    table_push(nt, v)
+    t = nt
 }
 
 // 出栈并删除栈顶：空栈返回哨兵 0。无缩表原语，ref 重建前 n-1 个元素重绑定。
@@ -246,5 +264,91 @@ pub func kmp_count(s: string, sub: string) -> i64 {
         si = si + 1
     }
     return count
+}
+
+// ---------- 高阶函数（P2d，表作末参配合 P1 箭头管道） ----------
+// 约定：表参数放**最后**——`t -> coll.map(f)` = `coll.map(f, t)`（P1 管道）。
+// fn 值参数（S2.2）：命名函数/闭包均可传入；函数内以调用表达式 f(x) 调用。
+// 返回新表（原表不变）；元素类型由 table_new_* 显式决定（规避混合表推断）。
+
+// 映射：对 t 每个元素应用 f，返回新表。
+pub func map_i64(f: fn(i64) -> i64, t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(r, f(t[i]))
+        i = i + 1
+    }
+    return r
+}
+
+// 过滤：保留 f 为真的元素，返回新表。
+pub func filter_i64(f: fn(i64) -> bool, t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        if f(t[i]) {
+            table_push(r, t[i])
+        }
+        i = i + 1
+    }
+    return r
+}
+
+// 折叠：acc 从 init 起，逐元素 acc = f(acc, t[i])，返回最终 acc。
+pub func reduce_i64(f: fn(i64, i64) -> i64, init: i64, t: table<i64>) -> i64 {
+    var acc: i64 = init
+    var i: i64 = 0
+    while i < len(t) {
+        acc = f(acc, t[i])
+        i = i + 1
+    }
+    return acc
+}
+
+// 遍历：对 t 每个元素调用 f(value, index)；fn 返回哑值 i64（忽略）。
+pub func foreach_i64(f: fn(i64, i64) -> i64, t: table<i64>) {
+    var i: i64 = 0
+    while i < len(t) {
+        var d = f(t[i], i)
+        i = i + 1
+    }
+}
+
+// ---------- string 变体 ----------
+
+// 映射（string）：对 t 每个字符串应用 f，返回新表。
+pub func map_string(f: fn(string) -> string, t: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(r, f(t[i]))
+        i = i + 1
+    }
+    return r
+}
+
+// 过滤（string）：保留 f 为真的元素，返回新表。
+pub func filter_string(f: fn(string) -> bool, t: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    while i < len(t) {
+        if f(t[i]) {
+            table_push(r, t[i])
+        }
+        i = i + 1
+    }
+    return r
+}
+
+// 折叠（string）：acc 从 init 起，逐元素 acc = f(acc, t[i])。
+pub func reduce_string(f: fn(string, string) -> string, init: string, t: table<string>) -> string {
+    var acc: string = init
+    var i: i64 = 0
+    while i < len(t) {
+        acc = f(acc, t[i])
+        i = i + 1
+    }
+    return acc
 }
 }
