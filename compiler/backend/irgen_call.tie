@@ -80,6 +80,20 @@ func tig_user_call_from(full: string, id: i64, arg_start: i64) -> i64 {
         if av < 0 {
             av = tig_expr(arg_node)
         }
+        // P2c：any 形参实参装箱——实参表达式是具体类型 → box 为 {tag,payload}
+        //（对齐 return/var 声明装箱；实参已是 any 则跳过）。必须在 call 指令
+        // 创建前完成：tig_box_any 会新建指令（ir_ops 全局线性缓冲），若放在
+        // 操作数添加循环内调用会交错进 call 的操作数切片（值/地址错位）。
+        if arg_idx < nparams && ptys[arg_idx] == types.named(TK_ANY) {
+            var ant = node_types[arg_node]
+            if ant >= 0 && ant != types.named(TK_ANY) {
+                var abx2 = tig_box_any(av, ant)
+                if abx2 < 0 {
+                    return -1
+                }
+                av = abx2
+            }
+        }
         table_push(argvals, av)
         table_push(argisref, is_ref_arg)
         table_push(argkinds, arg_kind)

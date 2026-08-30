@@ -475,6 +475,16 @@ func t21_zero(ty: i64) -> i64 {
     if ty == types.named(TK_BOOL) {
         return tig_bool_lit(0)
     }
+    if ty == types.named(TK_ANY) {
+        // P2c：any 零值 = 零聚合 {tag:0, payload:0}（alloca+load；直接
+        // tig_int_lit_ty(0,any) 会生成非法 `add {i64,i64} 0, 0`）
+        var za = ir.new_inst(g_cur_block, 20, ty)
+        ir.add_operand(za, ty, 2)
+        var zp = ir.get_value(za)
+        var lz = ir.new_inst(g_cur_block, 21, ty)
+        ir.add_operand(lz, zp, 0)
+        return ir.get_value(lz)
+    }
     return tig_int_lit_ty(0, ty)
 }
 

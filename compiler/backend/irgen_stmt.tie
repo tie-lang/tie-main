@@ -56,6 +56,10 @@ func tig_index_read(id: i64) -> i64 {
         var mret = types.named(TK_I64)
         if map_val_ty == types.named(TK_STR) {
             mret = types.named(TK_STR)
+        } else if map_val_ty == types.named(TK_ANY) {
+            // P2c：map<any> 读——值槽存堆指针 → 读指针 → 从堆还原 {i64,i64} any
+            var hp = s21_map_get(t, iv, types.named(TK_STR))
+            return s21_load(hp, types.named(TK_ANY))
         }
         // 批次 7：内联二分/哈希读（替代 tie_map_get 桥）；缺失键 → 运行时错误
         return s21_map_get(t, iv, mret)
@@ -187,6 +191,9 @@ func tig_index_assign(id: i64) -> i64 {
         var pty_m = types.named(TK_I64)
         if is_str_m {
             pty_m = types.named(TK_STR)
+        } else if map_val_ty == types.named(TK_ANY) {
+            // P2c：map<any> 值槽存堆指针（any 16 字节放不进 8 字节值槽）
+            pty_m = types.named(TK_STR)
         }
         // 复合赋值（m[k] += v）：先读旧值（s21_map_get，缺失 raise）→ 运算 → 写回
         var v_m: i64 = -1
@@ -209,6 +216,26 @@ func tig_index_assign(id: i64) -> i64 {
             if v_m < 0 {
                 return -1
             }
+        }
+        // P2c：map<any> 值写入——装箱 + 堆拷贝，值槽存堆指针
+        if map_val_ty == types.named(TK_ANY) {
+            var vtm = node_types[val]
+            var src_m: i64 = v_m
+            if vtm >= 0 && vtm != types.named(TK_ANY) {
+                var bxm = tig_box_any(v_m, vtm)
+                if bxm < 0 {
+                    return -1
+                }
+                src_m = bxm
+            }
+            var any_ty4 = types.named(TK_ANY)
+            var hp2 = s21_raw_alloc_str(tig_int_lit(16))
+            if hp2 < 0 {
+                return -1
+            }
+            s21_store(hp2, src_m, any_ty4)
+            v_m = hp2
+            pty_m = types.named(TK_STR)  // 值槽存堆指针
         }
         s21_map_set(t, iv, v_m, pty_m)  // 批次 7：内联二分/哈希写（替代 tie_map_set 桥）
         return 0
@@ -756,6 +783,10 @@ func tig_stmt(id: i64) -> i64 {
                 // trit：i8 槽（compare() 返回 trit 变量——曾落入 is_bool_like
                 // 判为 i1 槽，store i8 %i1 类型错）
                 ty = types.named(TK_TRIT)
+            } else if it == types.named(TK_ANY) {
+                // P2c：any 推断 → {i64,i64} 聚合槽（异构值存储；init 已是 any
+                // 或下方统一装箱）
+                ty = it
             } else if it >= 0 && types.is_bool_like(it) {
                 ty = types.named(TK_BOOL)
             } else if it >= 0 && types.is_float(it) {
@@ -978,6 +1009,16 @@ func tig_stmt(id: i64) -> i64 {
                 }
                 rv = cr
                 rty = g_cur_ret_ty
+            }
+            // P2c：any 返回类型装箱——`func f() -> any { return 42 }` → box 为
+            // {tag,payload}（对齐 var 声明装箱；返回值已是 any 则跳过）
+            if g_cur_ret_ty == types.named(TK_ANY) && rty != types.named(TK_ANY) {
+                var bx2 = tig_box_any(rv, rty)
+                if bx2 < 0 {
+                    return -1
+                }
+                rv = bx2
+                rty = types.named(TK_ANY)
             }
             var ret = ir.new_inst(g_cur_block, 32, rty)  // ret
             ir.add_operand(ret, rv, 0)

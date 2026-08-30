@@ -895,7 +895,7 @@ pub func infer_expr(id: i64) -> i64 {
             i = i + 1
         }
         if is_map {
-            // map<val_ty>：所有值类型一致
+            // map<val_ty>：值类型一致；P2c 异构值（非同类收窄）→ map<any>
             var val_ty: i64 = -1
             var i2: i64 = 0
             while i2 < nc {
@@ -908,10 +908,13 @@ pub func infer_expr(id: i64) -> i64 {
                     val_ty = vt
                 } else {
                     if vt != val_ty && !(types.is_int(vt) && types.is_int(val_ty)) {
-                        sm_err_line = s_lines[id]
-                        sm_err_col = s_cols[id]
-                        sm_err_msg = "键值表值类型不匹配：map 值为 " + types.type_name(val_ty) + " 与 " + types.type_name(vt)
-                        return -1
+                        if types.is_float(vt) && types.is_float(val_ty) {
+                            val_ty = vt  // 浮点族（f32/f64）收窄
+                        } else {
+                            // P2c 异构 map 值（`["k1":1, "k2":"x"]`）→ map<any>
+                            // 动态值类型（装箱在 irgen 层完成，对齐 table<any>）
+                            val_ty = types.named(TK_ANY)
+                        }
                     }
                 }
                 i2 = i2 + 1

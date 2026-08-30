@@ -1048,6 +1048,16 @@ func tig_default_val(ty: i64) -> i64 {
     if ty == types.named(TK_BOOL) {
         return tig_bool_lit(0)
     }
+    if ty == types.named(TK_ANY) {
+        // P2c：any 零值 = 零聚合 {tag:0, payload:0}（对齐 t21_zero；不可用
+        // tig_int_lit_ty(0,any)——会生成非法 `add {i64,i64} 0, 0`）
+        var za2 = ir.new_inst(g_cur_block, 20, ty)
+        ir.add_operand(za2, ty, 2)
+        var zp2 = ir.get_value(za2)
+        var lz2 = ir.new_inst(g_cur_block, 21, ty)
+        ir.add_operand(lz2, zp2, 0)
+        return ir.get_value(lz2)
+    }
     if ty == types.named(TK_I8) || ty == types.named(TK_CHAR) || ty == types.named(TK_TRIT) {
         return tig_int_lit_ty(0, ty)
     }

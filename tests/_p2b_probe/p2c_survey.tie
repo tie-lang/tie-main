@@ -1,0 +1,55 @@
+type tie<logic>
+// P2c 摸底：any 作 struct 字段 / 函数参数返回 / map<any> 现状
+
+struct Bag {
+    var name: string = ""
+    var items: table<any> = []
+}
+
+func classify(v: any) -> string {
+    var r: string = "?"
+    switch v {
+        case i64:
+            r = "int " + to_string(as_i64(v))
+        case string:
+            r = "str " + as_string(v)
+        default:
+            r = "other"
+    }
+    return r
+}
+func wrap(v: i64) -> any {
+    return v
+}
+
+func main() {
+    // 1. struct 字段 table<any>
+    var b: Bag = Bag("box", [1, "a", true])
+    println(b.name)
+    println(len(b.items))
+    println(as_i64(b.items[0]))
+    println(as_string(b.items[1]))
+
+    // 2. any 函数参数/返回
+    println(classify(42))
+    println(classify("hi"))
+    var w = wrap(7)
+    println(as_i64(w))
+
+    // 3. map<any> 异构值
+    var m: map<any> = ["k1": 1, "k2": "x"]
+    println(as_i64(m["k1"]))
+    println(as_string(m["k2"]))
+    m["k3"] = true
+    println(as_bool(m["k3"]))
+
+    // 4. any 直接作 struct 字段
+    var h: Holder = Holder(5)
+    println(as_i64(h.v))
+    h.v = "s2"
+    println(as_string(h.v))
+}
+
+struct Holder {
+    var v: any
+}

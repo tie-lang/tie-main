@@ -203,6 +203,14 @@ func tig_field_assign(id: i64) -> i64 {
             }
             vv = cv
         }
+        // P2c：any 字段赋值装箱——值是具体类型 → box（对齐构造/var/return 装箱）
+        if fty == types.named(TK_ANY) && vt >= 0 && vt != types.named(TK_ANY) {
+            var bx5 = tig_box_any(vv, vt)
+            if bx5 < 0 {
+                return -1
+            }
+            vv = bx5
+        }
         var st2 = ir.new_inst(g_cur_block, 22, -1)  // store
         ir.add_operand(st2, fty, 2)
         ir.add_operand(st2, vv, 0)
@@ -277,6 +285,24 @@ func tig_box_any(v: i64, vty: i64) -> i64 {
     var ld = ir.new_inst(g_cur_block, 21, any_ty)
     ir.add_operand(ld, sp, 0)
     return ir.get_value(ld)
+}
+
+// P2c map<any>：具体值 → 装箱 → 堆拷贝 16 字节 any 盒 → 返回堆指针。
+// map 容器条目 16 字节（key@0 8B + value@8 8B），any 值 16 字节放不进 8 字节
+// 值槽——值槽存指向堆上 any 盒的指针（容器布局零改动）。读取侧由消费方
+// s21_load(ptr, any) 还原。堆内存不回收（与 any 复合装箱一致的借用约定）。
+func tig_map_any_heapbox(v: i64, vty: i64) -> i64 {
+    var bx = tig_box_any(v, vty)
+    if bx < 0 {
+        return -1
+    }
+    var any_ty = types.named(TK_ANY)
+    var p = s21_raw_alloc_str(tig_int_lit(16))
+    if p < 0 {
+        return -1
+    }
+    s21_store(p, bx, any_ty)
+    return p
 }
 
 // P2b 拆箱：any 值 v → 目标类型 vty（运行时 tag 检查；不匹配 → 运行时错误）。
@@ -673,6 +699,14 @@ func tig_struct_construct(id: i64, nm: string) -> i64 {
             }
             v = cv
         }
+        // P2c：any 字段装箱——实参/默认值是具体类型 → box（对齐 var/return/参数装箱）
+        if fty == types.named(TK_ANY) && vt >= 0 && vt != types.named(TK_ANY) {
+            var bx4 = tig_box_any(v, vt)
+            if bx4 < 0 {
+                return -1
+            }
+            v = bx4
+        }
         var gp = ir.new_inst(g_cur_block, 27, agg)  // agg_gep
         ir.add_operand(gp, ap, 0)
         ir.add_operand(gp, i, 2)
@@ -724,6 +758,8 @@ func tig_table_lit(id: i64) -> i64 {
         var pty_v = types.named(TK_I64)
         if mval_ty == types.named(TK_STR) {
             pty_v = types.named(TK_STR)
+        } else if mval_ty == types.named(TK_ANY) {
+            pty_v = types.named(TK_ANY)
         }
         var t = s21_map_new()  // 数组模式句柄（esz=16，复用表基座）
         var i: i64 = 0
@@ -741,6 +777,27 @@ func tig_table_lit(id: i64) -> i64 {
             var v = tig_expr(val)
             if v < 0 {
                 return -1
+            }
+            // P2c：map<any> 值——装箱 + 堆拷贝，值槽存堆指针（any 16 字节
+            // 放不进 8 字节值槽；容器布局不变）。值已是 any → 直接堆拷贝。
+            if mval_ty == types.named(TK_ANY) {
+                var vt3 = node_types[val]
+                var src3: i64 = v
+                if vt3 >= 0 && vt3 != types.named(TK_ANY) {
+                    var bx3 = tig_box_any(v, vt3)
+                    if bx3 < 0 {
+                        return -1
+                    }
+                    src3 = bx3
+                }
+                var any_ty3 = types.named(TK_ANY)
+                var hp = s21_raw_alloc_str(tig_int_lit(16))
+                if hp < 0 {
+                    return -1
+                }
+                s21_store(hp, src3, any_ty3)
+                v = hp
+                pty_v = types.named(TK_STR)  // 值槽存堆指针
             }
             s21_map_set(t, k, v, pty_v)  // 有序插入（内联二分，替代 tie_map_set 桥）
             i = i + 1
