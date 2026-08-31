@@ -1,0 +1,19 @@
+type tie<logic>
+// regression: cross-file struct field collection misalignment
+// (consumer part). "Gamma" is interned here during parse (before the
+// import file is parsed), giving it a lower intern id than Alpha/Beta
+// -> st_keys sorted order diverges from registration order.
+// Old compiler rotated the collected fields and this failed with
+// "类 'Beta' 没有字段 'g'" or wrong field values; fixed compiler must
+// print 1 (all fields correct).
+import "./crossfile_struct_lib.tie" as lib
+func main() {
+    var g = Gamma()
+    var a = Alpha()
+    var b = Beta()
+    var ok: i64 = 0
+    if g.g == 3 && a.a == 1 && b.b == 2 {
+        ok = 1
+    }
+    println(to_string(ok))
+}

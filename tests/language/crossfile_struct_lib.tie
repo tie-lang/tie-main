@@ -1,0 +1,18 @@
+type tie<class>
+// regression: cross-file struct field collection misalignment
+// (lib part) — three structs; "Gamma" is referenced by the consumer
+// before this file is parsed, so Gamma gets a LOWER intern id than
+// Alpha/Beta. st_keys is sorted by intern id while struct indexes
+// follow registration order (Alpha=0,Beta=1,Gamma=2), so the two
+// orders diverge. Bug: collect_struct_fields used st_keys[si]
+// (sorted table indexed by struct index) to fetch the struct name,
+// which rotated the collected fields (Alpha got Gamma's fields, etc.).
+struct Alpha {
+    var a: i64 = 1
+}
+struct Beta {
+    var b: i64 = 2
+}
+struct Gamma {
+    var g: i64 = 3
+}

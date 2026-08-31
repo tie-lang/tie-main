@@ -930,7 +930,7 @@ pub func infer_expr(id: i64) -> i64 {
             }
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
-            sm_err_msg = "类 '" + intern.lookup(st_keys[si]) + "' 没有字段 '" + fnm + "'"
+            sm_err_msg = "类 '" + sstate.struct_name_of(si) + "' 没有字段 '" + fnm + "'"
             return -1
         }
         sm_err_line = s_lines[id]

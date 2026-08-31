@@ -1066,7 +1066,7 @@ pub func check_stmt(s: i64) -> i64 {
             if !found {
                 sm_err_line = s_lines[s]
                 sm_err_col = s_cols[s]
-                sm_err_msg = "类 '" + intern.lookup(st_keys[si]) + "' 没有字段 '" + fnm + "'"
+                sm_err_msg = "类 '" + sstate.struct_name_of(si) + "' 没有字段 '" + fnm + "'"
                 return -1
             }
             var vt = sinfer.infer_expr(sstate.child(s, 1))

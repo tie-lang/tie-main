@@ -1,3 +1,14 @@
+## [修复] 跨文件 struct 字段收集错位（2026-08-31）
+
+跨文件使用多 struct 时，若 struct 名在主文件先被 intern（消费方在 import
+展开前引用该名），st_keys 按 intern id 的排序序与 struct 登记序不一致，
+而 `collect_struct_fields` 用 `st_keys[si]`（按名排序表直接用 struct 索引
+取下标）取 struct 名 → 取到别的 struct 名，字段收集整体旋转（如 Alpha 拿到
+Gamma 的字段），构造/字段访问报错或读错字段。改为经 `sstate.struct_name_of(si)`
+按索引反查名字（含继承环报错与两处"没有字段"错误消息），回归测试
+tests/language/crossfile_struct_misorder.tie（旧编译器必现，新编译器绿）。
+
+
 ## [自定义角色] 插件化（S3.4 v2，2026-08-28）
 
 角色体系彻底表驱动：内建默认表 + config roles（兼容）+ 项目 roles.data.tie
