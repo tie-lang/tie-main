@@ -530,6 +530,11 @@ dev33 计划批次 2（任务 3-6）：tiec 全链路支持 128 位有/无符号
   tiec3）SHA-256 一致（可复现构建）；回归 PASS=65 无新增失败（try_probe
   panic exit=1、shift_neg_free 被脚本误分类为负例，二者均为既有脚本判定项）。
 
+## Harbor-2026.1-preview.3（2026-08-18）
+
+> **preview.3 = tie 的「阶段 2/3 语言深化」**：宏/闭包/port/错误处理全链路、字符串模型、库包模型、
+> S1 语言地基（unsafe/窄整数/角色扩展）、LLVM 22 升级。对比 preview.2 的增量见下方条目。
+
 ## [文档] 新增 NEW.md：发行版新鲜事（新功能与特色速览）—— 2026-08-18
 
 - 根目录新增 [NEW.md](NEW.md)：面向读者「想知道这个发行版有什么新东西」——
@@ -865,6 +870,11 @@ compiler/）全链路实现（词法→语法→语义→IR→LLVM），完全�
 - **回归全绿**：interp 11/11 + _driver_test 行为等价 PASS + tests/language 24 PASS（无新增失败，3 个预存失败 18/22 一致）+ 自举闭环 tiec2==tiec3 sha 一致（可复现构建）+ G4 闸门 PASS（91 文件 88 可编译 96.7%，ratio 1.458 < 硬性 3.0）+ vendored 场景 hello 与库编译链（clang -c + llvm-ar rcs）正常
 - **本机切换**：D:\LLVM 升级为 22.1.8（18.1.8 备份至 D:\LLVM18 便于回退）；打包脚本 package.ps1 默认 -LlvmDir D:\LLVM 路径不变自动取 22
 
+## Harbor-2026.1-preview.2（2026-08-15）
+
+> **preview.2 = enum 语言特性 + 0-Rust 工具链**：enum ADT 全链路（tiec 实现）、
+> 剔除 Rust 工具链（tiec_rust 归档）、P0 库级四件套（net/HTTP/集合/向量 db）。
+
 ## [新增] enum 枚举语言特性（ADT 标签联合 + 泛型，tiec 全链路实现）—— 2026-08-15
 
 tie 语言新增 **enum 枚举**（Rust 风格 ADT），tiec（tie 自写编译器，compiler/）
@@ -1052,6 +1062,11 @@ freestanding）定制：无堆/无 OS/无 libc 环境可用的最小基础库。
 - **验证**：中文路径下 tiec 编译源文件成功、std/fs 全功能测试通过（创建/写入/追加/
   读取/行读取/大小/类型判定/删除）；行为等价回归 96.2%（≥90% 达标）；repl/pkg/driver
   编译通过。
+
+## Harbor-2026.1-preview.1（2026-08-13）
+
+> **preview.1 = tiec 性能反超 + vendored LLVM + tiec 升格一级编译器**：G4 ratio 6.9→1.09、
+> LLVM 随包分发（zip 自包含）、repl/pkg 自举改由 tiec、tie Logo 定稿。对比基线见下方条目。
 
 ## [阶段 A] tiec 升格一级编译器——repl/pkg 自举改用 tiec，tiec.exe 入库版本化 — 2026-08-13
 
