@@ -1,0 +1,362 @@
+type tie<logic>
+// scripts/package.tie —— tie 正式发行版打包器（0-PowerShell，tie 语言自写）
+// ============================================================
+// 职责：构建 release 工具链（自举）→ 组装发行目录 → 生成 zip 压缩包。
+// 产物：dist/tie-{发行版号}-win-x64.zip（如 tie-Harbor-2026.1-preview.5-win-x64.zip）
+//
+// 用法（由 tiec 编译并运行）：
+//   compiler/tiec.exe scripts/package.tie -- 2026.1        # 指定版本
+//   compiler/tiec.exe scripts/package.tie -- Harbor-2026.1-preview.5
+//   compiler/tiec.exe scripts/package.tie -- 2026.1 skip-repl   # 跳过 repl 自举
+//   compiler/tiec.exe scripts/package.tie -- 2026.1 skip-llvm   # 跳过 LLVM 捆绑
+//
+// 流程与 scripts/package.ps1 一一对应（0-Rust，参考编译器已归档 tiec_rust）：
+//   1. 自举验证：tiec.exe 编译 driver.tie → tiec2.exe（编译零错误）
+//   2. repl.exe 自举（tiec 编译 repl/repl.tie；-skip-repl 可跳过）
+//   3. 组装 dist/tie-{版本}/（bin/doc/examples/editor + bin/llvm/ 精简工具链
+//      + std/ext/rdu + skills + compiler 源码）
+//   4. tar 打包为 zip（Windows 自带 bsdtar：tar -a -c -f）
+
+// ---------- 命令行参数 ----------
+// 内置 version/args 原语见 tiec 环境；此处用 arg_string 读取（pkg 同款约定）。
+func arg(i: i64) -> string {
+    return arg_string(i)
+}
+
+var g_skip_repl: bool = false
+var g_skip_llvm: bool = false
+
+func parse_args() {
+    var i: i64 = 0
+    while i < 8 {
+        var a = arg(i)
+        if a == "skip-repl" {
+            g_skip_repl = true
+        }
+        if a == "skip-llvm" {
+            g_skip_llvm = true
+        }
+        i = i + 1
+    }
+}
+
+// ---------- 小工具 ----------
+
+// shell 转义：仅当路径含空格时才包双引号（cmd 的 system() 对以引号开头的
+// 整条命令有吞首引号解析问题；无空格路径直接裸传最稳）。
+func shell_q(s: string) -> string {
+    if has_sub(s, " ") {
+        return "\"" + s + "\""
+    }
+    return s
+}
+
+// bool → "true"/"false"（调试打印用）。
+func bool_s(b: bool) -> string {
+    if b {
+        return "true"
+    }
+    return "false"
+}
+
+// 判断 s 是否包含 sub（朴素逐位比对，O(n·m)）。
+func has_sub(s: string, sub: string) -> bool {
+    var n = str_len(s)
+    var m = str_len(sub)
+    if m == 0 {
+        return true
+    }
+    var i: i64 = 0
+    while i <= n - m {
+        var j: i64 = 0
+        while j < m {
+            if str_char(s, i + j) != str_char(sub, j) {
+                break
+            }
+            j = j + 1
+        }
+        if j == m {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ---------- 第 1 步：自举验证 ----------
+
+func step1_bootstrap(root: string) -> i64 {
+    println("[1/4] 自举验证: tiec 编译 driver.tie -> tiec2.exe ...")
+    // 先删旧 tiec2（避免陈旧产物误判成功）
+    if fs_exists(root + "\\compiler\\tiec2.exe") {
+        var _r = fs_remove(root + "\\compiler\\tiec2.exe")
+    }
+    var cmd = shell_q(root + "\\compiler\\tiec.exe") + " " +
+              shell_q(root + "\\compiler\\driver.tie") + " -o " + shell_q(root + "\\compiler\\tiec2.exe")
+    var rc = exec_code(cmd)
+    // tiec 是 GUI 子系统程序，system() 退出码语义不可靠；以产物生成判定成功
+    if !fs_exists(root + "\\compiler\\tiec2.exe") {
+        println("[package] 自举编译失败（退出码 " + to_string(rc) + "，tiec2.exe 未生成）")
+        return 1
+    }
+    println("[1/4] 自举验证完成")
+    return 0
+}
+
+// ---------- 第 2 步：repl.exe 自举 ----------
+
+func step2_repl(root: string) -> i64 {
+    if g_skip_repl {
+        println("[2/4] 已跳过 repl 自举（skip-repl）")
+        return 0
+    }
+    println("[2/4] repl.exe 自举 ...")
+    var cmd = shell_q(root + "\\compiler\\tiec.exe") + " " + shell_q(root + "\\repl\\repl.tie")
+    var rc = exec_code(cmd)
+    if !fs_exists(root + "\\repl\\repl.exe") {
+        println("[package] repl.exe 编译失败（退出码 " + to_string(rc) + "，repl.exe 未生成）")
+        return 1
+    }
+    println("[2/4] repl.exe 自举完成")
+    return 0
+}
+
+// ---------- 第 3 步：组装发行目录 ----------
+// 注：拆成多个小函数规避 tiec 大函数跨模块访问器 + 交错表操作损坏值的问题。
+
+func s3_bin(root: string, dist: string) -> i64 {
+    var _r = fs_create_dir_all(dist + "\\bin")
+    if fs_exists(root + "\\repl\\repl.exe") {
+        var _r = fs_copy(root + "\\repl\\repl.exe", dist + "\\bin\\repl.exe")
+        println("  bin/repl.exe ok")
+    }
+    if fs_exists(root + "\\pkg\\pkg.exe") {
+        var _r = fs_copy(root + "\\pkg\\pkg.exe", dist + "\\bin\\pkg.exe")
+        println("  bin/pkg.exe ok")
+    }
+    if fs_exists(root + "\\compiler\\tiec.exe") {
+        var _r = fs_copy(root + "\\compiler\\tiec.exe", dist + "\\bin\\tiec.exe")
+        println("  bin/tiec.exe ok")
+    }
+    return 0
+}
+
+func s3_llvm(dist: string) -> i64 {
+    var llvm = "D:\\LLVM"
+    if fs_exists(llvm + "\\bin\\clang.exe") {
+        var _r = fs_create_dir_all(dist + "\\bin\\llvm\\bin")
+        var _r = fs_create_dir_all(dist + "\\bin\\llvm\\lib")
+        var tools = ["clang.exe", "opt.exe", "llvm-ar.exe", "lld-link.exe"]
+        var i: i64 = 0
+        while i < 4 {
+            var t = tools[i]
+            if fs_exists(llvm + "\\bin\\" + t) {
+                var _r = fs_copy(llvm + "\\bin\\" + t, dist + "\\bin\\llvm\\bin\\" + t)
+                println("  bin/llvm/bin/" + t + " ok")
+            }
+            i = i + 1
+        }
+        var clang_dir = llvm + "\\lib\\clang"
+        if fs_exists(clang_dir) {
+            var _r = fs_copy_dir(clang_dir, dist + "\\bin\\llvm\\lib\\clang")
+            println("  bin/llvm/lib/clang ok")
+        }
+        if fs_exists(llvm + "\\LICENSE.txt") {
+            var _r = fs_copy(llvm + "\\LICENSE.txt", dist + "\\bin\\llvm\\LICENSE.txt")
+        }
+        println("[3.5] LLVM 精简工具链完成（TIE_LLVM_HOME=" + dist + "\\bin\\llvm）")
+    } else {
+        println("  LLVM 工具链打包跳过（未找到 " + llvm + "\\bin\\clang.exe）")
+    }
+    return 0
+}
+
+func s3_doc(root: string, dist: string) -> i64 {
+    var _r = fs_create_dir_all(dist + "\\doc")
+    foreach_doc(root, dist, "README.md")
+    foreach_doc(root, dist, "CHANGELOG.md")
+    foreach_doc(root, dist, "LICENSE")
+    if fs_exists(root + "\\docs") {
+        var _r = fs_copy_dir(root + "\\docs", dist + "\\doc\\docs")
+    }
+    println("  doc/ ok")
+    return 0
+}
+
+func s3_examples(root: string, dist: string) -> i64 {
+    if fs_exists(root + "\\examples") {
+        var ok1 = fs_copy_dir(root + "\\examples", dist + "\\examples")
+        println("  examples/ ok (" + bool_s(ok1) + ")")
+    }
+    return 0
+}
+
+func s3_libs(root: string, dist: string) -> i64 {
+    var libs = ["std", "ext", "rdu"]
+    var j: i64 = 0
+    while j < 3 {
+        var l = libs[j]
+        if fs_exists(root + "\\" + l) {
+            var _r = fs_copy_dir(root + "\\" + l, dist + "\\" + l)
+            println("  " + l + "/ ok")
+        }
+        j = j + 1
+    }
+    if fs_exists(root + "\\skills") {
+        var _r = fs_copy_dir(root + "\\skills", dist + "\\skills")
+        println("  skills/ ok")
+    }
+    if fs_exists(root + "\\editor") {
+        var _r = fs_copy_dir(root + "\\editor", dist + "\\editor")
+        println("  editor/ ok")
+    }
+    return 0
+}
+
+func s3_compiler(root: string, dist: string) -> i64 {
+    if fs_exists(root + "\\compiler") {
+        var _r = fs_copy_dir(root + "\\compiler", dist + "\\compiler")
+        prune_artifacts(dist + "\\compiler")
+        println("  compiler/ ok")
+    }
+    return 0
+}
+
+// 清理目录下的编译产物（.exe/.ll/.bc），递归；用系统命令避免 tie 表遍历。
+func prune_artifacts(dir: string) {
+    var _r = exec_code("del /s /q " + shell_q(dir + "\\*.exe") + " " + shell_q(dir + "\\*.ll") + " " + shell_q(dir + "\\*.bc") + " >nul 2>&1")
+    var _r = exec_code("for /d /r " + shell_q(dir) + " %d in (*) do @del /s /q \"%d\\*.exe\" \"%d\\*.ll\" \"%d\\*.bc\" >nul 2>&1")
+}
+
+func step3_assemble(root: string, version: string, dist: string) -> i64 {
+    println("[3/4] 组装发行目录 " + dist + " ...")
+    if fs_exists(dist) {
+        var _r = fs_remove_all(dist)
+    }
+    var _r = fs_create_dir_all(dist + "\\bin")
+
+    var r1 = s3_bin(root, dist)
+    var r2 = s3_llvm(dist)
+    var r3 = s3_doc(root, dist)
+    var r4 = s3_examples(root, dist)
+    var r5 = s3_libs(root, dist)
+    var r6 = s3_compiler(root, dist)
+
+    println("[3/4] 发行目录组装完成")
+    return 0
+}
+
+// 文档复制辅助：存在才复制到 doc/
+func foreach_doc(root: string, dist: string, name: string) {
+    if fs_exists(root + "\\" + name) {
+        var _r = fs_copy(root + "\\" + name, dist + "\\doc\\" + name)
+    }
+}
+
+func ends_with(s: string, suffix: string) -> bool {
+    var n = str_len(s)
+    var m = str_len(suffix)
+    if m > n {
+        return false
+    }
+    var i: i64 = 0
+    while i < m {
+        if str_char(s, n - m + i) != str_char(suffix, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// ---------- 第 4 步：打包 zip ----------
+
+func step4_zip(root: string, version: string, dist: string) -> i64 {
+    println("[4/4] 打包 zip ...")
+    var dir_name = "tie-" + version
+    var zip_path = root + "\\dist\\" + dir_name + "-win-x64.zip"
+    if fs_exists(zip_path) {
+        var _r = fs_remove(zip_path)
+    }
+    var _r = fs_create_dir_all(root + "\\dist")
+
+    // Windows 自带 bsdtar：-a 按扩展名自动选格式，-c 建档，-f 输出
+    // 在 dist/ 目录内打包 dist/tie-{version} 子树 → zip 内含 tie-{version}/ 顶层目录
+    var old = exec_code("cd /d " + shell_q(root + "\\dist") + " && tar -a -c -f " + shell_q(zip_path) + " " + dir_name)
+    if old != 0 {
+        println("[package] zip 打包失败（退出码 " + to_string(old) + "）")
+        return 1
+    }
+    if !fs_exists(zip_path) {
+        println("[package] zip 文件未生成")
+        return 1
+    }
+    println("[4/4] 打包完成: " + zip_path)
+    return 0
+}
+
+// ---------- main ----------
+
+// fs 库命名空间函数别名（经 import 后按 fs.xxx 调用；此处应用全局内置
+// 的 file_* 族，避免依赖 import 顺序问题——与 package.ps1 行为对齐）。
+func fs_exists(path: string) -> bool {
+    if file_exists(path) {
+        return true
+    }
+    return file_is_dir(path)
+}
+func fs_copy(src: string, dst: string) -> bool { return file_copy(src, dst) }
+func fs_remove(path: string) -> bool { return file_delete(path) }
+func fs_remove_all(path: string) -> bool { return remove_dir_all(path) }
+func fs_create_dir_all(path: string) -> bool { return mkdir_all(path) }
+func fs_copy_dir(src: string, dst: string) -> bool { return copy_dir(src, dst) }
+
+func main() -> i64 {
+    parse_args()
+    var version = arg(0)
+    if version == "" {
+        version = "2026.1"
+    }
+    println("[package] 发行版号: " + version)
+    var root = io_cwd()
+    println("[package] 仓库根目录: " + root)
+    var dist = root + "\\dist\\tie-" + version
+
+    if step1_bootstrap(root) != 0 { return 1 }
+    if step2_repl(root) != 0 { return 1 }
+    if step3_assemble(root, version, dist) != 0 { return 1 }
+    if step4_zip(root, version, dist) != 0 { return 1 }
+
+    println("打包完成: " + dist + "\\tie-" + version + "-win-x64.zip")
+    return 0
+}
+
+func io_cwd() -> string {
+    // 用 exec_output 取当前工作目录（pwd），回退仓库根
+    var out = exec_output("cd")
+    if out == "" {
+        return "."
+    }
+    // 去掉首行卷标与尾随换行/空格
+    return string_trim(out)
+}
+
+func string_trim(s: string) -> string {
+    // 去除首尾空白
+    var n = str_len(s)
+    var start: i64 = 0
+    while start < n && (str_char(s, start) == " " || str_char(s, start) == "\r" || str_char(s, start) == "\n") {
+        start = start + 1
+    }
+    var end = n
+    while end > start && (str_char(s, end - 1) == " " || str_char(s, end - 1) == "\r" || str_char(s, end - 1) == "\n") {
+        end = end - 1
+    }
+    var out: string = ""
+    var i: i64 = start
+    while i < end {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
