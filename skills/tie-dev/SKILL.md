@@ -1,7 +1,7 @@
 ---
 name: tie-dev
-description: 用 tie 语言开发软件——tie 语法与类型系统、文件角色与头声明、编译运行（tiec）、标准库、包管理器、工程化工作流。在 F:\Projects\tie 仓库或任何 tie 项目中编写 .tie 应用代码时加载。
-whenToUse: 编写 tie 源文件（.tie）、编译运行 tie 程序、使用标准库（std/）、组织多文件项目、使用包管理器（pkg/）时使用。
+description: 用 tie 语言开发软件——tie 语法与类型系统、文件角色与头声明、编译运行（tiec）、数据互联（tink/zd）、表运算、标准库、包管理器、工程化工作流。在 F:\Projects\tie 仓库或任何 tie 项目中编写 .tie 应用代码时加载。
+whenToUse: 编写 tie 源文件（.tie）、编译运行 tie 程序、使用 tink 帧协议/zd 序列化、使用标准库（std/）、组织多文件项目、使用包管理器（pkg/）时使用。
 ---
 
 # tie 开发技能（用 tie 写软件）
@@ -23,7 +23,8 @@ compiler\tiec.exe repl\repl.tie          # 构建 REPL 外壳
 - 输入 `.tie` 源文件，输出本机可执行文件（logic/script 角色）或静态库 `.a`（class 角色）；
 - 发行 zip 内置 `bin/llvm/`（clang/opt/llvm-ar/lld-link），设置 `TIE_LLVM_HOME` 指向它即可开箱即用，无需单独安装 LLVM；
 - 纯程序零运行时依赖：`exec_code`/`get_env`/`time_now` 已内联到 libc，`std/runtime.a` 已退役；只用这些内置的程序不链接任何运行时库；用 tie-interp 桥（file/regex 等）才链 Rust `tie_interp.lib`；
-- LLVM 工具发现顺序：`TIE_LLVM_HOME\bin` → tiec.exe 同目录 `llvm\bin` → `PATH` → 固定目录（`D:\LLVM\bin` 等）。
+- LLVM 工具发现顺序：`TIE_LLVM_HOME\bin` → tiec.exe 同目录 `llvm\bin` → `PATH` → 固定目录（`D:\LLVM\bin` 等）；
+- 发行打包：`compiler\tiec.exe scripts\package.tie -- <版本号>`（tie 语言自写打包器，产出 `dist/tie-<版本>-win-x64.zip`；`skip-repl`/`skip-llvm` 可跳过对应步骤）。
 
 ## 2. 文件角色（头声明）
 
@@ -40,13 +41,14 @@ compiler\tiec.exe repl\repl.tie          # 构建 REPL 外壳
 | `type tie<ui>` / `type tie<db>` | 界面 / 数据库 | 对应工具链未实现，勿用            |
 
 - 未声明头按 `logic` 处理；文件名 `xxx.<角色>.tie` 可作默认角色，但头部声明优先；
+- 角色体系支持**自定义插件化**（S3.4）：通过构建配置 `config.data.tie` 的 `roles` 段或项目 `roles.data.tie` 注册自定义基础/修饰角色与参数（`kind`/`params`/`output=lib|check|exe`），与内建角色依序合并；**包可扩展编译器（纯数据声明）、不可扩展加载器**（字段白名单 + `[audit]` 审计拦截）；
 - 头只允许出现在文件头部；优化级别 / 交叉编译目标**仅 CLI**（`-O2` / `--target`），不放头部；
 - 头部与内容之间允许空行分隔。
 
 ## 3. 类型系统
 
 基本类型：`i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 bool trit char string void`。
-复合类型：`table<T>`（动态数组）、`map`（键值表）、元组 `(T1, T2)`、struct、enum、`fn(A)->R`（函数类型）、`code`（编译期代码片段，宏用）。
+复合类型：`table<T>`（动态数组）、`map`（键值表）、元组 `(T1, T2)`、struct、enum、`fn(A)->R`（函数类型）、`code`（编译期代码片段，宏用）、`any`（P2c 动态装箱）。
 
 ```tie
 var x = 5                    // 推导 i64（整数字面量默认 i64）
@@ -58,7 +60,42 @@ var m: map = ["a": 1, "b": 2]
 var p: trit = zero           // 平衡三进制 -1/0/+1（true/zero/false）
 ```
 
-窄整数后缀：`42i32 / 7u8 / 1.5f32`；转换 `as_*`；溢出检查 `checked_*` 族。
+窄整数后缀：`42i32 / 7u8 / 1.5f32`；转换 `as_*`；溢出检查 `checked_*` 族；
+**f64↔i64 位重解释**：`bitcast_f64_i64(f) -> i64` / `bitcast_i64_f64(i) -> f64`（zd 序列化层支柱，字节级重解释非数值转换）。
+
+### 3.1 `any` 动态类型与异构数据（P2c）
+
+`any` 是一等值类型：struct / enum / fn 装箱为 any（堆分配），可作函数参数/返回值、struct 字段、`map` 键值。
+
+```tie
+func store(v: any) -> any { return v }        // 函数参数/返回值
+var m: map<any> = ["k": 123, "s": "hi"]       // map 键值异构
+var t: table<any> = [1, "x", 3.5]             // 异构元素表（P2b）
+```
+
+- 装箱自动（标量/struct/enum/fn 传 any 处自动装箱）；`println(any)` 运行时分派打印；
+- **拆箱**：`as_i64 / as_f64 / as_string / as_struct<T> / as_enum<T>`（`as_*` 运行时 tag 检查）；
+- `switch` 类型匹配取用 any：`case T: …`（按动态类型分派）；
+- 复合元素表：`t[0](5)`（fn 值表达式间接调用）、`t[i].field` 可寻址读写（struct/enum 元素）、`map_keys / map_values / map_contains` 内置。
+
+### 3.2 高层表运算（P1–P2，std/collection 库）
+
+```tie
+import "../../std/collection.tie"  using coll;
+var xs: table<i64> = [5, 3, 8, 1]
+coll.map(xs, func(x: i64) -> i64 { return x * 2 })        // 高阶 map
+coll.filter(xs, func(x: i64) -> bool { return x > 2 })    // filter
+coll.reduce(xs, 0, func(acc: i64, x: i64) -> i64 { ... }) // reduce
+coll.count_if(xs, pred) / coll.any(xs, pred) / coll.all(xs, pred)
+coll.find_index(xs, pred) / coll.contains(xs, v)
+coll.sort_f64(xs)                                          // 排序
+coll.mean(xs) / coll.median(xs) / coll.variance(xs) / coll.stdev(xs)
+coll.reverse(xs) / coll.to_string(xs) / coll.join(xs, ",")
+coll.sum(xs) / coll.product(xs) / coll.max(xs) / coll.min(xs)
+```
+
+集合：`std/set.tie`（`set_*` 有序表 + 二分，i64/string）；map 查询：`map_keys(m)` / `map_values(m)` / `map_contains(m, k)`。
+高阶函数语法（P1）：数据流箭头 `->`/`<-` 传参与赋值简化链式调用。
 
 ## 4. 控制流
 
@@ -75,7 +112,7 @@ switch n {
         println("three to six")
     case 8 when flag:                    // 守卫：值相等 且 flag 为真
         println("eight and flag")
-    case string:                         // 类型匹配：subject 为宽类型/动态容器时
+    case string:                         // 类型匹配：宽类型/any/动态容器
         println("a string")
     default:                             // 可省略
         println("other")
@@ -83,12 +120,11 @@ switch n {
 ```
 
 - `case` 值支持整数、字符、布尔、负数、字符串、区间、多值组合（`case 1, 3..5 when cond:`）；
+- `switch` 对 `any` 用 `case T:` 类型匹配取用（P2b-T4）；
 - **无 break、无 fallthrough**：一个 case 执行完自动跳出；守卫不满足落入下一个 case；
-- 浮点区间不支持；普通静态类型变量上做类型匹配 → 语义层报错（恒真/恒假无意义）；
-- `&&` / `||` 短路求值：条件里带副作用的调用须嵌套 if（避免被多读）。
-- **字符串码点迭代** `for c in s.chars()`：按 Unicode 码点逐字符遍历，c 是单字符
-  string，中文/emoji 多字节字符一次迭代得完整字符（与字节索引分离）；随机码点
-  索引用 `utf.to_chars(s)` 转码点表，码点数用 `utf.codepoint_count(s)`。
+- 浮点区间不支持；普通静态类型变量上做类型匹配 → 语义层报错；
+- `&&` / `||` 短路求值：条件里带副作用的调用须嵌套 if；
+- **字符串码点迭代** `for c in s.chars()`：按 Unicode 码点逐字符遍历（中文/emoji 一次迭代得完整字符）；随机码点索引用 `utf.to_chars(s)`，码点数用 `utf.codepoint_count(s)`。
 
 ## 5. 函数
 
@@ -153,7 +189,8 @@ var k = len(m)                 // 条目数
 - map 键恒为字符串，值类型全表一致，按键 **strcmp 字节序**有序存储（查找 O(log n)）；
 - map 输出/打印按键排序，不依赖插入序；
 - **map 不能作全局变量**（语法层拒绝）；仅 `table<T>` 支持顶层全局（`var g: table<i64>;`，跨函数持久）；
-- 表字面量：`[1, 2, 3]`；二维表 `[1,2;3,4]` 语法可解析但语义报错，勿用。
+- 表字面量：`[1, 2, 3]`；二维表 `[1,2;3,4]` 语法可解析但语义报错，勿用；
+- **字符串二进制安全**：`std/bytes.tie` 提供字节表读写（`bytes.read/write/concat` 等，0-Rust 内联实现，往返二进制安全）；tink/zd 序列化即以字节表为媒。
 
 ### 6.2 struct（纯数据 + 命名空间方法）
 
@@ -191,7 +228,7 @@ switch c {
 }
 ```
 
-- 静态结构体布局（tag + payload 槽），可作 struct 字段/函数参数/返回值；
+- 静态结构体布局（tag + payload 槽），可作 struct 字段/函数参数/返回值；可装箱 any 后经 `as_enum<T>` 拆箱；
 - payload 目前支持 i64 等标量（string/f64 等宽类型暂不支持）。
 
 ### 6.4 泛型
@@ -238,7 +275,7 @@ var g: fn(i64) -> i64 = add1                           // 命名函数提升
 func make() -> fn(i64) -> i64 { ... return func(x: i64) -> i64 { ... } }  // 闭包返回
 ```
 
-闭包值 = `{env, entry}` 聚合，捕获变量 move 进 env（堆分配），调用走 call_indirect。
+闭包值 = `{env, entry}` 聚合，捕获变量 move 进 env（堆分配），调用走 call_indirect；嵌套捕获（闭包内再闭包）支持。
 
 ## 9. 错误处理
 
@@ -252,7 +289,7 @@ var v = div(10, 2) ?                 // ? 解包：Err 提前 return，Ok 解包
 panic("致命错误")                      // 打印 + exit(1)
 ```
 
-`?` 仅限返回 Result/Option 的函数内使用。
+`?` 仅限返回 Result/Option 的函数内使用。`fs.read_text/json.parse_file/http.get` 等返回 `Result<string|i64, string>`（错误带上消息）。
 
 ## 10. 宏 / 元编程
 
@@ -283,18 +320,27 @@ using math;                        // 引入命名空间：公有函数可裸调
 - 命名空间内函数默认**私有**（仅同命名空间可见），`pub func` 显式导出；顶层函数恒公有；
 - `import "x.tie" as f2`：别名是唯一入口（原前缀被屏蔽）；
 - 多 using 同名函数 → 裸调用歧义报错；
-- 函数递归加载内联、重复导入去重；跨文件语义（命名空间调用）不误报未声明变量。
+- 函数递归加载内联、重复导入去重；跨文件语义（命名空间调用）不误报未声明变量；
+- **标准库 import 路径**：工程根下直接 `import "std/string.tie"`（或仓库内 `import "../../std/xxx.tie"`），随后 `using xxx;`。
 
-### 标准库（std/，35 文件，`import "../../std/xxx.tie"` + `using xxx;`）
+### 标准库（std/，library-v2 三层重构后）
 
 ```
-文本：string / ascii / utf / bytes / format / regex / json / csv / encoding
+文本/编码：string / ascii / utf / bytes / format / regex / json / csv / encoding / base48
 数据结构：sort / collection / set / deque / graph / linalg / optsearch / radix
-数学：math / exmath / random
+数学：math（泛型 abs<T>/max<T>/min<T>/clamp<T>）/ exmath / random / bigint
 IO/系统：fs / path / args / process / time / version / intern / assert
 网络：net / http / http_server
-其他：crypto / db / result / runtime
+哈希/密码：sha1 / sha256 / sha512 / sha3 / blake2 / blake3 / shake / md5（遗留）/
+          siphash / xxh3（非加密）/ hmac / poly1305 / ascon_mac / hkdf / pbkdf2 /
+          ed25519 / x25519 / tsha1 / tsha1_w48（TIE Secure Hash，state-per-n）
+数据互联：tink（帧协议）/（zd 序列化见下方）
+其他：crypto / db / result / tink_probe
 ```
+
+扩展库（ext/）：aes / chacha20 / ascon_aead / ecdsa / scrypt / argon2 / compress /
+jpeg / lz4 / zstd / brotli（codec）/ ml / registry / log / bench / cache / config / pretty / test / tui。
+嵌入式基础层（rdu/，无栈纪律）：ascii / bits / crc（Crc8/16/32/Fnv1a）/ fixed / math / rdb / rnd / rdu_ascon_mac / rdu_poly1305。
 
 常用：
 
@@ -309,15 +355,55 @@ process.exec_output("echo hello")        // "hello\n"（stdout+stderr 合并捕�
 intern.intern("abc")                     // 字符串 → 稳定整数 id（std/intern.tie）
 ```
 
-注意：`std/db.tie` 参数名用 `txt`（`text` 是类型关键字不能作参数名）；`len(s)` 是字节数，`str_len(s)` 按 Unicode 码点（中文 1 字 = 3 字节 1 码点，遍历用 `str_len` 才不会错位）。
+注意：`std/db.tie` 参数名用 `txt`；`len(s)` 是字节数，`str_len(s)` 按 Unicode 码点（中文 1 字 = 3 字节 1 码点，遍历用 `str_len`）。
 
-## 12. 工程化
+## 12. 数据互联：tink 帧协议与 zd 序列化（preview.5 核心）
 
-### 12.1 CLI 选项
+### 12.1 tink 节点帧协议（std/tink.tie）
+
+tink 是语言无关的通用数据流互联服务：组件遵守统一字节级帧协议即可接入管道。帧格式：
+
+```
+帧 = [ len: u32 BE ][ payload: len 字节 ][ crc: u32 BE ]
+crc = CRC32-IEEE(payload)（多项式 0xEDB88320；校验向量 crc32("123456789")==0xCBF43926）
+```
+
+```tie
+import "../../std/tink.tie"  using tink;
+var p = table_new_i64()                  // payload = 字节表（元素 0..255）
+table_push(p, 1)  table_push(p, 2)  table_push(p, 3)
+var f = tink.frame_encode(p)             // 编码：len + payload + crc
+var (payload, next_pos) = tink.frame_next(f, 0)   // 解析（校验 CRC）：失败 (空表, -1)
+var skip = tink.frame_skip(f, 0)         // 跳过一帧（不校验）：返回 next_pos / -1
+var c = tink.crc32(p)                    // 整段 CRC32
+```
+
+多语言库共生（Rust/C/Python/JS/Go/Zig/Lua…，`tink-<语言>` 仓库，API 与校验向量一致）。
+
+### 12.2 zd v2 通用二进制序列化
+
+语言无关二进制规范：10 字节头（`TIEDBZD` 魔数 + base-48 版本 + flags），核心类型
+i64/u64/f64/string/bool/array/map/bytes/blob/null + ext 扩展类型，字符串字典/列式容器优化，
+v1 兼容读取，扩展名统一 `.zd`。规范见 docs/superpowers/specs 的 zd v2 设计文档。
+
+### 12.3 tiec `--compress-data`（td → zd）
+
+```bash
+tiec --compress-data in.data.tie -o out.zd    # 表字面量 → DFS 平铺 → zd record
+```
+
+把 `.data.tie`（tie 表字面量，含 `type tie<data>` 头与可选表名）经 DFS 平铺 + 平行表
+（kind/key/value/child_count）转为 zd record 输出 `.zd`；编译器内部 config 等数据文件
+可走同一条统一定义路径。
+
+## 13. 工程化
+
+### 13.1 CLI 选项
 
 ```bash
 tiec <input.tie> [-o <out>] [-O0|-O1|-O2|-O3] [--target <三元组>]
                 [--emit-ir] [--keep-ir] [--prep-only] [--config <f>] [--help]
+tiec --compress-data <in.data.tie> -o <out.zd>     # td → zd（12.3）
 ```
 
 | 选项              | 说明                                                    |
@@ -331,11 +417,12 @@ tiec <input.tie> [-o <out>] [-O0|-O1|-O2|-O3] [--target <三元组>]
 | `--config <f>`  | 构建配置文件（分层合并：CLI > 项目 config > 用户 > 内置默认）              |
 | `--profile <p>` | 构建 profile（dev/release，Cargo 风格）                      |
 | `--backend <b>` | 后端选择（win32 唯一可用）                                      |
+| `--compress-data` | td → zd 压缩数据子命令（表字面量 → DFS → zd record）              |
 | `--lsp`         | 语言服务器模式（stdio）                                        |
 
 退出码：`0` 成功 / `1` 编译失败 / `2` 参数错误。
 
-### 12.2 库编译
+### 13.2 库编译
 
 ```bash
 tiec lib_math.tie                  # class 角色（type tie<class>）→ lib_math.a
@@ -344,7 +431,7 @@ tiec lib_math.tie -o lib_math.lib  # MSVC 兼容 .lib（同一 COFF 归档，不
 
 导出符号为 `命名空间$函数`（如 `mathlib$add`），C/其他语言可链接消费。
 
-### 12.3 包管理器（pkg/，tie 自写）
+### 13.3 包管理器（pkg/，tie 自写）
 
 ```bash
 tiec pkg\main.tie -o pkg\pkg.exe    # 构建 pkg.exe
@@ -356,7 +443,7 @@ tie publish                         # 打包发布（.tar.gz + git tag + push）
 tie search <关键字> / tie info <包>  # 查询注册表
 ```
 
-### 12.4 多文件并行编译与缓存
+### 13.4 多文件并行编译与缓存
 
 ```tie
 // tie.config（type tie<data>）
@@ -366,7 +453,7 @@ tie search <关键字> / tie info <包>  # 查询注册表
 ]
 ```
 
-## 13. 编译期会报错的写法（负例，勿生成）
+## 14. 编译期会报错的写法（负例，勿生成）
 
 | 场景                                              | 错误关键词                                    |
 | ----------------------------------------------- | ---------------------------------------- |
@@ -384,22 +471,12 @@ tie search <关键字> / tie info <包>  # 查询注册表
 | extern 参数为表或结构体 / 函数体内声明 / REPL 调用              | 「必须标量类型」/「只能出现在文件顶层」/「REPL 不支持调用 extern」 |
 | 静态类型变量上做类型匹配（switch）                            | 语义层报错（类型恒定）                              |
 | 浮点区间 case                                       | 语义层报错                                    |
+| enum payload 为宽类型（string/f64/table）               | 「白名单暂不支持」                               |
+| map 作为全局变量                                       | 语法层拒绝                                    |
 
-## 14. 参考资料索引（写 tie 代码时查阅）
-
-- `docs/language.md`：语法规范（权威）
-- `docs/ai-guide.md`：AI 教学指南（语言全景 + 负例）
-- `docs/cli.md`：CLI 用法速查（主入口 / 包管理器 / 库编译）
-- `docs/tiec.md`：tiec 编译器文档（角色识别 / 运行时依赖 / 已知限制）
-- `docs/tie-script.md`：tie:script 模块协议（eval / eval_call）
-- `docs/prompt-pack.md`：可粘贴 Prompt 包（自包含简介）
-- `examples/`：可运行示例（hello / lib_math / switch_pattern / pkg_demo…）
-- `tests/*_probe/`：真实可用代码样例（最新特性语法以此为准）
-- `NEW.md` / `CHANGELOG.md`：发行版新鲜事 / 版本变更记录
 ## 15. 并发：actor（消息方法——多参标量 sync/async）
 
-actor 是原生并发原语（零运行时，编译期降到 OS 线程 + 互斥/条件变量）。`run Typed()`
-建句柄，方法调用即跨线程消息。
+actor 是原生并发原语（零运行时，编译期降到 OS 线程 + 互斥/条件变量，或 trm-lite 简单执行体承载）。`run Typed()` 建句柄，方法调用即跨线程消息。
 
 ```tie
 actor Counter {
@@ -412,17 +489,14 @@ var v = c.inc(5)      // 同步：返回 5
 c.bump(3)             // async：不阻塞
 ```
 
-- 消息方法支持**多个标量参数**（2-3 及更多，sync/async 均可）；实参按声明序写入 record
-  消息槽段（@80+k*8），dispatch 读出后传 handler。
-- 同步方法可有返回值；`async` 必须 `void`（无返回值）。
-- 私有状态字段为 actor 独占（串行消费免锁）；字段初值暂用**类型默认值**（如 i64=0），
-  显式初值 `= N` 尚未捕获。
-- 指针/slice 宽类型共享消息属 unsafe 门禁（`#[unsafe.share]` 等，见 concurrency-model §7），
-  安全路径限标量。
+- 消息方法支持**多个标量参数**（2-3 及更多，sync/async 均可）；
+- 同步方法可有返回值；`async` 必须 `void`（无返回值）；
+- 私有状态字段为 actor 独占（串行消费免锁）；字段初值暂用**类型默认值**（如 i64=0）；
+- 指针/slice 宽类型共享消息属 unsafe 门禁（`#[unsafe.share]` 等），安全路径限标量。
+
 ## 16. unsafe、移动语义与三期限量语法（概览）
 
-不安全与三期并发的越界语法；细节以 docs/language.md §13/14 与
-docs/designs/concurrency-model.md §7 为准。
+细节以 docs/language.md §13/14 与 docs/designs/concurrency-model.md §7 为准。
 
 - 所有权：`var b = move a` 转移所有权，转移后 `a` 不可再用（编译期报错）——smove pass（S1.5）。
 - `unsafe fn` / `unsafe { }`：解锁指针/切片 `ptr<T>` / `slice<T>`、`slice_of(表)`、
@@ -430,6 +504,19 @@ docs/designs/concurrency-model.md §7 为准。
 - 窄整数：`42i32` / `7u8` / `1.5f32` 后缀、`as_*` 转换、`checked_*` 溢出检查。
 - 属性 `#[...]`：`#[macro]`（过程宏）、`#[repr(C)]`、`#[unsafe.share/trm/mem/ext]` 凭据、
   `#[tag.x]` 标签。
-- goto：`#[tag.x]` 标签 + `unsafe goto #x` 无条件跳转（三期，见 concurrency-model §7.1.5）。
+- goto：`#[tag.x]` 标签 + `unsafe goto #x` 无条件跳转。
 - guard 凭据：`unsafe.get(share)` / `unsafe use g { }` / `unsafe.with(share) { }`
-  （move-only `guard<share>`，破「状态私有」边界，见 concurrency-model §7.1.1）。
+  （move-only `guard<share>`，破「状态私有」边界）。
+
+## 17. 参考资料索引（写 tie 代码时查阅）
+
+- `docs/language.md`：语法规范（权威）
+- `docs/ai-guide.md`：AI 教学指南（语言全景 + 负例）
+- `docs/cli.md`：CLI 用法速查（主入口 / 包管理器 / 库编译 / --compress-data）
+- `docs/tiec.md`：tiec 编译器文档（角色识别 / 运行时依赖 / 已知限制）
+- `docs/tie-script.md`：tie:script 模块协议（eval / eval_call）
+- `docs/prompt-pack.md`：可粘贴 Prompt 包（自包含简介）
+- `docs/superpowers/specs/`：设计文档（tink / zd v2 / td 数据编译器 / tsha1 等）
+- `examples/`：可运行示例（hello / lib_math / switch_pattern / pkg_demo…）
+- `tests/*_probe/`：真实可用代码样例（最新特性语法以此为准；P2 表运算见 tests/_p2b_probe）
+- `NEW.md` / `CHANGELOG.md`：发行版新鲜事 / 版本变更记录
