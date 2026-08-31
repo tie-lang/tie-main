@@ -1,0 +1,7 @@
+// 样例数据：可选表名（无 var）
+type tie<data>
+pack = [
+    "name": "测试数据包",
+    "version": 1,
+    "items": [10, 20, 30],
+]

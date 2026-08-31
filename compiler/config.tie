@@ -728,6 +728,81 @@ pub func parse_file(path: string) -> i64 {
     return parse(body)
 }
 
+// 解析 tie:data 数据文件（--compress-data 用）：复用 strip_header 剥离 `type tie<data>`
+// 等头部行，再支持**可选表名**（`name = [...]`，无 var；首标识符 + '=' + '[' 时跳过
+// 表名部分，从 '[' 起解析）。裸表（无表名）原样。失败返回 -1（c_err_msg 含信息）。
+pub func parse_data(path: string) -> i64 {
+    var content = file_read(path)
+    if str_len(content) == 0 {
+        c_err_msg = "data 文件为空或读取失败: " + path
+        return -1
+    }
+    var body = strip_header(content)
+    body = skip_opt_table_name(body)
+    return parse(body)
+}
+
+// 可选表名剥离：若正文（去前导空白后）形如 `标识符 = [`，则返回 '[' 起的子串；
+// 否则原样返回。仅当 '=' 后紧跟 '['（表字面量）才剥离，避免误伤普通内容。
+func skip_opt_table_name(body: string) -> string {
+    var n: i64 = str_len(body)
+    var i: i64 = 0
+    // 前导空白
+    while i < n {
+        var c = str_char(body, i)
+        var cp: i64 = char_code(c)
+        if cp == 32 || cp == 9 || cp == 10 || cp == 13 {
+            i = i + 1
+        } else {
+            break
+        }
+    }
+    // 首 token：标识符（字母/下划线开头，后接字母数字下划线）
+    var start: i64 = i
+    while i < n {
+        var c = str_char(body, i)
+        var cp: i64 = char_code(c)
+        if (cp >= 97 && cp <= 122) || (cp >= 65 && cp <= 90) || cp == 95 ||
+            (i > start && cp >= 48 && cp <= 57) {
+            i = i + 1
+        } else {
+            break
+        }
+    }
+    if i == start {
+        return body
+    }
+    // 标识符后空白，找 '='
+    var j: i64 = i
+    while j < n {
+        var c = str_char(body, j)
+        var cp: i64 = char_code(c)
+        if cp == 32 || cp == 9 || cp == 10 || cp == 13 {
+            j = j + 1
+        } else {
+            break
+        }
+    }
+    if j >= n || str_char(body, j) != "=" {
+        return body
+    }
+    // '=' 后空白，确认 '['（表字面量）
+    var k: i64 = j + 1
+    while k < n {
+        var c = str_char(body, k)
+        var cp: i64 = char_code(c)
+        if cp == 32 || cp == 9 || cp == 10 || cp == 13 {
+            k = k + 1
+        } else {
+            break
+        }
+    }
+    if k < n && str_char(body, k) == "[" {
+        return slice(body, k, n)
+    }
+    return body
+}
+
 // 追加解析 config 文件（不重置存储）：供 load_merge 分层加载使用。
 // 失败返回 -1（c_err_msg 含信息）。
 func parse_file_append(path: string) -> i64 {
@@ -764,6 +839,17 @@ pub func int_val(n: i64) -> i64 {
         return c_ivals[n]
     }
     return 0
+}
+
+// float 节点的值（其他类型返回 0.0）。供 td→zd 平铺等消费方取浮点值。
+pub func float_val(n: i64) -> f64 {
+    if n < 0 || n >= len(c_types) {
+        return 0.0
+    }
+    if c_types[n] == 3 {
+        return c_fvals[n]
+    }
+    return 0.0
 }
 
 // str 节点的文本（其他类型返回空串）。

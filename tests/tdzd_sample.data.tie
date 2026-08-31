@@ -1,0 +1,17 @@
+// 样例数据：羁绊/棋子（td 格式，裸表）
+type tie<data>
+[
+    "season": "S13",
+    "season_id": 2026,
+    "rating": 4.5,
+    "active": true,
+    "champions": [
+        "阿卡丽",
+        "金克丝",
+        "亚索",
+    ],
+    "tags": [
+        "meta": "tier1",
+        "count": 3,
+    ],
+]
