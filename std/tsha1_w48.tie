@@ -54,17 +54,33 @@ func quant3(m0: i64, n0: i64, m1: i64, n1: i64, m2: i64, n2: i64) -> i64 {
     return ((A & B) | (B & C) | (C & A)) & 0xFFFFFFFF
 }
 
-func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64, m1: i64, n1: i64, pw: table<i64>, skey: i64) {
+// F1-2 位平面 16 项标量容器（替代 table<i64> Pw）：零堆分配、零动态索引，与 Lanes9/
+// Lanes11h 同哲学——把吸收路径的位平面固化为常数字段，供 LLVM -O2 全展开常量折叠。
+struct Planes16 {
+    var w0: i64 = 0
+    var w1: i64 = 0
+    var w2: i64 = 0
+    var w3: i64 = 0
+    var w4: i64 = 0
+    var w5: i64 = 0
+    var w6: i64 = 0
+    var w7: i64 = 0
+    var w8: i64 = 0
+    var w9: i64 = 0
+    var w10: i64 = 0
+    var w11: i64 = 0
+    var w12: i64 = 0
+    var w13: i64 = 0
+    var w14: i64 = 0
+    var w15: i64 = 0
+}
+
+func w48_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64, m1: i64, n1: i64, pw: Planes16, skey: i64) {
     var M0v: i64 = 0
     var N0v: i64 = 0
     var M1v: i64 = 0
     var N1v: i64 = 0
-    var Pw = table_new_i64()
-    var kk: i64 = 0
-    while kk < 16 {
-        table_push(Pw, 0)
-        kk = kk + 1
-    }
+    var Pw = Planes16()
     var skey: i64 = 0
     var j: i64 = 0
     while j < 64 {
@@ -79,9 +95,9 @@ func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64,
         // 不能用 tv 二元钳位（会把 t=2/tf=3 误并为 1，令高两位 11 的字节污染 skey）。
         var dig = bits3 * 3 + (t + 1)
         skey = (skey * 3 + dig) & 0xFFFFFFFF
+        var wv = j / 32
+        var bit = j % 32
         if t != 0 {
-            var wv = j / 32
-            var bit = j % 32
             if t > 0 {
                 if wv == 0 {
                     M0v = M0v | (1 << bit)
@@ -96,11 +112,25 @@ func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64,
                 }
             }
         }
-        var biti: i64 = 0
-        while biti < 8 {
-            var pi = biti * 2 + (j / 32)
-            Pw[pi] = Pw[pi] | (((b >> biti) & 1) << (j % 32))
-            biti = biti + 1
+        // 位平面累积（标量 unroll：pi = biti*2 + wv，biti=0..7 → 偶/奇 8 项一组）。
+        if wv == 0 {
+            Pw.w0 = Pw.w0 | (((b >> 0) & 1) << bit)
+            Pw.w2 = Pw.w2 | (((b >> 1) & 1) << bit)
+            Pw.w4 = Pw.w4 | (((b >> 2) & 1) << bit)
+            Pw.w6 = Pw.w6 | (((b >> 3) & 1) << bit)
+            Pw.w8 = Pw.w8 | (((b >> 4) & 1) << bit)
+            Pw.w10 = Pw.w10 | (((b >> 5) & 1) << bit)
+            Pw.w12 = Pw.w12 | (((b >> 6) & 1) << bit)
+            Pw.w14 = Pw.w14 | (((b >> 7) & 1) << bit)
+        } else {
+            Pw.w1 = Pw.w1 | (((b >> 0) & 1) << bit)
+            Pw.w3 = Pw.w3 | (((b >> 1) & 1) << bit)
+            Pw.w5 = Pw.w5 | (((b >> 2) & 1) << bit)
+            Pw.w7 = Pw.w7 | (((b >> 3) & 1) << bit)
+            Pw.w9 = Pw.w9 | (((b >> 4) & 1) << bit)
+            Pw.w11 = Pw.w11 | (((b >> 5) & 1) << bit)
+            Pw.w13 = Pw.w13 | (((b >> 6) & 1) << bit)
+            Pw.w15 = Pw.w15 | (((b >> 7) & 1) << bit)
         }
         j = j + 1
     }
@@ -699,14 +729,48 @@ func fin_synth11(h: ref table<i64>) {
 
 // F1-2 位平面吸收（W=9 全宽内核，半宽=false → rrp）。逐条 Pw 按锚点字 w%9
 // 平衡加并入 l 字段（tadd2 后写回原字段，与通用路径 lanes 语义逐式一致）。
-func absorb9(l: Lanes9, Pw: table<i64>, skey: i64) -> Lanes9 {
+func absorb9(l: Lanes9, Pw: Planes16, skey: i64) -> Lanes9 {
     var w: i64 = 0
     while w < 16 {
-        if Pw[w] != 0 {
+        var pv: i64 = 0
+        if w == 0 {
+            pv = Pw.w0
+        } else if w == 1 {
+            pv = Pw.w1
+        } else if w == 2 {
+            pv = Pw.w2
+        } else if w == 3 {
+            pv = Pw.w3
+        } else if w == 4 {
+            pv = Pw.w4
+        } else if w == 5 {
+            pv = Pw.w5
+        } else if w == 6 {
+            pv = Pw.w6
+        } else if w == 7 {
+            pv = Pw.w7
+        } else if w == 8 {
+            pv = Pw.w8
+        } else if w == 9 {
+            pv = Pw.w9
+        } else if w == 10 {
+            pv = Pw.w10
+        } else if w == 11 {
+            pv = Pw.w11
+        } else if w == 12 {
+            pv = Pw.w12
+        } else if w == 13 {
+            pv = Pw.w13
+        } else if w == 14 {
+            pv = Pw.w14
+        } else {
+            pv = Pw.w15
+        }
+        if pv != 0 {
             var a = (w * 5 + ((skey >> (w & 7)) & 7)) & 31
             var an = w % 9
-            var v = rrp(Pw[w], a)
-            var v2 = rrp(Pw[w], a + 17)
+            var v = rrp(pv, a)
+            var v2 = rrp(pv, a + 17)
             if an == 0 {
                 var (s0m, s0n) = tadd2(l.M0, l.N0, v, v2)
                 l.M0 = s0m & 0xFFFFFFFF
@@ -751,14 +815,48 @@ func absorb9(l: Lanes9, Pw: table<i64>, skey: i64) -> Lanes9 {
 }
 
 // F1-2 位平面吸收（W=11 半宽内核，半宽=true → rrp16）。锚点字 w%11。
-func absorb11h(l: Lanes11h, Pw: table<i64>, skey: i64) -> Lanes11h {
+func absorb11h(l: Lanes11h, Pw: Planes16, skey: i64) -> Lanes11h {
     var w: i64 = 0
     while w < 16 {
-        if Pw[w] != 0 {
+        var pv: i64 = 0
+        if w == 0 {
+            pv = Pw.w0
+        } else if w == 1 {
+            pv = Pw.w1
+        } else if w == 2 {
+            pv = Pw.w2
+        } else if w == 3 {
+            pv = Pw.w3
+        } else if w == 4 {
+            pv = Pw.w4
+        } else if w == 5 {
+            pv = Pw.w5
+        } else if w == 6 {
+            pv = Pw.w6
+        } else if w == 7 {
+            pv = Pw.w7
+        } else if w == 8 {
+            pv = Pw.w8
+        } else if w == 9 {
+            pv = Pw.w9
+        } else if w == 10 {
+            pv = Pw.w10
+        } else if w == 11 {
+            pv = Pw.w11
+        } else if w == 12 {
+            pv = Pw.w12
+        } else if w == 13 {
+            pv = Pw.w13
+        } else if w == 14 {
+            pv = Pw.w14
+        } else {
+            pv = Pw.w15
+        }
+        if pv != 0 {
             var a = (w * 5 + ((skey >> (w & 7)) & 7)) & 31
             var an = w % 11
-            var v = rrp16(Pw[w], a)
-            var v2 = rrp16(Pw[w], a + 17)
+            var v = rrp16(pv, a)
+            var v2 = rrp16(pv, a + 17)
             if an == 0 {
                 var (t0m, t0n) = tadd2(l.M0, l.N0, v, v2)
                 l.M0 = t0m & 0xFFFFFFFF
@@ -813,7 +911,7 @@ func absorb11h(l: Lanes11h, Pw: table<i64>, skey: i64) -> Lanes11h {
 pub func compress_w9(h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
             t_lo: i64, t_hi: i64, last: bool,
             iv: table<i64>, rcon: table<i64>, R: i64) {
-    var (M0, N0, M1, N1, Pw, skey) = block_planes_skey(msg, pos, nbytes)
+    var (M0, N0, M1, N1, Pw, skey) = w48_planes_skey(msg, pos, nbytes)
     var l = Lanes9()
     l.M0 = h[0] & 0xFFFFFFFF
     l.N0 = rrp(h[4], 7)
@@ -882,7 +980,7 @@ pub func compress_w9(h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
 pub func compress_w11(h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
             t_lo: i64, t_hi: i64, last: bool,
             iv: table<i64>, rcon: table<i64>, R: i64) {
-    var (M0, N0, M1, N1, Pw, skey) = block_planes_skey(msg, pos, nbytes)
+    var (M0, N0, M1, N1, Pw, skey) = w48_planes_skey(msg, pos, nbytes)
     var l = Lanes11h()
     l.M0 = h[0] & 0xFFFFFFFF
     l.N0 = rrp16(h[5], 7)
