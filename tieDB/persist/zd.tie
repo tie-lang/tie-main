@@ -150,6 +150,7 @@ pub func read_u64_be(t: table<i64>, pos: i64) -> (i64, i64) {
 //   - 位模式 = (sign<<63)|(biased<<52)|mant，biased=e+1023。
 // 局限：次正规数（|x|<2^-1022，biased≤0）简化编码为 ±0 位模式（测试不含）。
 func f64_bits(x: f64) -> i64 {
+    var min_i64: i64 = 0 - 9223372036854775807 - 1  // -2^63（字面量安全构造）
     // NaN：x!=x（防御；正常数据不会触发）
     if x != x {
         return 0x7FF8000000000000
@@ -157,7 +158,7 @@ func f64_bits(x: f64) -> i64 {
     // 零值（含 -0.0）：符号位 + 全 0。负零判定 1.0/x<0（1.0/-0.0=-inf<0）。
     if x == 0.0 {
         if 1.0 / x < 0.0 {
-            return 0x8000000000000000
+            return min_i64
         }
         return 0
     }
@@ -167,7 +168,7 @@ func f64_bits(x: f64) -> i64 {
         return 0x7FF0000000000000
     }
     if x < -maxd {
-        return 0xFFF0000000000000
+        return min_i64 + 0x7FF0000000000000
     }
     // 常规数：符号位 + 绝对值
     var sign: i64 = 0
@@ -1200,10 +1201,31 @@ pub func decode_map(t: table<i64>, pos: i64, val_kind: i64) -> (table, table, i6
 }
 
 // ==================== 文件接口（byte_write / byte_read + 魔数头） ====================
+// v2 兼容读取（同步 tiedb 权威 src/zd.tie v2 头）：识别 v1（8 字节魔数 + 0x01）与
+// v2（10 字节魔数 + base-48 版本 + flags）。save 保持写 v1（8 字节）——部分消费方
+// 硬编码 8 字节头偏移，升级 v2 写需同步改消费方；save_v2 提供 v2 写。
 
-// save：字节表 + 8 字节魔数头写入文件 → 成功返回 true。
-// 魔数 = [0x54,0x49,0x45,0x44,0x42,0x5A,0x44,0x01]（"TIEDBZD" ASCII + 版本 1），
-// 共 8 字节。byte_write 返回 i8（1 成功 / 0 失败）转 bool。
+// header_info：头部解析 → (version, header_len, flags)；失败 (-1,-1,-1)。
+//   v1 → (1, 8, 0)；v2 → (2, 10, flags)。
+pub func header_info(t: table<i64>) -> (i64, i64, i64) {
+    var n: i64 = len(t)
+    if n < 8 {
+        return (-1, -1, -1)
+    }
+    if t[0] != 0x54 || t[1] != 0x49 || t[2] != 0x45 || t[3] != 0x44 ||
+        t[4] != 0x42 || t[5] != 0x5A || t[6] != 0x44 {
+        return (-1, -1, -1)
+    }
+    if t[7] == 0x01 {
+        return (1, 8, 0)
+    }
+    if n >= 10 && t[7] >= 0 && t[7] <= 47 && t[8] >= 0 && t[8] <= 47 {
+        return (t[7] * 48 + t[8], 10, t[9])
+    }
+    return (-1, -1, -1)
+}
+
+// save：字节表 + 8 字节魔数头（v1）写入文件 → 成功返回 true。
 pub func save(path: string, bytes: table<i64>) -> bool {
     var head = table_new_i64()
     table_push(head, 0x54)  // 'T'
@@ -1218,46 +1240,36 @@ pub func save(path: string, bytes: table<i64>) -> bool {
     return byte_write(path, data)
 }
 
-// load：读文件 → 校验魔数头 → 返回去头字节表。非 zd 文件返回空表。
+// save_v2：字节表 + 10 字节 v2 头（魔数 + "02" + flags 0）写入文件 → 成功 true。
+pub func save_v2(path: string, bytes: table<i64>) -> bool {
+    var head = table_new_i64()
+    table_push(head, 0x54)
+    table_push(head, 0x49)
+    table_push(head, 0x45)
+    table_push(head, 0x44)
+    table_push(head, 0x42)
+    table_push(head, 0x5A)
+    table_push(head, 0x44)
+    table_push(head, 0x00)
+    table_push(head, 0x02)
+    table_push(head, 0x00)
+    return byte_write(path, concat(head, bytes))
+}
+
+// load：读文件 → 校验头部 → 返回去头字节表（v1/v2 均可）。非 zd 文件返回空表。
 // byte_read 失败（文件不存在等）由编译器报错退出（底座行为，std/bytes 同款约定）。
 pub func load(path: string) -> table<i64> {
     var data = byte_read(path)
-    if !is_zd(data) {
+    var (version, hlen, flags) = header_info(data)
+    if version < 0 {
         return table_new_i64()
     }
-    // 去掉 8 字节魔数头
-    return slice(data, 8, len(data))
+    return slice(data, hlen, len(data))
 }
 
-// is_zd：校验字节表是否带 TIEDBZD 魔数头（长度 >=8 且前 8 字节匹配）。
+// is_zd：校验字节表是否带 TIEDBZD 魔数头（v1/v2 任一合法头部）。
 pub func is_zd(t: table<i64>) -> bool {
-    if len(t) < 8 {
-        return false
-    }
-    if t[0] != 0x54 {
-        return false
-    }
-    if t[1] != 0x49 {
-        return false
-    }
-    if t[2] != 0x45 {
-        return false
-    }
-    if t[3] != 0x44 {
-        return false
-    }
-    if t[4] != 0x42 {
-        return false
-    }
-    if t[5] != 0x5A {
-        return false
-    }
-    if t[6] != 0x44 {
-        return false
-    }
-    if t[7] != 0x01 {
-        return false
-    }
-    return true
+    var (version, hlen, flags) = header_info(t)
+    return version >= 0
 }
 }
