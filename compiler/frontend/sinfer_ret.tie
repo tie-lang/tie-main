@@ -184,7 +184,8 @@ pub func infer_call_expr(id: i64) -> i64 {
         if at < 0 {
             return -1
         }
-        if !stype.types_compatible(want, at) && !stype.types_match(want, at, sstate.child(id, kf)) {
+        if !stype.types_compatible(want, at) && !stype.types_match(want, at, sstate.child(id, kf)) &&
+            !stype.types_narrow_int(want, at, sstate.child(id, kf)) {
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
             sm_err_msg = "调用表达式第 " + to_string(kf) + " 个实参类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(at)
@@ -650,7 +651,8 @@ pub func infer_call(id: i64) -> i64 {
                 if at < 0 {
                     return -1
                 }
-                if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[kf]) {
+                if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[kf]) &&
+                    !stype.types_narrow_int(want, at, args[kf]) {
                     sm_err_line = s_lines[id]
                     sm_err_col = s_cols[id]
                     sm_err_msg = "函数值调用 '" + fnm + "' 参数类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(at)
@@ -741,7 +743,8 @@ pub func infer_call(id: i64) -> i64 {
         // 表形参（table<T>）的元素不匹配留给 A1 专用检查；非表类型 mismatch 报通用消息
         var want_is_tbl = types.kind(want) == K_TABLE
         var at_is_tbl = types.kind(at) == K_TABLE
-        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j2]) {
+        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j2]) &&
+            !stype.types_narrow_int(want, at, args[j2]) {
             if !(want_is_tbl && at_is_tbl) {
                 sm_err_line = s_lines[id]
                 sm_err_col = s_cols[id]

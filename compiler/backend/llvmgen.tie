@@ -300,8 +300,10 @@ func emit_globals() {
         } else {
             var ty = llvm_ty(g_global_tys[i])
             var init = "0"
-            // const 整数字面量初始值（i64 字面量直接输出；其余保持零值）
-            if i < len(g_global_inits) && g_global_inits[i] >= 0 && ty == "i64" {
+            // const 整数字面量初始值（全部整数类型直接输出；其余保持零值）。
+            // 旧实现仅 ty=="i64" 应用 → i8/i16/i32/u* 等 const 全局恒为 0
+            //（GetSystemMetrics(1 的 const i32) 传成 0 一类值破坏 bug）。
+            if i < len(g_global_inits) && g_global_inits[i] >= 0 && types.is_int(g_global_tys[i]) {
                 init = to_string(g_global_inits[i])
             }
             if ty == "ptr" {

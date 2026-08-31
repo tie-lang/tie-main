@@ -1,0 +1,25 @@
+type tie<logic>
+// regression: const integer-literal initializer applied to global for ALL
+// integer types (i8/i16/i32/u*), not just i64.
+//
+// Old bug (llvmgen emit_globals): const scalar init was only emitted when
+// `ty == "i64"`; i32 (etc.) const globals stayed 0 → e.g. GetSystemMetrics
+// called with a const i32 = 1 received 0 (returned SM_CXSCREEN instead of
+// SM_CYSCREEN), and plain reads of the const yielded 0.
+//
+// Uses libc abs() (deterministic, always available): abs(const i32 = 42)
+// must be 42, const i64 read must be 7. Prints 1 when correct.
+unsafe extern fn abs(x: i32) -> i32
+
+const CI32: i32 = 42
+const CI64: i64 = 7
+
+func main() {
+    unsafe {
+        var ok: i64 = 0
+        if as_i64(abs(CI32)) == 42 && as_i64(CI64) == 7 {
+            ok = 1
+        }
+        println(to_string(ok))
+    }
+}

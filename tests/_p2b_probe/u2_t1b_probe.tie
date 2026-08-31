@@ -1,0 +1,18 @@
+type tie<logic>
+// U2-T1b：变量初始化窄化测试（i64 变量 → u32 局部变量）
+
+func main() {
+    var v: i64 = 0x0F0F0F0F
+    var x: u32 = v  // i64 变量初始化 u32：是否允许？
+    println(as_i64(x))
+    // 表元素 → u32
+    var t: table<i64> = [0x33333333]
+    var y: u32 = t[0]
+    println(as_i64(y))
+    // u32 局部变量 → i64 赋值（widen）
+    var z: i64 = x
+    println(z)
+    // u32 局部变量算术
+    var w: u32 = x + 1
+    println(as_i64(w))
+}

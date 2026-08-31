@@ -1,0 +1,36 @@
+type tie<logic>
+// U2-T1 可行性验证：i64 变量 ↔ u32 形参/返回 的运行时转换
+// 模拟 tsha1 热路径改造场景：lanes 存 i64，热路径函数改 u32
+
+func add_u32(a: u32, b: u32) -> u32 {
+    return a + b
+}
+
+func rr32_u32(v: u32, n: u32) -> u32 {
+    return (v >> n) | (v << (32 - n))
+}
+
+func main() {
+    // 1. i64 变量（模拟 lanes[i]，值 32 位内）传 u32 形参
+    var lanes: table<i64> = [0x0F0F0F0F, 0x33333333, 0x55555555, 0xAAAAAAAA]
+    var a: i64 = lanes[0]
+    var b: i64 = lanes[1]
+    // i64 变量直接传 u32 形参（应 trunc，值不变）
+    var s: u32 = add_u32(a, b)
+    println(as_i64(s))  // 期望 0x42424242
+    // 2. u32 返回值赋 i64 变量（应 zext）
+    var s64: i64 = s
+    println(s64)  // 期望 1111638594
+    // 3. u32 链式：u32 返回 → u32 形参
+    var t: u32 = add_u32(s, s)
+    println(as_i64(t))  // 期望 0x84848484（回绕）
+    // 4. 旋转 u32（模拟 rr32）：i64 值传 u32 形参
+    var r: u32 = rr32_u32(lanes[0], 13)
+    println(as_i64(r))  // 期望 0x78787878 = 2021161080（0x0F0F0F0F 右旋 13）
+    // 5. u32 返回值写回 i64 表槽
+    lanes[0] = as_i64(r)
+    println(lanes[0])  // 期望 2021161080
+    // 6. 混合：u32 与 i64 算术（u32 值 + i64 值 → i64）
+    var m: i64 = as_i64(s) + lanes[2]
+    println(m)  // 期望 1111638594 + 1431655765
+}

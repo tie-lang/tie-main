@@ -324,6 +324,46 @@ pub func types_compatible(a: i64, b: i64) -> bool {
     return false
 }
 
+// S1.3 C2 扩展——整数窄化兼容（U2 通道）：want 与 got 都是整数，且 want 位宽
+// 严格更窄（i64 → u32/u16/u8/i32/i8 等）→ 允许隐式缩窄（语义层放行；IR 层
+// tig_coerce 生成 trunc，值回绕语义）。仅整数族（float/struct/string/any 等
+// 保持严格）；同宽 i↔u 不隐式（C4：必须显式 as_*）。用于函数参数传递与
+// 变量初始化/赋值处的类型检查（TSHA1 U2：位平面热路径 i64 → u32 签名改造）。
+// 常量表达式（字面量/常量算术）不走窄化：由 types_match 的 C3/O3 范围检查
+// 决定——超范围字面量必须报错（`var a: i8 = 200` 仍拒绝），不能因窄化放行
+// 静默截断。窄化只针对运行期值（变量/调用/下标/非纯常量算术等）。
+pub func types_narrow_int(want: i64, got: i64, node: i64) -> bool {
+    if !types.is_int(want) || !types.is_int(got) {
+        return false
+    }
+    if int_width(want) >= int_width(got) {
+        return false
+    }
+    if node >= 0 {
+        var tag = s_tags[node]
+        // 单字面量：C3 范围检查已覆盖（在范围内 types_match 放行，超范围拒绝）
+        if tag == S_N_INT_LIT {
+            return false
+        }
+        // 纯常量算术（两侧都是字面量）：O3 窄域常量检查已覆盖
+        if tag == S_N_BINARY {
+            var ln = sstate.child(node, 0)
+            var rn = sstate.child(node, 1)
+            if s_tags[ln] == S_N_INT_LIT && s_tags[rn] == S_N_INT_LIT {
+                return false
+            }
+        }
+        // 负字面量（Neg + IntLit）：C3 负常量范围检查已覆盖
+        if tag == S_N_UNARY {
+            var un = sstate.child(node, 0)
+            if s_vals[node] == 0 && s_tags[un] == S_N_INT_LIT {
+                return false
+            }
+        }
+    }
+    return true
+}
+
 // 元组结构相等（递归）：字段类型逐层比较（含嵌套元组字段）。
 // 背景：types_compatible 的元组分支用 `!=` 逐字段比较，嵌套元组字段
 // 每处字面量独立登记 tuple id（如 ((1,2),3) 的字段类型 tuple#0/tuple#1），

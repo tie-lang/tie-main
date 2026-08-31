@@ -1,0 +1,149 @@
+type tie<logic>
+// tsha_bench.tie：TSHA1 四档（f/b/x/r）× 五尺寸（0B/16B/1KB/64KB/1MB）吞吐基准探针。
+//
+// 计时方法（自持，未用 ext/bench.tie，因 bench 库汇总精度仍受 time_now 秒级粒度
+// 限制且不便做逐 case 迭代校准）：
+//   ms = time_now() * 1000。time_now 仅 Unix 纪元**秒**级（i64），同秒内两次差值恒 0，
+//   故单次毫秒多为 0；必须大循环累计到跨过 ≥1 秒才有非零区分度。
+//   本探针逐 case 用 time_now 前后差值判定：差值 == 0（未跨秒）则放大迭代数 ×8
+//   重测，直到跨过 ≥1 秒（ms>0）或触及该尺寸迭代上限（cap）。
+//   吞吐 MiB/s = size×iters / (ms/1000) / 1,048,576；µs/call = ms×1000/iters。
+//
+// 说明：
+//   - 四档默认输出均含 base48 编码（tsha1f/tsha1b/tsha1x=46 字符、tsha1r=23 字符）。
+//   `_hex` 与默认输出差异仅在编码后处理层（内部哈希字节不变），故本探针只测默认输出。
+//   - 大消息用 2^k 倍增拼接构造（rep2），拼接成本在计时循环**外**，只计哈希循环；
+//     0B 尺寸 throughput 未定义（0 字节），该格输出 “—”（以 µs/call 比较）。
+import "../../std/tsha1.tie"
+using tsha;
+
+// 固定宽度填充（右补空格，中文按字节计——本表全 ASCII 列头/数字，安全）。
+func pad(s: string, w: i64) -> string {
+    var out: string = s
+    var n = len(out)
+    while n < w {
+        out = out + " "
+        n = n + 1
+    }
+    return out
+}
+
+// 四档适配函数（顶层命名函数，作 fn(string)->string 值传参，避免循环内分支开销）。
+func ff(m: string) -> string { return tsha.tsha1f(m, 64) }
+func fb(m: string) -> string { return tsha.tsha1b(m, 64) }
+func fx(m: string) -> string { return tsha.tsha1x(m, 64) }
+func fr(m: string) -> string { return tsha.tsha1r(m, 64) }
+
+// 哈希循环：iters 次累加 result 字节长度，返回累计防死消除（结果有副作用：常量表写入/分配）。
+func bench_loop(f: fn(string) -> string, msg: string, iters: i64) -> i64 {
+    var i: i64 = 0
+    var acc: i64 = 0
+    while i < iters {
+        acc = acc + len(f(msg))
+        i = i + 1
+    }
+    return acc
+}
+
+// 输出一行：档 | size | iters | ms | MiB/s | µs/call
+func print_row(name: string, size: i64, iters: i64, ms: i64) {
+    var mbs: i64 = 0
+    if size > 0 && ms > 0 {
+        mbs = (size * iters * 1000 / ms) / 1048576
+    }
+    var us: i64 = 0
+    if iters > 0 {
+        us = ms * 1000 / iters
+    }
+    var mbs_s: string = "—"
+    if mbs > 0 {
+        mbs_s = to_string(mbs)
+    }
+    println(pad(name, 6) + pad(to_string(size), 8) +
+        pad(to_string(iters), 12) + pad(to_string(ms), 8) +
+        pad(mbs_s, 8) + pad(to_string(us), 8))
+}
+
+// 逐 case 计时 + 自适应迭代校准。
+func measure(f: fn(string) -> string, name: string, msg: string, size: i64, iters: i64, cap: i64) {
+    var it = iters
+    var ms: i64 = 0
+    var tries: i64 = 0
+    while tries < 12 {
+        var t0 = time_now()
+        var a = bench_loop(f, msg, it)
+        if a == -1 {
+            println("guard")
+        }
+        var t1 = time_now()
+        var d = t1 - t0
+        if d > 0 {
+            ms = d * 1000
+            break
+        }
+        var nx = it * 8
+        if nx > cap {
+            nx = cap
+        }
+        if nx == it {
+            break
+        }
+        it = nx
+        tries = tries + 1
+    }
+    print_row(name, size, it, ms)
+}
+
+// 2^k 个 'a'（倍增拼接，O(n) 而非 O(n²)）：rep2(0)="a"；rep2(4)=16；rep2(10)=1024；
+// rep2(16)=65536；rep2(20)=1048576。
+func rep2(k: i64) -> string {
+    var out: string = "a"
+    var i: i64 = 0
+    while i < k {
+        out = out + out
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // 消息构造在计时循环之外（准备成本不计入哈希）。
+    var msg16 = rep2(4)
+    var msg1k = rep2(10)
+    var msg64k = rep2(16)
+    var msg1m = rep2(20)
+
+    println("== TSHA1 四档 × 5 尺寸基准（time_now 秒级×1000 = ms，自持计时）==")
+    println(pad("档", 6) + pad("size", 8) + pad("iters", 12) + pad("ms", 8) +
+        pad("MiB/s", 8) + pad("us/call", 8))
+
+    // --- tsha1f（快速，B 骨架）---
+    measure(ff, "f", "", 0, 200000, 2000000)
+    measure(ff, "f", msg16, 16, 200000, 2000000)
+    measure(ff, "f", msg1k, 1024, 2000, 20000)
+    measure(ff, "f", msg64k, 65536, 30, 200)
+    measure(ff, "f", msg1m, 1048576, 4, 20)
+
+    // --- tsha1b（复杂，A 骨架双轨+SPN）---
+    measure(fb, "b", "", 0, 200000, 2000000)
+    measure(fb, "b", msg16, 16, 200000, 2000000)
+    measure(fb, "b", msg1k, 1024, 2000, 20000)
+    measure(fb, "b", msg64k, 65536, 30, 200)
+    measure(fb, "b", msg1m, 1048576, 4, 20)
+
+    // --- tsha1x（加强，f+b 排列组合 NX=6）---
+    measure(fx, "x", "", 0, 100000, 1000000)
+    measure(fx, "x", msg16, 16, 100000, 1000000)
+    measure(fx, "x", msg1k, 1024, 1000, 10000)
+    measure(fx, "x", msg64k, 65536, 15, 100)
+    measure(fx, "x", msg1m, 1048576, 2, 10)
+
+    // --- tsha1r（嵌入式轻量，128 位）---
+    measure(fr, "r", "", 0, 500000, 4000000)
+    measure(fr, "r", msg16, 16, 500000, 4000000)
+    measure(fr, "r", msg1k, 1024, 5000, 50000)
+    measure(fr, "r", msg64k, 65536, 60, 400)
+    measure(fr, "r", msg1m, 1048576, 6, 30)
+
+    println("tsha 基准探针完成")
+}

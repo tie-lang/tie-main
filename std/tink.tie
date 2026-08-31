@@ -1,0 +1,106 @@
+type tie<class>
+// std/tink.tie —— tink 节点帧协议（命名空间 tink）
+// ============================================================
+// 帧格式（与 tink 设计文档一致，语言无关）：
+//   帧 = [ len: u32 BE ][ payload: len 字节 ][ crc: u32 BE ]
+//   len = payload 字节数；crc = CRC32-IEEE(payload)（多项式 0xEDB88320）
+// 本库为**纯函数**（字节表进出，不碰 IO/文件），任意语言节点实现同一协议；
+// stdin/stdout 等 IO 边界由调用方或 tink 桥提供。
+// CRC32 复用 rdu_crc（增量实现，反射式逐位，与 zlib.crc32 一致）。
+//
+// 调用：import 后 tink.crc32(...) / tink.frame_encode(...) /
+// tink.frame_next(...) / tink.frame_skip(...)。
+// 错误约定：解析失败返回 (空表, -1) / -1 哨兵，不 panic。
+
+import "../rdu/crc.tie" as rdu_crc
+
+namespace tink {
+
+// ---------- CRC32（整段字节） ----------
+// 复用 rdu_crc 增量状态：crc32_new → 逐字节 update → crc32_value。
+// 校验向量：crc32("123456789" ASCII 0x31..0x39) == 0xCBF43926。
+pub func crc32(p: table<i64>) -> i64 {
+    var s = rdu_crc.crc32_new()
+    var i: i64 = 0
+    while i < len(p) {
+        s = rdu_crc.crc32_update(s, p[i])
+        i = i + 1
+    }
+    return rdu_crc.crc32_value(s)
+}
+
+// ---------- 帧编码 ----------
+// payload → 完整帧字节：len(u32 BE) + payload + crc(u32 BE)。
+pub func frame_encode(payload: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var n = len(payload)
+    table_push(out, (n >> 24) & 0xFF)
+    table_push(out, (n >> 16) & 0xFF)
+    table_push(out, (n >> 8) & 0xFF)
+    table_push(out, n & 0xFF)
+    var i: i64 = 0
+    while i < n {
+        table_push(out, payload[i])
+        i = i + 1
+    }
+    var c = crc32(payload)
+    table_push(out, (c >> 24) & 0xFF)
+    table_push(out, (c >> 16) & 0xFF)
+    table_push(out, (c >> 8) & 0xFF)
+    table_push(out, c & 0xFF)
+    return out
+}
+
+// ---------- 帧解析（校验 CRC） ----------
+// 从 bytes[pos..] 解析一帧 → (payload, next_pos)；失败 (空表, -1)。
+// 需 pos 起至少有 8 + n 字节（len 4 + payload n + crc 4）。
+pub func frame_next(bytes: table<i64>, pos: i64) -> (table<i64>, i64) {
+    var empty = table_new_i64()
+    var nb = len(bytes)
+    if pos < 0 {
+        return (empty, -1)
+    }
+    if pos + 7 >= nb {
+        return (empty, -1)
+    }
+    var n = ((bytes[pos] & 0xFF) << 24) | ((bytes[pos + 1] & 0xFF) << 16) | ((bytes[pos + 2] & 0xFF) << 8) | (bytes[pos + 3] & 0xFF)
+    if n < 0 {
+        return (empty, -1)
+    }
+    if pos + 8 + n > nb {
+        return (empty, -1)
+    }
+    var payload = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(payload, bytes[pos + 4 + i])
+        i = i + 1
+    }
+    var c = ((bytes[pos + 4 + n] & 0xFF) << 24) | ((bytes[pos + 5 + n] & 0xFF) << 16) | ((bytes[pos + 6 + n] & 0xFF) << 8) | (bytes[pos + 7 + n] & 0xFF)
+    if crc32(payload) != c {
+        return (empty, -1)
+    }
+    return (payload, pos + 8 + n)
+}
+
+// ---------- 帧跳过（零拷贝，不校验 CRC） ----------
+// 从 bytes[pos..] 跳过一帧，返回 next_pos；失败 -1。
+// 适合大 payload 只读不拷、或批量帧的快速定位（zd v2 偏移表思路的帧级版）。
+pub func frame_skip(bytes: table<i64>, pos: i64) -> i64 {
+    var nb = len(bytes)
+    if pos < 0 {
+        return -1
+    }
+    if pos + 7 >= nb {
+        return -1
+    }
+    var n = ((bytes[pos] & 0xFF) << 24) | ((bytes[pos + 1] & 0xFF) << 16) | ((bytes[pos + 2] & 0xFF) << 8) | (bytes[pos + 3] & 0xFF)
+    if n < 0 {
+        return -1
+    }
+    if pos + 8 + n > nb {
+        return -1
+    }
+    return pos + 8 + n
+}
+}

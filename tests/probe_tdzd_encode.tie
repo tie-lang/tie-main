@@ -1,0 +1,368 @@
+type tie<logic>
+// probe_tdzd_encode: --compress-data 编码端到端（写 .zd + 结构校验 + 往返）
+import "../compiler/tdzd.tie"
+import "../compiler/zdwrite.tie"
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ---------- 最小 zd 读取（探针用，验证产物结构） ----------
+
+func r_varint(t: table<i64>, pos: i64) -> (i64, i64) {
+    var v: i64 = 0
+    var shift: i64 = 0
+    var p: i64 = pos
+    var n: i64 = len(t)
+    while p < n {
+        var b: i64 = t[p]
+        v = v | ((b & 0x7F) << shift)
+        if (b & 0x80) == 0 {
+            return (v, p + 1)
+        }
+        shift = shift + 7
+        if shift > 63 {
+            return (0, -1)
+        }
+        p = p + 1
+    }
+    return (0, -1)
+}
+
+func r_u16(t: table<i64>, pos: i64) -> (i64, i64) {
+    if pos + 1 >= len(t) {
+        return (0, -1)
+    }
+    return (((t[pos] << 8) | t[pos + 1]), pos + 2)
+}
+
+func r_u32(t: table<i64>, pos: i64) -> (i64, i64) {
+    if pos + 3 >= len(t) {
+        return (0, -1)
+    }
+    return (((t[pos] << 24) | (t[pos + 1] << 16)) | ((t[pos + 2] << 8) | t[pos + 3]), pos + 4)
+}
+
+func r_u64(t: table<i64>, pos: i64) -> (i64, i64) {
+    if pos + 7 >= len(t) {
+        return (0, -1)
+    }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        v = (v << 8) | (t[pos + i] & 0xFF)
+        i = i + 1
+    }
+    return (v, pos + 8)
+}
+
+func r_i64(t: table<i64>, pos: i64) -> (i64, i64) {
+    var tag = t[pos]
+    if tag <= 0x7F {
+        return (tag, pos + 1)
+    }
+    if tag >= 0xE0 {
+        return (tag - 256, pos + 1)
+    }
+    if tag == 0xCC {
+        return (t[pos + 1], pos + 2)
+    }
+    if tag == 0xCD {
+        return r_u16(t, pos + 1)
+    }
+    if tag == 0xCE {
+        return r_u32(t, pos + 1)
+    }
+    if tag == 0xCF {
+        return r_u64(t, pos + 1)
+    }
+    if tag == 0xD0 {
+        var v = t[pos + 1]
+        if v >= 0x80 {
+            v = v - 256
+        }
+        return (v, pos + 2)
+    }
+    if tag == 0xD1 {
+        var (v, p2) = r_u16(t, pos + 1)
+        if v >= 0x8000 {
+            v = v - 0x10000
+        }
+        return (v, p2)
+    }
+    if tag == 0xD2 {
+        var (v, p2) = r_u32(t, pos + 1)
+        if v >= 0x80000000 {
+            v = v - 0x100000000
+        }
+        return (v, p2)
+    }
+    if tag == 0xD3 {
+        return r_u64(t, pos + 1)
+    }
+    return (0, -1)
+}
+
+func r_str(t: table<i64>, pos: i64) -> (string, i64) {
+    var tag = t[pos]
+    var n: i64 = -1
+    var dp: i64 = -1
+    if tag >= 0xA0 && tag <= 0xBF {
+        n = tag & 0x1F
+        dp = pos + 1
+    } else if tag == 0xD9 {
+        n = t[pos + 1]
+        dp = pos + 2
+    } else if tag == 0xDA {
+        var (v, p2) = r_u16(t, pos + 1)
+        n = v
+        dp = p2
+    } else if tag == 0xDB {
+        var (v, p2) = r_u32(t, pos + 1)
+        n = v
+        dp = p2
+    } else {
+        return ("", -1)
+    }
+    var out: string = ""
+    var end: i64 = dp + n
+    var p: i64 = dp
+    while p < end {
+        var b = t[p]
+        var cplen: i64 = 1
+        var cp: i64 = b
+        if b >= 0xF0 {
+            cplen = 4
+            cp = b & 0x07
+        } else if b >= 0xE0 {
+            cplen = 3
+            cp = b & 0x0F
+        } else if b >= 0xC0 {
+            cplen = 2
+            cp = b & 0x1F
+        }
+        var k: i64 = 1
+        while k < cplen {
+            cp = (cp << 6) | (t[p + k] & 0x3F)
+            k = k + 1
+        }
+        out = out + str_from_code(cp)
+        p = p + cplen
+    }
+    return (out, end)
+}
+
+func r_f64(t: table<i64>, pos: i64) -> (f64, i64) {
+    if t[pos] != 0xCB {
+        return (0.0, -1)
+    }
+    var bits: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        bits = (bits << 8) | t[pos + 1 + i]
+        i = i + 1
+    }
+    return (bitcast_i64_f64(bits), pos + 9)
+}
+
+func r_array(t: table<i64>, pos: i64) -> (i64, i64) {
+    var tag = t[pos]
+    if tag >= 0x90 && tag <= 0x9F {
+        return (tag & 0x0F, pos + 1)
+    }
+    if tag == 0xDC {
+        var (v, p2) = r_u16(t, pos + 1)
+        return (v, p2)
+    }
+    if tag == 0xDD {
+        var (v, p2) = r_u32(t, pos + 1)
+        return (v, p2)
+    }
+    return (-1, -1)
+}
+
+// 解码一列（按 kind 取对应列），返回列值表。kind_col: 0=i64 1=f64 2=string
+func decode_col(t: table<i64>, dp: i64, kind_col: i64) -> table {
+    var out = table_new_i64()
+    var (n, ap) = r_array(t, dp)
+    if n < 0 {
+        return out
+    }
+    var i: i64 = 0
+    while i < n {
+        if kind_col == 0 {
+            var (v, np) = r_i64(t, ap)
+            table_push(out, v)
+            ap = np
+        } else if kind_col == 1 {
+            var (fv, np2) = r_f64(t, ap)
+            table_push(out, 1)  // 占位：f64 列在此用 i64 桶，仅验证存在
+            ap = np2
+        } else {
+            var (sv, np3) = r_str(t, ap)
+            table_push(out, 1)  // 占位：string 列同样仅验证长度
+            ap = np3
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    println("start")
+    var out = "f:/Projects/tie-repo/tie-main/tests/tdzd_out.zd"
+    var ok = tdzd.compress_data("f:/Projects/tie-repo/tie-main/tests/tdzd_sample.data.tie", out)
+    check(ok, "compress_data ok")
+    if !ok {
+        println("ERR " + tdzd.err_msg())
+        println("done")
+        return
+    }
+    var data = byte_read(out)
+    // 头：TIEDBZD + 02 + flags(0) = 10 字节
+    var hdr_ok: bool = len(data) >= 10
+    if hdr_ok {
+        var magic: table<i64> = [0x54, 0x49, 0x45, 0x44, 0x42, 0x5A, 0x44]
+        var k: i64 = 0
+        while k < 7 {
+            if data[k] != magic[k] {
+                hdr_ok = false
+            }
+            k = k + 1
+        }
+        hdr_ok = hdr_ok && data[7] == 0x00 && data[8] == 0x02 && data[9] == 0x00
+    }
+    check(hdr_ok, "v2 header (TIEDBZD 02 flags=0)")
+
+    // 解析 6 个字段，按 tag 分派解码
+    var pos: i64 = 10
+    var field_bits: i64 = 0  // 位掩码：已见字段
+    var kind_ok: bool = false
+    var child_ok: bool = false
+    var key_ok: bool = false
+    var vi_ok: bool = false
+    var vf_ok: bool = false
+    var vs_ok: bool = false
+    var expect_kind: table<i64> = [0, 1, 2, 3, 2, 0, 1, 1, 1, 0, 1, 2]
+    var expect_child: table<i64> = [6, 0, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0]
+    while pos < len(data) {
+        var (tag, p2) = r_varint(data, pos)
+        var (ln, dp) = r_varint(data, p2)
+        var ep: i64 = dp + ln
+        if dp < 0 || ep > len(data) {
+            break
+        }
+        if tag == 10 {
+            field_bits = field_bits | 1
+            var (n, ap) = r_array(data, dp)
+            var i2: i64 = 0
+            var kk: bool = n == 12
+            while i2 < n {
+                var (v, np) = r_i64(data, ap)
+                if v != expect_kind[i2] {
+                    kk = false
+                }
+                ap = np
+                i2 = i2 + 1
+            }
+            kind_ok = kk
+        } else if tag == 50 {
+            field_bits = field_bits | 32
+            var (n2, ap2) = r_array(data, dp)
+            var i3: i64 = 0
+            var cc: bool = n2 == 12
+            while i3 < n2 {
+                var (v2, np2) = r_i64(data, ap2)
+                if v2 != expect_child[i3] {
+                    cc = false
+                }
+                ap2 = np2
+                i3 = i3 + 1
+            }
+            child_ok = cc
+        } else if tag == 18 {
+            field_bits = field_bits | 2
+            var (n3, ap3) = r_array(data, dp)
+            var i4: i64 = 0
+            var kk2: bool = n3 == 12
+            var has_season: bool = false
+            var has_champ: bool = false
+            while i4 < n3 {
+                var (sv, np3) = r_str(data, ap3)
+                if sv == "season" {
+                    has_season = true
+                }
+                if sv == "champions" {
+                    has_champ = true
+                }
+                ap3 = np3
+                i4 = i4 + 1
+            }
+            key_ok = kk2 && has_season && has_champ
+        } else if tag == 26 {
+            field_bits = field_bits | 4
+            var (n4, ap4) = r_array(data, dp)
+            var i5: i64 = 0
+            var vi: bool = false
+            while i5 < n4 {
+                var (v3, np4) = r_i64(data, ap4)
+                if i5 == 2 && v3 == 2026 {
+                    vi = true
+                }
+                ap4 = np4
+                i5 = i5 + 1
+            }
+            vi_ok = vi
+        } else if tag == 34 {
+            field_bits = field_bits | 8
+            var (n5, ap5) = r_array(data, dp)
+            var i6: i64 = 0
+            var vf: bool = false
+            while i6 < n5 {
+                var (fv, np5) = r_f64(data, ap5)
+                if i6 == 3 && fv == 4.5 {
+                    vf = true
+                }
+                ap5 = np5
+                i6 = i6 + 1
+            }
+            vf_ok = vf
+        } else if tag == 42 {
+            field_bits = field_bits | 16
+            var (n6, ap6) = r_array(data, dp)
+            var i7: i64 = 0
+            var vs: bool = false
+            while i7 < n6 {
+                var (sv2, np6) = r_str(data, ap6)
+                if i7 == 1 && sv2 == "S13" {
+                    vs = true
+                }
+                ap6 = np6
+                i7 = i7 + 1
+            }
+            vs_ok = vs
+        }
+        pos = ep
+    }
+    check(field_bits == 63, "all 6 fields present (bits=63)")
+    check(kind_ok, "kind array matches")
+    check(child_ok, "child_count array matches")
+    check(key_ok, "key array has season/champions")
+    check(vi_ok, "value_i64[2]=2026")
+    check(vf_ok, "value_f64[3]=4.5")
+    check(vs_ok, "value_str[1]=S13")
+
+    if fails == 0 {
+        println("PASS all")
+    } else {
+        println("FAIL total=" + to_string(fails))
+    }
+    println("done")
+}

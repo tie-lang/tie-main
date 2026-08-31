@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gen_tsha1_core as core
 
 MODELS = ('f', 'r')
-N_SET = (2, 8, 16, 48, 64, 69, 92, 96, 128, 144)
+N_SET = (2, 8, 16, 48, 64, 69, 88, 92, 96, 128, 144)
 
 
 def messages():

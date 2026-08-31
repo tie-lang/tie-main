@@ -1,0 +1,55 @@
+type tie<logic>
+// probe_bitcast: tie f64↔i64 bitcast 原语（M1）——编译路径正负/边界探针
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+func main() {
+    println("start")
+    var min_i64: i64 = 0 - 9223372036854775807 - 1  // -2^63
+
+    // 已知位模式：1.0 → 0x3FF0000000000000 = 4607182418800017408
+    check(bitcast_f64_i64(1.0) == 4607182418800017408, "bitcast 1.0 == 0x3FF0..")
+    check(bitcast_i64_f64(4607182418800017408) == 1.0, "bitcast back 1.0")
+    check(bitcast_f64_i64(0.0) == 0, "bitcast +0.0 == 0")
+    // 负零：-0.0 字面量可能被前端折叠为 +0.0，用运行时乘法产生 -0.0
+    var neg_zero: f64 = -1.0 * 0.0
+    check(1.0 / neg_zero < 0.0, "neg_zero is -0.0")
+    check(bitcast_f64_i64(neg_zero) == min_i64, "bitcast -0.0 == 0x8000..")
+
+    // +Inf → 0x7FF0000000000000 = 9218868437227405312；-Inf → 0xFFF0.. = -4503599627370496
+    check(bitcast_f64_i64(1.0 / 0.0) == 9218868437227405312, "bitcast +Inf")
+    check(bitcast_f64_i64(-1.0 / 0.0) == -4503599627370496, "bitcast -Inf")
+
+    // NaN：指数全 1 且尾数非 0
+    var nan_bits = bitcast_f64_i64(parse_float("nan"))
+    var exp_mask: i64 = 0x7FF0000000000000
+    var mant_mask: i64 = 0xFFFFFFFFFFFFF
+    check((nan_bits & exp_mask) == exp_mask && (nan_bits & mant_mask) != 0, "bitcast NaN exp/mant")
+
+    // 往返：bitcast_i64_f64(bitcast_f64_i64(x)) == x
+    var x1: f64 = -2.5
+    check(bitcast_i64_f64(bitcast_f64_i64(x1)) == x1, "roundtrip -2.5")
+    var x2: f64 = parse_float("1e100")
+    check(bitcast_i64_f64(bitcast_f64_i64(x2)) == x2, "roundtrip 1e100")
+    var x3: f64 = parse_float("1e-300")
+    check(bitcast_i64_f64(bitcast_f64_i64(x3)) == x3, "roundtrip 1e-300")
+
+    // i64 → f64 往返任意位模式
+    var bits: i64 = 1234567890123456789
+    check(bitcast_f64_i64(bitcast_i64_f64(bits)) == bits, "bitcast i64 roundtrip")
+
+    if fails == 0 {
+        println("PASS all")
+    } else {
+        println("FAIL total=" + to_string(fails))
+    }
+    println("done")
+}

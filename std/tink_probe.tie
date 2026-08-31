@@ -1,0 +1,62 @@
+type tie<logic>
+// std/tink_probe.tie —— tink 帧协议探针
+// 断言：CRC32 标准向量、帧编解码往返（含空 payload）、CRC 篡改拒绝、
+//       零拷贝跳过、越界解析失败。通过 println("PASS") + 正常退出（exit 0）。
+import "./tink.tie" as tink
+
+// 断言失败即 panic（打印 + exit 1）
+func expect(cond: bool, msg: string) {
+    if !cond {
+        panic("FAIL: " + msg)
+    }
+}
+
+// ASCII 字符串 → 字节表（CRC 向量用）
+func ascii(s: string) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < str_len(s) {
+        table_push(out, char_code(str_char(s, i)))
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // 1) CRC32 标准向量：crc32("123456789") == 0xCBF43926
+    var c = tink.crc32(ascii("123456789"))
+    expect(c == 0xCBF43926, "crc32 vector")
+
+    // 2) 帧编解码往返
+    var p1 = table_new_i64()
+    table_push(p1, 1)
+    table_push(p1, 2)
+    table_push(p1, 3)
+    var f1 = tink.frame_encode(p1)
+    var (p1b, np1) = tink.frame_next(f1, 0)
+    expect(np1 == len(f1), "roundtrip next==len")
+    expect(len(p1b) == 3, "roundtrip len")
+    expect(p1b[0] == 1 && p1b[2] == 3, "roundtrip vals")
+
+    // 3) 空 payload 往返
+    var f0 = tink.frame_encode(table_new_i64())
+    var (p0b, np0) = tink.frame_next(f0, 0)
+    expect(np0 == len(f0), "empty next==len")
+    expect(len(p0b) == 0, "empty payload")
+
+    // 4) CRC 篡改拒绝：改 payload 一字节 → 解析失败
+    f1[5] = f1[5] + 1
+    var (px, nx) = tink.frame_next(f1, 0)
+    expect(nx == -1, "crc tamper rejected")
+
+    // 5) 零拷贝跳过
+    var f2 = tink.frame_encode(p1)
+    var s2 = tink.frame_skip(f2, 0)
+    expect(s2 == len(f2), "frame_skip")
+
+    // 6) 越界解析失败
+    var (pb, nb) = tink.frame_next(f2, len(f2))
+    expect(nb == -1, "out of bounds")
+
+    println("PASS")
+}

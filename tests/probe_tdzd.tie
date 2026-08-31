@@ -1,0 +1,66 @@
+type tie<logic>
+// probe_tdzd: td 解析 + DFS 平铺平行表（--compress-data 前端）
+import "../compiler/tdzd.tie"
+import "../compiler/config.tie"
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+func main() {
+    println("start")
+    // 1) 裸表样例
+    var rc = tdzd.parse("f:/Projects/tie-repo/tie-main/tests/tdzd_sample.data.tie")
+    check(rc == 0, "parse sample ok")
+    if rc == 0 {
+        // 行数断言（根表 + 4 标量 + 表(3) + 3 元素 + 表(2) + 2 值 = 12 行）
+        var n = tdzd.count()
+        check(n == 12, "sample rows = 12, got " + to_string(n))
+        // 逐行校验
+        check(tdzd.kind(0) == 0 && tdzd.child(0) == 6, "root is table, child=6")
+        check(tdzd.kind(1) == 1 && tdzd.key(1) == "season" && tdzd.vstr(1) == "S13", "season str")
+        check(tdzd.kind(2) == 2 && tdzd.key(2) == "season_id" && tdzd.vi64(2) == 2026, "season_id int")
+        check(tdzd.kind(3) == 3 && tdzd.key(3) == "rating" && tdzd.vf64(3) == 4.5, "rating float")
+        check(tdzd.kind(4) == 2 && tdzd.key(4) == "active" && tdzd.vi64(4) == 1, "active bool=1")
+        // champions 表节点（行 5）与元素
+        check(tdzd.kind(5) == 0 && tdzd.key(5) == "champions" && tdzd.child(5) == 3, "champions table")
+        check(tdzd.kind(6) == 1 && tdzd.key(6) == "" && tdzd.vstr(6) == "阿卡丽", "champion 1 (中文)")
+        check(tdzd.kind(7) == 1 && tdzd.vstr(7) == "金克丝", "champion 2")
+        check(tdzd.kind(8) == 1 && tdzd.vstr(8) == "亚索", "champion 3")
+        // tags 表节点（行 9）与值
+        check(tdzd.kind(9) == 0 && tdzd.key(9) == "tags" && tdzd.child(9) == 2, "tags table")
+        check(tdzd.kind(10) == 1 && tdzd.key(10) == "meta" && tdzd.vstr(10) == "tier1", "tags.meta")
+        check(tdzd.kind(11) == 2 && tdzd.key(11) == "count" && tdzd.vi64(11) == 3, "tags.count")
+    }
+
+    // 2) 可选表名样例
+    var rc2 = tdzd.parse("f:/Projects/tie-repo/tie-main/tests/tdzd_named.data.tie")
+    check(rc2 == 0, "parse named ok")
+    if rc2 == 0 {
+        var n2 = tdzd.count()
+        // 根表 + 3 键 + items 表(3) + 3 元素 = 7 行
+        check(n2 == 7, "named rows = 7, got " + to_string(n2))
+        check(tdzd.kind(1) == 1 && tdzd.key(1) == "name" && tdzd.vstr(1) == "测试数据包", "named.name 中文")
+        check(tdzd.kind(2) == 2 && tdzd.key(2) == "version" && tdzd.vi64(2) == 1, "named.version")
+        check(tdzd.kind(4) == 2 && tdzd.key(4) == "" && tdzd.vi64(4) == 10, "items[0]=10")
+        check(tdzd.kind(6) == 2 && tdzd.vi64(6) == 30, "items[2]=30")
+    }
+
+    // 3) 非法文件
+    var rc3 = tdzd.parse("f:/Projects/tie-repo/tie-main/tests/tdzd_missing.data.tie")
+    check(rc3 < 0, "missing file fails")
+
+    if fails == 0 {
+        println("PASS all")
+    } else {
+        println("FAIL total=" + to_string(fails))
+    }
+    println("done")
+}

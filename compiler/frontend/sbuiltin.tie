@@ -607,6 +607,20 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_F64)
     }
+    if fn_name == "bitcast_f64_i64" || fn_name == "bitcast_i64_f64" {
+        // f64↔i64 位重解释（zd v2 §4.2 原语）：同宽 64 位，位模式直读。
+        // bitcast_f64_i64(x: f64) -> i64；bitcast_i64_f64(x: i64) -> f64。
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = fn_name + "() 期望 1 个参数，实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        if fn_name == "bitcast_f64_i64" {
+            return types.named(TK_I64)
+        }
+        return types.named(TK_F64)
+    }
     if fn_name == "pow" {
         if nargs != 2 {
             sm_err_line = s_lines[call_node]

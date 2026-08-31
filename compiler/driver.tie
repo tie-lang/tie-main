@@ -24,6 +24,8 @@ import "./backend/toolchain.tie"
 import "./config.tie"
 // S3.2：tieir 序列化（--tieir-out 输出分发单元 / --dump-irt 读回 dump）
 import "./middle/tieir_ser.tie"
+// td→zd 压缩数据子命令（--compress-data）：表字面量 → DFS 平铺 → zd record
+import "./tdzd.tie"
 
 // 阶段计时探针（性能诊断）：CRT clock()，毫秒精度。
 // 环境变量 TIEC_TIME=1 时输出各阶段耗时（不设则零开销静默）。
@@ -38,6 +40,7 @@ var g_target: string = "";        // --target（空 = 未指定）
 var g_emit_ir: bool = false;
 var g_keep_ir: bool = false;
 var g_prep_only: bool = false;
+var g_compress_data: bool = false;  // --compress-data：td → zd 压缩数据
 // M5 动态库模式（dev33 批次 12）：--shared 或输出扩展名 .dll/.so → 动态库。
 var g_shared: bool = false;
 var g_role: string = "";          // 头部识别的角色
@@ -93,6 +96,8 @@ func parse_args() -> i64 {
             g_emit_ir = true
         } else if a == "--keep-ir" {
             g_keep_ir = true
+        } else if a == "--compress-data" {
+            g_compress_data = true
         } else if a == "--shared" {
             g_shared = true
         } else if a == "--prep-only" {
@@ -824,6 +829,20 @@ func main() -> i64 {
     // 读源码
     if !file_exists(g_input) {
         println("读取源码失败: " + g_input)
+        return 1
+    }
+    // --compress-data：td → zd 压缩数据（表字面量 → DFS 平铺 → zd record）。
+    // 短接普通编译管线；输出缺省 = 输入名 + ".zd"。
+    if g_compress_data {
+        var outp: string = g_output
+        if str_len(outp) == 0 {
+            outp = g_input + ".zd"
+        }
+        if tdzd.compress_data(g_input, outp) {
+            println("[compress-data] " + g_input + " -> " + outp)
+            return 0
+        }
+        println("[compress-data] 失败: " + tdzd.err_msg())
         return 1
     }
     // zd 二进制预判：xxx.zd.tie 是二进制文件（压缩的 tie:data），人类不可读，

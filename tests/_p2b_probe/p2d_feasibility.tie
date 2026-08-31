@@ -1,0 +1,57 @@
+type tie<logic>
+// P2d 摸底：fn 值参数 + 函数内调用（map/filter/reduce 的可行性基础）
+
+func double(x: i64) -> i64 {
+    return x * 2
+}
+func is_even(x: i64) -> bool {
+    return x % 2 == 0
+}
+func apply_map(f: fn(i64) -> i64, t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(r, f(t[i]))
+        i = i + 1
+    }
+    return r
+}
+func apply_filter(f: fn(i64) -> bool, t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        if f(t[i]) {
+            table_push(r, t[i])
+        }
+        i = i + 1
+    }
+    return r
+}
+func add3(a: i64, b: i64, c: i64) -> i64 {
+    return a + b + c
+}
+
+func main() {
+    var t: table<i64> = [1, 2, 3, 4]
+    // fn 值作参数 + 函数内调用
+    var m = apply_map(double, t)
+    var i: i64 = 0
+    while i < len(m) {
+        println(m[i])
+        i = i + 1
+    }
+    // fn 值过滤
+    var f = apply_filter(is_even, t)
+    i = 0
+    while i < len(f) {
+        println(f[i])
+        i = i + 1
+    }
+    // 箭头传参（P1）到高阶函数
+    var m2 = t -> apply_map(double)
+    println(len(m2))
+    // fn 值变量
+    var g: fn(i64) -> i64 = double
+    var v = g(10)
+    println(v)
+}

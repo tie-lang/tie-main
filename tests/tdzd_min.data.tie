@@ -1,0 +1,4 @@
+type tie<data>
+[
+    "a": 1,
+]

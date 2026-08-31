@@ -1,0 +1,21 @@
+type tie<logic>
+// u2_planes16_probe.tie：验证「元组返回含 struct 元素 + 结构体字段读写」可行性，
+// 为 tsha1_w48 Pw 表标量化（Planes16）铺路。
+struct P16 {
+    var w0: i64 = 0
+    var w1: i64 = 0
+    var w2: i64 = 0
+}
+
+func mk() -> (a: i64, p: P16, b: i64) {
+    var p = P16()
+    p.w0 = 3
+    p.w1 = 5
+    p.w2 = 7
+    return (1, p, 2)
+}
+
+func main() {
+    var (a, p, b) = mk()
+    println(to_string(a) + " " + to_string(p.w0) + " " + to_string(p.w1) + " " + to_string(p.w2) + " " + to_string(b))
+}

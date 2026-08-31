@@ -527,6 +527,14 @@ func gen_inst(inst_id: i64) {
         line(reg + " = sitofp " + sty + " " + opnd_ref(inst_id, 1) + " to " + tty)
         return
     }
+    if op == 26 {
+        // bitcast：位重解释（f64↔i64 同宽 64 位直读，zd v2 §4.2 原语）。
+        // 操作数 [0]=源类型 IMM, [1]=值 VALUE；目标类型 = ins_ty。
+        var sty = llvm_ty(ir.ins_opnd(inst_id, 0))
+        var tty = llvm_ty(ir.ins_ty(inst_id))
+        line(reg + " = bitcast " + sty + " " + opnd_ref(inst_id, 1) + " to " + tty)
+        return
+    }
     if op == 27 {
         // agg_gep：聚合元素指针（元组/struct 字段）。操作数 [0]=地址 VALUE,
         // [1]=字段下标 IMM；ins_ty = 聚合类型 id → 生成
