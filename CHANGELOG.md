@@ -31,9 +31,32 @@ tiec（driver 编译路径）支持在构建配置 config.data.tie 的 roles 段
 prep/tie-prep 仍仅内建白名单（错误消息已提示）。Docs: docs/plans/role-model.md。
 
 
-## Harbor-2026.1-preview.5 开发中
+## Harbor-2026.1-preview.5（2026-08-31）
 
-> 开发中主题见下方随提交累积条目。
+> **preview.5 = 数据流互联首版 + 表运算深化 + 哈希算法谱系**：tink 帧协议与
+> zd v2 序列化规范落地、tiec `--compress-data`、P2 复合元素/异构表与高阶表运算、
+> TSHA1 家族性能内核（状态随位长）+ 全谱系 hash/crypto 标准库、f64↔i64 bitcast、
+> 自定义角色插件化、library-v2 三层内置库重写。
+> 对比基线：Harbor-2026.1-preview.4（自其累计提交见下方条目）。
+
+## [新增] tink 数据流互联服务：节点帧协议 + zd v2 序列化 + tiec --compress-data（2026-08-31）
+
+tink 为语言无关的通用数据流互联服务：任何组件遵守统一的字节级帧协议即可接入
+tink 管道（组件独立进程，统一 zd 字节 ABI）。本批落地协议侧核心：
+
+- **std/tink.tie**：tink 节点帧协议库（命名空间 `tink`，纯函数表进出不碰 IO）；
+  帧格式 `[len u32 BE][payload][crc u32 BE]`，CRC32-IEEE（复用 rdu/crc 增量实现，
+  与 zlib.crc32 向量一致 `crc32("123456789")==0xCBF43926`）；`crc32 / frame_encode /
+  frame_next / frame_skip` 四函数，解析失败返回空表/-1 哨兵不 panic；
+  探针 std/tink_probe.tie 全通过；
+- **zd v2 通用二进制序列化规范**（语言无关，多语言可独立实现）：10 字节头
+  `TIEDBZD` 魔数 + base-48 版本 + flags；核心类型 i64/u64/f64/string/bool/array/
+  map/bytes/blob/null + ext 扩展类型；字符串字典/列式容器等体积优化，v1 兼容读取；
+  扩展名统一 `.zd`；
+- **tiec `--compress-data`**：把 `.data.tie`（tie 表字面量，含 type 头与可选表名）
+  经 DFS 平铺 + 平行表（kind/key/value/child_count）转换为 zd record，输出 `.zd`
+  文件；tdzd.tie/zdwrite.tie 驱动接线，探针 probe_tdzd* 全通过；
+- tink 设计文档、跨语言示例文档与 td 数据编译器设计文档就位。
 
 ## [接入] actor 消息处理改由 trm-lite 简单执行体承载（2026-08-27）
 
