@@ -1,0 +1,195 @@
+type tie<class>
+// compiler/zdwrite.tie —— 最小 zd 编码原语（--compress-data 用）
+// ============================================================
+// 自包含约束同 config/tdzd：**不 import 任何 std 库**（被 driver.tie 链式引入，
+// 重复 import 会让 str 命名空间重复定义导致编译失败）。
+// 字节一律 table<i64>；产出为 zd 语义字节（标签 + 大端 + UTF-8），供 tdzd 组装
+// record 字段。f64 用 bitcast_f64_i64（M1 原语）快路径。
+namespace zdw {
+
+// concat：拼接两个字节表（byte_concat 封装）。
+pub func concat(a: table, b: table) -> table<i64> {
+    return byte_concat(a, b)
+}
+
+// ---------- 大端定宽写入 ----------
+
+pub func be16(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, (n >> 8) & 0xFF)
+    table_push(out, n & 0xFF)
+    return out
+}
+
+pub func be32(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, (n >> 24) & 0xFF)
+    table_push(out, (n >> 16) & 0xFF)
+    table_push(out, (n >> 8) & 0xFF)
+    table_push(out, n & 0xFF)
+    return out
+}
+
+pub func be64(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 7
+    while i >= 0 {
+        table_push(out, (n >> (i * 8)) & 0xFF)
+        i = i - 1
+    }
+    return out
+}
+
+// ---------- varint（Protobuf 7 位分组；record 字段 tag/长度） ----------
+
+pub func varint(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    if n < 0 {
+        return out
+    }
+    var v: i64 = n
+    while v >= 0x80 {
+        table_push(out, (v & 0x7F) | 0x80)
+        v = v >> 7
+    }
+    table_push(out, v)
+    return out
+}
+
+// ---------- UTF-8 编码 ----------
+
+pub func utf8_encode(s: string) -> table<i64> {
+    var out = table_new_i64()
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        var cp: i64 = char_code(str_char(s, i))
+        if cp < 0 {
+            i = i + 1
+            continue
+        }
+        if cp <= 0x7F {
+            table_push(out, cp)
+        } else if cp <= 0x7FF {
+            table_push(out, 0xC0 | (cp >> 6))
+            table_push(out, 0x80 | (cp & 0x3F))
+        } else if cp <= 0xFFFF {
+            if cp >= 0xD800 && cp <= 0xDFFF {
+                i = i + 1
+                continue
+            }
+            table_push(out, 0xE0 | (cp >> 12))
+            table_push(out, 0x80 | ((cp >> 6) & 0x3F))
+            table_push(out, 0x80 | (cp & 0x3F))
+        } else if cp <= 0x10FFFF {
+            table_push(out, 0xF0 | (cp >> 18))
+            table_push(out, 0x80 | ((cp >> 12) & 0x3F))
+            table_push(out, 0x80 | ((cp >> 6) & 0x3F))
+            table_push(out, 0x80 | (cp & 0x3F))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ---------- 标量编码（zd 语义：最紧凑优先） ----------
+
+pub func enc_i64(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    if n >= 0 && n <= 127 {
+        table_push(out, n)
+        return out
+    }
+    if n >= -32 && n < 0 {
+        table_push(out, n & 0xFF)
+        return out
+    }
+    if n >= -128 && n < -32 {
+        table_push(out, 0xD0)
+        table_push(out, n & 0xFF)
+        return out
+    }
+    if n >= 128 && n <= 255 {
+        table_push(out, 0xCC)
+        table_push(out, n)
+        return out
+    }
+    if n >= -32768 && n < -128 {
+        table_push(out, 0xD1)
+        return concat(out, be16(n & 0xFFFF))
+    }
+    if n >= 256 && n <= 65535 {
+        table_push(out, 0xCD)
+        return concat(out, be16(n))
+    }
+    if n >= -2147483648 && n < -32768 {
+        table_push(out, 0xD2)
+        return concat(out, be32(n & 0xFFFFFFFF))
+    }
+    if n >= 65536 && n <= 4294967295 {
+        table_push(out, 0xCE)
+        return concat(out, be32(n))
+    }
+    if n >= 0 {
+        table_push(out, 0xCF)
+        return concat(out, be64(n))
+    }
+    table_push(out, 0xD3)
+    return concat(out, be64(n))
+}
+
+pub func enc_f64(x: f64) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, 0xCB)
+    var bits = bitcast_f64_i64(x)
+    var i: i64 = 7
+    while i >= 0 {
+        table_push(out, (bits >> (i * 8)) & 0xFF)
+        i = i - 1
+    }
+    return out
+}
+
+pub func enc_string(s: string) -> table<i64> {
+    var body = utf8_encode(s)
+    var n: i64 = len(body)
+    var head = table_new_i64()
+    if n <= 31 {
+        table_push(head, 0xA0 | n)
+        return concat(head, body)
+    }
+    if n <= 255 {
+        table_push(head, 0xD9)
+        table_push(head, n)
+        return concat(head, body)
+    }
+    if n <= 65535 {
+        table_push(head, 0xDA)
+        return concat(concat(head, be16(n)), body)
+    }
+    table_push(head, 0xDB)
+    return concat(concat(head, be32(n)), body)
+}
+
+// ---------- 数组 ----------
+
+pub func array_head(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    if n <= 15 {
+        table_push(out, 0x90 | n)
+        return out
+    }
+    if n <= 65535 {
+        table_push(out, 0xDC)
+        return concat(out, be16(n))
+    }
+    table_push(out, 0xDD)
+    return concat(out, be32(n))
+}
+
+// array：数组头 + 元素字节（元素自带类型标签）。
+pub func array(n: i64, body: table<i64>) -> table<i64> {
+    return concat(array_head(n), body)
+}
+
+}

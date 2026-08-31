@@ -16,6 +16,7 @@ type tie<class>
 //   d_child  表/数组的子元素数（消费者按此推进 DFS 遍历子树）
 
 import "./config.tie"
+import "./zdwrite.tie"
 
 // ---------- 平行表（模块级全局，DFS 累积） ----------
 var d_kinds: table<i64>;
@@ -187,6 +188,77 @@ pub func brief() -> string {
         i = i + 1
     }
     return out
+}
+
+// ---------- zd record 组装（固定字段号，只追加；td→zd 产物） ----------
+// 字段号：1=kind 2=key 3=value_i64 4=value_f64 5=value_str 6=child_count。
+// 每字段 = varint tag(field_no<<3|2) + varint 载荷长度 + 载荷（zd 数组）。
+// 消费者按 kind/key/child_count 遍历重建（无需自带 td 解析器）。
+
+func enc_field(tag: i64, payload: table<i64>) -> table<i64> {
+    var head = zdw.concat(zdw.varint(tag), zdw.varint(len(payload)))
+    return zdw.concat(head, payload)
+}
+
+func enc_i64_array(t: table<i64>) -> table<i64> {
+    var body = table_new_i64()
+    var n: i64 = len(t)
+    var i: i64 = 0
+    while i < n {
+        body = zdw.concat(body, zdw.enc_i64(t[i]))
+        i = i + 1
+    }
+    return zdw.array(n, body)
+}
+
+func enc_f64_array(t: table<f64>) -> table<i64> {
+    var body = table_new_i64()
+    var n: i64 = len(t)
+    var i: i64 = 0
+    while i < n {
+        body = zdw.concat(body, zdw.enc_f64(t[i]))
+        i = i + 1
+    }
+    return zdw.array(n, body)
+}
+
+func enc_str_array(t: table<string>) -> table<i64> {
+    var body = table_new_i64()
+    var n: i64 = len(t)
+    var i: i64 = 0
+    while i < n {
+        body = zdw.concat(body, zdw.enc_string(t[i]))
+        i = i + 1
+    }
+    return zdw.array(n, body)
+}
+
+// compress_data：解析 data 文件 → DFS 平铺 → zd record（v2 头 + 6 字段）→ 写 .zd。
+// 成功 true；失败 false（c_err 携带，可用 err_msg() 取）。输出格式见设计文档 §4。
+pub func compress_data(input: string, output: string) -> bool {
+    if parse(input) < 0 {
+        return false
+    }
+    var body = table_new_i64()
+    body = zdw.concat(body, enc_field(10, enc_i64_array(d_kinds)))
+    body = zdw.concat(body, enc_field(18, enc_str_array(d_keys)))
+    body = zdw.concat(body, enc_field(26, enc_i64_array(d_vi64)))
+    body = zdw.concat(body, enc_field(34, enc_f64_array(d_vf64)))
+    body = zdw.concat(body, enc_field(42, enc_str_array(d_vstr)))
+    body = zdw.concat(body, enc_field(50, enc_i64_array(d_child)))
+    // v2 文件头：TIEDBZD(7) + 版本 "02"(2) + flags(1)
+    var head = table_new_i64()
+    table_push(head, 0x54)
+    table_push(head, 0x49)
+    table_push(head, 0x45)
+    table_push(head, 0x44)
+    table_push(head, 0x42)
+    table_push(head, 0x5A)
+    table_push(head, 0x44)
+    table_push(head, 0x00)
+    table_push(head, 0x02)
+    table_push(head, 0x00)
+    return byte_write(output, zdw.concat(head, body))
 }
 
 }
