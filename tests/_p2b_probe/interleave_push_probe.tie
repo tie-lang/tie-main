@@ -1,0 +1,60 @@
+type tie<logic>
+// 复现探针：大函数内「跨模块全局访问器 + 交错多表 push」——已知缺陷的回归用例。
+// 模式：单一函数内连续构造 6 个全局表 push（模拟 tdzd emit / library-v2 交错登记），
+// 并在循环中穿插调用其他函数（生成器交错）。若编译器存在该缺陷，preview 产物会
+// 损坏值或 AV。
+
+var g_a: table<i64>;
+var g_b: table<i64>;
+var g_c: table<i64>;
+var g_d: table<i64>;
+var g_e: table<i64>;
+var g_f: table<i64>;
+
+func helper(v: i64) -> i64 {
+    return v * 2 + 1
+}
+
+func main() {
+    g_a = table_new_i64()
+    g_b = table_new_i64()
+    g_c = table_new_i64()
+    g_d = table_new_i64()
+    g_e = table_new_i64()
+    g_f = table_new_i64()
+
+    var i: i64 = 0
+    while i < 1000 {
+        // 交错 push 6 个全局表（每轮穿插一次函数调用，制造生成器交错）
+        table_push(g_a, i)
+        var h1 = helper(i)
+        table_push(g_b, h1)
+        var h2 = helper(h1)
+        table_push(g_c, h2)
+        var h3 = len(g_a)
+        table_push(g_d, h3)
+        var h4 = len(g_b)
+        table_push(g_e, h4)
+        var h5 = len(g_c)
+        table_push(g_f, h5)
+        i = i + 1
+    }
+
+    // 校验：每表长度与元素值
+    if len(g_a) != 1000 {
+        panic("g_a len wrong")
+    }
+    if len(g_b) != 1000 {
+        panic("g_b len wrong")
+    }
+    if len(g_f) != 1000 {
+        panic("g_f len wrong")
+    }
+    var ok1 = g_a[0] == 0 && g_a[999] == 999
+    var ok2 = g_b[0] == 1 && g_b[999] == 1999
+    var ok3 = g_c[999] == 3999
+    if !ok1 || !ok2 || !ok3 {
+        panic("value corrupted")
+    }
+    println("PASS")
+}
