@@ -923,6 +923,19 @@ func compress48(model: i64, n: i64, h: ref table<i64>, msg: string, pos: i64, nb
         }
         return
     }
+    if n == 64 {
+        if model == 0 {
+            compress_w12(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+        } else if model == 2 {
+            compress_w12(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 14)
+        } else if model == 3 {
+            compress_w12(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 16)
+        } else {
+            // r 半宽 n=64 → W=23（dual 12+11），暂留通用路径
+            compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half)
+        }
+        return
+    }
     compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half)
 }
 
