@@ -1,0 +1,183 @@
+type tie<logic>
+// tsha1 差分均匀性抽样探针（diff probe）。
+// 目的：抽检 4 模型（f/b/x/r）在「固定输入小差分」下的输出雪崩是否满足密码学
+// 均匀性基本面。不比对全量 KAT，而是统计抽样断言汉明距离占比均值落入理论区间
+// （对 264 位输出，随机差分的期望占比 0.5）。
+//   ① δ=1 bit（随机位翻转）：100 对随机 48B 消息，n=48 base16（33B=264 位）输出差的
+//      汉明距离/264 聚合均值 ∈ [0.44,0.56]，且无输出完全相同对。
+//   ② δ=整个字节 0x01（某字节 ^ 0x01）：抽样 20 对，均值 ∈ [0.40,0.60]（样本更少放宽）。
+// 消息经二进制安全 string_builder 构造（任意 0..255 字节），与 std/tsha1.tie 及
+// tests/tsha_probe/tsha1_avalanche_probe.tie 的二进制安全惯例一致。
+import "../../std/tsha1.tie"
+using tsha;
+import "../../std/random.tie"
+using rnd;
+
+var PASS_COUNT: table<i64>
+
+func radix10(v: i64) -> string {
+    if v == 0 {
+        return "0"
+    }
+    var digits = "0123456789"
+    var out: string = ""
+    var x = v
+    while x > 0 {
+        out = str_char(digits, x % 10) + out
+        x = x / 10
+    }
+    return out
+}
+
+func chk_ok(name: string) {
+    PASS_COUNT[0] = PASS_COUNT[0] + 1
+    println("PASS " + name)
+}
+
+func chk_fail(name: string, info: string) {
+    println("FAIL " + name + " " + info)
+    exit(1)
+}
+
+// 十六进制字符 → 0..15（输出为小写 hex）。
+func hex_nib(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 0..15 的置位位计数。
+func popcnt(v: i64) -> i64 {
+    var c: i64 = 0
+    var x = v
+    while x > 0 {
+        c = c + (x & 1)
+        x = x >> 1
+    }
+    return c
+}
+
+// 两个等长 hex 串的汉明距离（位差数）。
+func hamming(h1: string, h2: string) -> i64 {
+    var n = len(h1)
+    var d: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        d = d + popcnt(hex_nib(str_char(h1, i)) ^ hex_nib(str_char(h2, i)))
+        i = i + 1
+    }
+    return d
+}
+
+// 随机 n 字节（0..255，二进制安全）。
+func gen_msg(n: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        sb_append_byte(sb, rnd.int(0, 255))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// δ=1 bit：复制 msg 并把某字节的某一位翻转（0..255 全任意，无需可打印约束）。
+func flip_one_bit(msg: string) -> string {
+    var n = len(msg)
+    var pos = rnd.int(0, n - 1)
+    var bit = rnd.int(0, 7)
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        var b = str_byte(msg, i)
+        if i == pos {
+            b = b ^ (1 << bit)
+        }
+        sb_append_byte(sb, b)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// δ=整个字节 0x01：复制 msg 并把某字节与 0x01 异或（触发该字节各位变化）。
+func flip_byte(msg: string) -> string {
+    var n = len(msg)
+    var pos = rnd.int(0, n - 1)
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        var b = str_byte(msg, i)
+        if i == pos {
+            b = b ^ 0x01
+        }
+        sb_append_byte(sb, b)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+func model_hash(m: string, msg: string, n: i64, base: i64) -> string {
+    if m == "f" {
+        return tsha.tsha1f(msg, n, base)
+    }
+    if m == "r" {
+        return tsha.tsha1r(msg, n, base)
+    }
+    if m == "b" {
+        return tsha.tsha1b(msg, n, base)
+    }
+    return tsha.tsha1x(msg, n, base)
+}
+
+// 聚合：n_pairs 对消息 × 4 模型计汉明距离；断言无输出完全相同对，且 264 位下
+// 占比均值 ∈ [lo,hi]（1000 倍整数判定）。
+func run_diff(name: string, n_pairs: i64, difffn: fn(string) -> string, lo: i64, hi: i64) {
+    var total: i64 = 0
+    var cnt: i64 = 0
+    var ident: i64 = 0
+    var pair: i64 = 0
+    while pair < n_pairs {
+        var msg = gen_msg(48)
+        var msg2 = difffn(msg)
+        var models: table<string> = ["f", "r", "b", "x"]
+        var mn: string = ""
+        for mn in models {
+            var h1 = model_hash(mn, msg, 48, 16)
+            var h2 = model_hash(mn, msg2, 48, 16)
+            var d = hamming(h1, h2)
+            if d == 0 {
+                ident = ident + 1
+            }
+            total = total + d
+            cnt = cnt + 1
+        }
+        pair = pair + 1
+    }
+    if ident == 0 {
+        chk_ok(name + " no-identical")
+    } else {
+        chk_fail(name + " no-identical", "ident=" + radix10(ident) + " 对（输出完全相同，雪崩破坏）")
+    }
+    // 平均占比 = total / (cnt*264)；整数放大 1000 后应落在 [lo,hi]。
+    var scaled = (total * 1000) / (cnt * 264)
+    if scaled >= lo && scaled <= hi {
+        chk_ok(name + " mean1000=" + radix10(scaled) + " band[" + radix10(lo) + "," + radix10(hi) + "]")
+    } else {
+        chk_fail(name + " mean1000=" + radix10(scaled),
+                 "band[" + radix10(lo) + "," + radix10(hi) + "]")
+    }
+}
+
+func main() {
+    table_push(PASS_COUNT, 0)
+    // ① δ=1 bit：100 对 48B，n=48 base16（33B=264 位），均值 ∈[0.44,0.56]
+    run_diff("diff-1bit", 100, flip_one_bit, 440, 560)
+    // ② δ=整个字节 0x01：20 对，均值 ∈[0.40,0.60]
+    run_diff("diff-byte01", 20, flip_byte, 400, 600)
+    println("tsha1_diff 探针全部通过，PASS 总数=" + radix10(PASS_COUNT[0]))
+}

@@ -10,8 +10,17 @@ func rrp(v: i64, r: i64) -> i64 {
     return rr32(v, r & 31)
 }
 
+// 高半折叠进低半：消息平面（32 位、覆盖 64 字节位置）高 16 位整体补入第 16-31 字节位置。
+// 对 ≤16 位的 r 状态值是恒等（x ^ 0）。
+func fold16(v: i64) -> i64 {
+    return ((v & 0xFFFF) ^ (v >> 16)) & 0xFFFF
+}
+
+// r 半宽旋转（dual11h 内核）：统一先 fold16 再 rrp16。本文件 rrp16 仅被 W=11（r 半宽）
+// 内核使用（W=9 走 rrp），故在定义点折叠等价于在每个 rrp16 调用点先折叠——语义与
+// canonical gen_tsha1_core._rot_lane(half=true) 一致。
 func rrp16(v: i64, r: i64) -> i64 {
-    return rr32(v & 0xFFFF, r & 15)
+    return rr32(fold16(v), r & 15)
 }
 
 func rr32(v: i64, n: i64) -> i64 {

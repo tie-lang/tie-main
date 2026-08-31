@@ -1,0 +1,184 @@
+type tie<logic>
+// tsha1 位平面扩散（avalanche）探针 v2：验证 64 字节块每翻转 1 位 → 摘要各位约 0.5 概率翻转。
+// 方法：固定种子 LCG（u64 朴素同余，i = i*6364136223846793005 + 1442695040888963407 自然模 2^64
+//   回绕截断）生成 100 个 64B 随机块；对每块、对每字节的每一位（64×8 = 512 次翻转）计算
+//   tsha.tsha1f/b/x/r(blk, 48, 16)（base16，33 字节 = 264 位）与原始块摘要的**汉明距离 / 264**；
+//   统计每模型聚合均值与单样本分布。
+// 断言（阈值宽松防抖动）：
+//   ① 各模型（f/b/x/r）51200 次翻转（100 块 × 512）的聚合均值 ∈ [0.44, 0.56]；
+//   ② 单样本偏离 [0.30, 0.70] 的比例 < 2%；
+//   ③ f@n=92（W17 档，base16 ⌊92·698121/1e6⌋·2 hex = 512 位）抽样 20 块 × 512 翻转，
+//      聚合均值 ∈ [0.44, 0.56]。
+// 提示：汉明距离对 hex 逐字符异或计位；翻转块逐字节重建（StringBuilder 二进制安全）。
+import "../../std/tsha1.tie"
+using tsha;
+
+var PASS_COUNT: table<i64>;
+
+// 十进制整数 → 字符串（报告用）。
+func radix10(v: i64) -> string {
+    if v == 0 {
+        return "0"
+    }
+    var digits = "0123456789"
+    var out: string = ""
+    var x = v
+    while x > 0 {
+        out = str_char(digits, x % 10) + out
+        x = x / 10
+    }
+    return out
+}
+
+// 按模型名分派到 tsha 公开四函数。
+func model_hash(m: string, msg: string, n: i64, base: i64) -> string {
+    if m == "f" {
+        return tsha.tsha1f(msg, n, base)
+    }
+    if m == "r" {
+        return tsha.tsha1r(msg, n, base)
+    }
+    if m == "b" {
+        return tsha.tsha1b(msg, n, base)
+    }
+    return tsha.tsha1x(msg, n, base)
+}
+
+// 固定种子 LCG 生成 nb 个 64 字节随机块。
+func gen_blocks(nb: i64) -> table<string> {
+    var out: table<string>
+    var s: u64 = 0x1234567890ABCDEFu64
+    var blk: i64 = 0
+    while blk < nb {
+        var sb = string_builder()
+        var i: i64 = 0
+        while i < 64 {
+            var b = as_i64(s & 0xFFu64)
+            sb_append_byte(sb, b)
+            s = s * 6364136223846793005u64 + 1442695040888963407u64
+            i = i + 1
+        }
+        table_push(out, sb_build(sb))
+        blk = blk + 1
+    }
+    return out
+}
+
+// 复制 blk 且把第 by 字节的第 bit 位翻转（0 起计），逐字节重建，二进制安全。
+func flip_block(blk: string, by: i64, bit: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < 64 {
+        var b = str_byte(blk, i)
+        if i == by {
+            b = b ^ (1 << bit)
+        }
+        sb_append_byte(sb, b)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 单个十六进制字符 → 值（0..15）。
+func hexval(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 0..15 的置位位数。
+func bitcount4(d: i64) -> i64 {
+    return (d & 1) + ((d >> 1) & 1) + ((d >> 2) & 1) + ((d >> 3) & 1)
+}
+
+// 两个等长 hex 串的汉明位距离（每 hex 字符异或后计置位）。
+func hamming_bits(a: string, b: string) -> i64 {
+    var n = len(a)
+    var tot: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var d = hexval(str_char(a, i)) ^ hexval(str_char(b, i))
+        tot = tot + bitcount4(d)
+        i = i + 1
+    }
+    return tot
+}
+
+// 跑一个模型 × n 的位平面扩散统计：对 nb 块 × 512 翻转聚合计 dist。
+// 返回 (聚合计分位, 聚合总位数, 离群样本数, 翻转总次数)；check_out=false 时不统计离群。
+func run_model(mname: string, n: i64, blks: table<string>, nb: i64, check_out: bool) -> (mb: i64, tb: i64, outliers: i64, flips: i64) {
+    var tot_bits: i64 = 0
+    var tot_diff: i64 = 0
+    var outliers: i64 = 0
+    var flips: i64 = nb * 512
+    var blk_i: i64 = 0
+    while blk_i < nb {
+        var base = model_hash(mname, blks[blk_i], n, 16)
+        var dlen = len(base)
+        var bits = dlen * 4
+        tot_bits = tot_bits + 512 * bits
+        var by: i64 = 0
+        while by < 64 {
+            var bit: i64 = 0
+            while bit < 8 {
+                var fblk = flip_block(blks[blk_i], by, bit)
+                var fdig = model_hash(mname, fblk, n, 16)
+                var hd = hamming_bits(base, fdig)
+                tot_diff = tot_diff + hd
+                if check_out {
+                    if hd * 100 < 30 * bits || hd * 100 > 70 * bits {
+                        outliers = outliers + 1
+                    }
+                }
+                bit = bit + 1
+            }
+            by = by + 1
+        }
+        blk_i = blk_i + 1
+    }
+    return (tot_diff, tot_bits, outliers, flips)
+}
+
+// 布尔断言：通过累计 PASS 并打印，失败打印 FAIL 并 exit(1)。
+func check_bool(name: string, ok: bool) {
+    if ok {
+        PASS_COUNT[0] = PASS_COUNT[0] + 1
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        exit(1)
+    }
+}
+
+func main() {
+    table_push(PASS_COUNT, 0)
+    var blks = gen_blocks(100)
+
+    // 四模型 × n=48（51200 翻转）：均值 ∈ [0.44,0.56] + 离群(<2%)
+    var models: table<string> = ["f", "r", "b", "x"]
+    var mn: string = ""
+    for mn in models {
+        var (mb, tb, ol, fl) = run_model(mn, 48, blks, 100, true)
+        var mperm = (mb * 1000) / tb
+        var okm1 = mb * 100 >= 44 * tb
+        var okm2 = mb * 100 <= 56 * tb
+        check_bool("avalanche " + mn + " n48 mean=" + radix10(mperm) + "‰ ∈[0.44,0.56]", okm1 && okm2)
+        var oko1 = ol * 100 < 2 * fl
+        check_bool("avalanche " + mn + " n48 离群 <2% (" + radix10(ol) + "/" + radix10(fl) + ")", oko1)
+    }
+
+    // f@n=92（W17 档）抽样 20 块 × 512 翻转：均值 ∈ [0.44,0.56]
+    var (mb9, tb9, o9, fl9) = run_model("f", 92, blks, 20, false)
+    var mperm9 = (mb9 * 1000) / tb9
+    var ok91 = mb9 * 100 >= 44 * tb9
+    var ok92 = mb9 * 100 <= 56 * tb9
+    check_bool("avalanche f n92 mean=" + radix10(mperm9) + "‰ ∈[0.44,0.56]", ok91 && ok92)
+
+    println("tsha1 位平面扩散探针 v2 全部通过，PASS 总数=" + radix10(PASS_COUNT[0]))
+}

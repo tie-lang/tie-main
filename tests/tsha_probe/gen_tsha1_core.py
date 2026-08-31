@@ -81,6 +81,10 @@ def rrp(x, r):
 def rrp16(x, r):
     return rotr(x & 0xFFFF, r & 15)
 
+def _fold16(x):
+    """高半折叠进低半：消息平面（32 位、覆盖 64 字节位置）高 16 位整体补入第 16-31 字节位置。"""
+    return ((x & 0xFFFF) ^ (x >> 16)) & 0xFFFF
+
 def tadd2(Ma, Na, Mb, Nb):
     aP = Ma & (~Na); aN = Ma & Na
     bP = Mb & (~Nb); bN = Mb & Nb
@@ -183,8 +187,8 @@ def absorb(lanes, Pw, skey, half):
         a = (w * 5 + ((skey >> (w & 7)) & 7)) & 31
         an = (w % (len(lanes) // 2))            # 锚点字 w%W（<W 时确定叠加）
         i2 = 2 * an
-        v = rrp16(Pw[w], a) if half else rrp(Pw[w], a)
-        v2 = rrp16(Pw[w], a + 17) if half else rrp(Pw[w], a + 17)
+        v = rrp16(_fold16(Pw[w]), a) if half else rrp(Pw[w], a)
+        v2 = rrp16(_fold16(Pw[w]), a + 17) if half else rrp(Pw[w], a + 17)
         s = tadd2(lanes[i2], lanes[i2 + 1], v, v2)
         lanes[i2] = s[0] & M32
         lanes[i2 + 1] = s[1] & M32
@@ -193,7 +197,11 @@ def absorb(lanes, Pw, skey, half):
 # 通用环式扩散（值语义的唯一定义）
 # ----------------------------------------------------------------------------
 def _rot_lane(x, r, half):
-    return rrp16(x, r) if half else rrp(x, r)
+    # ★half（r 模型）：消息平面 / 状态统一先折叠高半再用 rrp16（half 语义一致），
+    #   使全部 64 字节位置（含 16-31/48-63）进入状态；fold16 对 16 位状态是恒等。
+    if half:
+        return rrp16(_fold16(x), r)
+    return rrp(x, r)
 
 def ring_mix(lanes, idx, r, skey, rcon, half, inject, rcon_idx):
     """对 idx（L 个字）做一轮环式扩散。lanes 长度 2·W（在轨上原位修改）。

@@ -153,10 +153,16 @@ func rrp16(v: i64, r: i64) -> i64 {
     return rr32(v & 0xFFFF, r & 15)
 }
 
-// 通用旋转：half=true（r 模型）走 rrp16，否则 rrp。
+// 高半折叠进低半：消息平面（32 位、覆盖 64 字节位置）高 16 位整体补入第 16-31 字节位置。
+// 对 ≤16 位的 r 状态值是恒等（x ^ 0）。
+func fold16(v: i64) -> i64 {
+    return ((v & 0xFFFF) ^ (v >> 16)) & 0xFFFF
+}
+
+// 通用旋转：half=true（r 模型）走 rrp16（先折叠高半，half 语义统一），否则 rrp。
 func rotlane(x: i64, r: i64, half: bool) -> i64 {
     if half {
-        return rrp16(x, r)
+        return rrp16(fold16(x), r)
     }
     return rrp(x, r)
 }
@@ -533,8 +539,8 @@ func absorb(lanes: ref table<i64>, Pw: table<i64>, skey: i64, half: bool) {
             var v: i64 = 0
             var v2: i64 = 0
             if half {
-                v = rrp16(Pw[w], a)
-                v2 = rrp16(Pw[w], a + 17)
+                v = rrp16(fold16(Pw[w]), a)
+                v2 = rrp16(fold16(Pw[w]), a + 17)
             } else {
                 v = rrp(Pw[w], a)
                 v2 = rrp(Pw[w], a + 17)
