@@ -179,6 +179,11 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
     if str_len(target) > 0 {
         cmd = cmd + " --target=" + target
     }
+    // Windows 目标：链接 GDI/用户库（平台适配器 cap_win 等 extern user32/gdi32；
+    // 对非 Windows 交叉目标不追加，避免 libuser32 缺失）
+    if str_len(target) == 0 || has_sub(target, "windows") {
+        cmd = cmd + " -luser32 -lgdi32"
+    }
     if need_interp {
         var lib = find_interp_lib()
         if str_len(lib) == 0 {
@@ -245,6 +250,10 @@ pub func link_shared(input_opt: string, output_so: string, target: string, need_
     var cmd = tool + lld_flag + " " + shared_flag + " " + input_opt + " -o " + output_so
     if str_len(target) > 0 {
         cmd = cmd + " --target=" + target
+    }
+    // Windows 目标：链接 GDI/用户库（平台适配器 extern user32/gdi32）
+    if str_len(target) == 0 || has_sub(target, "windows") {
+        cmd = cmd + " -luser32 -lgdi32"
     }
     if need_interp {
         var lib = find_interp_lib()
