@@ -1,3 +1,7 @@
+## [修复] 顶层 const 整数全局初始值（2026-08-31）
+
+顶层 const 的整数字面量初始值此前只在类型为 i64 时输出（llvmgen emit_globals 的 ty=="i64" 限制），i8/i16/i32/u* 等 const 全局恒为 0——extern 以 const 传参时收到 0（如 GetSystemMetrics(1 的 const i32) 返回屏幕宽而非高）。改为对全部整数类型（types.is_int）应用初始值。回归测试 tests/language/const_global_int_init.tie。
+
 ## [修复] 跨文件 struct 字段收集错位（2026-08-31）
 
 跨文件使用多 struct 时，若 struct 名在主文件先被 intern（消费方在 import
