@@ -1,4 +1,5 @@
 # tie 更改记录
+*EN: Changelog*
 
 > **写作规范（写死，改此文件必守）**：
 > 1. 写完即记：每个开发/修复完成立即追加一条（与 commit 同内容），不批量攒。
@@ -7,6 +8,14 @@
 > 4. 禁止：重复条目、`---##` 等烂格式、正文夹带旧标题残留、删除历史条目。
 > 5. 大版本归档：正式版发布时把本文件复制为仓库根 `<版本>.CHANGELOG`，清空重记下一版本。
 > 6. **编号只用 p.x.x.x**：p=预发布，大版本号省略（preview.5 → p.5）；第一段为发布档，第二段为开发模块（旧称「里程碑」），第三段为子项；每版开发前只定第一、二段，第三段自动递增。禁止 H1/M1/P1 等字母数字混合标记。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+> EN (writing rules, fixed — must follow when editing this file):
+> 1. Log each change immediately (same content as the commit); do not batch.
+> 2. Entry format: `## [type] one-line title (YYYY-MM-DD)`, optionally with `（p.x.y.z）`; new entries go under their version heading, above older ones (newest first).
+> 3. Version headings: `## Harbor-2026.1-preview.N（YYYY-MM-DD）` / `## 2026.1（stable, in progress）`; entries must sit **under** their version heading; membership follows git tag boundaries.
+> 4. Forbidden: duplicate entries, malformed headings (`---##`), stray legacy headers in the body, deleting history.
+> 5. Major-version archive: on stable release, copy this file to `<version>.CHANGELOG` at the repo root, then start a fresh one.
+> 6. **Use p.x.x.x numbering only**: p = preview, major version omitted (preview.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 2026.1（正式版，进行中）
 
