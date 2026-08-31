@@ -25,8 +25,8 @@
 ### 修复计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能）
 
 **正确性（p.6.1，必查）**
-- [ ] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出
-- [ ] p.6.1.2 smove.check_fn_walk 对 extern 越界隐患（TIE_MOVE_CHECK=1 门控，评估是否修）
+- [x] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出（已修复 4095ee1，回归 err_066–068）
+- [x] p.6.1.2 smove.check_fn_walk 对 extern 越界隐患（TIE_MOVE_CHECK=1 门控，评估结论：越界读为真实缺陷，已修复）
 - [ ] p.6.1.3 lld 解析 tie_interp.lib CRT printf 缺陷（无 MSVC 环境 interp 桥受影响）
 - [ ] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push）：保持拆小函数纪律，
       考虑在 ir.add_operand 加交错检测断言，把未知暴露点转编译期错误
@@ -48,6 +48,10 @@
 - [ ] p.6.3.5 driver:1257/1299 残余逐字符拼接点
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+
+## [修复] smove.check_fn 对 extern 声明越界读取防护（2026-08-31）
+
+extern 声明经 `reg_fn` 登记进 `fn_keys`/`fn_def_nodes`（S_N_EXTERN 节点），TIE_MOVE_CHECK=1 时 `smove.check_fn_walk` 快路径把 S_N_EXTERN 节点当函数体遍历——`body = child(fn_node, slot_off+1+nparams)` 的索引 == nchild，`child()` 无边界检查，越界读会把相邻/后续顶层节点或 arena 尾部未初始化内存误当函数体（假报错误或 0xC0000005）。为 `smove.check_fn` 补 `nchild` 边界防护（对齐 scheck.check_fn 既有防护）：extern 声明（slots 不足 1+nparams）直接返回 0，不遍历 body。验证：tests/s15/extern_move_check_probe.tie（extern 置于文件末尾 + import 扰动布局）在 TIE_MOVE_CHECK=1 下编译运行通过；tests/language 全量正例 55/58 与旧 tiec 一致（3 个基线已知失败不变）；tiec 与 tiec_fix 产物哈希/IR 逐字节一致；移动语义正例过、负例拒。
 
 ## [修复] 顶层 const 整数全局初始值（2026-08-31）
 

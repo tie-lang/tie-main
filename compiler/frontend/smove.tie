@@ -604,6 +604,14 @@ func check_fn_walk_in_ns(blk: i64, full: string) -> i64 {
 func check_fn(fn_node: i64) -> i64 {
     sstate.lv_moved_reset()
     var nparams = s_aux[fn_node]
+    // 无函数体声明（如 extern 声明，p.6.1.2）：body 子节点不存在
+    // （index == nchild），child() 无边界检查——越界读会把相邻/后续节点
+    // （import 多时常为其它文件顶层节点）或 arena 尾部未初始化内存
+    // 误当函数体扫到（假报错误或 0xC0000005）。声明无需检查体，直接返回
+    // （对齐 scheck.check_fn 的既有防护）。
+    if sstate.slot_off(fn_node) + 1 + nparams >= sstate.nchild(fn_node) {
+        return 0
+    }
     // 函数体：children[slot_off + 1 + nparams]
     var body = sstate.child(fn_node, sstate.slot_off(fn_node) + 1 + nparams)
     return check_block(body)

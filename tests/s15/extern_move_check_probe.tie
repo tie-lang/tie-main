@@ -1,0 +1,33 @@
+type tie<logic>
+// tests/s15/extern_move_check_probe.tie —— p.6.1.2 回归探针
+// ============================================================
+// smove.check_fn 对 extern 声明的越界读取防护：
+// extern 经 reg_fn 登记进 fn_keys/fn_def_nodes（S_N_EXTERN 节点），
+// TIE_MOVE_CHECK=1 时 smove.check_fn_walk 快路径会把 S_N_EXTERN 节点当
+// 函数体遍历——body = child(fn_node, slot_off+1+nparams) == nchild 读越界
+// （child() 无边界检查，平铺/相邻节点或 arena 尾部内存被误当函数体；修复前
+// 可能误报错误或 0xC0000005 崩溃）。extern 声明置于文件末尾 + import 放大
+// arena 布局扰动（对齐 scheck 修复前的观测）。修复后：正常编译运行。
+// 验证命令：TIE_MOVE_CHECK=1 tiec tests/s15/extern_move_check_probe.tie
+// 预期输出：
+//   extern move check ok
+import "../../std/string.tie"
+using str;
+
+func concat_ok(a: string, b: string) -> string {
+    return a + b
+}
+
+func main() {
+    unsafe {
+        var r = rand()
+        if r >= 0 || r < 0 {
+            var s = concat_ok("extern ", "move check ok")
+            println(s)
+        }
+    }
+}
+
+// extern 放文件末尾：解析后其子节点切片紧贴 arena 尾部——未防护时
+// child(fn_node, 1) 越界读易命中尾部未初始化内存/相邻顶层节点。
+unsafe extern fn rand() -> i32;
