@@ -1,22 +1,36 @@
 # 规划：后量子密码（PQC）接入评估与路线图（ML-KEM / ML-DSA / SLH-DSA）
+*EN: Plan: Post-Quantum Cryptography (PQC) Integration Assessment and Roadmap (ML-KEM / ML-DSA / SLH-DSA)*
 
 > 状态：**决策已定——全量纯 tie**（2026-08-29，纯文档，未实现）
+> EN: Status: **Decision made — pure-tie end to end** (2026-08-29, documentation only, not implemented)
 > 关联：`docs/plans/asymmetric-roadmap.md`（非对称族评估：ECDSA/Ed25519/X25519 先例）、
+> EN: Related: `docs/plans/asymmetric-roadmap.md` (asymmetric family assessment: the ECDSA/Ed25519/X25519 precedent),
 > `std/sha256.tie` / `std/sha3.tie` / `std/blake2.tie`（std 哈希族）、
+> EN: `std/sha256.tie` / `std/sha3.tie` / `std/blake2.tie` (the std hash family),
 > `ext/aes.tie` / `ext/chacha20.tie` / `ext/ascon_aead.tie`（ext 对称族）、
+> EN: `ext/aes.tie` / `ext/chacha20.tie` / `ext/ascon_aead.tie` (the ext symmetric family),
 > `docs/plans/unsafe-model.md`（unsafe / extern 能力边界）。
+> EN: `docs/plans/unsafe-model.md` (the unsafe / extern capability boundary).
 > 结论一句话：**全量纯 tie 实现——SLH-DSA-SHA2（哈希基）优先 → ML-KEM-768 → ML-DSA-65；
+> EN: Conclusion in one line: **full pure-tie implementation — SLH-DSA-SHA2 (hash-based) first → ML-KEM-768 → ML-DSA-65;
 > 弃 extern CNG / liboqs / OpenSSL。**理由：项目铁律「Cannot use Rust in implementation、
+> EN: drop extern CNG / liboqs / OpenSSL.** Rationale: the project's iron rules "Cannot use Rust in implementation",
 > 去 Rust 桥、tie 自写 tiec」——所有算法库必须纯 tie，不依赖 extern 系统库；CNG/liboqs/OpenSSL
+> EN: remove the Rust bridge, tie writes tiec itself" — all algorithm libraries must be pure tie, with no dependency on extern system libraries; CNG/liboqs/OpenSSL
 > 仅保留为背景信息与验证向量来源（见 §3 §6）。
+> EN: are retained only as background information and as the source of verification vectors (see §3 §6).
 > **决策记录：同意用户纯 tie 决策，弃 extern。**
+> EN: **Decision record: agree with the user's pure-tie decision; drop extern.**
 > 当前编译基线不受本文档影响（纯文档，未触碰任何 `.tie` 与编译器源码）。
+> EN: The current compilation baseline is unaffected by this document (documentation only; no `.tie` files or compiler source are touched).
 
 ---
 
 ## 1. 目标与动机
+*EN: 1. Goals and Motivation*
 
 ### 1.1 tie 平台为何需要 PQC
+*EN: 1.1 Why the tie Platform Needs PQC*
 
 | 动机 | 说明 | 紧迫度 |
 | --- | --- | --- |
@@ -24,32 +38,45 @@
 | 与 TLS / PGP 混合部署对接 | 生态系统（浏览器、K8s、OpenSSL）已大规模接入混合 PQC（如 X25519MLKEM768），tie 若做网络/证书将面临互操作义务 | 中 |
 | 2030–2035 迁移表 | 商用实现逐步转向 PQC，CNSA 2.0 等规范要求对涉密系统主流化 PQC；平台需在迁移窗口内具备就绪路径 | 低（仍处窗口期） |
 
+EN: Motivation table: (1) long-term signing credentials for the plugin audit chain — hash-based SLH-DSA only relies on hash collision/preimage resistance, the most conservative assumption, best for long-lived signatures (medium); (2) interop obligations with the TLS/PGP hybrid deployment that the ecosystem already uses (medium); (3) the 2030–2035 migration window per CNSA 2.0 and peers (low, still within the window).
+
 > 需求取舍（YAGNI 前置）：若 PQC 仅服务于平台**内部审计链**（未对外的长期签名），则不存在
 > 「harvest-now-decrypt-later」的密文窃取风险，慢一点不致命——这使「陈退款（滞后）」成为
 > 合法可选项（见 §5 劝退项）。
+> EN: Requirement trade-off (YAGNI upfront): if PQC only serves the platform's **internal audit chain** (non-public long-lived signatures), there is no "harvest-now-decrypt-later" ciphertext-harvesting risk, so being slower is not fatal — this makes "delaying (lagging)" a legitimate option (see the discouragements in §5).
 
 ### 1.2 tie 平台现状（相关先决事实）
+*EN: 1.2 Current tie Platform State (Relevant Prior Facts)*
 
 - **std 哈希族**：`sha256`（`std/sha256.tie`）、`sha3_256/512`（`std/sha3.tie`，含 Keccak
   轮函数 block）、`blake2` / `blake3`、`sha1`、`tsha1`（trit 混合）、`base48`。**尚无 SHAKE
   XOF 公开封装**（`sha3.tie` 的 keccak 可为其铺路）。
+  EN: **std hash family**: `sha256` (`std/sha256.tie`), `sha3_256/512` (`std/sha3.tie`, including the Keccak round-function block), `blake2`/`blake3`, `sha1`, `tsha1` (trit-hybrid), `base48`. **No public SHAKE XOF wrapper yet** (`sha3.tie`'s keccak can pave the way).
 - **ext 对称族**：AES、ChaCha20、Ascon-AEAD。
+  EN: **ext symmetric family**: AES, ChaCha20, Ascon-AEAD.
 - **ext 非对称**：ECDSA P-256 已走 BCrypt extern 落地（`ext/ecdsa.tie`，已实证）——**过渡方案，
   远期纯 tie**；Ed25519/X25519 统一走纯 tie bigint（依赖 `std/bigint.tie`，见 asymmetric-roadmap）。
+  EN: **ext asymmetric**: ECDSA P-256 was implemented via BCrypt extern (`ext/ecdsa.tie`, proven) — **a transitional scheme, pure tie in the long run**; Ed25519/X25519 uniformly go through pure-tie bigint (depending on `std/bigint.tie`; see asymmetric-roadmap).
 - **无现成多项式 / 格 / 有限域数学库**（`std/linalg` 为浮点线性代数，非模 q 环运算）。
+  EN: **No ready-made polynomial / lattice / finite-field math library** (`std/linalg` is floating-point linear algebra, not mod-q ring arithmetic).
 - **随机源**：`rdu/rnd.tie` 为 xorshift64 伪随机（**非密码学安全**）；PQC 密钥生成需密码学安全
   随机源，纯 tie 只提供算法主体，熵仍须来自系统 CSPRNG（如 Windows `BCryptGenRandom`）——
   **熵源属基础设施，非算法库 extern，不违纯 tie 决策**（见 §3.5）。
+  EN: **Random source**: `rdu/rnd.tie` is xorshift64 pseudorandom (**not cryptographically secure**); PQC key generation needs a cryptographically secure source, but pure tie only provides the algorithm body — the entropy must still come from the system CSPRNG (e.g. Windows `BCryptGenRandom`) — **the entropy source is infrastructure, not an algorithm-library extern, so it does not violate the pure-tie decision** (see §3.5).
 - **字节承载**：tie `string` 为 UTF-8、可含 NUL，但不能可靠承载 ≥0x80 的原始任意字节，IO 统一
   用**小写 hex 字符串**（与 asymmetric-roadmap / ext 一致）。
+  EN: **Byte carriage**: tie `string` is UTF-8 and may contain NUL, but cannot reliably carry arbitrary raw bytes ≥ 0x80, so IO uniformly uses **lowercase hex strings** (consistent with asymmetric-roadmap / ext).
 
 ---
 
 ## 2. 三条路线对比
+*EN: 2. Comparison of the Three Routes*
 
 > extern 后端三选（**仅作背景与验证向量来源，本项目不采用**）：**Windows CNG（内建，已含
 > ML-KEM/ML-DSA）**、**liboqs（需自带 dll）**、**OpenSSL 3.5+（需自带 dll）**。
+> EN: The extern backend candidates (**background and verification-vector source only; this project does not use them**): **Windows CNG (built-in, already includes ML-KEM/ML-DSA)**, **liboqs (requires shipping a dll)**, **OpenSSL 3.5+ (requires shipping a dll)**.
 > 经用户决策：**全量纯 tie，弃 extern**。下表记录被否（A/B）与采纳（C）的路径。
+> EN: By user decision: **full pure tie; extern dropped**. The table below records the rejected (A/B) and adopted (C) paths.
 
 | 维度 | A. extern C 库（CNG / liboqs / OpenSSL 3.5+） | B. 混合（extern + 纯 tie 分派） | **C. 纯 tie 全量（推荐）** |
 | --- | --- | --- | --- |
@@ -64,21 +91,30 @@
 | **对项目铁律符合度** | **✗**（依赖 extern 系统库，违背用户决策） | **✗**（部分依赖 extern） | **✓**（纯 tie，去 Rust 桥 / tie 自写 tiec 之延伸） |
 | **决策** | **弃**（仅背景） | **弃** | **采纳** |
 
+EN: The three-route table compares extern-C (A), hybrid (B), and full pure-tie (C). A and B are rejected (they depend on extern system libraries, violating the iron rule and user decision); C is adopted: self-implemented ML-KEM/ML-DSA/SLH-DSA with bigint + SHAKE XOF prerequisites, no binary dependencies, all platforms, at the cost of the largest effort.
+
 ---
 
 ## 3. 外部事实核实（WebSearch 结论，来源见 §8）
+*EN: 3. External-Fact Verification (WebSearch findings; sources in §8)*
 
 > **标注**：本节为外部事实核实（背景信息）——**本项目不采用 extern 实现**，仅采纳其标准与
 > 官方 self-test / ACVP 向量作为纯 tie 实现的核对基准。
+> EN: **Note**: this section is external-fact verification (background information) — **this project does not adopt extern implementations**; it adopts only their standards and official self-test / ACVP vectors as the check baseline for the pure-tie implementation.
 
 ### 3.1 标准状态
+*EN: 3.1 Standard Status*
 
 - NIST **FIPS 203（ML-KEM，原 Kyber）、FIPS 204（ML-DSA，原 Dilithium）、FIPS 205（SLH-DSA，
   原 SPHINCS+）** 于 **2024-08-13** 正式发布。
+  EN: NIST **FIPS 203 (ML-KEM, formerly Kyber), FIPS 204 (ML-DSA, formerly Dilithium), FIPS 205 (SLH-DSA, formerly SPHINCS+)** were published on **2024-08-13**.
 - **Falcon → FN-DSA** 为 **FIPS 206（制定中 / 草稿）**，因浮点签名常数时间化困难而延迟。
+  EN: **Falcon → FN-DSA** is **FIPS 206 (in progress / draft)**, delayed because constant-timing of the floating-point signature is hard.
 - **HQC** 于 **2025-03** 在格族之外被选中（码基 KEM），作为对格族潜在突破的多样化对冲。
+  EN: **HQC** was selected **2025-03** outside the lattice family (a code-based KEM), as a diversifying hedge against a potential lattice breakthrough.
 
 ### 3.2 OpenSSL 3.5+（PQC 支持状态）
+*EN: 3.2 OpenSSL 3.5+ (PQC Support Status)*
 
 | 核实项 | 结论 |
 | --- | --- |
@@ -86,7 +122,10 @@
 | TLS 指纹 | 默认开混合 `X25519MLKEM768`；另有 `P-256+MLKEM768`、`P-384+MLKEM1024` 等混合组 |
 | 成熟度 | 官方标注部分接口为 **experimental**；标准算法在默认 provider，无需 oqs-provider |
 
+EN: OpenSSL 3.5 (LTS until 2030-04) natively merges ML-KEM/ML-DSA/SLH-DSA into its default provider; TLS defaults to hybrid `X25519MLKEM768`, with `P-256+MLKEM768`, `P-384+MLKEM1024` hybrid groups; some interfaces are marked **experimental**, and no oqs-provider is needed for the standard algorithms.
+
 ### 3.3 liboqs（现状）
+*EN: 3.3 liboqs (Current State)*
 
 | 核实项 | 结论 |
 | --- | --- |
@@ -95,7 +134,10 @@
 | 说明 | 0.16.0 移除旧版 SPHINCS+（Round-3 名），保留标准化 **SLH-DSA**；HQC 曾临时禁用后按 0.16.0 规范重启用；ML-DSA 默认实现切换为 `mldsa-native` |
 | 形态 | C 库，需自带并打包（非平台内建）；提供 oqs-provider（OpenSSL 3 provider） |
 
+EN: liboqs is actively maintained, latest **0.16.0 (2026-07)**; it includes ML-KEM (512/768/1024), ML-DSA (44/65/87) and SLH-DSA (Tier 3), plus second-round candidates; it is a C library that must be shipped and packaged (not platform built-in).
+
 ### 3.4 Windows CNG / BCrypt（PQC 支持状态）
+*EN: 3.4 Windows CNG / BCrypt (PQC Support Status)*
 
 | 核实项 | 结论 |
 | --- | --- |
@@ -105,17 +147,22 @@
 | SLH-DSA | **CNG 未覆盖**（算法标识表无 SLH-DSA） |
 | 可用性 | 微软 2025-05 官宣 PQC 入 Windows（Insider Canary 27852+）；ML-KEM / ML-DSA 随较新 Windows 内置；**内建于 `bcryptprimitives.dll`，无新增二进制依赖** |
 
+EN: Windows CNG already includes ML-KEM and ML-DSA (Windows 11 24H2+); a composite ML-KEM algorithm is marked prerelease/Insider; SLH-DSA is NOT covered by CNG; the primitives are built into `bcryptprimitives.dll` with no new binary dependency.
+
 > **关键更正**：asymmetric-roadmap 评估时（纯 ECDSA 阶段）BCrypt 无 PQC；**截至 2026-08，
 > Windows CNG 已内建 ML-KEM / ML-DSA**。该事实使「extern CNG」在技术上从「无 PQC 可用」变为
 > 「零新依赖即可满足 KEM + 格签名」——**但仅作背景信息：经用户纯 tie 决策，本项目不采用 extern，
 > 不以此变更路线**。
+> EN: **Key correction**: when asymmetric-roadmap was assessed (the pure-ECDSA phase) BCrypt had no PQC; **as of 2026-08, Windows CNG has built-in ML-KEM / ML-DSA**. This makes "extern CNG" go from "no PQC available" to "KEM + lattice signature with zero new dependencies" — **but this is only background: per the user's pure-tie decision, this project does not use extern, and does not change the route on this basis**.
 
 ---
 
 ## 3.5 前置依赖（纯 tie 数学地基）
+*EN: 3.5 Prerequisites (Pure-tie Math Foundation)*
 
 > 纯 tie 全量路线必须先建立「大数 / XOF / 常数时间」三块地基，再进入任何算法。顺序增量自举，
 > 每块完工即被后续算法复用——是「哈希基首发消化工具链」的物质前提。
+> EN: The fully-pure-tie route must first lay the three foundations of "bigint / XOF / constant-time" before entering any algorithm. Self-bootstrap incrementally; once finished, each block is reused by later algorithms — this is the material prerequisite for "hash-based first, digesting the toolchain".
 
 | 地基 | 内容 | 复用算法 | 风险与缓解 |
 | --- | --- | --- | --- |
@@ -123,14 +170,19 @@
 | **SHAKE XOF（SHA-3 扩展）** | `std/sha3.tie` 的 Keccak block 封一层 SHAKE128/256 XOF（squeeze 任意长输出） | **SLH-DSA-SHAKE**、**ML-KEM**（XOF 派生 A / 种子）、**ML-DSA** 共同前提 | 少；Keccak block 已在 std 实证，仅需 XOF 封装与向量核对 |
 | **常数时间与内存清除** | 常数时间结构（固定循环 / 无 secret 索引）；密钥 / 共享秘密清除 | 全部非对称算法 | tie **无 `memzero`**：`sensitive` 数据槽覆写约定——安全上下文里的临时 buffer 用毕逐字覆写为 0x00，不由通用 GC 保证；常数时间性由算法结构 + 向量兜底；**内存清除为该路线强制的先行前置** |
 
+EN: The foundation table: `std/bigint.tie` (256/512-bit bigint, modular inverse/pow, shared base for Ed25519/X25519 and lattice algorithms); SHAKE128/256 XOF wrapped over the existing Keccak block (prerequisite shared by SLH-DSA-SHAKE, ML-KEM, ML-DSA); constant-time structure and memory clearing (tie has no `memzero`, so rely on the `sensitive` data-slot overwrite convention; memory clearing is a mandatory upfront prerequisite).
+
 > 随机源（熵源基础设施，非算法 extern）：上述数学地基就绪后，密钥生成先接系统 CSPRNG 熵源
 > （如 Windows `BCryptGenRandom`），`rdu/rnd`（xorshift64）不作为安全熵。
+> EN: Random source (entropy infrastructure, not an algorithm extern): once the math foundations are ready, key generation first connects to the system CSPRNG entropy source (e.g. Windows `BCryptGenRandom`); `rdu/rnd` (xorshift64) is not used as secure entropy.
 
 ---
 
 ## 4. 推荐与分期
+*EN: 4. Recommendation and Phasing*
 
 ### 4.1 推荐：**C 纯 tie 全量**（弃 extern CNG / liboqs / OpenSSL）
+*EN: 4.1 Recommendation: Full Pure-tie Route C (drop extern CNG / liboqs / OpenSSL)*
 
 | 目标算法 | 推荐实现 | 优先级 | 理由 |
 | --- | --- | --- | --- |
@@ -138,24 +190,34 @@
 | **ML-KEM-768**（密钥封装） | **纯 tie** | ② | 需 **NTT / 多项式环 mod q** 库（前置依赖 §3.5）；障碍居中 |
 | **ML-DSA-65**（格签名） | **纯 tie** | ③ 最重 | 格族最重：多项式乘 / 格基 / 常数时间面最宽，放最后冲刺 |
 
+EN: Recommended target algorithms, all pure tie: SLH-DSA-SHA2 first (hash-based, highest reachability, no NTT and no mod-q ring), then ML-KEM-768 (needs an NTT / mod-q polynomial-ring library), and ML-DSA-65 last (the heaviest lattice component).
+
 > 弃 extern 的理由：**项目铁律——Cannot use Rust in implementation、去 Rust 桥、tie 自写 tiec**；
 > 用户明确要求**全部算法库纯 tie 实现，不依赖 extern 系统库**。CNG / liboqs / OpenSSL 仅保留作
 > 背景与验证向量来源（其官方 self-test / ACVP 向量用于核对纯 tie 输出），不再作为实现后端。
+> EN: Why drop extern: **the project's iron rules — Cannot use Rust in implementation, remove the Rust bridge, tie writes tiec itself**; the user explicitly requires **all algorithm libraries be pure tie, independent of extern system libraries**. CNG / liboqs / OpenSSL are retained only as background and verification-vector sources (their official self-test / ACVP vectors check the pure-tie output), no longer as implementation backends.
 > 同理弃「混合」：只要引 extern 即违背决策，纯 tie 部分也会被 extern 拖累。
+> EN: The "hybrid" is dropped for the same reason: any extern reference violates the decision, and the pure-tie part would be dragged down by extern.
 
 ### 4.2 为何 SLH-DSA 是纯 tie 的「最低风险首选」
+*EN: 4.2 Why SLH-DSA Is the "Lowest-Risk First Choice" for Pure tie*
 
 - SLH-DSA **不需要格数学**：无 NTT、无模 q 多项式环、无常数时间标量乘——本质是
   **哈希函数 + Merkle 树 + 超树（Hypertree）+ 少量 Tweak 参数算术**。
+  EN: SLH-DSA **needs no lattice math**: no NTT, no mod-q polynomial ring, no constant-time scalar multiplication — it is essentially **hash functions + Merkle trees + a Hypertree + a little tweak-parameter arithmetic**.
 - tie 已具备 **SHA-256（`std/sha256.tie`）+ SHA-3（`std/sha3.tie`，含 Keccak block）**；
   SLH-DSA-SHA2-* 族基于 SHA-256/512，SLH-DSA-SHAKE-* 族基于 SHAKE128/256（从已有
   `sha3.keccak` 加一层 XOF 即可）。
+  EN: tie already has **SHA-256 (`std/sha256.tie`) + SHA-3 (`std/sha3.tie`, including the Keccak block)**; the SLH-DSA-SHA2-* families are based on SHA-256/512 and the SLH-DSA-SHAKE-* families on SHAKE128/256 (a XOF layer over the existing `sha3.keccak` suffices).
 - 因此纯 tie SLH-DSA 的**实现风险 / 工作量远低于任何格算法**（格路线核心难点是常数时间 + 侧信道；
   哈希签名的主要风险仅是 Merkle / 超树的状态与索引正确性，可用 KAT / ACVP 向量收敛）。
+  EN: So pure-tie SLH-DSA has **far lower implementation risk / effort than any lattice algorithm** (the core difficulty of the lattice route is constant-time + side channels; the main risk of hash-based signing is only the state/index correctness of Merkle / hypertrees, which KAT / ACVP vectors can converge).
 - 定位：**平台审计链的长期签名凭证**（安全假设最保守、有效期长），并作为纯 tie 格路线的
   **首发入口**——先用低风险哈希基消化「大数 / 常数时间 / 向量核对」全套基建，再攻格算法。
+  EN: Positioning: **the long-term signing credential for the platform audit chain** (most conservative security assumption, long validity), and the **first entry** for the pure-tie lattice route — first use the low-risk hash base to digest the full "bigint / constant-time / vector-checking" infrastructure, then tackle lattice algorithms.
 
 ### 4.3 分期建议
+*EN: 4.3 Phasing Recommendation*
 
 | 阶段 | 内容 | 前提 / 验收 |
 | --- | --- | --- |
@@ -167,13 +229,17 @@
 | 六 | **ML-DSA-65 纯 tie（格签名，最重）** | FIPS 204 KAT + ACVP |
 | 七（远期） | 接入插件审计链凭证签发 / 验签 | 自举（自签凭证用 tie 验签）+ 全量回归 |
 
+EN: Phasing: (1) this document finalizes the pure-tie decision; (2) math foundations; (3) SLH-DSA-SHA2 first; (4) Ed25519/X25519; (5) ML-KEM-768; (6) ML-DSA-65 (heaviest); (7, long-term) integrate into the plugin audit chain's credential signing/verification.
+
 ---
 
 ## 5. 落地步骤（地基 → SLH-DSA → Ed25519/X25519 → ML-KEM → ML-DSA）
+*EN: 5. Implementation Steps (Foundation → SLH-DSA → Ed25519/X25519 → ML-KEM → ML-DSA)*
 
 > 通用验收准则（每步三挂钩）：**① KAT / ACVP 向量逐字节一致；② 自举**——产出可运行 exe、
 > tie 自己编译运行；**③ 回归**——与既有回归基线解耦，不破坏现有编译 / 运行基线；新增测试归入
 > 对应探针目录，不并入通用回归。
+> EN: Universal acceptance criteria (three hooks per step): **① byte-exact agreement with KAT / ACVP vectors; ② bootstrap** — produce a runnable exe that tie compiles and runs itself; **③ regression** — decoupled from the existing regression baseline, without breaking the current compile/run baseline; new tests go into the corresponding probe directory, not the general regression.
 
 | 步骤 | 交付 | 验收挂钩 |
 | --- | --- | --- |
@@ -184,9 +250,12 @@
 | 5 格签名 | `std/mldsa`（ML-DSA-65，最重） | FIPS 204 KAT + ACVP |
 | 6 接入审计链凭证（远期） | 签发 / 验签接入插件链路 | 自举闭环（tie 验自己的签）+ 全量回归 |
 
+EN: Implementation step table: (1) `std/bigint.tie` + SHAKE XOF + sensitive-slot constant-time conventions; (2) `std/slhdsa` hash-signature first delivery; (3) `std/ed25519`, `std/x25519`; (4) `std/mlkem` (ML-KEM-768); (5) `std/mldsa` (ML-DSA-65, heaviest); (6) integrate into the audit chain's credential signing/verification (long-term).
+
 ---
 
 ## 6. 风险
+*EN: 6. Risks*
 
 | 风险 | 等级 | 说明与缓解 |
 | --- | --- | --- |
@@ -199,9 +268,12 @@
 | 工期 / 范围膨胀 | 高 | 全栈三算法自研边宽；**缓解：严格分期**（地基→哈希基→Ed25519→ML-KEM→ML-DSA），每步三挂钩收敛后才启动下一步 |
 | 劝退项（YAGNI） | — | 已按用户纯 tie 决策立项，不再整体滞后；但若审计链无对外长期凭证刚需，仍可选择性延后格路线保留哈希基凭证 |
 
+EN: Risk table: pure-tie implementation complexity and constant-time/side-channel are high but controllable (strict phasing, structure-level constant time, `sensitive` overwrite convention); memory safety is medium (no memzero primitive → mandatory `sensitive` convention); interop vectors, crypto-secure randomness, platform availability (low), schedule/scope creep (high, mitigated by strict phasing), and a YAGNI discouragement.
+
 ---
 
 ## 7. 决策记录表
+*EN: 7. Decision Record Table*
 
 | 决策点 | 结论 | 备选 |
 | --- | --- | --- |
@@ -213,24 +285,42 @@
 | 是否现在就投实现 | **是——同意用户纯 tie 决策，弃 extern**；按 地基→SLH-DSA→Ed25519/X25519→ML-KEM→ML-DSA 分期 | 仅立项评估（弃，已被决策取代） |
 | 随机源 / 内存清除 | 密钥生成接系统 CSPRNG 熵源 + `sensitive` 槽覆写约定（先行前置） | — |
 
+EN: Decision record: SLH-DSA-SHA2 leads the pure-tie effort; implementation path is full pure tie (extern dropped); full-stack scope is ML-KEM-768 + ML-DSA-65 + SLH-DSA-SHA2; prerequisites are `std/bigint.tie` + SHAKE XOF + `sensitive` constant-time conventions + system entropy; extern backends are dropped (background/vectors only); invest now, phased foundation → SLH-DSA → Ed25519/X25519 → ML-KEM → ML-DSA.
+
 ---
 
 ## 8. 外部参考（核实来源）
+*EN: 8. External References (Verification Sources)*
 
 - NIST FIPS 203 / 204 / 205（2024-08-13 发布）：`csrc.nist.gov/pubs/fips/203/final`（ML-KEM）、
   `.../fips/204/final`（ML-DSA）、`.../fips/205/final`（SLH-DSA）；FIPS 206（FN-DSA）草稿；HQC 2025-03 选定。
+  EN: NIST FIPS 203/204/205 (published 2024-08-13): `csrc.nist.gov/pubs/fips/203/final` (ML-KEM), `.../fips/204/final` (ML-DSA), `.../fips/205/final` (SLH-DSA); FIPS 206 (FN-DSA) draft; HQC selected 2025-03.
 - OpenSSL 3.5（PQC）：
+  EN: OpenSSL 3.5 (PQC):
   - OpenSSL 3.5 Final Release 博客（2025-04-08）：`mirror.openssl-corporation.org/blog/2025-04-08-openssl-35-final-release.html`
+    EN: OpenSSL 3.5 Final Release blog (2025-04-08): `mirror.openssl-corporation.org/blog/2025-04-08-openssl-35-final-release.html`.
   - OpenSSL NEWS.md（ML-KEM / ML-DSA / SLH-DSA default provider）：`github.com/openssl/openssl/blob/master/NEWS.md`
+    EN: OpenSSL NEWS.md (ML-KEM / ML-DSA / SLH-DSA in the default provider): `github.com/openssl/openssl/blob/master/NEWS.md`.
   - 3.5+ TLS 默认 `X25519MLKEM768` 与混合组：`cloud.tencent.com/developer/article/2568549`
+    EN: 3.5+ TLS default `X25519MLKEM768` and hybrid groups: `cloud.tencent.com/developer/article/2568549`.
   - 部分接口标注 experimental 的说明：`evertrust.io/guide/pqc-algorithms/`
+    EN: Note that some interfaces are marked experimental: `evertrust.io/guide/pqc-algorithms/`.
 - liboqs：
+  EN: liboqs:
   - Releases（0.16.0，2026-07；移除 SPHINCS+、保 SLH-DSA）：`github.com/open-quantum-safe/liboqs/releases`
+    EN: Releases (0.16.0, 2026-07; removed SPHINCS+, keeps SLH-DSA): `github.com/open-quantum-safe/liboqs/releases`.
   - 算法支持 / Tier 状态：`openquantumsafe.org/liboqs/api/doxygen/index.html`
+    EN: Algorithm support / Tier status: `openquantumsafe.org/liboqs/api/doxygen/index.html`.
   - ML-DSA 默认 `mldsa-native`、HQC 重启用、候选算法：`lwn.net/Articles/1086192/`（SUSE 安全通告）
+    EN: ML-DSA default `mldsa-native`, HQC re-enable, candidate algorithms: `lwn.net/Articles/1086192/` (SUSE security advisory).
 - Windows CNG（BCrypt）：
+  EN: Windows CNG (BCrypt):
   - CNG 算法标识（`BCRYPT_MLKEM_ALGORITHM`、`BCRYPT_MLDSA_ALGORITHM`、`BCRYPT_COMPOSITE_MLKEM_ALGORITHM`，
     标注 prerelease）：`learn.microsoft.com/windows/win32/seccng/cng-algorithm-identifiers`
+    EN: CNG algorithm identifiers (`BCRYPT_MLKEM_ALGORITHM`, `BCRYPT_MLDSA_ALGORITHM`, `BCRYPT_COMPOSITE_MLKEM_ALGORITHM`, marked prerelease): `learn.microsoft.com/windows/win32/seccng/cng-algorithm-identifiers`.
   - 用 BCrypt 进行 ML-KEM 封装 / 解封装官方示例：`learn.microsoft.com/zh-hk/windows/win32/seccng/cng-mlkem-examples`
+    EN: Official BCrypt ML-KEM wrap/unwrap example: `learn.microsoft.com/zh-hk/windows/win32/seccng/cng-mlkem-examples`.
   - 微软官宣 PQC 入 Windows（Insider Canary 27852+，2025-05）：Microsoft Security Blog（techcommunity）
+    EN: Microsoft announces PQC in Windows (Insider Canary 27852+, 2025-05): Microsoft Security Blog (techcommunity).
   - Windows 11 24H2 内建 ML-KEM / ML-DSA 为 CNG 一等算法：`paragmali.com/blog/cng-architecture-bcrypt-ncrypt-ksps.md`
+    EN: Windows 11 24H2 has ML-KEM / ML-DSA first-class in CNG: `paragmali.com/blog/cng-architecture-bcrypt-ncrypt-ksps.md`.

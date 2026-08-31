@@ -1,4 +1,5 @@
 # tie 编译器 Rust 基线基准（baseline-rust）
+*EN: tie Compiler Rust Baseline Benchmark (baseline-rust)*
 
 - 生成时间: 2026-08-10 19:46:21
 - CPU: 12th Gen Intel(R) Core(TM) i5-12490F
@@ -8,7 +9,16 @@
 - 前端通道: `tie-frontend <file> --check`
 - 前端+IR 通道: `tie-llvm <file> --emit-ir`
 
+EN: - Generated at: 2026-08-10 19:46:21
+EN: - CPU: 12th Gen Intel(R) Core(TM) i5-12490F
+EN: - Machine: JIRO-MAIN
+EN: - Corpus file count: 101 (pass 94 / fail 7)
+EN: - Timing method: 1 warm-up + 5 hot runs per file, taking the median; CPU pinned to core 0
+EN: - Frontend channel: `tie-frontend <file> --check`
+EN: - Frontend+IR channel: `tie-llvm <file> --emit-ir`
+
 ## 汇总
+*EN: Summary*
 
 | 指标 | 前端 --check | 前端+IR --emit-ir |
 | --- | ---: | ---: |
@@ -18,7 +28,10 @@
 | 意外失败 (pass 文件 --emit-ir 退出码≠0) | 0 |
 | --check 可成功样本 (import 无关) | 63 / 94 |
 
+EN: Summary table of total time, median, max single-file time, unexpected failures, and successful --check samples.
+
 ## 逐文件（耗时单位 ms）
+*EN: Per-File (times in ms)*
 
 | 文件 | 角色 | 前端 | 前端+IR | 退出码 |
 | --- | --- | ---: | ---: | ---: |
@@ -123,3 +136,5 @@
 | std/sort.tie | pass | 66.3 | 165.2 | 0 |
 | std/string.tie | pass | 75.4 | 176.7 | 0 |
 | std/version.tie | pass | 59.8 | 115.9 | 0 |
+
+EN: Per-file table with role (pass/fail), frontend time, frontend+IR time, and exit code for the 101 corpus files.

@@ -1,4 +1,5 @@
 # tie 自举阶段 1 前端性能闸门（G1）
+*EN: tie Self-Hosting Phase 1 Frontend Performance Gate (G1)*
 
 - 生成时间: 2026-08-11 11:21:37
 - CPU: 12th Gen Intel(R) Core(TM) i5-12490F
@@ -6,14 +7,27 @@
 - 通道: `tiec-proto <file> --check`（tie 前端）vs `tie-frontend <file> --check`（Rust 前端）
 - 计时方法: 每文件预热 1 次 + 5 次热运行取中位数，CPU 固定核心 0，单次硬超时 60s
 
+EN: - Generated at: 2026-08-11 11:21:37
+EN: - CPU: 12th Gen Intel(R) Core(TM) i5-12490F
+EN: - Machine: JIRO-MAIN
+EN: - Channels: `tiec-proto <file> --check` (tie frontend) vs `tie-frontend <file> --check` (Rust frontend)
+EN: - Timing method: 1 warm-up + 5 hot runs per file, taking the median; CPU pinned to core 0; hard per-run timeout 60s
+
 ## 语料统计
+*EN: Corpus Statistics*
 
 - 语料文件总数: 101（pass 94 / fail 7）
 - 计入对比（两边都 exit 0）: 62 个
 - 排除: 32 个
 - 排除原因: tiec-proto 语义层不展开 import（import 文件预期 tiec exit 1），故仅对两边都 exit 0 的文件做公平对比
 
+EN: - Total corpus files: 101 (pass 94 / fail 7)
+EN: - Included in comparison (both exit 0): 62
+EN: - Excluded: 32
+EN: - Exclusion reason: tiec-proto's semantic layer does not expand imports (import files are expected to exit 1 on tiec), so only files where both sides exit 0 are compared fairly
+
 ## 逐文件（耗时单位 ms，计入对比）
+*EN: Per-File (times in ms, included in comparison)*
 
 | 文件 | tiec-proto | tie-frontend | 每文件比值 (tie/rust) |
 | --- | ---: | ---: | ---: |
@@ -80,7 +94,10 @@
 | std/string.tie | 322.7 | 47.8 | 6.75 |
 | std/version.tie | 125.5 | 44.9 | 2.80 |
 
+EN: Per-file table of the 62 compared files with tiec-proto time, tie-frontend time, and per-file ratio (tie/rust).
+
 ## 排除文件
+*EN: Excluded Files*
 
 | 文件 | 原因 | tiec exit | rust exit |
 | --- | --- | ---: | ---: |
@@ -117,7 +134,10 @@
 | pkg/publish.tie | tiec-proto 语义层不展开 import（exit 1） | 1 | 0 |
 | std/csv.tie | 两边均退出非 0（tiec=1 / rust=1） | 1 | 1 |
 
+EN: Excluded-files table with exclusion reason and both exit codes; most are import files where both sides exit 1, and one (pkg/publish.tie) fails only on tiec-proto.
+
 ## 汇总
+*EN: Summary*
 
 | 指标 | tiec-proto | tie-frontend | 比值 (tie/rust) |
 | --- | ---: | ---: | ---: |
@@ -125,19 +145,32 @@
 | 单文件中位数 (ms) | 68.2 | 47.9 | - |
 | 单文件最大 (ms) | 1892.9 | 60.9 | - |
 
+EN: Summary table with total time, per-file median, per-file maximum, and the ratio (tie/rust).
+
 ## G1 判定
+*EN: G1 Verdict*
 
 - **ratio = tiec_proto_total / tie_frontend_total = 4.443**
 - 硬闸门: ratio < 1.0（tie 前端总耗时 < Rust 前端总耗时）→ **G1 FAIL**
 - 目标: 0.5–0.83（tie 前端 1.2–2× 快于 Rust）
 - 结论: tie 前端未快于 Rust，G1 未过；热点分析见下，优化留待后续阶段（不改产品代码）。
 
+EN: - **ratio = tiec_proto_total / tie_frontend_total = 4.443**
+EN: - Hard gate: ratio < 1.0 (tie frontend total time < Rust frontend total time) → **G1 FAIL**
+EN: - Target: 0.5–0.83 (tie frontend 1.2–2× faster than Rust)
+EN: - Conclusion: the tie frontend is not faster than Rust and G1 is not passed; hotspot analysis below, optimization deferred to later phases (no product code changes).
+
 ## 热点分析（G1 FAIL，仅分析不改产品代码）
+*EN: Hotspot Analysis (G1 FAIL, analysis only, no product code changes)*
 
 - 计入的 62 个文件中，**无任何文件 tiec-proto 快于 tie-frontend**（tiec_ms ≤ rust_ms 的文件数 = 0）。
 - 每文件比值分布: <2× 有 42 个、2–5× 有 6 个、5–10× 有 7 个、≥10× 有 7 个——大文件（符号多的库文件）急剧恶化。
 
+EN: - Among the 62 included files, **no file has tiec-proto faster than tie-frontend** (files with tiec_ms ≤ rust_ms = 0).
+EN: - Per-file ratio distribution: <2×: 42, 2–5×: 6, 5–10×: 7, ≥10×: 7 — large files (library files with many symbols) degrade sharply.
+
 ### tiec-proto 最慢 Top8
+*EN: Slowest Top 8 in tiec-proto*
 
 | 文件 | tiec-proto (ms) | tie-frontend (ms) | 每文件比值 |
 | --- | ---: | ---: | ---: |
@@ -150,13 +183,24 @@
 | pkg/lock.tie | 531.1 | 49.5 | 10.73 |
 | ext/ml.tie | 462 | 47.1 | 9.81 |
 
+EN: Table of the top 8 slowest tiec-proto files with their times and per-file ratios (±10–39×).
+
 ### 可能原因（依据 compiler/proto 实现）
+*EN: Possible Causes (based on the compiler/proto implementation)*
 
 1. **符号表构建是 O(n²)**：`semantic.tie` 的 `sorted_insert`（约 662 行）每插入一个符号先二分定位，再 `table_push` + `while i > pos` 整体后移表——每个新符号都位移整张表。大符号表文件（zstd/exmath/linalg/jpeg 等，符号数百个）构成主要热点，比值达 10–38×。
 2. **表访问经 C ABI 间接调用**：tie 语言 `keys[mid]` / `keys[i] = keys[i-1]` 每次读写 `table<i64>` 都落到运行时表操作（下标/边界/长度维护），比 Rust 原生 Vec/数组访问慢一个数量级，放大 O(n²) 常数。
 3. **字符串池 intern 开销**：每个名字/字面量走 `intern.intern`（二分 + 比较 + 分配），符号名频繁 id 化；`out = out + ...` 字符串拼接每次产生新分配（如 `semantic.tie` 464/695 行附近）。
 
+EN: 1. **Symbol-table construction is O(n²)**: `semantic.tie`'s `sorted_insert` (around line 662) first does a binary search to locate each new symbol, then `table_push` + `while i > pos` shifts the whole table — every new symbol shifts the entire table. Files with large symbol tables (zstd/exmath/linalg/jpeg etc., with hundreds of symbols) are the main hotspot, with ratios of 10–38×.
+EN: 2. **Table access goes through C ABI indirect calls**: each read/write of `table<i64>` from tie's `keys[mid]` / `keys[i] = keys[i-1]` lands in runtime table operations (index/bounds/length maintenance), an order of magnitude slower than Rust's native Vec/array access, amplifying the constant of the O(n²) factor.
+EN: 3. **String-pool intern overhead**: every name/literal goes through `intern.intern` (binary search + comparison + allocation); symbol names are frequently id-ized; each `out = out + ...` string concatenation produces a new allocation (e.g. around lines 464/695 of `semantic.tie`).
+
 ### 记录
+*EN: Records*
 
 - **G1 未过，如实记录，优化留待后续阶段**（阶段 2 模块化重写时按 LLVM 3 层重做，届时符号表/列式表按 T2.x 任务重构；不改当前产品代码）。
 - 被排除的 32 个文件：31 个两边都 exit 1（Rust --check 同样不展开 import，属 import 文件）；1 个（pkg/publish.tie）tiec-proto 单独失败——无 import 但报 `未定义的函数 'path_dirname'`，为 tiec-proto 语义层对命名空间内函数解析的差异，非 import 所致，已记录。
+
+EN: - **G1 is not passed; recorded as-is, with optimization left for later phases** (to be redone on the 3-layer LLVM basis during the Phase 2 modular rewrite, when the symbol table/columnar table are refactored per the T2.x tasks; current product code is unchanged).
+EN: - The 32 excluded files: 31 have both sides exit 1 (Rust --check also does not expand imports; these are import files); 1 (pkg/publish.tie) fails only on tiec-proto — it has no import yet reports `未定义的函数 'path_dirname'`, a difference in how tiec-proto's semantic layer resolves namespace-internal functions, not caused by imports; recorded.

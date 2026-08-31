@@ -1,4 +1,5 @@
 # 设计定稿：trm（tie runtime suite）最终设计
+*EN: Design Finalization: trm (tie runtime suite) Final Design*
 
 > 状态：**设计定稿**（2026-08-22 讨论对齐，2026-08-23 定稿）
 > 本文档是 trm 的**唯一权威运行时设计**，取代 `docs/plans/trm-arch.md` 作为执行依据。
@@ -11,10 +12,20 @@
 > `docs/plans/dynamic-library.md`（M5 平台桥，本文档扩展其边界）、
 > `docs/plans/tieir-format.md`（tieir 字节码契据）、`docs/plans/unsafe-model.md`。
 
+> EN: Status: **Design finalized** (2026-08-22 discussion alignment, 2026-08-23 finalization)
+> EN: This document is trm's **sole authoritative runtime design**, superseding `docs/plans/trm-arch.md` as the basis for implementation.
+> EN: Positioning: **two-tier + asymmetric** — pure-compilation Route A (preserve the status quo, zero dependencies) + trm runtime Route B (tieir bytecode + interp front-end + replaceable backend + engine-level GC + all-tie platform implementation).
+> EN: Philosophy: **pure compilation is the safe default (actor / pure logic); the runtime is an capability enhancement (GC/M:N/reflection/hot reload/dynamic)**, and veterans can explicitly hook into the runtime with unsafe.
+> EN: Decision basis: `docs/plans/trm-design-compare.md` (option comparison; this is the finalization).
+> EN: Related: `docs/designs/concurrency-model.md` (native actor syntax with zero runtime), `docs/plans/dynamic-library.md` (M5 platform bridge, whose boundary this document extends), `docs/plans/tieir-format.md` (the tieir bytecode contract), `docs/plans/unsafe-model.md`.
+
 ## 1. 一句话总览
+*EN: 1. One-Line Overview*
 
 **trm = tie 平台的运行时套件**。开发者不 import trm = 走纯编译路线 A（现状零依赖）；
 import trm = 走路线 B，tiec 产出 tieir 字节码，由 trm 引擎执行。
+
+EN: **trm = the runtime suite of the tie platform**. A developer who does not `import` trm follows pure-compilation Route A (current zero-dependency state); a developer who `import` trm follows Route B, where tiec produces tieir bytecode executed by the trm engine.
 
 ```
 路线 A（纯编译，保留现状，零依赖）
@@ -31,9 +42,12 @@ import trm = 走路线 B，tiec 产出 tieir 字节码，由 trm 引擎执行。
 **一句话**：纯编译给所有人稳定零依赖；运行时给线路 B 的老鸟完整能力面（GC、M:N、
 反射、动态加载）。两条路同源一套源码，`import` 即选择。
 
+EN: **In one sentence**: pure compilation gives everyone a stable zero-dependency base; the runtime gives veterans on track B the full capability surface (GC, M:N, reflection, dynamic loading). Both routes share a single source codebase; `import` is the choice.
+
 ---
 
 ## 2. 架构分层
+*EN: 2. Architecture Layering*
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -66,14 +80,20 @@ import trm = 走路线 B，tiec 产出 tieir 字节码，由 trm 引擎执行。
 引擎层**不依赖库层**（引擎可独立测试/裁剪/嵌入式）；GC 是引擎层的独立子系统，
 interp 与后端都作为执行面通过 GC 管理对象，统一对象身份。
 
+EN: **Dependency direction (hard constraint)**: application → library layer → engine layer (interp/backend/GC) → platform implementation layer → system API. The engine layer **does not depend on the library layer** (the engine can be tested/customized/embedded independently); GC is an independent subsystem of the engine layer, and both interp and the backends act as execution surfaces that manage objects through GC, with a unified object identity.
+
 ---
 
 ## 3. 引擎层
+*EN: 3. Engine Layer*
 
 **引擎层 = 执行 tieir 字节码**。只做"怎么执行"，不掺业务 API。对标 JVM 本体
 （解释器 + JIT + 类加载器 + GC）。
 
+EN: **Engine layer = executes tieir bytecode**. It only handles "how to execute" and does not mix in business APIs. It corresponds to the JVM body itself (interpreter + JIT + class loader + GC).
+
 ### 3.1 前端/后端解耦（决策：前后端分离，后端可替换）
+*EN: 3.1 Front-End/Backend Decoupling (Decision: front-end and back-end separate; backend replaceable)*
 
 ```
 tieir ──▶ front-end interp（跨端一致，语义基准）
@@ -89,6 +109,8 @@ InterpBackend ORC-JIT       wasm/AOT（扩展）
 
 `Backend` 接口（引擎内部）：
 
+EN: The `Backend` interface (internal to the engine):
+
 ```
 Backend 接口：
   compile(module: tieir_module) -> Executable   // 字节码模块 → 可执行体
@@ -97,14 +119,20 @@ Backend 接口：
 ```
 
 - **interp 也实现同接口**（`InterpBackend`）——前后端对引擎调度透明，可热切换。
+- EN: **interp also implements the same interface** (`InterpBackend`) — front-end and backend are transparent to engine scheduling and can be hot-switched.
 - **分支策略**：Vanilla 场景 interp 直跑；热点函数提升到 JIT 后端（对标 HotSpot tiered）。
+- EN: **Branch strategy**: in Vanilla scenarios interp runs directly; hot functions are promoted to the JIT backend (mirroring HotSpot tiered compilation).
 - **跨平台一致性以 interp 为基准**：语义契约 + 测试矩阵在 interp 上定基线；JIT 后端
   须通过同一契约测试（结果一致），平台差异只允许在平台桥。
+- EN: **Cross-platform consistency is benchmarked against interp**: the semantic contract + test matrix are baseline-fixed on interp; the JIT backend must pass the same contract tests (identical results), and platform differences are allowed only in the platform bridge.
 
 ### 3.2 GC 层（引擎级统一 GC，独立子系统）
+*EN: 3.2 GC Layer (engine-level unified GC, independent subsystem)*
 
 **决策：GC 独立成层**——不是 interp/后端附属，而是引擎层独立子系统，管**栈与对象**。
 interp 与 JIT 后端共用**同一托管堆与回收器**，单一对象身份，hot/cold 切换无搬运成本。
+
+EN: **Decision: GC is an independent layer** — not an appendage of interp/backend but an independent subsystem of the engine layer, managing **stacks and objects**. interp and the JIT backend share **the same managed heap and collector**, with a single object identity and no migration cost on hot/cold switching.
 
 | 项 | 决策 |
 | --- | --- |
@@ -114,25 +142,37 @@ interp 与 JIT 后端共用**同一托管堆与回收器**，单一对象身份�
 | 与路线 A | 路线 A 无 GC（确定性释放保持现状）；GC 是**路线 B 独有能力** |
 
 - 精确根扫描 → 可迁移栈成立 → M:N 协程成立；这是 GC 与 M:N 能够搭配的先决条件。
+- EN: Precise root scanning → migratable stacks are feasible → M:N coroutines are feasible; this is the precondition for GC and M:N to work together.
 - 栈既是根来源也是可移动对象载体：协程迁移时 GC 把栈一起管理，避免重分配丢失根。
+- EN: The stack is both a root source and a carrier of movable objects: when a coroutine migrates, GC manages the stack along with it, avoiding lost roots through reallocation.
 
 ### 3.3 tieir 加载（类加载器）
+*EN: 3.3 tieir Loading (Class Loader)*
 
 沿用 [tieir-format.md](tieir-format.md) §7：反序列化优先 + 语法校验；可选签名校验
 （发布者公钥验签）。校验失败 = 加载报错（安全底线）。`--strip` 去 span/文档段。
 
+EN: Follows [tieir-format.md](tieir-format.md) §7: deserialization first + syntax validation; optional signature validation (publisher public-key verification). Validation failure = a loading error (the safety baseline). `--strip` removes span/doc segments.
+
 ### 3.4 对象模型 / 反射（底座）
+*EN: 3.4 Object Model / Reflection (Foundation)*
 
 - 运行期类型查询、自动序列化、跨域身份——是 GC + 序列化 + 调试器 + 动态加载的公共底座。
+- EN: Runtime type query, automatic serialization, and cross-domain identity are the shared foundation for GC + serialization + debugger + dynamic loading.
 - 依赖通过 GC 的统一对象身份来建立（P4 立稳，P2 打底）。
+- EN: They rely on the unified object identity established through GC (solidified at P4, grounded at P2).
 
 ---
 
 ## 4. library 库层（业务能力面）
+*EN: 4. library Layer (Business Capability Surface)*
 
 库层 = 全部业务能力。对标 JDK 类库。**全 tie 写**。
 
+EN: The library layer = all business capabilities. It corresponds to the JDK class libraries. **Written entirely in tie**.
+
 ### 4.1 系统域
+*EN: 4.1 System Domains*
 
 | 域 | 命名空间 | 内容 | 交付形态 |
 | --- | --- | --- | --- |
@@ -147,29 +187,41 @@ interp 与 JIT 后端共用**同一托管堆与回收器**，单一对象身份�
 | ui | trm.ui | 窗口/绘制/事件/字体/输入 | 逻辑静态 + 平台板桥 |
 
 ### 4.2 工具集成（统一入口，不搬代码）
+*EN: 4.2 Tool Integration (unified entry point, no code relocation)*
 
 log/compress/http/test/tui 等：`import "trm:log"` 统一入口，底层实现仍是 ext/*。
 纯逻辑工具（json/regex/zd 编解码）留 std（路线 A 也能用，不绑定 trm）。
 
+EN: log/compress/http/test/tui, etc.: a unified entry point via `import "trm:log"`, with the underlying implementation still in ext/*. Pure-logic tools (json/regex/zd codec) stay in std (usable on Route A as well, not bound to trm).
+
 ### 4.3 混合交付（决策）
+*EN: 4.3 Mixed Delivery (Decision)*
 
 - **纯逻辑**（terminal/fs/env/net 语义层）→ **静态编译进产物**（tie 源码 import）。
+- EN: **Pure logic** (the terminal/fs/env/net semantic layers) → **statically compiled into the artifact** (imported from tie source).
 - **平台实现**（impl-win32/posix/macos/android）→ **动态绑定**（平台桥动态库）。
+- EN: **Platform implementations** (impl-win32/posix/macos/android) → **dynamic binding** (a platform-bridge dynamic library).
 
 ---
 
 ## 5. M:N 协程 / async 调度
+*EN: 5. M:N Coroutines / async Scheduling*
 
 - **可迁移栈** + M:N 调度器，由 GC 一并管（§3.2）。
+- EN: **Migratable stacks** + an M:N scheduler, managed together by GC (§3.2).
 - **lean 设计**：async 表达式 / 方法内暂停，在路线 B 上实现（栈可迁移 → 真正可暂停）。
   actor 的 `async` 投递（路线 A 已实现）是投递侧异步；路线 B 才有「方法内暂停」的完整 await。
+- EN: **lean design**: async expressions / mid-method suspension are implemented on Route B (migratable stacks → truly suspendable). An actor's `async` dispatch (already implemented on Route A) is dispatch-side asynchrony; only Route B has the complete in-method-suspension await.
 - 与 actor（路线 A 纯编译）的衔接见 §8。
+- EN: The interface with actor (Route A pure compilation) is in §8.
 
 ---
 
 ## 6. 平台实现层与平台桥
+*EN: 6. Platform Implementation Layer and Platform Bridge*
 
 ### 6.1 平台实现层（全 tie 写）
+*EN: 6.1 Platform Implementation Layer (written entirely in tie)*
 
 ```
 impl-win32/   Windows（Win32：GDI/Direct2D、消息循环、进程）
@@ -179,13 +231,20 @@ impl-android/ Android（NDK：Surface/Canvas、沙盒存储）
 ```
 
 - 同名函数不同实现（`trm_ui_window_create` 四端各自）——与 JVM native method 同构。
+- EN: Same-named functions with different implementations (`trm_ui_window_create` differs per the four ends) — isomorphic to JVM native methods.
 - 全部用 tie 写：`unsafe extern` + `repr(C)` 桥原生 API，保持 0-Rust 自举灵魂。
+- EN: All written in tie: `unsafe extern` + `repr(C)` to bridge native APIs, keeping the 0-Rust self-hosting spirit.
 
 ### 6.2 平台桥 ABI（决策：扩展链面）
+*EN: 6.2 Platform Bridge ABI (Decision: extended cross-library surface)*
 
 `trm_platform.dll / .so / .dylib / libtrm.so`（Android）——动态库主形态。
 
+EN: `trm_platform.dll / .so / .dylib / libtrm.so` (Android) — the primary dynamic-library form.
+
 **跨库边界允许的类型（扩展 M5，见 §9 改动说明）：**
+
+EN: **Types allowed across the library boundary (extending M5; see the change notes in §9):**
 
 | 类型 | 备注 |
 | --- | --- |
@@ -199,11 +258,15 @@ impl-android/ Android（NDK：Surface/Canvas、沙盒存储）
 **约束（不变量）**：任何允许跨库的类型都须占用确定长度、布局可在四端精确复现；
 带指针/slice 不得转移所有权，所有权永远留在生成侧。
 
+EN: **Constraint (invariant)**: every type allowed across the library boundary must occupy a definite length, and its layout must be precisely reproducible on all four ends; types carrying pointers/slices must not transfer ownership — ownership always stays with the producing side.
+
 ---
 
 ## 7. 版本化 / 分发 / 跨平台一致
+*EN: 7. Versioning / Distribution / Cross-Platform Consistency*
 
 ### 7.1 版本化（沿用 trm-arch §8）
+*EN: 7.1 Versioning (following trm-arch §8)*
 
 ```
 trm@major.minor.patch：major 变 = ABI 破坏（符号改名/减删、结构布局变化）
@@ -212,11 +275,15 @@ major 绑定 ABI：应用声明 trm@^x，机器只有别的 major → 拒绝加�
 ```
 
 ### 7.2 编译器能力绑定（min_tiec）
+*EN: 7.2 Compiler Capability Binding (min_tiec)*
 
 `tie.pkg` 声明 `version / min_tiec / abi`；编译期（import trm 时 tiec 校验自身 ≥ min_tiec）
 + 运行期（trm.init() 加载校验 abi）。哲学一致："编译期决定能力"。
 
+EN: `tie.pkg` declares `version / min_tiec / abi`; at compile time (when importing trm, tiec validates that itself ≥ min_tiec) + at runtime (`trm.init()` validates abi upon loading). The philosophy is consistent: "compile time decides capabilities".
+
 ### 7.3 分发
+*EN: 7.3 Distribution*
 
 | 项 | 决策 |
 | --- | --- |
@@ -226,6 +293,7 @@ major 绑定 ABI：应用声明 trm@^x，机器只有别的 major → 拒绝加�
 | 加载路径 | `trm.init()` → 查应用声明版本 → `~/.tie/trm/{version}/` → 回退语言捆绑版本 → 加载+ABI 校验 |
 
 ### 7.4 跨平台一致（"结果一样"的保证）
+*EN: 7.4 Cross-Platform Consistency (the "same result" guarantee)*
 
 ```
 1. 平台语义契约：trm.api 每函数平台无关语义定义，四端必须满足契约
@@ -238,9 +306,12 @@ major 绑定 ABI：应用声明 trm@^x，机器只有别的 major → 拒绝加�
 > 一致性以 **interp 基准 + 契约矩阵**保证，不依赖"每端 JIT 行为一致"——这是一等设计决策：
 > JIT 只是 interp 语义的加速器，契约测试同一套，大幅降低跨平台风险。
 
+> EN: Consistency is guaranteed by the **interp baseline + a contract matrix**, not by relying on "each end's JIT behaving identically" — this is a first-class design decision: JIT is merely an accelerator for interp semantics, and the contract tests are the same set, greatly reducing cross-platform risk.
+
 ---
 
 ## 8. 双路线与 actor 衔接（决策：unsafe 可选接 trm）
+*EN: 8. Two Routes and the actor Interface (Decision: unsafe optionally hooks into trm)*
 
 | 对象 | 默认（安全） | 老鸟（unsafe 显式） |
 | --- | --- | --- |
@@ -249,14 +320,18 @@ major 绑定 ABI：应用声明 trm@^x，机器只有别的 major → 拒绝加�
 | 系统/UI 应用 | import trm → 路线 B | 同左 |
 
 - **actor 不被强制接 trm**：保持「actor 原生语法 · 零运行时」的安全默认。
+- EN: **actor is not forced into trm**: the safe default of "native actor syntax · zero runtime" is preserved.
 - **老鸟可用 unsafe 显式让 actor 走路线 B（trm）**：就能用上 M:N 协程、GC 对象模型、
   动态加载等运行时能力——语法零改动，仅接入机制不同。
+- EN: **Veterans can explicitly make actors follow Route B (trm) with unsafe**: this unlocks runtime capabilities such as M:N coroutines, the GC object model, and dynamic loading — with zero syntax change, only a different hook-in mechanism.
 - 由此，concurrency-model §6「actor 与 trm 解耦」的语义被放宽为：
   **默认解耦（路线 A），unsafe 显式接入（路线 B）**。
+- EN: Consequently, concurrency-model §6's "actor is decoupled from trm" is relaxed to: **decoupled by default (Route A), explicitly hooked in via unsafe (Route B)**.
 
 ---
 
 ## 9. 对既有决策的改动点
+*EN: 9. Change Points to Existing Decisions*
 
 | 原有文档 | 本定稿的改动 |
 | --- | --- |
@@ -264,9 +339,14 @@ major 绑定 ABI：应用声明 trm@^x，机器只有别的 major → 拒绝加�
 | dynamic-library.md（M5） | **扩展边界**：从"仅标量+string"扩展为"标量 + string + repr(C) pod struct + 带指针 struct + slice"（含 unsafe/所有权约束）——需更新 regress-m5-dynlib 边界负例为正例 |
 | concurrency-model.md §6 | "actor 完全解耦"收窄为"默认解耦，unsafe 可选接入路线 B" |
 
+> EN: trm-arch.md: overall redirection — JIT downgraded from "the only execution" to **one of the replaceable backends**; GC promoted to an **engine-level independent layer**; cross-platform consistency changed from "relying on each end's JIT" to "interp baseline + contract matrix".
+> EN: dynamic-library.md (M5): **boundary extended** — from "scalars + string only" to "scalars + string + repr(C) pod struct + pointer-carrying struct + slice" (including unsafe/ownership constraints) — the regress-m5-dynlib boundary case needs updating from negative to positive.
+> EN: concurrency-model.md §6: "actor completely decoupled" is narrowed to "decoupled by default, optionally hooked into Route B via unsafe".
+
 ---
 
 ## 10. 能力里程碑（分期）
+*EN: 10. Capability Milestones (Phasing)*
 
 | 阶段 | 内容 | 依赖 | 验收 |
 | --- | --- | --- | --- |
@@ -280,9 +360,12 @@ major 绑定 ABI：应用声明 trm@^x，机器只有别的 major → 拒绝加�
 > P0→P1 线性（先字节码执行）；P1 库层可与 P2 并行（库层多用标量+句柄，不强依赖 GC）；
 > P3 若成本过高可后置（interp 已是可用形态）；每个阶段独立提交、双端推送、`roadmap.md` 关联段分解。
 
+> EN: P0→P1 is linear (bytecode execution first); the P1 library layer can run in parallel with P2 (the library layer mostly uses scalars + handles and does not strongly depend on GC); P3 can be deferred if too costly (interp is already a usable form); each phase is committed independently and pushed to both ends, with the associated `roadmap.md` sections decomposed accordingly.
+
 ---
 
 ## 11. 决策记录（定稿）
+*EN: 11. Decision Log (Finalized)*
 
 | 决策点 | 结论 | 备选（未选） |
 | --- | --- | --- |
@@ -306,22 +389,37 @@ major 绑定 ABI：应用声明 trm@^x，机器只有别的 major → 拒绝加�
 ---
 
 ## 12. 未决 / 后续细化
+*EN: 12. Open Questions / Future Refinement*
 
 1. **精确根扫描的栈图实现**：interp 与后端共用一套栈图还是各自产（定稿倾向共用，待 P2 定）。
+EN: 1. **Stack-graph implementation for precise root scanning**: whether interp and the backends share one stack-graph set or each produces its own (the finalization leans toward sharing; to be decided at P2).
 2. **Android 临时替代**：用户自研轻量执行路径 vs 纯 interp 退化（P5 定）。
+EN: 2. **Android temporary substitute**: a user-developed lightweight execution path vs pure-interp fallback (decided at P5).
 3. **反射能力范围**：只读类型查询 vs 运行动态调用（invoke）——P4 定。
+EN: 3. **Reflection capability scope**: read-only type query vs runtime dynamic invocation (invoke) — decided at P4.
 4. **wasm/AOT 后端**：是否正式立项（P5，编译期 AOT 替 webui 场景）。
+EN: 4. **wasm/AOT backend**: whether to formally adopt it (P5, with compile-time AOT replacing the webui scenario).
 5. **带指针 struct / slice 跨库的所有权模型细化**：与 unsafe-model guard<ext> 对齐（P1 平台桥定）。
+EN: 5. **Refining the ownership model for pointer-carrying structs / slices across the library boundary**: align with unsafe-model's guard<ext> (decided at the P1 platform bridge).
 6. **是否升级 trm-arch.md**：本定稿为权威，trm-arch 是否降为规划史/删除待定（用户决定）。
+EN: 6. **Whether to retire trm-arch.md**: this finalization is authoritative; whether trm-arch is downgraded to planning history or deleted is TBD (user decision).
 
 ---
 
 ## 13. 相关文档
+*EN: 13. Related Documents*
 
 - 方案对比（决策依据）：`docs/plans/trm-design-compare.md`
+- EN: Option comparison (decision basis): `docs/plans/trm-design-compare.md`
 - 规划稿：`docs/plans/trm-arch.md`（被本文档取代，待归档）
+- EN: Draft: `docs/plans/trm-arch.md` (superseded by this document, pending archival)
 - actor 零运行时：`docs/designs/concurrency-model.md`
+- EN: actor with zero runtime: `docs/designs/concurrency-model.md`
 - 动态库边界（被扩展）：`docs/plans/dynamic-library.md`
+- EN: Dynamic-library boundary (being extended): `docs/plans/dynamic-library.md`
 - tieir 字节码：`docs/plans/tieir-format.md`
+- EN: tieir bytecode: `docs/plans/tieir-format.md`
 - unsafe 凭据门禁：`docs/plans/unsafe-model.md`
+- EN: unsafe credential gates: `docs/plans/unsafe-model.md`
 - 实施路线图：`docs/plans/roadmap.md`（S4.1 trm）
+- EN: Implementation roadmap: `docs/plans/roadmap.md` (S4.1 trm)

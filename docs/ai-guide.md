@@ -1,4 +1,5 @@
 # tie 语言 AI 教学指南
+*EN: tie Language AI Teaching Guide*
 
 > 本文件专为 **AI 助手（LLM）** 编写：目标是"粘贴即用"的完整语言说明书，
 > 覆盖语法、语义、已实现/未实现边界与编译器架构。你（AI）应严格按本文件 +
@@ -6,10 +7,17 @@
 >
 > 更新于 2026-08-10（自举 v2 阶段 0：ref 表参数 / 全局表 / map 排序 / intern / extern 完成后）。
 
+EN: This document is written specifically for **AI assistants (LLMs)**: it is a "paste-and-go" complete language manual covering syntax, semantics, implemented/unimplemented boundaries, and the compiler architecture. You (the AI) should work strictly according to this file plus [language.md](language.md), and must not use features not listed in this document (they are likely unimplemented).
+
+EN: Updated 2026-08-10 (after bootstrap v2 phase 0: `ref` table parameters / global tables / map sorting / `intern` / `extern` were completed).
+
 ## 0. 一句话定位
+*EN: One-Sentence Positioning*
 
 tie 是一门**静态类型、四段式编译**的通用语言（预处理 → 前端 → 中端 → 后端），
 后端为 LLVM。类/元组/表是**值类型**（非引用、无 GC、无虚表）。
+
+EN: tie is a general-purpose language with **static typing and a four-stage compilation pipeline** (preprocessing → front end → middle end → back end), with LLVM as its back end. Classes / tuples / tables are **value types** (not references, no GC, no vtable).
 
 ```bash
 cargo build --workspace          # 构建
@@ -19,8 +27,11 @@ tie                             # 无参数 → REPL
 ```
 
 ## 1. 文件头（Header / 角色声明）
+*EN: File Header (role declaration)*
 
 文件前几行以 `// tie:` 开头的指令决定文件角色（每行一个，连续排列）：
+
+EN: The directives at the top of a file that start with `// tie:` determine the file's role (one per line, placed consecutively):
 
 ```c
 // tie:logic                     // 逻辑代码（默认角色，可省略）：编译为可执行文件
@@ -37,11 +48,17 @@ tie                             # 无参数 → REPL
 | `library` | 编译为库，不生成 main |
 | `ui` / `db` | 规划中（M4），**未实现** |
 
+EN: The table above lists the file roles: `logic` (default) — an executable that must contain `func main()`; `data` — pure data declarations for other files to `import`; `library` — compiled as a library without generating `main`; `ui` / `db` — planned for M4, **not implemented**.
+
 ## 2. 已实现特性清单（截至 2026-08-10，含自举 v2 阶段 0）
+*EN: Implemented Feature Checklist (as of 2026-08-10, including bootstrap v2 phase 0)*
 
 以下特性**可以使用**，示例均已验证：
 
+EN: The following features **can be used**; all examples have been verified:
+
 ### 2.1 变量与类型
+*EN: Variables and Types*
 
 ```c
 var x = 5                        // 可变，自动推导 i64（整数字面量默认 i64）
@@ -54,7 +71,10 @@ const s: string = "hi"           // 不可变（const），赋值语句会拒绝
 宽类型（编译期类别框，声明后变量以推导的具体类型参与运算）：
 `num`（数）/ `text`（string+char）/ `misc`（其余）。
 
+EN: Basic types: `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `f32` `f64` `bool` `char` `string` `void`. Wide types (compile-time category boxes; after a declaration, the variable takes part in operations with the derived concrete type): `num` (number) / `text` (string+char) / `misc` (everything else).
+
 ### 2.2 表达式与运算符
+*EN: Expressions and Operators*
 
 ```c
 var a = 1 + 2 * 3                 // 算术：+ - * / %（% 仅整数）
@@ -63,6 +83,7 @@ var c = -a                        // 一元负号
 ```
 
 ### 2.3 控制流
+*EN: Control Flow*
 
 ```c
 if x > 3 { } else if x > 1 { } else { }    // 条件分支
@@ -86,13 +107,22 @@ return expr                                // 返回值
 
 switch 的 `case` 支持整数、字符（`'a'`）、布尔、负数、字符串；`default` 可省略。
 
+EN: The `case` of `switch` supports integers, characters (`'a'`), booleans, negative numbers, and strings; `default` may be omitted.
+
 **模式匹配增强**（`case 值[, 值]... [when 条件]:`）：
 - **多值**：逗号分隔多个值（或区间），任一匹配即命中；
 - **区间**：`case 3..7:` 整数/字符区间，左闭右开（与 `for i in 0..10` 一致）；浮点区间不支持；
 - **守卫**：`case 8 when flag:` 值匹配 **且** 守卫为真才进入，守卫不满足落入下一个 case；
 - **类型匹配**：`case string:` / `case i64:` 按 subject 的动态类型匹配，仅宽类型/动态容器对象（表、元组）上有意义——普通静态类型变量上语义层报错（类型恒定，恒真/恒假无意义）。
 
+EN: **Pattern-matching enhancements** (`case 值[, 值]... [when 条件]:`):
+- **Multi-value**: comma-separated multiple values (or ranges); a match on any one of them fires;
+- **Range**: `case 3..7:` an integer/character range, left-closed and right-open (same as `for i in 0..10`); floating-point ranges are not supported;
+- **Guard**: `case 8 when flag:` enters only when the value matches **and** the guard is true; if the guard fails it falls through to the next case;
+- **Type matching**: `case string:` / `case i64:` matches the subject by its dynamic type and is meaningful only on wide types / dynamic-container objects (tables, tuples) — on an ordinary statically typed variable the semantic layer reports an error (the type is constant, so always-true/always-false is meaningless).
+
 ### 2.4 函数
+*EN: Functions*
 
 ```c
 func add(a: i64, b: i64) -> i64 { return a + b }
@@ -105,9 +135,17 @@ func main() { println(add(1, 2)) }         // 入口
   调用时可省略可选参数（必须连续排在必选参数之后）。
 - **未实现**：一等函数、重载、函数体内嵌套函数。
 
+EN: The return type `-> Ty` is optional (defaults to `void`).
+EN: **Multiple return values** use tuples (see 2.6).
+EN: **Default-value parameters** (implemented in M2.1): `func greet(name: string, prefix: string = "Hello")`, so optional parameters may be omitted at the call site (they must come consecutively after the required ones).
+EN: **Not implemented**: first-class functions, overloading, and nested functions inside a function body.
+
 ### 2.4.1 ref 表参数按引用传递（T0.3 已实现）
+*EN: `ref` table parameters passed by reference (T0.3 implemented)*
 
 形参类型前加 `ref`，表参数**按引用传递**（仅限表，非表类型报错）：
+
+EN: Adding `ref` before the parameter type makes the table parameter **pass by reference** (tables only; passing a non-table type is an error):
 
 ```c
 func fill(x: ref table<i64>) {
@@ -137,9 +175,17 @@ func main() {
   `调用 'g' 的 ref 参数需要可寻址的表变量实参（字面量/下标/调用结果不可取地址）`；
 - 非 ref 表参数保持值语义（重绑定隔离；interp 路径内容修改也隔离）。
 
+EN: **Rules**:
+EN: Content modifications (push/subscript writes) and variable rebinding (`x = ...`) are both **written back to the caller's argument slot**;
+EN: The argument must be an **addressable dynamic-table variable**: a table literal `g([1, 2])`, a subscript, or a call result → `调用 'g' 的 ref 参数需要可寻址的表变量实参（字面量/下标/调用结果不可取地址）` (the error text is shown as-is);
+EN: Non-`ref` table parameters keep value semantics (rebinding is isolated; content modifications are also isolated on the interp path).
+
 ### 2.4.2 extern 函数声明（T0.7 已实现）
+*EN: `extern` function declarations (T0.7 implemented)*
 
 顶层声明外部 C 函数符号（无函数体），编译路径链接 clang 解析 libc（msvcrt）：
+
+EN: Declare external C function symbols at the top level (no function body); on the compilation path, clang is used to link against libc (msvcrt):
 
 ```c
 extern fn system(cmd: string) -> i32;   // libc system
@@ -158,7 +204,14 @@ func main() {
 - 表/结构体参数 → `extern 函数 'foo' 的参数 't' 必须是标量类型…实际是 table<i64>`；
 - **REPL / 解释路径不支持调用 extern**（仅编译路径）：`REPL 不支持调用 extern 函数 'foo'（仅编译路径可用，请用 tie-llvm 编译运行）`。
 
+EN: **Rules**:
+EN: `extern fn` uses a fixed identifier; parameters/returns are scalar only (i8..u64/f32/f64/bool/char/string/void);
+EN: A declaration may only appear at **file top level** (inside a function body → compile-time error);
+EN: Table/struct parameters → `extern 函数 'foo' 的参数 't' 必须是标量类型…实际是 table<i64>` (the error text is shown as-is);
+EN: **Calling `extern` is not supported on the REPL / interpreter path** (compilation path only): `REPL 不支持调用 extern 函数 'foo'（仅编译路径可用，请用 tie-llvm 编译运行）` (the error text is shown as-is).
+
 ### 2.5 表 table（数组）与键值表 map
+*EN: Tables (arrays) and key-value maps*
 
 ```c
 var arr: table = [1, 2, 3]         // 单行 3 列（无 id）
@@ -171,7 +224,10 @@ for item in arr { }                // 遍历（已实现）
 > 已随 E3 + T0.5 落地可用（见 2.5.1）；二维表（`[1,2;3,4]`）语法可解析，
 > 但语义阶段报"留待 M3"，**不要使用**。
 
+EN: **Note**: in the table-literal examples above, the string-id table (`["a":1]`) is the **key-value map**, which shipped and became usable with E3 + T0.5 (see 2.5.1); the two-dimensional table (`[1,2;3,4]`) parses syntactically, but the semantic stage reports "留待 M3" (left for M3) — **do not use it**.
+
 ### 2.5.1 键值表 map / map\<T\>（E3 + T0.5 排序键二分已实现）
+*EN: Key-value map / `map<T>` (E3 + T0.5 sorted-key binary search implemented)*
 
 ```c
 var m: map = ["a":1, "b":2]      // 键值表：string -> i64
@@ -185,15 +241,24 @@ var k = len(m)                   // 条目数：3
 （零分配），10k 次查找由线性 ≈ 6.27s 降至 ≈ 2.7ms（~2295×，见
 `scripts/bench/map-bench.tie`）。
 
+EN: **Sorted-key binary search (T0.5)**: map keys are always stored in **strcmp byte order**, and lookup/insertion are binary search (zero allocation); 10k lookups drop from a linear ≈ 6.27s to ≈ 2.7ms (~2295×, see `scripts/bench/map-bench.tie`).
+
 **行为契约**：map 输出/打印**按键排序**（`{a: 1, m: 2, z: 3}`），
 **不依赖插入序**。依赖插入序的写法不可用。
+
+EN: **Behavior contract**: map output/printing is **sorted by key** (`{a: 1, m: 2, z: 3}`) and does **not depend on insertion order**. A style that relies on insertion order is not usable.
 
 **约束**：键恒为字符串（必须加双引号）；值类型全表一致；**map 不能作全局变量**
 （语法层即拒绝，见 2.5.2）。
 
+EN: **Constraints**: keys are always strings (must be double-quoted); the value type is uniform across the table; **a map cannot be a global variable** (rejected at the syntax layer; see 2.5.2).
+
 ### 2.5.2 顶层表全局变量（T0.4 已实现）
+*EN: Top-level global table variables (T0.4 implemented)*
 
 顶层 `var g: table<T>;`（无初始化器 = 默认空动态表；也可 `= []`）：
+
+EN: A top-level `var g: table<T>;` (no initializer = a default empty dynamic table; or `= []`):
 
 ```c
 var g: table<i64>;               // 顶层全局表：跨函数持久，main 入口运行时创建
@@ -218,7 +283,15 @@ func main() {
 - **const 全局表暂不支持**：`const g: table<i64>;` → `const 全局表暂不支持：'g'（表在 main 入口运行时创建，无法静态初始化）`；
 - 初始化器只能为空表 `[]`（或省略）；非表类型全局变量限标量。
 
+EN: **Rules**:
+EN: Persistent across functions: push / subscript writes / `len` / `for` traversal can all be used directly;
+EN: It can be a `ref` argument (§2.4.1); the element type can be annotated (`table<i64>`), defaulting to `string` when omitted;
+EN: **Only `table<T>` supports globals**; **a map cannot be global** (rejected at the syntax layer);
+EN: **`const` global tables are not yet supported**: `const g: table<i64>;` → `const 全局表暂不支持：'g'（表在 main 入口运行时创建，无法静态初始化）` (the error text is shown as-is);
+EN: The initializer may only be an empty table `[]` (or omitted); non-table-type global variables are limited to scalars.
+
 ### 2.6 元组（多值返回 / 异构值类型）
+*EN: Tuples (multiple returns / heterogeneous value type)*
 
 ```c
 func divmod(a: i64, b: i64) -> (q: i64, r: i64) {
@@ -236,7 +309,12 @@ var (q, r) = divmod(17, 5)        // 解构：q=3, r=2（编译期 desugar）
 - 字段访问三种形式等价：`t.x` / `t.Item1` / `t.0`。
 - **未实现**：`println` 打印元组、元组比较运算。
 
+EN: Empty tuples `()` are not supported; the element count must be ≥ 1.
+EN: Three forms of field access are equivalent: `t.x` / `t.Item1` / `t.0`.
+EN: **Not implemented**: `println` for tuples and tuple comparison operators.
+
 ### 2.7 import（多文件）与单文件命名空间（M2.1.7）
+*EN: import (multi-file) and single-file namespaces (M2.1.7)*
 
 ```c
 import "./lib_math.tie" as math   // 导入其他 tie 文件（相对路径字符串）
@@ -255,10 +333,20 @@ using math;                       // 引入命名空间：其公有函数可裸�
     多 using 同名函数 → 裸调用歧义报错。
 - **未实现**：`data` 文件导入为只读数据表、按角色分派可见符号集。
 
+EN: **Implemented** (M2): functions in an imported file are recursively loaded and available inline; the import expansion logic is centralized in tie-frontend's `imports` module (shared by tie-llvm and tie-lsp), and the language server's diagnostics / hover / go-to-definition / completion also support cross-file semantics (cross-file namespace calls such as `str.split` do not falsely report undeclared variables).
+EN: **Implemented** (M2.1.7, single-file namespace = a true module boundary):
+EN: Functions inside a namespace are **private** by default (visible only within the same namespace); `pub func` exports them explicitly; top-level functions are always public; calling a private function across namespaces → compile-time error;
+EN: `import "x.tie" as f2`: the alias is the **only entry point** — the original namespace prefix is masked, so you must access it through the alias;
+EN: `using fmt;` / `using f2.inner;`: introduces the public functions of an imported namespace so they can be called by bare name; multiple `using` with same-named functions → bare-call ambiguity error.
+EN: **Not implemented**: importing a `data` file as a read-only data table and per-role dispatch of the visible symbol set.
+
 ### 2.7.1 字符串池 intern（T0.6 已实现，std/intern.tie）
+*EN: String interning pool `intern` (T0.6 implemented, std/intern.tie)*
 
 字符串 → 稳定整数 id 的登记机制（命名空间 `intern`），编译器符号表把
 O(len) 字符串比较降为 O(1) 整数比较：
+
+EN: A registration mechanism that maps strings to stable integer ids (namespace `intern`); the compiler's symbol table reduces O(len) string comparisons to O(1) integer comparisons:
 
 ```c
 import "../../std/intern.tie"
@@ -278,10 +366,15 @@ func main() {
 `lookup(id)->string`（缺失返回空串哨兵）、`interned_len()->i64`。
 池为模块级全局状态，跨函数/跨模块 id 稳定。
 
+EN: **Interface**: `intern(s)->i64` (registering returns a stable id; identical strings get the same id), `lookup(id)->string` (missing ids return an empty-string sentinel), `interned_len()->i64`. The pool is module-level global state, so ids are stable across functions/modules.
+
 ### 2.7.2 进程原语 process（T0.7 已实现，std/process.tie）
+*EN: Process primitives `process` (T0.7 implemented, std/process.tie)*
 
 用 extern 声明（链接期 libc 符号）实现的进程原语（命名空间 `process`），
 0-Rust 路径的关键证明——tie 直接声明并调用 libc 函数：
+
+EN: Process primitives implemented with `extern` declarations (libc symbols at link time) (namespace `process`) — a key proof of the zero-Rust path: tie declares and calls libc functions directly:
 
 ```c
 import "../../std/process.tie"
@@ -298,12 +391,17 @@ func main() {
 `exec_output(cmd)->string`（stdout+stderr 合并捕获，临时文件重定向读回）。
 依赖 extern 调用，**REPL 中不可用**（仅编译路径）。
 
+EN: **Interface**: `exec_code(cmd)->i32` (wraps the extern `system`, returns the exit code), `exec_output(cmd)->string` (captures stdout+stderr combined, reads back via temporary-file redirection). It depends on `extern` calls, so it is **not available in the REPL** (compilation path only).
+
 ### 2.8 struct 数据与逻辑分离（M2.1.8）
+*EN: struct data and logic separation (M2.1.8)*
 
 `struct` = **纯数据**（只含字段，值类型，LLVM 内联布局）；逻辑（方法）移出为
 **绑定 struct 名的命名空间函数**。`obj.method()` 由编译器转发为命名空间函数
 （接收者作首参，按**引用**传递——函数内字段修改反映到调用方）。
 `this`/`static`/`class` 已废弃。
+
+EN: A `struct` is **pure data** (fields only, value type, with an inline LLVM layout); logic (methods) moves out into **namespace functions bound to the struct's name**. `obj.method()` is forwarded by the compiler to a namespace function (the receiver is the first parameter, passed **by reference** — field modifications inside the function are reflected at the caller). `this`/`static`/`class` are deprecated.
 
 ```c
 struct Point {
@@ -334,7 +432,11 @@ func main() {
 > 寄存器中的 struct 值无内存地址，必须先 `var o = ...` 存入变量再访问。
 > 方法函数必须 `pub`（否则 `obj.method()` 转发被私有拦截）。
 
+EN: **Key limitation**: chaining `Point.origin().x` / `make().dist()` directly reports "needs an addressable target" — a struct value in a register has no memory address, so you must first store it into a variable with `var o = ...` before accessing it. Method functions must be `pub` (otherwise the `obj.method()` forwarding is blocked by privacy).
+
 **继承**（字段复用，无虚表/无动态分派/无向上转型）：
+
+EN: **Inheritance** (field reuse, no vtable/no dynamic dispatch/no upcasting):
 
 ```c
 struct Animal {
@@ -355,9 +457,14 @@ namespace Dog {
 
 > 注意：文档早期用过 `str`，**当前类型名是 `string`**（`var name: string`）。
 
+EN: Note: early versions of the docs used `str`; **the current type name is `string`** (`var name: string`).
+
 ## 3. 编译期会报错的写法（负例）
+*EN: Constructs that fail at compile time (negative examples)*
 
 以下代码**都会在编译期报错**，AI 不要生成：
+
+EN: The following code **all fails at compile time**; the AI must not generate it:
 
 | 场景 | 错误信息（关键词） |
 |---|---|
@@ -387,7 +494,10 @@ namespace Dog {
 | extern 与已有函数同名重复声明 | 「extern 函数 'foo' 与已有函数重复定义」 |
 | REPL 中调用 extern 声明的函数 | 「REPL 不支持调用 extern 函数 'foo'（仅编译路径可用，请用 tie-llvm 编译运行）」 |
 
+EN: The table above lists the error scenarios and their error messages (keywords). All Chinese texts inside 「…」 are the compiler's diagnostic strings shown as-is.
+
 ## 4. 未实现 / 不要使用的特性
+*EN: Unimplemented / do-not-use features*
 
 - `ui` / `db` 文件角色（M4 规划）
 - 二维表（`[1,2;3,4]`）**运行时**（语法能解析但语义报错）；字符串 id 表（=map）已实现可用
@@ -401,7 +511,10 @@ namespace Dog {
 - **const 全局表**（`const g: table<i64>;` 报「const 全局表暂不支持」）
 - **extern 在 REPL/解释路径**（仅编译路径可用；含 std/process 的 exec_code/exec_output）
 
+EN: `ui` / `db` file roles (planned for M4); the **runtime** for two-dimensional tables (`[1,2;3,4]`) (parses syntactically but fails in semantics); string-id tables (= maps) are implemented and usable; importing `data` files as tables; library compilation (the `library` role declaration works, but the compile-to-library flow is incomplete); `--target` cross-compilation and `--backend=gnu`; first-class functions and function overloading; classes: object comparison (`==`), `println` for objects, method overloading, and destructors; bare code blocks (`{ }` inside a function body) and empty tuples `()`; **map global variables** (top-level `var m: map;` is rejected at the syntax layer); **`const` global tables** (`const g: table<i64>;` reports "const 全局表暂不支持"); **`extern` on the REPL/interpreter path** (compilation path only; includes the `exec_code`/`exec_output` of std/process).
+
 ## 5. 编写 tie 代码的硬性规则
+*EN: Hard-and-fast rules for writing tie code*
 
 1. **类、import、func、extern 声明只出现在文件顶层**；函数体内只有语句。
 2. **行尾分号可省略**（ASI 自动补全）；同一行多条语句必须用 `;` 分隔。
@@ -414,7 +527,19 @@ namespace Dog {
 9. **extern 声明**（§2.4.2）：限标量类型；声明后仅编译路径可调用（REPL 不可用）。
 10. **全局表**（§2.5.2）：仅 `table<T>`、无初始化器或 `= []`；map 不能全局、const 暂不支持。
 
+EN: 1. **Classes, `import`, `func`, and `extern` declarations appear only at file top level**; a function body contains only statements.
+EN: 2. **Trailing semicolons may be omitted** (auto-completed by ASI); multiple statements on the same line must be separated with `;`.
+EN: 3. To access a field or call a method on a class instance, **you must first store it in a variable** (`var p = Point(0); p.x`); you cannot write `Point(0).x`.
+EN: 4. Inherited fields must be unique across the chain; method shadowing is allowed (a subclass overrides the same-named method of a parent class).
+EN: 5. `string` literals use double quotes; `char` uses single quotes.
+EN: 6. A `logic` file must contain `func main()`.
+EN: 7. All statements (variable declarations, assignments, expressions, `return`) end with a newline or `;`.
+EN: 8. **`ref` table parameters** (§2.4.1): used only for table parameters; the argument must be an addressable dynamic-table variable.
+EN: 9. **`extern` declarations** (§2.4.2): limited to scalar types; after declaration they can only be called on the compilation path (not available in the REPL).
+EN: 10. **Global tables** (§2.5.2): only `table<T>`, with no initializer or `= []`; a map cannot be global and `const` is not yet supported.
+
 ## 6. 完整可运行示例（可直接粘贴验证）
+*EN: Complete runnable example (paste and verify)*
 
 ```c
 // tie:logic
@@ -455,7 +580,11 @@ func main() {
 > 注意 ASI 规则：**每条语句独占一行**（`return "..."` 与 `}` 不能同行，
 > 因为分号只在换行处自动补全；同一行多条语句必须显式 `;`）。
 
+EN: Note the ASI rule: **each statement takes its own line** (`return "..."` and `}` cannot be on the same line, because a semicolon is auto-inserted only at a newline; multiple statements on the same line must use an explicit `;`).
+
 保存为 `demo.tie` 后用 `cargo run -p tie -- demo.tie` 编译运行，输出应为：
+
+EN: Save it as `demo.tie`, then compile and run it with `cargo run -p tie -- demo.tie`; the output should be:
 
 ```
 Rex
@@ -470,8 +599,10 @@ Woof
 ---
 
 # 第二部分：编译器架构（供开发 tie 的 AI 使用）
+*EN: Part Two: Compiler Architecture (for AIs developing tie)*
 
 ## 7. 工程结构与数据流
+*EN: Project structure and data flow*
 
 ```text
 crates/
@@ -485,15 +616,23 @@ crates/
 流水线：`tie-prep`（预处理）→ 按角色分派（logic/library → tie-llvm 编译）→
 tie-llvm 内部：AST → `.ll` 文本 → `opt` 优化 → `clang` 汇编 → `lld` 链接 → 可执行文件。
 
+EN: Pipeline: `tie-prep` (preprocessing) → dispatch by role (logic/library → tie-llvm compilation) → inside tie-llvm: AST → `.ll` text → `opt` optimization → `clang` assembly → `lld` linking → an executable.
+
 ## 8. 前端（tie-frontend）
+*EN: Front end (tie-frontend)*
 
 ### 8.1 词法（lexer.rs）
+*EN: Lexing (lexer.rs)*
 
 - 产出 `Vec<Token>`，`TokenKind` 含 `Ident/Int/Float/Str/TypeKw/Keyword/Semi/Eof...`。
 - **ASI 自动补全在词法层实现**（token 流层面插入 `Semi`）：换行处语句已完整则补 `;`；
   括号未闭合、行尾是二元运算符/`,`/`.`/开括号、行尾是 `else`/`in` 等则不补。
 
+EN: Produces a `Vec<Token>`; `TokenKind` includes `Ident/Int/Float/Str/TypeKw/Keyword/Semi/Eof...`.
+EN: **ASI auto-completion is implemented at the lexical layer** (a `Semi` is inserted at the token-stream level): if the statement at a newline is already complete a `;` is inserted; if parentheses are unclosed, or the line ends with a binary operator / `,` / `.` / an opening bracket, or the line ends with `else` / `in`, etc., no semicolon is inserted.
+
 ### 8.2 语法（parser.rs）
+*EN: Parsing (parser.rs)*
 
 - 递归下降解析器 `Parser`，入口 `parse_program`。
 - 顶层只允许三种语句：`Stmt::FnDef` / `Stmt::Import` / `Stmt::Class`，其他 → 语法错误。
@@ -502,7 +641,13 @@ tie-llvm 内部：AST → `.ll` 文本 → `opt` 优化 → `clang` 汇编 → `
   （`Ident = ...` → Assign；`obj.field = ...` → FieldAssign）。
 - `is_addressable_base`：判断表达式是否可寻址（Var 或 FieldAccess 链）。
 
+EN: A recursive-descent parser `Parser`, with entry point `parse_program`.
+EN: Only three statement kinds are allowed at the top level: `Stmt::FnDef` / `Stmt::Import` / `Stmt::Class`; anything else → a syntax error.
+EN: Key functions: `parse_fn_def`, `parse_class` (with `extends`), `parse_method` (`func` definitions inside a class, including `static`), `parse_var_decl` (including desugaring tuple destructuring into temporary variables + field access), `parse_expr_or_assign` (`Ident = ...` → Assign; `obj.field = ...` → FieldAssign).
+EN: `is_addressable_base`: determines whether an expression is addressable (a `Var` or a `FieldAccess` chain).
+
 ### 8.3 AST（ast.rs）
+*EN: AST (ast.rs)*
 
 ```rust
 pub enum TypeSpec { Named(TyKw), Tuple(Vec<TupleField>), Struct(String) }
@@ -514,8 +659,11 @@ pub struct FieldAssignStmt { base: Box<Expr>, field: String, value: Expr, span: 
 ```
 
 ### 8.4 语义（semantic.rs）
+*EN: Semantics (semantic.rs)*
 
 入口 `analyze(&Program) -> Result<SemanticResult, SemanticError>`，共 **3 遍**：
+
+EN: The entry point is `analyze(&Program) -> Result<SemanticResult, SemanticError>`, running **3 passes**:
 
 1. **收集函数签名**：`funcs: HashMap<全名, FuncSig>`（顶层裸名 / 命名空间全名
    `Point::dist`），重复定义报错（允许前向引用）。
@@ -524,7 +672,13 @@ pub struct FieldAssignStmt { base: Box<Expr>, field: String, value: Expr, span: 
 3. **check_fn**：逐函数体 `check_stmt`（作用域为 `HashMap<名称, TypeSpec>`）；
    命名空间函数由 check_ns_stmts 递归覆盖。
 
+EN: 1. **Collect function signatures**: `funcs: HashMap<全名, FuncSig>` (top-level bare names / namespace-qualified names such as `Point::dist`); duplicate definitions error (forward references are allowed).
+EN: 2. **collect_structs**: registers struct names (checking conflicts against function/struct names), then flattens each inheritance chain via `flatten_struct` (parent-struct fields come first; a `chain: HashSet` detects inheritance cycles). Methods are not inside the struct.
+EN: 3. **check_fn**: runs `check_stmt` over each function body (with a scope of `HashMap<名称, TypeSpec>`); namespace functions are covered recursively by `check_ns_stmts`.
+
 关键数据结构：
+
+EN: Key data structures:
 
 ```rust
 pub struct ClassInfo {
@@ -544,11 +698,21 @@ pub struct ClassInfo {
 - `expr_types: HashMap<usize, TypeSpec>`：用表达式地址（`addr_of`）记录推导类型，IR 层查询。
 - `tables: HashMap<usize, TableInfo>`：表字面量布局元数据（元素类型/长度）。
 
+EN: `resolve_class_field_ty`: resolves a field's type — an explicit annotation is preferred; without one the type is inferred from the default-value literal; if neither exists → error.
+EN: **Method forwarding** (the MethodCall branch of `infer_expr`): when the receiver type is a struct, look up the `funcs` key `T::method` along the inheritance chain (child → parent); the method function must be `pub`; the first parameter type must be struct-compatible (`struct_assignable`: a subclass can be assigned to a parent class); the receiver must be addressable (passed by reference).
+EN: `is_addressable_expr` (semantic layer): struct field access/method forwarding require the object to be addressable (a `Var` or a `FieldAccess` chain); a struct value in a register (a construction expression / a method-call result) → error.
+EN: `expr_types: HashMap<usize, TypeSpec>`: records the inferred type keyed by the expression address (`addr_of`), queried by the IR layer.
+EN: `tables: HashMap<usize, TableInfo>`: layout metadata for table literals (element type / length).
+
 ## 9. 中端+后端（tie-llvm / ir.rs）
+*EN: Middle end + back end (tie-llvm / ir.rs)*
 
 入口 `run(program, semantic_result)`（`IrGenerator`）。
 
+EN: The entry point is `run(program, semantic_result)` (`IrGenerator`).
+
 ### 9.1 核心设计
+*EN: Core design*
 
 - **值类型用字面结构体**：元组/struct → LLVM `{T0, T1, ...}`，通过 `ty_cache` 缓存
   （`HashMap<TypeSpec, String>` 生成 `%tup.N` / `%cls.N` 类型名），避免重复声明。
@@ -565,7 +729,16 @@ pub struct ClassInfo {
   **struct 字段访问**：`gen_class_addr` 先取地址（Var → 绑定地址；FieldAccess 链 → 逐级 GEP），再 load。
 - **`current_ret_ty`**：函数/方法内 return 的返回类型查询——查 `funcs`（兜底 `I64`）。
 
+EN: **Value types use literal structs**: tuples/structs → LLVM `{T0, T1, ...}`, cached through `ty_cache` (`HashMap<TypeSpec, String>` generating the `%tup.N` / `%cls.N` type names) to avoid repeated declarations.
+EN: **Method mangling**: a method = a namespace function (`namespace Point`); the full name is converted to `$` (`Point::dist` → `@Point$dist`), generated uniformly by `gen_ns_fns`. The **first parameter of a method function** (whose type == the struct name) is passed **by reference**: the first parameter of the signature is `ptr`, bound with `VarBind` using `by_ptr` (no alloca; it directly reuses the incoming pointer) — field modifications inside the function are reflected at the caller.
+EN: **Method-forwarding calls** (the `first` parameter of `gen_call_inner`): for an instance call `p.dist()`, the receiver is the first argument, and after `is_method_fn` determines it, its **address** is passed (`gen_class_addr`); a static `Point.dist()` goes through the namespace branch (no receiver argument).
+EN: **Field read**: `GEP + load`; **field write**: `GEP + store` (`gen_field_assign`).
+EN: **Construction** (`gen_construct`): an `insertvalue` chain assembles the fields one by one; missing parameters use default/zero values.
+EN: **Tuple-field access**: `extractvalue` (take the register value directly, no address required); **struct-field access**: `gen_class_addr` takes the address first (Var → the bound address; a FieldAccess chain → GEP level by level), then loads.
+EN: **`current_ret_ty`**: queries the return type for a `return` inside a function/method — looks up `funcs` (falling back to `I64`).
+
 ### 9.2 运行流程
+*EN: Execution flow*
 
 1. 先遍历 `Stmt::FnDef` / `Stmt::Namespace` 生成全部函数（`gen_fn` / `gen_ns_fns`，
    含方法函数 `@Point$dist`），`gen_fn` 判定方法函数首参按引用生成。
@@ -573,11 +746,19 @@ pub struct ClassInfo {
 3. import 已在 driver 层递归加载为内联函数（语义分析前）。
 4. 生成 `.ll` → 调用 `opt`（优化）→ `clang`（汇编）→ `lld`（链接）。
 
+EN: 1. First traverse `Stmt::FnDef` / `Stmt::Namespace` to generate all functions (`gen_fn` / `gen_ns_fns`, including the method function `@Point$dist`); `gen_fn` determines whether a method function's first parameter is generated by reference.
+EN: 2. `Stmt::Struct` generates no code (pure type layout; fields are flattened by the semantic layer).
+EN: 3. Imports are already recursively loaded as inline functions at the driver layer (before semantic analysis).
+EN: 4. Generate `.ll` → invoke `opt` (optimization) → `clang` (assembly) → `lld` (linking).
+
 ### 9.3 tie:script 模块协议（eval / eval_call）
+*EN: tie:script module protocol (eval / eval_call)*
 
 tie:script 是「宿主进程 ↔ tie 脚本」的执行协议：约定 `.tie` 模块文件在
 解释器会话中被 **`eval` 注册 + `eval_call` 字符串值直传调用**。
 完整说明见 [docs/tie-script.md](tie-script.md)，要点：
+
+EN: tie:script is the execution protocol between "host process ↔ tie script": it stipulates that a `.tie` module file is **registered via `eval` and called with a string value passed directly via `eval_call`** in the interpreter session. For the full description see [docs/tie-script.md](tie-script.md); the key points are:
 
 - **入口约定**：模块顶层定义 `func process(src: string) -> string`
   （可放命名空间，用全名 `mod::process` 调用；void 入口返回空串）；
@@ -593,7 +774,14 @@ tie:script 是「宿主进程 ↔ tie 脚本」的执行协议：约定 `.tie` �
 - **协议文本**：`eval_call` 只能返回一个字符串，跨层结构化数据用文本协议
   （如 prep/core.tie 的 `ROLE:`/`HEADERS:`/`H:`/`BODY:` 四行前缀 + 字节计数正文）。
 
+EN: **Entry convention**: the module's top level defines `func process(src: string) -> string` (it may sit in a namespace and be called by the full name `mod::process`; a void entry returns an empty string);
+EN: **Execution semantics**: `eval(module source)` collects the top-level definitions into the session's function table (persistent across calls); `eval_call(full name, text)` calls with a `Value::Str` **passed directly by value** (not escaped through source text), requiring the entry to take exactly 1 required string parameter (it may carry optional defaulted parameters);
+EN: **Three entry tiers**: the Rust side `tie_prep::run_module` (tie-prep bootstrap) / the CLI side `tie-prep --module <file.tie>` (converter extension) / the built-in `eval` / `eval_call` inside a tie program (both compile and interpret paths, see below);
+EN: **Compilation-path bridge**: the built-in `eval`/`eval_call` generate calls in the IR to the tie-interp static library's C exports — `tie_eval_expr` / `tie_eval_call` (+ `tie_free_result` to release the heap string afterwards), linking `tie_interp.lib`;
+EN: **Protocol text**: `eval_call` can return only a single string; cross-layer structured data uses a text protocol (e.g. the `ROLE:`/`HEADERS:`/`H:`/`BODY:` four-line prefix plus byte-counted body in prep/core.tie).
+
 ## 10. 给编译器开发 AI 的硬性规则
+*EN: Hard-and-fast rules for AI compiler developers*
 
 1. **修改 AST 枚举时**：新增变体会破坏 `semantic.rs` / `ir.rs` 的 `match`——需同步
    添加分支并保证 `match` 穷尽。
@@ -607,7 +795,16 @@ tie:script 是「宿主进程 ↔ tie 脚本」的执行协议：约定 `.tie` �
 6. **ASI 在词法层**：新增语法时考虑 token 流层面的分号补全影响。
 7. 提交消息用中文（见 CHANGELOG.md 的既有风格）。
 
+EN: 1. **When modifying the AST enums**: a new variant breaks the `match` in `semantic.rs` / `ir.rs` — you must synchronously add the branch and keep the `match` exhaustive.
+EN: 2. **The field index is the single source of truth**: `ClassInfo.field_index` (computed by the semantic layer); the IR layer must not re-flatten on its own, or offsets will misalign.
+EN: 3. **Method functions live in the funcs table**: a method = a namespace function bound to a struct name (full name `Point::dist`), going into `result.funcs` uniformly with top-level functions; struct/function name conflicts are intercepted by `collect_structs`.
+EN: 4. **Semantics precede IR**: all compile-time errors are intercepted at the semantic layer (e.g. addressability, inheritance cycles, duplicate field names); an `unwrap/expect` in the IR layer is treated as an internal error.
+EN: 5. **Wide types / `code` / `table` are compile-time concepts**: they are expanded into concrete types in the semantic phase and do not appear in the IR phase.
+EN: 6. **ASI lives at the lexical layer**: when adding new syntax, consider the impact of semicolon completion at the token-stream level.
+EN: 7. Commit messages are written in Chinese (see the existing style in CHANGELOG.md).
+
 ## 11. 常见开发任务索引
+*EN: Index of common development tasks*
 
 | 任务 | 涉及文件 |
 |---|---|
@@ -619,3 +816,4 @@ tie:script 是「宿主进程 ↔ tie 脚本」的执行协议：约定 `.tie` �
 | 修改预处理/角色 | crates/tie-prep/ |
 | 修改 tie:script 协议 / eval / eval_call | crates/tie-interp/src/lib.rs（Session::eval/eval_call、call_fn 分发、C ABI 导出）→ crates/tie-llvm/src/ir.rs（内置调用生成）→ prep/（模块）→ docs/tie-script.md |
 
+EN: The table above lists each task and the files involved, kept in the original Chinese for traceability.

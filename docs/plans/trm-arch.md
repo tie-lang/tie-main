@@ -1,4 +1,5 @@
 # 规划：trm（tie 运行时套件）——两层架构（引擎层 + 库层）
+*EN: Plan: trm (tie Runtime Suite) — a Two-Layer Architecture (Engine Layer + Library Layer)*
 
 > 状态：**规划**（2026-08-15 初稿，2026-08-18 修订定稿，未实现）
 > 本文档定义 trm（tie runtime suite）——tie 生态的**单一运行时套件**，
@@ -22,10 +23,18 @@
 > 关联：tieconsole（终端/进程/会话）、tiu（ui 域消费方）、unsafe 模型
 > （extern/repr(C)）、包模型（动态库 M5）、序列化规范（zd）、
 > tieir-format.md（tieir 格式）。
+>
+> EN: Status: **Plan** (draft on 2026-08-15, revised and finalized on 2026-08-18, not implemented)
+> EN: This document defines trm (tie runtime suite) — the **single runtime suite** of the tie ecosystem, following a **JVM-style design**, split into two layers: the **engine layer** (tieir bytecode VM: interp + LLVM ORC JIT) and the **library layer** (common function wrappers + tool integration). One compile, four-end run (Windows/Linux/macOS/Android), consistent results. **Absorbs tucore**: the original tucore becomes the ui domain of the trm library layer (trm.ui).
+> EN: Decision summary (2026-08-18 revision): **two-layer architecture** (engine layer: interpreter + JIT; library layer: system wrappers + tool integration) + **JVM-style** (unified API + tieir bytecode VM + platform implementation layer) + **tieir bytecode** (interp bootstrap + LLVM ORC JIT hotspots, mixed execution) + **four-end platform layer** (impl-win32 / impl-posix / impl-android) + **dual routes** (developer choice: trm VM or pure-compiled zero-dependency) + **bundled distribution** (LLVM distributed with trm) + **cross-platform consistency** (semantic contracts + test matrix) + **versioning** (independent version + bundled default + min_tiec fallback) + **session domain** (generalized + two-level distinction).
+> EN: Benchmark: JVM (HotSpot engine + JDK class library), .NET (CLR + BCL). Related: tieconsole (terminal/process/session), tiu (ui-domain consumer), unsafe model (extern/repr(C)), package model (dynamic library M5), serialization spec (zd), tieir-format.md (tieir format).
 
 ## 1. 定位
+*EN: 1. Positioning*
 
 **trm = tie 平台运行时**：两层架构，服务所有 tie 组件：
+
+EN: **trm = the tie platform runtime**: a two-layer architecture serving all tie components:
 
 ```
 ┌─ tieconsole ──┐  ┌─ tiu ──┐  ┌─ webui ──┐
@@ -52,7 +61,10 @@
 库层管"提供什么能力"（系统 API + 现成工具）。对标 JDK = JVM（引擎）
 + java.* 类库（库）。
 
+EN: **The two layers in one sentence**: the engine layer handles "how to execute code" (tieir → machine code); the library layer handles "what capabilities to provide" (system APIs + ready-made tools). The JDK analog = JVM (engine) + the java.* class library (library).
+
 ### 1.1 JVM 式设计（2026-08-18 定稿）
+*EN: 1.1 JVM-Style Design (finalized 2026-08-18)*
 
 | JVM 概念 | trm 对应 | 层 |
 | --- | --- | --- |
@@ -64,13 +76,20 @@
 | JDK 附带工具（javac/jar/...） | tie 工具链（tiec/pkg/...） | 库层外 |
 | 一次编写到处运行 | 一次编译四端运行 | 整体 |
 
+EN: This table maps JVM concepts to their trm counterparts and layers: bytecode (.class) → tieir bytecode (distribution artifact); HotSpot interpreter/JIT → interp (bootstrap/embedded) + LLVM ORC JIT (engine layer); classloader + verification → tieir deserialization + validation + signature (engine layer); JNI/native methods → extern → platform implementation (engine layer); the standard library (JCL) → the trm library layer (system domains + tools) (library layer); JDK tools (javac/jar/...) → the tie toolchain (tiec/pkg/...) (outside the library layer); write once run anywhere → one compile four-end run (overall).
+
 **"结果一样"的强保证**：同一份 tieir 字节码 + 平台无关的引擎核心 →
 执行语义天然一致；平台差异只剩 extern 实现，由**平台语义契约 + 跨平台
 测试矩阵**兜底（见 §6）。
 
+EN: The strong guarantee of "same results": the same tieir bytecode + platform-independent engine core → execution semantics are naturally consistent; platform differences are limited to extern implementations, covered by the **platform semantic contracts + cross-platform test matrix** (see §6).
+
 ### 1.2 双路线：开发者自由选择（关键约束）
+*EN: 1.2 Dual Routes: Free Developer Choice (Key Constraint)*
 
 **trm 是可选依赖（opt-in）**：
+
+EN: **trm is an optional dependency (opt-in)**:
 
 ```
 路线 A：纯编译（现状保持，零依赖）
@@ -84,7 +103,9 @@
 
 - **import 即选择**：源码 `import "trm:terminal"` → 路线 B；
   不 import trm → 路线 A（产物与现状完全一致）
+  - EN: **import is the choice**: `import "trm:terminal"` in source → Route B; no trm import → Route A (output identical to the current state)
 - **三模式并存**：
+  - EN: **three modes coexist**:
 
 | 模式 | 路径 | 产物 | 用途 |
 | --- | --- | --- | --- |
@@ -92,14 +113,22 @@
 | B trm VM（主路径） | tiec → tieir → trm 引擎 | tieir + trm | 跨平台 UI/系统应用 |
 | C 混合（后置） | tieir → 引擎 → JIT/内联 | 字节码 + 热点原生 | 性能敏感（后置） |
 
+EN: This table lists the three modes — A pure compile (kept), B trm VM (main path), and C hybrid (deferred) — with their paths, outputs, and uses.
+
 三模式同一套源码——编译目标决定形态（与 tie:xxx 角色哲学一致）。
 
+EN: All three modes share the same source — the compile target determines the form (consistent with the tie:xxx role philosophy).
+
 ## 2. 引擎层（JIT + 解释器层）
+*EN: 2. Engine Layer (JIT + Interpreter Layer)*
 
 ### 2.1 职责
+*EN: 2.1 Responsibilities*
 
 **引擎层 = 执行 tieir 字节码**。只做"怎么执行"，不掺业务 API。
 对标 JVM 本体（解释器 + JIT + 平台桥）。
+
+EN: **The engine layer = executes tieir bytecode**. It only does "how to execute", with no business APIs mixed in. It mirrors the JVM itself (interpreter + JIT + platform bridge).
 
 ```
 引擎层
@@ -111,6 +140,7 @@
 ```
 
 ### 2.2 执行策略：混合（interp 启动 + ORC JIT 热点）
+*EN: 2.2 Execution Strategy: Hybrid (interp Bootstrap + ORC JIT Hotspots)*
 
 ```
 tieir 字节码
@@ -121,14 +151,20 @@ tieir 字节码
 - **复用现有后端**：irgen/llvmgen（tie 写，已打通 tie IR → LLVM IR）——
   引擎直接调用，一行不改。llvmgen 现输出 .ll 文本喂 clang；JIT 路线把
   "喂 clang" 换成 "LLVMParseIR + ORC JIT 执行"。
+  - EN: **reuse the existing backend**: irgen/llvmgen (written in tie, already links tie IR → LLVM IR) — the engine calls it directly, not a line changed. llvmgen currently outputs .ll text fed to clang; the JIT route replaces "feed clang" with "LLVMParseIR + ORC JIT execution".
 - **混合调度**（HotSpot tiered 思路）：先解释启动 → 热点函数（计数/采样）
   提升到 ORC JIT → 冷函数可降回解释。
+  - EN: **hybrid scheduling** (HotSpot tiered idea): interpret first at startup → hot functions (counter/sampling) promoted to ORC JIT → cold functions can fall back to interpretation.
 - **函数级 lazy compile**：ORC 原生支持按需编译，冷函数不编译、零开销。
+  - EN: **function-level lazy compile**: ORC natively supports on-demand compilation; cold functions are not compiled, zero overhead.
 - **interp 的双重价值**：快速启动 + 嵌入式执行器（无 LLVM 环境）。
+  - EN: **interp's dual value**: fast startup + embedded executor (no-LLVM environments).
 - **性能预期**：解释器约 10-50x 慢于原生（可接受：UI 瓶颈在绘制）；
   JIT ≈ 原生。性能关键路径可 unsafe extern 下沉到平台实现（应用自选）。
+  - EN: **performance expectation**: the interpreter is roughly 10-50x slower than native (acceptable: the UI bottleneck is painting); JIT ≈ native. Performance-critical paths can be sunk into the platform implementation via unsafe extern (application's choice).
 
 ### 2.3 加载流程
+*EN: 2.3 Loading Flow*
 
 ```
 trm.init()
@@ -139,6 +175,7 @@ trm.init()
 ```
 
 ### 2.4 平台实现层（引擎层底部）
+*EN: 2.4 Platform Implementation Layer (bottom of the engine layer)*
 
 ```
 trm/impl/
@@ -151,21 +188,31 @@ trm/impl/
 
 - **平台实现 = 同名函数不同实现**（`trm_ui_window_create` 四端各自实现）——
   与 JVM 的 native method 同构
+  - EN: **platform implementation = same-name functions with different implementations** (`trm_ui_window_create` implemented separately on each of the four ends) — isomorphic to JVM native methods
 - **macOS 与 Linux 共用 POSIX 层** + 各自覆盖差异点
+  - EN: **macOS and Linux share the POSIX layer** + each covers its own differences
 - **目录分离**（P2 决策）：平台代码隔离，发布按平台打包
+  - EN: **directory separation** (P2 decision): platform code isolated, packaged per platform at release
 - **动态库形态**：trm.dll / trm.so / trm.dylib / libtrm.so（Android）
+  - EN: **dynamic-library form**: trm.dll / trm.so / trm.dylib / libtrm.so (Android)
 - **webui（wasm）**：编译期 AOT（tieir → wasm），浏览器内执行——
   平台实现层的"第五形态"，走编译期而非运行时 JIT
+  - EN: **webui (wasm)**: compile-time AOT (tieir → wasm), executed in the browser — the "fifth form" of the platform implementation layer, via compile-time rather than runtime JIT
 
 ## 3. 库层（常用函数封装 + 工具集成）
+*EN: 3. Library Layer (Common Function Wrappers + Tool Integration)*
 
 ### 3.1 职责
+*EN: 3.1 Responsibilities*
 
 **库层 = 全部业务能力面**。封装系统 API、集成现成工具，
 开发者 import 即用。对标 JDK 类库（java.lang/java.util/java.io/...）。
 **库层依赖引擎层**（库代码跑在 VM 上），引擎层不依赖库层。
 
+EN: **The library layer = the entire business-capability surface**. It wraps system APIs and integrates ready-made tools for developers to import-and-use. It mirrors the JDK class library (java.lang/java.util/java.io/...). **The library layer depends on the engine layer** (library code runs on the VM); the engine layer does not depend on the library layer.
+
 ### 3.2 系统域（平台 API 封装）
+*EN: 3.2 System Domains (Platform API Wrappers)*
 
 | 域 | 命名空间 | 内容 | 服务对象 |
 | --- | --- | --- | --- |
@@ -179,13 +226,20 @@ trm/impl/
 | data | trm.data | **只做文件 IO 面**（zd 编解码留 std） | 通用 |
 | ui | trm.ui | 窗口/绘制/事件/字体/输入（原 tucore 全部） | tiu |
 
+EN: This table lists the system domains — terminal, process, fs, env, session, clock, net, data, and ui — with their namespaces, contents, and served clients.
+
 > **fs/net 路径（2026-08-18 定）**：**包装而非移动**——std/fs、std/net
 > 保留（纯逻辑部分），trm.fs/trm.net 是统一平台面（包装 std + 平台实现）。
+>
+> EN: **fs/net approach (decided 2026-08-18)**: **wrap, don't move** — std/fs and std/net remain (pure-logic parts), while trm.fs/trm.net are the unified platform surface (wrapping std + platform implementation).
 
 ### 3.3 工具集成（现成能力，开箱即用）
+*EN: 3.3 Tool Integration (ready-made capabilities, out of the box)*
 
 库层不仅封装系统 API，还**集成各类工具**为统一入口——对标 JDK 类库的
 丰富度（java.util/json/net/http/...）：
+
+EN: The library layer not only wraps system APIs, but also **integrates various tools** as unified entry points — mirroring the richness of the JDK class library (java.util/json/net/http/...):
 
 | 工具 | 现状基础 | 集成形态 |
 | --- | --- | --- |
@@ -199,13 +253,18 @@ trm/impl/
 | test 测试 | ext/test.tie | 保留 ext，库层入口 |
 | tui 终端 UI | ext/tui.tie | 演进为 trm.ui 的前身/验证场 |
 
+EN: This table lists the integrated tools — zd serialization, json, log, tieDB, compress, regex, http, test, and tui — with their current foundations and integration forms.
+
 **集成原则**：
 - **纯逻辑（无平台依赖）** → std/ext 保留（路线 A 也能用，不绑定 trm）
 - **有平台依赖** → 库层统一面（trm.xxx 包装）
 - **工具以"库层入口"形态集成**：不搬代码，提供统一 import 面——
   开发者 `import "trm:log"` 拿到 log，底层实现仍是 ext/log.tie
 
+EN: **Integration principles**: **pure logic (no platform dependency)** → kept in std/ext (usable on Route A too, not bound to trm); **with platform dependency** → the library layer's unified surface (trm.xxx wrapper); **tools integrated as "library-layer entry points"** — no code movement, just a unified import surface — developers `import "trm:log"` get log, while the underlying implementation remains ext/log.tie.
+
 ### 3.4 命名空间组织
+*EN: 3.4 Namespace Organization*
 
 ```tie
 namespace trm {
@@ -225,9 +284,12 @@ namespace trm {
 ```
 
 - 调用形态：`trm.terminal.is_tty(0)` / `trm.process.spawn(...)` / `trm.ui.window_create(...)`
+  - EN: call forms: `trm.terminal.is_tty(0)` / `trm.process.spawn(...)` / `trm.ui.window_create(...)`
 - 域内方法链：`w.show().resize(..)`（句柄方法，H2 类型化句柄）
+  - EN: in-domain method chains: `w.show().resize(..)` (handle methods, H2 typed handles)
 
 ## 4. 两层关系
+*EN: 4. Relationship Between the Two Layers*
 
 ```
 应用（路线 B）
@@ -250,12 +312,19 @@ namespace trm {
 | 裁剪 | 嵌入式可减 JIT | 按域 import 裁剪 |
 | 对标 | JVM 本体 | JDK 类库 |
 
+EN: This table contrasts the engine layer and library layer across responsibilities, dependencies, independent evolution, trimming, and benchmark.
+
 **依赖方向（硬约束）**：应用 → 库层 → 引擎层 → 平台。引擎层绝不依赖
 库层——保证引擎独立、可单独测试、可单独裁剪（嵌入式只要引擎+精简域）。
 
+EN: **Dependency direction (hard constraint)**: application → library layer → engine layer → platform. The engine layer must never depend on the library layer — ensuring the engine is independent, testable on its own, and trimmable on its own (embedded needs only the engine + a reduced domain set).
+
 ## 5. ui 域（原 tucore 吸收，决策保留）
+*EN: 5. The ui Domain (tucore Absorbed, Decisions Kept)*
 
 原 tucore-arch.md 决策全部保留，命名迁移 + Android 补充：
+
+EN: All the original tucore-arch.md decisions are kept, with name migration + Android additions:
 
 | 原 tucore 决策 | trm.ui 对应 |
 | --- | --- |
@@ -269,16 +338,26 @@ namespace trm {
 | 组合式开发 | 保留（组件/行为/布局/模块四层） |
 | JVM/.NET 借鉴 | 保留（P/Invoke/延迟绑定/元数据） |
 
+EN: This table maps each original tucore decision to its trm.ui counterpart.
+
 **Android 补充**：
 - trm.ui 命令列表 → Android Canvas（1:1 映射，与 webui Canvas 桥同构）
   ——**绘制抽象一次设计，桌面/Android/web 三端复用**
+  - EN: **paint abstraction designed once, reused across desktop/Android/web**
 - 事件契约 → MotionEvent 归一化（坐标/键码/触摸）
+  - EN: event contract → MotionEvent normalization (coordinates/key codes/touch)
 - Activity 生命周期（onPause/onResume）→ 信号（挂起/恢复）+ 显式 init/shutdown
+  - EN: Activity lifecycle (onPause/onResume) → signals (suspend/resume) + explicit init/shutdown
+
+**Android additions**: the trm.ui command list → Android Canvas (1:1 mapping, isomorphic to the webui Canvas bridge); the event contract → MotionEvent normalization; the Activity lifecycle → signals plus explicit init/shutdown.
 
 > **绘制契约与事件契约是一等公民**：4 个消费端（Win32/X11/macOS/Android
 > Canvas），命令列表纯数据、可序列化、可 diff。
+>
+> EN: **The paint contract and event contract are first-class citizens**: 4 consumers (Win32/X11/macOS/Android Canvas), with the command list being pure data, serializable, and diffable.
 
 ## 6. 跨平台一致性（"结果一样"的保证）
+*EN: 6. Cross-Platform Consistency (the "Same Results" Guarantee)*
 
 ```
 1. 平台语义契约（契约文档 + 注释）
@@ -299,7 +378,10 @@ namespace trm {
 **测试先行是 JVM 思路的骨**：没有跨平台测试矩阵，"结果一样"就是空话。
 跨平台测试矩阵是 trm 的**一等里程碑**（与核心实现同步，不后置）。
 
+EN: **Testing-first is the backbone of the JVM approach**: without a cross-platform test matrix, "same results" is empty talk. The cross-platform test matrix is trm's **first-class milestone** (in sync with core implementation, not deferred).
+
 ## 7. 与 std/ext 的分工
+*EN: 7. Division of Labor with std/ext*
 
 | 层 | 内容 | 平台依赖 |
 | --- | --- | --- |
@@ -310,13 +392,19 @@ namespace trm {
 
 - **data 域（2026-08-18 定）**：zd 编解码（纯逻辑）留 std；
   trm.data 只管文件 IO 面
+  - EN: **data domain (decided 2026-08-18)**: zd encode/decode (pure logic) stays in std; trm.data only handles the file-IO surface
 - **fs/net（2026-08-18 定）**：std 保留，trm 统一平台面（包装）
+  - EN: **fs/net (decided 2026-08-18)**: std kept, trm is the unified platform surface (wrapped)
 - **工具集成（2026-08-18 定）**：不搬代码，库层提供统一 import 入口
+  - EN: **tool integration (decided 2026-08-18)**: no code movement; the library layer provides a unified import entry
 - **双路线保留**：不 import trm 的程序 = 现状产物（零依赖 exe）
+  - EN: **dual routes kept**: programs that don't import trm = current-state output (zero-dependency exe)
 
 ## 8. 版本化（2026-08-18 定稿）
+*EN: 8. Versioning (finalized 2026-08-18)*
 
 ### 8.1 版本号策略：语义化 + ABI 绑定
+*EN: 8.1 Version-Number Strategy: Semantic Versioning + ABI Binding*
 
 ```
 trm@major.minor.patch
@@ -326,9 +414,12 @@ trm@major.minor.patch
 ```
 
 - major 绑定 ABI：应用链接 trm@2.x，机器上只有 trm@3.x → 拒绝加载
+  - EN: major binds ABI: an app links trm@2.x but the machine has only trm@3.x → refuse to load
 - 符号导出带 major 后缀（多 major 共存）——**第一版不做**，记入后置
+  - EN: symbol exports carry a major suffix (multiple majors coexist) — **not done in v1**, recorded as deferred
 
 ### 8.2 编译器能力绑定：min_tiec
+*EN: 8.2 Compiler-Capability Binding: min_tiec*
 
 ```tie
 // tie.pkg（trm 包元数据）
@@ -341,9 +432,12 @@ package trm {
 
 - **检查时机**：编译期（import trm 时 tiec 校验自身 ≥ min_tiec）；
   运行期（trm.init() 加载 DLL 时校验 abi）
+  - EN: **check timing**: compile-time (when importing trm, tiec validates that itself ≥ min_tiec); runtime (when loading the DLL at trm.init(), the abi is validated)
 - **哲学一致**："编译期决定能力"
+  - EN: **philosophy consistent**: "capabilities decided at compile time"
 
 ### 8.3 与语言版本：独立版本 + 捆绑默认
+*EN: 8.3 With the Language Version: Independent Version + Bundled Default*
 
 | 场景 | 机制 |
 | --- | --- |
@@ -353,6 +447,7 @@ package trm {
 | 语言大版本升级 | min_tiec 兜底——锁 trm@2.x 也安全（ABI 不变） |
 
 ### 8.4 加载路径
+*EN: 8.4 Loading Path*
 
 ```
 trm.init()
@@ -363,15 +458,21 @@ trm.init()
 ```
 
 ### 8.5 依赖分发：随包（2026-08-18 定稿）
+*EN: 8.5 Dependency Distribution: Bundled (finalized 2026-08-18)*
 
 - **LLVM 随 trm 分发**（~20-40MB）——复用 vendored LLVM 经验
   （tie-llvm-vendored-dist 已完成）
+  - EN: **LLVM distributed with trm** (~20-40MB) — reusing the vendored LLVM experience (tie-llvm-vendored-dist done)
 - 零依赖（应用不用装 LLVM）、版本绑定（编译器已验证 22.1.8）
+  - EN: zero dependencies (apps needn't install LLVM), version-bound (compiler verified 22.1.8)
 - 许可：LLVM Apache 2.0，可随 trm 分发，无 GPL 污染
+  - EN: license: LLVM is Apache 2.0, distributable with trm, no GPL pollution
 
 ## 9. session 域范围（2026-08-18 定稿）
+*EN: 9. session Domain Scope (finalized 2026-08-18)*
 
 ### 9.1 两级状态区分
+*EN: 9.1 Two-Level State Distinction*
 
 ```
 trm.session 管两类东西，机制完全不同：
@@ -384,7 +485,10 @@ trm.session 管两类东西，机制完全不同：
 **规则**：持久的东西才叫 session；运行期临时状态归应用自己，
 session 域不做"全局变量存储"。
 
+EN: **Rule**: only persistent things are called session; runtime temporary state belongs to the application itself; the session domain does not do "global variable storage".
+
 ### 9.2 用户级存储（~/.tie/）
+*EN: 9.2 User-Level Storage (~/.tie/)*
 
 ```
 ~/.tie/
@@ -401,11 +505,15 @@ session 域不做"全局变量存储"。
 ```
 
 ### 9.3 并发与一致性
+*EN: 9.3 Concurrency and Consistency*
 
 - 配置类 → 原子写（临时文件 + rename），读优先
+  - EN: config-type → atomic write (temp file + rename), read-preferred
 - 历史类 → 追加写 + 文件锁（第一版：单进程追加约定；第二版：跨进程锁）
+  - EN: history-type → append writes + file locking (v1: single-process append convention; v2: cross-process locking)
 
 ### 9.4 API 面
+*EN: 9.4 API Surface*
 
 ```tie
 namespace trm {
@@ -424,6 +532,7 @@ namespace trm {
 ```
 
 ### 9.5 边界（session 不做什么）
+*EN: 9.5 Boundaries (what session does not do)*
 
 | 不做 | 理由 |
 | --- | --- |
@@ -433,12 +542,17 @@ namespace trm {
 | 不锁死路径 | set_home 覆盖 + 平台标准目录探测 |
 
 ### 9.6 与版本化的咬合
+*EN: 9.6 Interlocking with Versioning*
 
 `~/.tie/trm/{version}/` 归 session 域管路径、trm 管内容——单一数据源。
 
+EN: `~/.tie/trm/{version}/` — the session domain manages the path, trm manages the content — a single source of truth.
+
 ## 10. 形态
+*EN: 10. Form*
 
 ### 10.1 主形态：动态库（延迟绑定）
+*EN: 10.1 Main Form: Dynamic Library (Lazy Binding)*
 
 ```
 trm.dll / trm.so / trm.dylib / libtrm.so（Android）——延迟绑定
@@ -448,9 +562,12 @@ trm.dll / trm.so / trm.dylib / libtrm.so（Android）——延迟绑定
 
 - **动态库为默认**：extern 符号运行时解析（LoadLibrary/dlopen），
   支持 P4b 实现选择运行时分发
+  - EN: **dynamic library is the default**: extern symbols resolved at runtime (LoadLibrary/dlopen), supporting P4b's runtime implementation selection/distribution
 - 前置：M5 动态库编译能力（docs/plans/dynamic-library.md 规划中）
+  - EN: prerequisite: the M5 dynamic-library compilation capability (docs/plans/dynamic-library.md, in planning)
 
 ### 10.2 嵌入式子集：trm-embedded
+*EN: 10.2 Embedded Subset: trm-embedded*
 
 ```
 trm-embedded（静态链接，无动态库，interp 执行）
@@ -460,9 +577,12 @@ trm-embedded（静态链接，无动态库，interp 执行）
 ```
 
 - 与 tie:embedded 角色咬合（编译期裁剪：禁用 spawn/终端/JIT）
+  - EN: interlocks with the tie:embedded role (compile-time trimming: spawn/terminal/JIT disabled)
 - 无动态库环境：静态链接（P4b 编译期选择）
+  - EN: no-dynamic-library environments: static linking (P4b compile-time choice)
 
 ## 11. 编译器实现拆解
+*EN: 11. Compiler Implementation Breakdown*
 
 | 模块 | 改动 |
 | --- | --- |
@@ -479,6 +599,7 @@ trm-embedded（静态链接，无动态库，interp 执行）
 | 迁移 | tucore 命名 → trm.ui（无用户，直接改名） |
 
 ## 12. 里程碑
+*EN: 12. Milestones*
 
 | 阶段 | 内容 | 依赖 |
 | --- | --- | --- |
@@ -495,8 +616,11 @@ trm-embedded（静态链接，无动态库，interp 执行）
 | T10 | 平台扩展：impl-posix（Linux/macOS）→ impl-android | T5 后渐进 |
 
 > T2/T3 串行（interp 先通、JIT 后上）；T5-T9 并行；T10 渐进。
+>
+> EN: T2/T3 are serial (interp first, JIT later); T5-T9 are parallel; T10 is gradual.
 
 ## 13. 决策记录（2026-08-18 修订）
+*EN: 13. Decision Log (2026-08-18 Revision)*
 
 | 决策点 | 结论 | 备选（未选） |
 | --- | --- | --- |
@@ -522,18 +646,27 @@ trm-embedded（静态链接，无动态库，interp 执行）
 | 与 std | trm = 平台门面，std = 纯逻辑 | 合并 std |
 
 ## 14. 未决问题
+*EN: 14. Open Questions*
 
 1. **ORC JIT 跨平台验证**：Android（ARM64）可行性需实验确认
    （NDK 自带 LLVM，理论可行，T3 前验证）
+   EN: **ORC JIT cross-platform validation**: Android (ARM64) feasibility needs experimental confirmation (NDK ships LLVM, theoretically viable, verified before T3)
 2. **JIT 热点检测策略**：计数 vs 采样——T4 调优时定
+   EN: **JIT hotspot-detection strategy**: counters vs sampling — decided during T4 tuning
 3. **多 major 共存**：符号导出带 major 后缀（第一版不做，后置）
+   EN: **multiple-major coexistence**: symbol exports carry a major suffix (not in v1, deferred)
 4. **跨进程锁**：session 历史并发写（第二版）
+   EN: **cross-process locking**: concurrent writes to session history (v2)
 5. **tieir 执行语义完整度**：interp 对 tieir 的覆盖范围——T2 时盘点
+   EN: **tieir execution-semantics completeness**: interp's coverage of tieir — audited at T2
 6. **webui AOT 细化**：tieir → wasm 编译期路径 vs 运行时 interp——M5 定
+   EN: **webui AOT details**: tieir → wasm compile-time path vs runtime interp — decided at M5
 7. **工具集成边界**：ext 工具哪些升级进库层入口（log/compress 首批，
    其余按需）——随 T9 渐进
+   EN: **tool-integration boundary**: which ext tools upgrade into library-layer entries (log/compress first batch, others on demand) — progressing with T9
 
 ## 15. 与 tiu 的关系
+*EN: 15. Relationship with tiu*
 
 | 项 | 关系 |
 | --- | --- |
@@ -544,3 +677,5 @@ trm-embedded（静态链接，无动态库，interp 执行）
 | tiu 主题持久化 | trm.session 的 config/tie:data（主题 token 可落盘） |
 | tiu 跨线程 | trm.clock 定时器信号 → 动画驱动；协程/channel（M4 后，tie 并发设计见 [concurrency-model.md](../designs/concurrency-model.md)） |
 | tiu 分发 | tieir 字节码 + trm 引擎（路线 B）——tiu 应用默认走路线 B |
+
+EN: This table describes the relationship between trm and tiu: tiu's Backend module equals trm.ui's abstract surface (port Backend implementation, implemented on each of the four ends); tiu's paint contract uses trm.ui's command list; tiu events consume trm.ui's event_drain; tiu's lifecycle calls trm.init()/shutdown(); tiu theme persistence uses trm.session's config/tie:data; tiu cross-threading uses trm.clock timer signals and coroutines/channels; and tiu distribution runs on the tieir bytecode + trm engine (Route B) — tiu apps default to Route B.

@@ -1,4 +1,5 @@
 # tie 自举阶段 5 前端+IR 性能闸门（G4）
+*EN: tie Self-Hosting Phase 5 Frontend+IR Performance Gate (G4)*
 
 - 生成时间: 2026-08-15 18:28:23
 - CPU: 12th Gen Intel(R) Core(TM) i5-12490F
@@ -6,14 +7,27 @@
 - 通道: `tiec <file> --emit-ir`（tie 编译器）vs `tie-llvm <file> --emit-ir`（Rust 基线）
 - 计时方法: 每文件预热 1 次 + 5 次热运行取中位数（median-of-5），CPU 固定核心 0，单次硬超时 60s
 
+EN: - Generated at: 2026-08-15 18:28:23
+EN: - CPU: 12th Gen Intel(R) Core(TM) i5-12490F
+EN: - Machine: JIRO-MAIN
+EN: - Channels: `tiec <file> --emit-ir` (tie compiler) vs `tie-llvm <file> --emit-ir` (Rust baseline)
+EN: - Timing method: 1 warm-up + 5 hot runs per file, taking the median (median-of-5); CPU pinned to core 0; hard per-run timeout 60s
+
 ## 语料统计
+*EN: Corpus Statistics*
 
 - 语料: 91 个（examples/*.tie（剔除 oop_neg_*）+ tests/language/*.tie（剔除 *_neg.tie））
 - 可编译（计入对比）: 88 个（覆盖 96.7%）
 - tiec 不可编译: 0 个（见不可编译清单）
 - 双失败（Rust 也失败）: 3 个（文件本身为负例/有错，非 tiec 缺口）
 
+EN: - Corpus: 91 files (examples/*.tie (excluding oop_neg_*) + tests/language/*.tie (excluding *_neg.tie))
+EN: - Compilable (included in comparison): 88 (coverage 96.7%)
+EN: - Not compilable on tiec: 0 (see the non-compilable list)
+EN: - Double failures (Rust also fails): 3 (the files themselves are negative/have errors, not tiec gaps)
+
 ## 逐文件（耗时单位 ms，计入对比）
+*EN: Per-File (times in ms, included in comparison)*
 
 | 文件 | tiec | tie-llvm | 每文件比值 (tie/rust) |
 | --- | ---: | ---: | ---: |
@@ -106,7 +120,10 @@
 | tests/language/utf_ascii.tie | 220.3 | 161.8 | 1.36 |
 | tests/language/variadic.tie | 81.3 | 81.7 | 1.00 |
 
+EN: Per-file table of the 88 compilable files with tiec time, tie-llvm time, and per-file ratio (tie/rust).
+
 ## 双失败（Rust 基线自身失败）
+*EN: Double Failures (the Rust baseline itself fails)*
 
 | 文件 | 原因 | Rust exit |
 | --- | --- | ---: |
@@ -114,13 +131,19 @@
 | tests/language/enum.tie | Rust 基线自身编译失败（文件为负例/语义错误，非 tiec 缺口） | 1 |
 | tests/language/generics.tie | Rust 基线自身编译失败（文件为负例/语义错误，非 tiec 缺口） | 1 |
 
+EN: Table of the 3 double-failure files where the Rust baseline itself fails to compile (the files are negative/semantically invalid, not tiec gaps).
+
 ## 汇总
+*EN: Summary*
 
 | 指标 | tiec | tie-llvm | 比值 (tie/rust) |
 | --- | ---: | ---: | ---: |
 | 总耗时 (ms，中位和) | 30850.2 | 21153.5 | 1.458 |
 
+EN: Summary table with total time (sum of medians) and the ratio (tie/rust).
+
 ## G4 判定
+*EN: G4 Verdict*
 
 - **ratio = tiec_total / rust_total = 1.458**（仅 88 个可编译文件）
 - 硬线: ratio ≤ 3.0（同量级）→ 可编译文件数 > 0 且 ratio ≤ 3.0 为 PASS
@@ -128,7 +151,14 @@
 - 判定: **G4 PASS（部分基准 + 缺口清单）**
 - 覆盖: 96.7%（88/91）——**部分基准**：语料未全量编译，结论仅代表当前可编译子集；缺口清单见上，修复后重跑自动扩全。
 
+EN: - **ratio = tiec_total / rust_total = 1.458** (only the 88 compilable files)
+EN: - Hard line: ratio ≤ 3.0 (same order of magnitude) → PASS requires compilable file count > 0 and ratio ≤ 3.0
+EN: - Target: ratio ≤ 2.0 (after the Phase 2 direct symbol-table lookup)
+EN: - Verdict: **G4 PASS (partial baseline + gap list)**
+EN: - Coverage: 96.7% (88/91) — **partial baseline**: the corpus is not fully compiled; the conclusion represents only the current compilable subset; see the gap list above, rerun after fixing to auto-expand.
+
 ## 方法
+*EN: Method*
 
 - **冻结语料**: examples/*.tie（剔除 oop_neg_* 已知负例；库文件可含）与 tests/language/*.tie（剔除 *_neg.tie 负例），共 91 个。文件清单不落盘（脚本每次动态枚举），规则固定——缺口修复后新增可编译文件自动进入对比。
 - **计时通道**: `--emit-ir`（前端 + IR 生成）。后端 opt/clang/lld 对两端是同一批外部工具，排除在 tie-vs-Rust 对比之外。
@@ -137,9 +167,19 @@
 - **单次硬超时 60s**: 防 tiec 意外死循环挂死基准。
 - **比值口径**: 每文件 ratio = tiec 中位 / Rust 中位；总比 = tiec 中位总和 / Rust 中位总和（仅两边都成功、即「可编译」的文件计入）。
 
+EN: - **Frozen corpus**: examples/*.tie (excluding the known negative oop_neg_*; library files allowed) and tests/language/*.tie (excluding the *_neg.tie negatives), 91 files total. The file list is not persisted (the script enumerates dynamically each run); the rule is fixed — newly compilable files after gap fixes automatically enter the comparison.
+EN: - **Timed channel**: `--emit-ir` (frontend + IR generation). The backend opt/clang/lld are the same external tools for both sides, excluded from the tie-vs-Rust comparison.
+EN: - **median-of-5**: 1 warm-up run per file (discarded, to remove load/cache noise) + 5 hot runs taking the median (`Measure-Command`).
+EN: - **Machine pinning**: the process and all child processes are pinned to core 0 via `SetProcessAffinityMask` to avoid scheduling jitter; avoid other load during measurement.
+EN: - **Hard per-run timeout 60s**: to prevent an unexpected tiec infinite loop from hanging the baseline.
+EN: - **Ratio definition**: per-file ratio = tiec median / Rust median; total ratio = sum of tiec medians / sum of Rust medians (only files where both succeed, i.e. "compilable", are included).
+
 ## 三处净收益分析（tie IR 生成的架构优势）
+*EN: Three Net-Gain Analyses (architectural advantages of tie IR generation)*
 
 - 以下三点是 tie 编译器相对 Rust 种子编译器在 frontend+IR 通道的设计收益，在当前可编译子集与全量语料上都成立（随覆盖扩大，收益在总耗时中体现）：
+
+EN: The following three points are design gains of the tie compiler over the Rust seed compiler on the frontend+IR channel, holding on both the current compilable subset and the full corpus (as coverage grows, the gains show up in the total time):
 
 | # | 净收益 | Rust 种子做法 | tie 编译器做法 | 收益来源 |
 | --- | --- | --- | --- | --- |
@@ -147,12 +187,23 @@
 | 2 | **语义单遍** | semantic 多趟扫描（函数签名收集 + 类型解析分阶段） | 单遍符号表 + 节点类型表（收集与解析合一） | 省掉额外符号表遍历与重复解析 |
 | 3 | **类型表直查** | IR 生成时对节点做类型推断 | 语义阶段已写 node-id→type 表，llvmgen 直接查表 | 省去 IR 生成期的重复类型推断 |
 
+EN: Table summarizing the three net gains (no renumber single pass, single-pass semantics, direct type-table lookup) versus the Rust seed approach and their source of gain.
+
 - 净收益的量化验证依赖全量语料（当前覆盖 96.7%）。部分基准下比值已接近 1.0，说明 tie 编译器的 frontend+IR 通道与 Rust 同量级甚至略快，架构收益成立。
 
+EN: Quantifying the net gains depends on the full corpus (currently 96.7% coverage). Under the partial baseline the ratio is already near 1.0, indicating that the tie compiler's frontend+IR channel is the same order as Rust or even slightly faster, so the architectural gains hold.
+
 ## 当前覆盖与缺口
+*EN: Current Coverage and Gaps*
 
 - **当前可编译**: 88/91（96.7%）——仅 irgen 最小集文件（println/print/exec_code/time_now/get_env + 算术/if/for/var + 纯函数），详见逐文件表。
 - **不可编译**: 0 个，原因分类见上表（irgen 最小集外为主；前端语义/语法缺口少量）。前端语义缺口（全局表误判）正由另一任务修复——修复后重跑本脚本即自动扩全。
 - **双失败**: 3 个（Rust 基线自身也失败，文件本身为负例/有错，不算 tiec 缺口）。
 - **G4 结论**: ratio 1.458（仅可编译子集）
 - 覆盖注脚: 当前为部分基准（覆盖 96.7%），结论仅代表可编译子集；缺口清单见上，前端语义缺口修复后重跑即自动扩全。
+
+EN: - **Currently compilable**: 88/91 (96.7%) — only the irgen minimal-set files (println/print/exec_code/time_now/get_env + arithmetic/if/for/var + pure functions); see the per-file table.
+EN: - **Not compilable**: 0; the failure categories are shown in the table above (mostly outside the irgen minimal set; a few frontend semantic/syntax gaps). The frontend semantic gap (global-table misjudgment) is being fixed by another task — rerunning this script after the fix auto-expands the coverage.
+EN: - **Double failures**: 3 (the Rust baseline itself also fails; the files are negative/have errors, so they do not count as tiec gaps).
+EN: - **G4 conclusion**: ratio 1.458 (compilable subset only)
+EN: - Coverage footnote: currently a partial baseline (96.7% coverage); the conclusion represents only the compilable subset; see the gap list above, rerun after the frontend semantic gap is fixed to auto-expand.

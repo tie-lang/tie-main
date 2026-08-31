@@ -1,4 +1,5 @@
 # 规划：tsp（tie 语言服务器，原 tie-lsp 重写增强）
+*EN: Plan: tsp (tie Language Server, a Rewrite-and-Enhance of the Original tie-lsp)*
 
 > 状态：**规划**（2026-08-15 设计讨论定稿，未实现）
 > 本文档定义 tsp——tie 语言服务器（Language Server），原 tie-lsp 的
@@ -10,17 +11,27 @@
 > 关联：自举链（tiec/interp/trm 已 tie 化，LSP 是最后 Rust 残留）、
 > 编译器前端（lexer/parser/semantic 直接复用）、ir_meta（sym_table 符号索引）、
 > tieconsole（补全/高亮复用）、序列化规范（LSP 协议用 JSON——标准协议）。
+>
+> EN: Status: **Plan** (design discussion finalized on 2026-08-15, not implemented)
+> EN: This document defines tsp — the tie Language Server, a **tie rewrite + full enhancement** of the original tie-lsp. Namespace/directory: **tsp** (the original plan's tlsp is deprecated). Decision summary: **R1** (tie-rewritten server, 0-Rust bootstrapping route) + **full enhancement** (16 capabilities) + **incremental analysis in v1** (performance-critical) + **tieconsole reuse confirmed** (completion engine shared) + **semanticTokens in v1** (semantic highlighting).
+> EN: Related: the bootstrapping chain (tiec/interp/trm already tie-ified; LSP is the last Rust leftover), the compiler frontend (lexer/parser/semantic directly reused), ir_meta (sym_table symbol index), tieconsole (completion/highlighting reuse), and the serialization spec (the LSP protocol uses JSON — a standard protocol).
 
 ## 1. 定位与路线
+*EN: 1. Positioning and Route*
 
 ### 1.1 现状
+*EN: 1.1 Current State*
 
 - Rust 版 tie-lsp 已归档（tiec_rust）——**LSP 服务端是自举链最后的 Rust 残留**
+  - EN: the Rust tie-lsp has been archived (tiec_rust) — **the LSP server is the last Rust leftover in the bootstrapping chain**
 - VSCode 客户端已实现（TypeScript + vscode-languageclient，M1 完成）：
   didOpen/didChange/didClose、publishDiagnostics、hover、definition、completion
+  - EN: the VSCode client is implemented (TypeScript + vscode-languageclient, M1 done): didOpen/didChange/didClose, publishDiagnostics, hover, definition, completion
 - 自举后的 tiec 无 LSP 服务端实现（driver 只有 `--lsp` 传参入口）
+  - EN: the post-bootstrap tiec has no LSP server implementation (the driver only has a `--lsp` parameter entry)
 
 ### 1.2 R1：tie 重写（0-Rust 路线收官）
+*EN: 1.2 R1: tie Rewrite (concluding the 0-Rust route)*
 
 ```
 现有：Rust tie-lsp（已归档）+ VSCode 客户端（TypeScript，保留）
@@ -32,7 +43,10 @@
 - 编辑器诊断 = 编译错误（永不漂移）
 - 补全/hover/跳转基于真实符号表（非重复实现）
 
+EN: **Core advantage: the compiler frontend is reused directly** — tsp imports compiler/frontend directly (lexer/parser/semantic all written in tie), so the analysis engine and the compiler are **the same code**: editor diagnostics = compile errors (never drifting); completion/hover/jump are based on the real symbol table (not a duplicate implementation).
+
 ## 2. 目录与命名空间
+*EN: 2. Directory and Namespace*
 
 ```
 compiler/lsp/（type tie<class>，命名空间 tsp）
@@ -55,14 +69,20 @@ compiler/lsp/（type tie<class>，命名空间 tsp）
 ```
 
 ## 3. 协议层（protocol.tie）
+*EN: 3. Protocol Layer (protocol.tie)*
 
 - LSP = JSON-RPC over stdio——std 已有 json 解析（复用 std/json）
+  - EN: LSP = JSON-RPC over stdio — std already has json parsing (reuse std/json)
 - **LSP 协议用 JSON**（标准协议，不适用 §1.4 "通信用 zd"——协议兼容优先）
+  - EN: **the LSP protocol uses JSON** (a standard protocol; the "use zd for communication" of §1.4 does not apply — protocol compatibility takes priority)
 - 消息类型：Initialize/Initialized/Shutdown/Exit +
   textDocument/*（didOpen/didChange/didClose/hover/completion/definition/...）
+  - EN: message types: Initialize/Initialized/Shutdown/Exit + textDocument/* (didOpen/didChange/didClose/hover/completion/definition/...)
 - 并发：LSP 异步请求（服务端循环 + 请求分发）
+  - EN: concurrency: LSP async requests (server loop + request dispatch)
 
 ## 4. 能力全量清单（16 项）
+*EN: 4. Full Capability List (16 Items)*
 
 | # | 能力 | 现状 | 增强实现 |
 | --- | --- | --- | --- |
@@ -83,7 +103,10 @@ compiler/lsp/（type tie<class>，命名空间 tsp）
 | 15 | 文档高亮 documentHighlight | ❌ | 符号出现位置高亮（复用索引） |
 | 16 | 代码透镜 codeLens | ❌ | 函数引用计数/测试标记（后置可选） |
 
+EN: This table lists all 16 capabilities with their current status and enhanced implementations: diagnostics (reuse semantic + incremental, §5), hover (+ doc_comment + port method signatures), definition (+ cross-file via the import graph + go-to-type), completion (+ keywords/symbol table/params/generic arguments), references, rename, signatureHelp, semanticTokens (v1), documentSymbol, workspaceSymbol, quickfix, foldingRange, formatting, the didOpen/didChange sync (kept), documentHighlight, and codeLens.
+
 ## 5. 增量分析（第一版做，性能关键）
+*EN: 5. Incremental Analysis (v1, Performance-Critical)*
 
 ```tie
 // 文档变更 → 只重分析该文件 + 反向依赖它的文件
@@ -91,16 +114,24 @@ compiler/lsp/（type tie<class>，命名空间 tsp）
 ```
 
 - 大项目（编译器自身 8 模块）编辑不卡顿
+  - EN: editing large projects (the compiler itself, 8 modules) without lag
 - 复用编译器 frontend——分析一致性（编辑器诊断 = 编译错误）
+  - EN: reuse the compiler frontend — analysis consistency (editor diagnostics = compile errors)
 - 缓存粒度：文件级（符号表 + 诊断结果）；import 变更才级联
+  - EN: cache granularity: file level (symbol table + diagnostic results); cascades only on import changes
 
 ## 6. 符号索引（index.tie）
+*EN: 6. Symbol Index (index.tie)*
 
 - **复用 ir_meta sym_table**：函数/struct/命名空间/全局 + 签名 + 可见性 + span
+  - EN: **reuse ir_meta sym_table**: functions/structs/namespaces/globals + signatures + visibility + span
 - import 图：解析 import 得到跨文件依赖（正向 + 反向索引）
+  - EN: the import graph: parse imports to get cross-file dependencies (forward + reverse indexing)
 - 工作区索引：打开的文件 + import 可达文件（按需加载）
+  - EN: workspace index: open files + import-reachable files (loaded on demand)
 
 ## 7. tieconsole 复用（确认）
+*EN: 7. tieconsole Reuse (confirmed)*
 
 ```
 tsp 服务端 = 分析引擎（tie 写，编译器前端复用）
@@ -109,10 +140,14 @@ tsp 服务端 = 分析引擎（tie 写，编译器前端复用）
 ```
 
 - tieconsole 的补全（I2）+ 语义高亮（I3）直接连 tsp 分析能力
+  - EN: tieconsole's completion (I2) + semantic highlighting (I3) directly connect to tsp's analysis capability
 - 共享实现：completion.tie / semantic_tokens.tie 双客户端复用
+  - EN: shared implementation: completion.tie / semantic_tokens.tie reused by both clients
 - 协议形态：tieconsole 进程内调用（库模式）或独立 tsp 进程（LSP 模式）——第一版库模式
+  - EN: protocol form: in-process call from tieconsole (library mode) or a standalone tsp process (LSP mode) — library mode in v1
 
 ## 8. 编译器实现拆解
+*EN: 8. Compiler Implementation Breakdown*
 
 | 模块 | 改动 |
 | --- | --- |
@@ -126,6 +161,7 @@ tsp 服务端 = 分析引擎（tie 写，编译器前端复用）
 | CLI | `tie --lsp` → 启动 tsp（现状入口保留） |
 
 ## 9. 决策记录（讨论产物）
+*EN: 9. Decision Log (Discussion Output)*
 
 | 决策点 | 结论 | 备选（未选） |
 | --- | --- | --- |
@@ -138,12 +174,18 @@ tsp 服务端 = 分析引擎（tie 写，编译器前端复用）
 | 协议 | LSP 标准 JSON（协议兼容优先，不用 zd） | zd |
 
 ## 10. 未决问题
+*EN: 10. Open Questions*
 
 1. **并发模型**：LSP 异步请求的调度（tsp 内用协程？——并发模型 M4 落地前
    第一版顺序处理 + 增量缓存补偿）
+   EN: **concurrency model**: scheduling of LSP async requests (use coroutines in tsp? — before concurrency model M4 lands, v1 does sequential processing + incremental-cache compensation)
 2. **tieconsole 库模式 API**：补全/高亮的最小接口面（completion(symtab, pos) /
    tokens(ast) 函数形态）
+   EN: **tieconsole library-mode API**: the minimal interface surface for completion/highlighting (function forms completion(symtab, pos) / tokens(ast))
 3. **quickfix 修复范围**：第一版修复集（缺分号/未定义变量/未使用变量？）
+   EN: **quickfix fix scope**: the v1 fix set (missing semicolon / undefined variable / unused variable?)
 4. **格式化规则**：与 prep 转换器的关系（格式化 = 转换器特例？）
+   EN: **formatting rules**: the relationship with the prep converter (is formatting a special case of the converter?)
 5. **语义令牌的 token 类型集**：与 VSCode 标准语义令牌类型的映射
    （keyword/type/variable/function/namespace...）
+   EN: **the semantic-token type set**: mapping to VSCode's standard semantic-token types (keyword/type/variable/function/namespace...)

@@ -1,11 +1,19 @@
 # G3 闸门：0-Rust 验证报告（自举 v2 T4.6）— 2026-08-12
+*EN: G3 gate: 0-Rust verification report (bootstrap v2 T4.6) — 2026-08-12*
 
 ## 种子界限（bootstrap boundary）
+*EN: The bootstrap boundary*
 
 0-Rust 不是"零 Rust 从头构建"——tiec.exe 本身由 Rust 种子编译器
 （`target/release/tie-llvm.exe`）编译，这是**唯一的 Rust 接触点**。
 G3 验证的承诺是：**种子 tiec 之后的一切**（编译用户程序、链接运行时、
 REPL 运行、解释器求值）**不触碰 cargo/target 的 Rust 产物**。
+
+EN: 0-Rust does not mean "built from scratch with zero Rust" — tiec.exe
+itself is compiled by the Rust seed compiler (`target/release/tie-llvm.exe`),
+which is the only Rust touch point. The G3 promise: everything after the seed
+tiec (compiling user programs, linking the runtime, running the REPL,
+interpreter evaluation) does not touch any Rust artifacts under cargo/target.
 
 ```
 Rust 种子（tie-llvm.exe）
@@ -16,6 +24,7 @@ Rust 种子（tie-llvm.exe）
 ```
 
 ## 验证矩阵（scripts/zero-rust-check.ps1）
+*EN: Verification matrix (scripts/zero-rust-check.ps1)*
 
 | # | 检查项 | 结果 |
 |---|---|---|
@@ -27,10 +36,19 @@ Rust 种子（tie-llvm.exe）
 | 6 | REPL parity（tie repl vs Rust 通道，golden 18 命令，233 字节 diff 空） | ✅ PASS |
 | 7 | interp 行为测试套件（11 文件 198 断言） | ✅ PASS |
 
+EN: All 7 checks pass (preconditions, hello compilation, runtime-program
+compilation, no tie_interp.lib-only symbols, allowed runtime.a exports,
+REPL parity with empty diff, and the 198-assertion interp suite).
+
 **结论：G3 PASS** —— 种子 tiec 编译的运行时程序链接 tie 自写 runtime.a
 （无 Rust tie-interp），运行时栈 Rust-free；REPL parity 空 diff；interp 套件全 PASS。
 
+EN: Conclusion: G3 PASS — runtime programs built by the seed tiec link the
+tie-written runtime.a (no Rust tie-interp), the runtime stack is Rust-free,
+REPL parity has an empty diff, and the interp suite fully passes.
+
 ## 关键机制（T4.5 基础）
+*EN: Key mechanisms (T4.5 foundation)*
 
 - **std/runtime.a**（tie 语言自写）：顶层裸函数 `func tie_exec_code(cmd: string) -> i64`
   编译为 `define i64 @tie_exec_code(ptr)`——无命名空间不 mangle，与语言底座
@@ -40,7 +58,14 @@ Rust 种子（tie-llvm.exe）
 - tiec 的 irgen 对 exec_code/time_now/get_env 生成 `extern_call(36)` 指令，
   llvmgen 收集符号输出 declare，driver 按 `g_used_runtime` 链接 runtime.a。
 
+EN: std/runtime.a (written in tie): top-level bare functions compile to
+unmangled symbols (e.g. `tie_exec_code`), byte-level matching the IR declares;
+it uses T0.7 extern fn declarations for libc (`system`/`getenv`/`time(0)`); the
+irgen emits `extern_call(36)` for these, llvmgen collects the declares, and the
+driver links runtime.a when `g_used_runtime` is set.
+
 ## 限制与 R3 fallback（诚实记录）
+*EN: Limitations and R3 fallback (honest record)*
 
 1. **runtime.a 需种子编译**：tiec 的 irgen 最小集不支持 `extern fn` 声明，
    故 std/runtime.tie 由种子编译器编译成 .a（0-Rust 验证允许的 bootstrap 步骤）。
@@ -53,9 +78,20 @@ Rust 种子（tie-llvm.exe）
    （TIE_INTERP_LIB 环境变量可回退），直到 tiec 能力闭合（extern fn 支持、
    irgen 全语句集）后彻底退役。
 
+EN: 1) runtime.a needs the seed compiler (minimum irgen lacks extern fn);
+2) repl.exe also needs the seed channel (read_line uses the C-ABI ptr bridge);
+3) ptr-bridge symbols are not tie-ified yet (tie has no pointer type; they come
+from the Rust tie-interp base); 4) R3 fallback: the Rust tie-interp remains as a
+recoverable fallback via TIE_INTERP_LIB until tiec closes the capability gap.
+
 ## 修复记录（验证过程暴露的 tiec 缺陷）
+*EN: Fixes recorded (tiec defects exposed by verification)*
 
 - **llvmgen ret 类型硬编码**：显式 `return <expr>` 生成 `ret i32 %N` 但值是 i64
   → 按 ins_ty 输出 `ret <T> %N`。
 - **irgen main 补 ret**：void main 补的 ret 原用 ty=-1（生成 `ret ptr 0`/`ret void`
   与 `define i32 @main` 不匹配）→ 显式 TK_I32。
+
+EN: llvmgen ret type was hard-coded (`ret i32` for an i64 value) → now uses
+ins_ty; irgen's implicit main ret used ty=-1 (mismatched with `define i32
+@main`) → now explicit TK_I32.

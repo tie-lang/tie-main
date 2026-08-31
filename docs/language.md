@@ -1,24 +1,52 @@
 # tie 语言规范（v0.1 草案）
 
+*EN: The tie Language Specification (v0.1 draft)*
+
 > ⚠️ **早期开发阶段**：本规范随实现演进，语法与语义可能变更，一切以实现为准。
+
+> **Early development stage**: this specification evolves with the implementation; the syntax and semantics may change, and the implementation is authoritative.
 
 > 工程结构、CLI 用法、编译流水线与路线图见根目录 [README.md](../README.md)。
 > 当前版本：0.1（设计阶段）
 
+> For project structure, CLI usage, the compilation pipeline and the roadmap, see the repository-root [README.md](../README.md).
+> Current version: 0.1 (design stage)
+
 ## 1. 语言定位
+
+*EN: 1. Language positioning*
 
 tie 是一门**通用编程语言**，目标是让用户仅用这一门语言就能完成大型项目：
 
+tie is a **general-purpose programming language** whose goal is to let users complete large projects using this one language alone:
+
 - 写**界面**（UI 文件）
+
+- write **interfaces** (UI files)
+
 - 写**逻辑**（业务/算法代码）
+
+- write **logic** (business / algorithm code)
+
 - 写**数据库**（表结构与数据定义）
+
+- write **databases** (table structures and data definitions)
+
 - 充当**数据交换格式**（类似 JSON/XML 的角色）
+
+- serve as a **data interchange format** (a role similar to JSON/XML)
 
 同一个 `.tie` 文件扮演什么角色，由文件**前几行的头（Header）**决定。头与主要内容严格分离。
 
+What role a given `.tie` file plays is determined by the **Header** at its first few lines. The header is strictly separated from the main content.
+
 ## 2. 文件结构：头 + 内容
 
+*EN: 2. File structure: header + content*
+
 tie 源文件由两部分组成，二者分离、职责明确：
+
+A tie source file consists of two parts, which are separated and have clear responsibilities:
 
 ```
 ┌─────────────────────────── 头（Header）───────────────────────────┐
@@ -31,8 +59,12 @@ tie 源文件由两部分组成，二者分离、职责明确：
 
 ### 2.1 头语法
 
+*EN: 2.1 Header syntax*
+
 头必须出现在文件**最前面几行**，是真正的语法行（不再是 `// tie:` 注释指令），
 连续排列（允许其间空行）直到第一个非头内容行为止：
+
+The header must appear in the **first few lines** of the file; it is a genuine syntactic line (no longer a `// tie:` comment directive), arranged contiguously (blank lines allowed between the lines) until the first non-header content line:
 
 ```c
 type tie<logic>    // 本文件是逻辑代码（默认，可省略）
@@ -43,7 +75,11 @@ func main() {
 
 声明语法：`type tie`（Type 角色，裸形式）或 `type tie<X>`（X 为子类型）。
 
+Declaration syntax: `type tie` (the Type role, bare form) or `type tie<X>` (X is a sub-type).
+
 ### 2.2 头类型（文件角色）
+
+*EN: 2.2 Header kinds (file roles)*
 
 | 头部声明              | 角色     | 说明                          |
 | ------------------- | ------ | --------------------------- |
@@ -57,32 +93,69 @@ func main() {
 | `type tie<port>`  | 端口/接口  | 端口/对外接口文件                    |
 | `type tie<ir>`    | IR 文件   | 直接生成 LLVM IR（.ll），不继续 opt/clang 链接 |
 
+EN: The table lists each supported header declaration with its file role and meaning: `type tie` (generic entry, Type role via the bare `type tie`), `logic` (default role, compiled to an executable or library), `ui` (UI component tree), `db` (table structure/data), `data` (pure data, similar to JSON, importable by other files), `class` (compiled to a static library `.a`, no `main`), `script` (executable script), `port` (port/external interface), and `ir` (emits LLVM IR `.ll` directly without further opt/clang linking).
+
 **未声明头**时默认按 `logic` 处理（可执行文件）。
 子类型全集：`script` / `data` / `ui` / `class` / `logic` / `port` / `db` / `ir`；
 `type` 角色由裸 `type tie` 表达（`type tie<type>` 是格式错误）。
 优化级别 / 交叉编译目标等选项不再放头部——`opt` / `target` **仅 CLI**。
 
+When **no header is declared**, the file defaults to `logic` (an executable). The full set of sub-types is: `script` / `data` / `ui` / `class` / `logic` / `port` / `db` / `ir`; the `type` role is expressed by the bare `type tie` (`type tie<type>` is a format error). Options such as the optimization level / cross-compilation target no longer live in the header — `opt` / `target` are **CLI-only**.
+
 ### 2.3 头 vs 主要内容分离原则
 
+*EN: 2.3 Principle of separating header vs. main content*
+
 - 头只允许出现在文件头部（前 N 行），内容区出现 `type tie` 视为普通代码。
+
+- The header may appear only at the head of the file (first N lines); a `type tie` in the content area is treated as ordinary code.
+
 - 头与内容之间允许空行分隔。
+
+- Blank lines are allowed between the header and the content.
+
 - `type tie<data>` 文件**只能**含数据声明（如 `record`/字面量表），不含函数体。
+
+- A `type tie<data>` file may contain **only** data declarations (e.g. `record`/literal tables), with no function bodies.
+
 - `type tie<ui>` 文件可含 `view`/`layout` 声明 + 事件处理函数。
+
+- A `type tie<ui>` file may contain `view`/`layout` declarations plus event-handling functions.
+
 - 内容单文件即可运行（`logic` 含 `func main()`），也可多文件通过 `import` 组合（见 §7）。
+
+- A single content file can run on its own (`logic` containing `func main()`), or multiple files can be combined via `import` (see §7).
+
 - 文件名 `xxx.<角色>.tie` 可声明默认角色（头部声明优先，不一致时警告并采用头部）。
 
+- A file name `xxx.<role>.tie` may declare a default role (the header declaration takes precedence; on a mismatch a warning is emitted and the header is used).
+
 ### 2.4 预处理（Harbor M3 起：tie 语言自举）
+
+*EN: 2.4 Preprocessing (from Harbor M3: tie language self-hosting)*
 
 **预处理（tie-prep）** 是四段式流水线的第一段，在源码文本层面工作，职责：
 去 BOM / CRLF→LF 归一（壳层）→ 提取声明行 → 判定角色 → 重建正文。
 
+**Preprocessing (tie-prep)** is the first stage of the four-stage pipeline; it works at the level of the source text with the responsibilities: strip BOM / normalize CRLF→LF (shell) → extract the declaration line → determine the role → rebuild the body.
+
 Harbor M3 起，预处理**核心逻辑完全用 tie 语言编写**（`prep/core.tie`），
 Rust 侧仅剩解释执行壳：
 
+Since Harbor M3, the **core logic of preprocessing is written entirely in tie** (`prep/core.tie`); only an interpreting shell remains on the Rust side:
+
 1. 字节规范化（去 BOM、`\r\n`→`\n`）留壳层——tie 字符串字面量无法表达 BOM 字符；
+
+1. Byte normalization (strip BOM, `\r\n`→`\n`) stays in the shell — tie string literals cannot express the BOM character;
+
 2. 通过 tie-interp `eval` 注册模块，再 `eval_call("prep::process", src)`
    以**字符串值直传**源码调用（不经源码文本转义，换行/引号原样直传）；
+
+2. Register the module via the tie-interp `eval`, then `eval_call("prep::process", src)` to call it with the source passed **directly as a string value** (without source-text escaping; newlines/quotes are passed through verbatim);
+
 3. 模块返回**协议文本**，壳层解析还原角色/正文（声明行已剥离）：
+
+3. The module returns **protocol text**, which the shell parses back into the role/body (the declaration line has already been stripped):
 
 ```text
 ROLE:logic          ← 角色（type/script/data/ui/class/logic/port/db/ir）
@@ -97,21 +170,33 @@ BODY:12             ← 正文码点数（str_len 语义，Rust 侧按字符截�
 > `len("你好") == 6` 字节；用 `len` 做 `str_char` 的循环上界会越界返回空串，
 > 导致 trim 尾随空白残留、slice 截取错乱）。
 
+> Encoding convention: BODY declares a **codepoint count** (`str_len`), not a byte count. Strings in tie are UTF-8 encoded; `len` returns the byte count while `str_char`/`str_len` index by Unicode codepoints — for multi-byte characters such as Chinese, the byte count ≠ the codepoint count (one Chinese character is 3 bytes and 1 codepoint), so string traversal boundaries must use `str_len` to keep Chinese text from misaligning (`str_len("你好") == 2` codepoints, `len("你好") == 6` bytes; using `len` as the loop upper bound for `str_char` goes out of bounds and returns an empty string, causing residual trailing whitespace in trim and garbled slice extraction).
+
 **扩展性**：新增转换器/处理器 = 新增一个 tie 模块（约定顶层
 `func process(src: string) -> string`），Rust 侧零改动。
 示例 `prep/indent.tie`（制表符→4 空格）可通过
 `tie-prep <file> --module prep/indent.tie` 挂载执行。
 
+**Extensibility**: adding a converter/processor = adding a tie module (conventionally a top-level `func process(src: string) -> string`), with zero changes on the Rust side. The example `prep/indent.tie` (tab → 4 spaces) can be mounted and run via `tie-prep <file> --module prep/indent.tie`.
+
 > tie:script 是上述机制的一般化协议：模块约定、`eval`/`eval_call` 执行语义、
 > 协议文本格式与三层调用入口（Rust / CLI / tie 程序内）的完整说明见
 > [docs/tie-script.md](tie-script.md)。
 
+> tie:script is the generalizing protocol of the above mechanism: the module convention, the `eval`/`eval_call` execution semantics, the protocol-text format, and the three-tier call entry points (Rust / CLI / inside a tie program) are fully described in [docs/tie-script.md](tie-script.md).
+
 ## 3. 类型系统（静态类型）
+
+*EN: 3. Type system (static typing)*
 
 tie 采用**静态类型**（编译期类型检查），后端为 LLVM 强类型 IR 服务。
 类型关键字采用 **Rust 风格**：`i8`/`i16`/`i32`/`i64`/`u8`/`u16`/`u32`/`u64`/`f32`/`f64`/`bool`/`char`/`string`/`void`/`code`。
 
+tie uses **static typing** (compile-time type checking), serving the strongly-typed LLVM IR backend. The type keywords follow **Rust style**: `i8`/`i16`/`i32`/`i64`/`u8`/`u16`/`u32`/`u64`/`f32`/`f64`/`bool`/`char`/`string`/`void`/`code`.
+
 ### 3.1 基本类型
+
+*EN: 3.1 Primitive types*
 
 | 类型                           | 说明                                   | 对应 LLVM 类型                   |
 | ---------------------------- | ------------------------------------ | ---------------------------- |
@@ -126,13 +211,21 @@ tie 采用**静态类型**（编译期类型检查），后端为 LLVM 强类型
 | `void`                       | 无返回值（仅函数）                            | `void`                       |
 | `code`                       | 代码片段（**编译期类型**：解析翻译为 AST 子程序，无运行时实体） | —（IR 阶段已展开）                  |
 
+EN: The table lists the primitive types with their meaning and corresponding LLVM type: signed/unsigned integers, 128-bit integers (S2), floats, `bool`, the balanced-ternary `trit`, `char` (UTF-32), the immutable `string`, `void` (return-less, functions only), and `code` (a **compile-time type**: parsed and translated into AST subroutines with no runtime entity).
+
 ### 3.2 平衡三进制 trit（三值逻辑，M4 补齐）
+
+*EN: 3.2 Balanced ternary trit (three-valued logic, completed in M4)*
 
 `trit` 是**平衡三进制**类型（ternary digit），值域 `-1/0/+1`——数论与三值逻辑常用
 （类似 bool 的三值扩展：`true`/`unknown`/`false`）。
 
+`trit` is a **balanced ternary** type (ternary digit) with the value range `-1/0/+1` — commonly used in number theory and three-valued logic (similar to a three-valued extension of bool: `true`/`unknown`/`false`).
+
 **字面量**：`true`（+1）/ `zero`（0）/ `false`（-1）——`true`/`false` 在 `trit`
 标注上下文中适配为 trit 值（裸 `true` 仍为 `bool`）：
+
+**Literals**: `true` (+1) / `zero` (0) / `false` (-1) — `true`/`false` adapt to trit values in a `trit`-annotated context (a bare `true` is still `bool`):
 
 ```c
 var p: trit = true    // +1
@@ -142,25 +235,41 @@ var n: trit = false   // -1
 
 **Kleene 三值逻辑**（`&&` = min，`||` = max，`!` = 取反）：
 
+**Kleene three-valued logic** (`&&` = min, `||` = max, `!` = negation):
+
 | `&&` | +1 | 0 | -1 |  `\|\|` | +1 | 0 | -1 | `!` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | **+1** | +1 | 0 | -1 | **+1** | +1 | +1 | +1 | +1→-1 |
 | **0** | 0 | 0 | -1 | **0** | +1 | 0 | 0 | 0→0 |
 | **-1** | -1 | -1 | -1 | **-1** | +1 | 0 | -1 | -1→+1 |
 
+EN: The Kleene truth tables for trit: `&&` applies min over the ternary values, `||` applies max, and `!` negates (+1→-1, 0→0, -1→+1).
+
 **饱和算术**（clamp 到 [-1,1]）：`trit + - * trit` → `trit`（如 `1+1=1` 饱和）；
 `trit` 与 `i64` 混合运算 → `i64`（sext 提升，如 `1+5=6`）；`div`/`mod` 不允许。
 
+**Saturating arithmetic** (clamped to [-1,1]): `trit + - * trit` → `trit` (e.g. `1+1=1`, saturating); mixing `trit` with `i64` → `i64` (sext promotion, e.g. `1+5=6`); `div`/`mod` are not allowed.
+
 **比较**：`trit == != < > <= >=`（与 trit 或 i64）→ `bool`。
 
+**Comparison**: `trit == != < > <= >=` (with trit or i64) → `bool`.
+
 **转换**：`to_string(trit)` → `"-1"/"0"/"1"`；`parse_trit(s)` → `trit`（非法输入报错）。
+
+**Conversion**: `to_string(trit)` → `"-1"/"0"/"1"`; `parse_trit(s)` → `trit` (an error is reported on invalid input).
 
 **典型用途**：三路比较（`compare(a,b)` 返回 -1/0/+1）、数论算法（平衡三进制数）、
 三态逻辑（是与否之外的"未知"）。
 
+**Typical uses**: three-way comparison (`compare(a,b)` returns -1/0/+1), number-theory algorithms (balanced ternary numbers), and three-state logic (an "unknown" besides yes and no).
+
 ### 3.3 宽类型（加速编译）
 
+*EN: 3.3 Wide types (to speed up compilation)*
+
 宽类型关键词覆盖一组相关类型，编译器无需精确推断即可快速编译；同时提高准确率与代码可读性：
+
+Wide-type keywords cover a family of related types, letting the compiler compile quickly without precise inference; they also improve accuracy and code readability:
 
 | 关键词        | 覆盖范围                          | 说明        |
 | ---------- | ----------------------------- | --------- |
@@ -168,11 +277,17 @@ var n: trit = false   // -1
 | `text`（文）  | 字符串与字符：`string`、`char`        | 文本数据      |
 | `misc`（其他） | 其余全部类型：`bool`、`void`、`code` 等 | 兜底类型      |
 
+EN: The wide types: `num` (numbers) covers all numeric types (integers i8..u64, floats f32/f64); `text` covers strings and chars (`string`, `char`); `misc` covers all remaining types (`bool`, `void`, `code`, etc.).
+
 宽类型是**编译期概念**（类别框）：声明时只校验初始化表达式属于该类别，
 变量在作用域内以**推导出的具体类型**参与运算（整数字面量→`i64`，浮点字面量→`f64`），
 IR 生成阶段不出现宽类型。
 
+Wide types are a **compile-time concept** (category buckets): at declaration time only the initialization expression's belonging to that category is checked; within scope the variable participates in operations with its **inferred concrete type** (integer literal → `i64`, float literal → `f64`); wide types never appear in the IR generation stage.
+
 使用示例：
+
+Usage examples:
 
 ```c
 var a: num = 42        // 数类型，不必写明 i64
@@ -183,10 +298,16 @@ var c: misc = true     // 其他类型
 
 ### 3.4 表类型（复合类型）
 
+*EN: 3.4 Table type (composite type)*
+
 `table` 代表**表**：数组（全部元素无 id）与高级数组（含 id 元素）的统一容器。
+
+`table` denotes a **table**: a unified container for arrays (all elements without ids) and advanced arrays (containing id'd elements).
 
 **表字面量**：`[col, col; row, row]`——逗号分隔**列**（元素），分号分隔**行**，
 id 可选（无 id 即普通位置元素）：
+
+**Table literals**: `[col, col; row, row]` — commas separate **columns** (elements), semicolons separate **rows**; ids are optional (no id means an ordinary positional element):
 
 ```c
 var arr: table = [1, 2, 3]              // 单行 3 列（无 id，隐式下标 0..2）
@@ -197,19 +318,43 @@ var grid: table = [1, 2; 3, 4]          // 2 行 2 列（分号分行）
 ```
 
 - **逗号 `,`**：分隔同一行的元素（列）。
+
+- **Comma `,`**: separates the elements (columns) of the same row.
+
 - **分号 `;`**：分隔行。
+
+- **Semicolon `;`**: separates rows.
+
 - **id 形式**：可选；显式写出的 id 可为**数字**（下标，不加引号）或**字符串**（命名键，**必须加双引号**，这是 tie 的底层逻辑——字符串字面量一律显式引号，杜绝与裸标识符歧义）；省略 id 时按位置隐式编号。
+
+- **id form**: optional; an explicitly written id may be a **number** (subscript, no quotes) or a **string** (a named key, **must be double-quoted** — this is tie's underlying logic: string literals always use explicit quotes to avoid ambiguity with bare identifiers); when the id is omitted, elements are implicitly numbered by position.
+
 - **value 类型**：任意类型（基本类型/复合类型），同一表内元素类型必须一致。
+
+- **value type**: any type (primitive/composite); element types within one table must be uniform.
+
 - 全部元素无 id → 行为等同普通数组（按下标访问）。
+
+- All elements without ids → behaves like an ordinary array (accessed by subscript).
+
 - 存在 id 元素 → 同时支持按下标与按 id 访问（表语义）。
+
+- With id'd elements → supports access by both subscript and id (table semantics).
+
 - 空表 `[]` 合法，元素类型暂定 `i64`。
+
+- The empty table `[]` is legal; its element type is tentatively `i64`.
 
 > **当前实现状态**：表运行时支持**单行纯位置表 + 数字下标**（存取、遍历已实现）。
 > 字符串 id 表即键值表 **map**（`["a":1]` 语法），已随 E3 + T0.5 落地（见 §3.4.1）；
 > 二维表（`[1,2;3,4]`）语法可解析，但语义阶段报"留待 M3"，暂不可用。
 
+> **Current implementation status**: the table runtime supports **single-row pure-positional tables + numeric subscripts** (store/load and iteration are implemented). A string-id table is the key-value table **map** (`["a":1]` syntax), landed with E3 + T0.5 (see §3.4.1); the two-dimensional table (`[1,2;3,4]`) syntax parses, but the semantic stage reports "deferred to M3" and it is not yet usable.
+
 **带元素类型的表 `table<T>`（A1，自举前置）**：参数/变量可标注元素类型，
 函数体内对表参数的 `t[i]` 下标访问、`len(t)`、`for x in t` 遍历的元素类型静态确定：
+
+**Typed tables `table<T>` (A1, bootstrapping prerequisite)**: parameters/variables may be annotated with an element type; within a function body, the element type of `t[i]` subscript access, `len(t)`, and `for x in t` iteration over a table parameter is determined statically:
 
 ```c
 func sum(t: table<i64>) -> i64 {        // 函数内可直接 t[i] 下标读取（元素 i64）
@@ -225,15 +370,27 @@ func join(t: table<string>) -> string { /* 字符串表参数同样可直接下�
 ```
 
 - 元素类型限标量（i64/f64/string/bool 等）；`table` 裸类型仍可作参数（元素约定为 string）；
+
+- The element type is limited to scalars (i64/f64/string/bool, etc.); the bare `table` type can still be used as a parameter (the element is conventionally `string`);
+
 - 实参校验：表字面量/动态表变量的元素类型须与 `table<T>` 一致（编译期报错）；
+
+- Argument validation: the element type of a table literal/dynamic table variable must match `table<T>` (compile-time error);
+
 - **跨函数传表不再需要"逗号分隔字符串序列"规避**——表参数可直接下标访问
   （自举编译器 AST 跨函数传递的基础）。
 
+- **Passing tables across functions no longer needs the "comma-separated string sequence" workaround** — table parameters can be subscript-accessed directly (the basis for passing the AST across functions in the bootstrapping compiler).
+
 ### 3.4.1 键值表 map / map\<T\>（E3；排序键二分 T0.5 已实现）
+
+*EN: 3.4.1 Key-value table map / map\<T\> (E3; sorted-key binary search implemented in T0.5)*
 
 `map` 是**键值表**（字符串 id 表的高级形式，编译器符号表的容器），元素类型
 为 `string -> value`：字面量 `["a":1]`（键为字符串，**必须加双引号**）、
 `m["k"]` 下标读写、`len(m)` 取条目数：
+
+`map` is a **key-value table** (an advanced form of the string-id table, the container of the compiler's symbol table), with the element type `string -> value`: the literal `["a":1]` (keys are strings, **must be double-quoted**), `m["k"]` subscript read/write, `len(m)` returns the entry count:
 
 ```c
 var m: map = ["a":1, "b":2]     // 键值表：string -> i64
@@ -247,22 +404,43 @@ var k = len(m)                  // 条目数：3
 定位 + memmove 平移，查找 = 二分 + strcmp 直比，均零分配），10k 次查找由
 线性扫描的 ≈ 6.27s 降至 ≈ 2.7ms（~2295×，见 `scripts/bench/map-bench.tie`）。
 
+**Sorted-key binary search (T0.5)**: inside a map, **keys are always stored in strcmp-byte order** (insert = binary-search positioning + memmove shift, lookup = binary search + direct strcmp; both are zero-allocation); 10k lookups drop from ≈ 6.27s with a linear scan to ≈ 2.7ms (~2295×, see `scripts/bench/map-bench.tie`).
+
 **行为契约变化（T0.5）**：map 的输出展示（REPL/打印）**按键排序**
 （`{a: 1, m: 2, z: 3}`），**不再依赖插入序**——插入 `["z":3, "a":1]`
 打印为 `{a: 1, z: 3}`。依赖插入序的旧行为已不存在。
 
+**Behavior-contract change (T0.5)**: map output display (REPL/printing) is **sorted by key** (`{a: 1, m: 2, z: 3}`) and **no longer depends on insertion order** — inserting `["z":3, "a":1]` prints as `{a: 1, z: 3}`. The old insertion-order-dependent behavior no longer exists.
+
 **约束**：
 
+**Constraints**:
+
 - 键恒为字符串（字面量必须加双引号，与 §3.4 字符串 id 规则一致）；
+
+- Keys are always strings (literals must be double-quoted, consistent with the §3.4 string-id rule);
+
 - 元素类型同构：值类型在整个表中一致（`map<string>` 显式标注）；
+
+- Uniform element type: the value type is consistent across the whole table (`map<string>` explicit annotation);
+
 - **map 不能作全局变量**（顶层 `var m: map;` 语法层即拒绝，见 §3.4.2）；
+
+- **a map cannot be a global variable** (top-level `var m: map;` is rejected already at the syntax level, see §3.4.2);
+
 - 空 map 字面量 `[]` 与空表字面量存在语法歧义（map 场景建议用
   非空初始，见 map-bench 注释）。
 
+- The empty-map literal `[]` and the empty-table literal are syntactically ambiguous (in the map scenario, prefer a non-empty initial value, see the map-bench comments).
+
 ### 3.4.2 顶层表全局变量（T0.4 已实现）
+
+*EN: 3.4.2 Top-level table global variables (implemented in T0.4)*
 
 顶层可声明**表全局变量**：`var g: table<T>;`——无初始化器 = 默认空动态表，
 也可 `= []`（空表字面量）：
+
+Top-level **table globals** may be declared: `var g: table<T>;` — no initializer means a default empty dynamic table, or `= []` (an empty table literal):
 
 ```c
 var g: table<i64>;          // 顶层全局动态表：跨函数持久，main 入口运行时创建
@@ -284,29 +462,63 @@ func main() {
 
 **语义**：
 
+**Semantics**:
+
 - **跨函数持久**：全局表在 main 入口运行时创建，进程内所有函数共享同一
   实例（table_push / 下标写 / len / for 遍历均可直接使用）；
+
+- **Persistent across functions**: the global table is created at runtime on the main entry, and all functions in the process share the same instance (table_push / subscript write / len / for iteration can all be used directly);
+
 - **可作 ref 实参**：全局表是"可寻址表变量"，可传给 `ref table<T>` 形参
   （§6.2），函数内修改直接写回全局（intern 库即此模式，见 §7.2）；
+
+- **Usable as a ref argument**: a global table is an "addressable table variable" and can be passed to a `ref table<T>` parameter (§6.2); modifications inside the function write straight back to the global (the intern library uses this pattern, see §7.2);
+
 - 全局表元素类型可标注（`table<i64>`），省略时按裸 `table` 约定为 `string`。
+
+- The global table's element type may be annotated (`table<i64>`); when omitted, the bare `table` convention of `string` applies.
 
 **约束（编译期报错）**：
 
+**Constraints (compile-time errors)**:
+
 - **const 全局表暂不支持**：`const g: table<i64>;` → `const 全局表暂不支持：'g'（表在 main 入口运行时创建，无法静态初始化）`；
+
+- **const global tables are not yet supported**: `const g: table<i64>;` → `const 全局表暂不支持：'g'（表在 main 入口运行时创建，无法静态初始化）`;
+
 - 全局表初始化器**只能是空表 `[]`**（或省略）；非空表字面量初始化 → 报错；
+
+- A global table initializer **may only be the empty table `[]`** (or omitted); initializing with a non-empty table literal → error;
+
 - **仅 `table<T>` 支持全局**；`map` 作全局变量在语法层即拒绝；
+
+- **only `table<T>` supports globals**; `map` as a global variable is rejected at the syntax level;
+
 - 非表类型全局变量限标量（i8..u64/f32/f64/bool/char/string）；
+
+- Non-table global variables are limited to scalars (i8..u64/f32/f64/bool/char/string);
+
 - 全局表名与函数名冲突 / 重复定义 → 编译期报错。
+
+- A global table name conflicting with a function name / duplicate definition → compile-time error.
 
 **参考验收**：`tests/language/global_table.tie`（运行输出 2/1/2）、
 `tests/language/global_table_const.tie`（负例 @3:1）。
 
+**Reference acceptance**: `tests/language/global_table.tie` (run output 2/1/2), `tests/language/global_table_const.tie` (negative case @3:1).
+
 ### 3.5 元组类型（复合类型）
+
+*EN: 3.5 Tuple type (composite type)*
 
 元组是**固定长度、元素可异构**的值类型（C# 风格）：用圆括号包裹、逗号分隔元素。
 元素 ≥ 1（空元组 `()` 不支持）；元素可有名字（命名元组）也可匿名。
 
+A tuple is a value type of **fixed length with heterogeneous elements** (C# style): wrapped in parentheses with comma-separated elements. It has ≥ 1 elements (the empty tuple `()` is unsupported); elements may be named (named tuple) or anonymous.
+
 **类型标注**：`(T1, T2)` 或 `(name: T1, name: T2)`（字段名可选）：
+
+**Type annotation**: `(T1, T2)` or `(name: T1, name: T2)` (field names optional):
 
 ```c
 func divmod(a: i64, b: i64) -> (q: i64, r: i64) {   // 命名元组作为返回类型（多返回值）
@@ -316,6 +528,8 @@ func divmod(a: i64, b: i64) -> (q: i64, r: i64) {   // 命名元组作为返回�
 
 **字面量**：`(1, "a")` / `(x: 1, y: 2)`（元素 ≥ 1；空元组 `()` 不支持）：
 
+**Literals**: `(1, "a")` / `(x: 1, y: 2)` (≥ 1 elements; the empty tuple `()` is unsupported):
+
 ```c
 var t = (10, 20)                 // 推导为 (i64, i64)
 var p = (x: 3, y: 4)             // 推导为 (x: i64, y: i64)
@@ -323,9 +537,19 @@ var p = (x: 3, y: 4)             // 推导为 (x: i64, y: i64)
 
 **字段访问**（三种形式等价）：
 
+**Field access** (three equivalent forms):
+
 - 命名访问：`t.x`（仅命名元组可用）
+
+- Named access: `t.x` (available only for named tuples)
+
 - 位置访问：`t.Item1`、`t.Item2` …（1 起编号，C# 风格）
+
+- Positional access: `t.Item1`, `t.Item2`, … (numbered from 1, C# style)
+
 - 数字下标：`t.0`、`t.1` …（0 起编号）
+
+- Numeric subscript: `t.0`, `t.1`, … (numbered from 0)
 
 ```c
 println(t.Item1)   // 10（位置访问）
@@ -335,6 +559,8 @@ println(p.x)       // 3（命名访问）
 
 **解构**：`var (a, b) = 元组表达式` 一次声明多个变量（编译期展开为临时变量 + 字段访问）：
 
+**Destructuring**: `var (a, b) = tuple expression` declares multiple variables at once (expanded at compile time into temporaries + field access):
+
 ```c
 var (q, r) = divmod(17, 5)   // q = 3, r = 2
 const (s, t) = divmod(9, 2)  // 解构变量同样可 const
@@ -342,19 +568,43 @@ const (s, t) = divmod(9, 2)  // 解构变量同样可 const
 
 **类型匹配规则**：
 
+**Type-matching rules**:
+
 - 元组之间比较**长度与字段类型**（字段名是编译期标签，`(x: i64, y: i64)` 与 `(i64, i64)` 可互换）；
+
+- Tuples compare **length and field types** (field names are compile-time labels; `(x: i64, y: i64)` and `(i64, i64)` are interchangeable);
+
 - 字段级字面量适配：`var w: (i32, i64) = (7, 8)` 合法（7 适配 i32）；
+
+- Field-level literal adaptation: `var w: (i32, i64) = (7, 8)` is legal (7 adapts to i32);
+
 - 支持嵌套：`(name: string, scores: (i64, i64))`。
+
+- Nesting is supported: `(name: string, scores: (i64, i64))`.
 
 **本期限制**：
 
+**Current-version limitations**:
+
 - `println` 不能直接打印元组（请逐字段打印）；
+
+- `println` cannot print a tuple directly (print field by field instead);
+
 - 元组不支持 `==` / `!=` 等比较运算（逐字段比较留待后续版本）；
+
+- Tuples do not support comparison operators like `==` / `!=` (per-field comparison is left to a later version);
+
 - 字段名重复（`(x: 1, x: 2)`）、字段越界（`t.Item3`）在编译期报错。
+
+- Duplicate field names (`(x: 1, x: 2)`) and out-of-range fields (`t.Item3`) report compile-time errors.
 
 ### 3.6 类型标注与推导
 
+*EN: 3.6 Type annotation and inference*
+
 变量声明用 `var`（可变）或 `const`（不可变）；不标注类型时由编译器推导（整数字面量默认 `i64`，浮点字面量默认 `f64`）：
+
+Variables are declared with `var` (mutable) or `const` (immutable); when no type is annotated, the compiler infers it (integer literals default to `i64`, float literals to `f64`):
 
 ```c
 var x = 5             // 可变变量，自动推导为 i64
@@ -366,12 +616,18 @@ var arr: table = [1, 2, 3]
 
 ### 3.7 泛型（编译期单态化，2026-08-14 实现）
 
+*EN: 3.7 Generics (compile-time monomorphization, implemented 2026-08-14)*
+
 tie 支持用户定义的泛型：**泛型函数**与**泛型 struct**。类型参数在声明处
 显式写出 `<T1, T2, ...>`，调用/构造点从实参类型推断（必要时可显式写出）。
 实例化机制为**编译期单态化**——每个具体类型参数组合展开为独立代码，零运行时
 开销（tie 无函数指针、无运行时类型信息，单态化是唯一自然路径）。
 
+tie supports user-defined generics: **generic functions** and **generic structs**. Type parameters are written explicitly as `<T1, T2, ...>` at the declaration; at call/construction points they are inferred from the argument types (and may be written explicitly when necessary). The instantiation mechanism is **compile-time monomorphization** — each concrete combination of type parameters is expanded into independent code with zero runtime overhead (tie has no function pointers and no runtime type information, so monomorphization is the only natural path).
+
 **泛型函数**：
+
+**Generic functions**:
 
 ```c
 func max<T>(a: T, b: T) -> T {
@@ -387,11 +643,21 @@ func pick<A, B>(a: A, b: B) -> A {
 ```
 
 - 类型参数列表紧跟函数名，逗号分隔，允许 1 个或多个；
+
+- The type-parameter list immediately follows the function name, comma-separated, allowing one or more;
+
 - 类型参数可在形参类型、返回类型、函数体内出现（作类型使用）；
+
+- Type parameters may appear in parameter types, the return type, and the function body (used as types);
+
 - 类型参数名允许任意标识符，作用域内**遮蔽内置类型名**（如 `func f<int>(x: int)`
   中 `int` 是类型参数而非内置类型）。
 
+- Type-parameter names may be any identifier and **shadow built-in type names** within scope (e.g. in `func f<int>(x: int)`, `int` is a type parameter, not a built-in type).
+
 **泛型 struct**：
+
+**Generic structs**:
 
 ```c
 struct Box<T> {
@@ -400,9 +666,16 @@ struct Box<T> {
 ```
 
 - 类型参数列表紧跟 struct 名；字段类型可引用类型参数；
+
+- The type-parameter list immediately follows the struct name; field types may reference type parameters;
+
 - struct 构造 `Box(实参)` 可从构造实参推断；`Box<i64>()`（无参构造）必须显式。
 
+- A struct construction `Box(args)` may be inferred from the construction arguments; `Box<i64>()` (no-arg construction) must be explicit.
+
 **实例化（使用点）**：
+
+**Instantiation (use points)**:
 
 ```c
 var m1 = max(3, 5)           // T = i64（调用点推断）
@@ -415,13 +688,26 @@ var nb = Box<table<i64>>(t)  // 嵌套：实参可为内建泛型
 
 - **调用点推断**：逐实参匹配形参类型中类型参数的位置；同一类型参数多处推断
   必须一致，不一致报错（`类型参数 T 推断冲突: i64 vs f64`）；
+
+- **Call-point inference**: each argument is matched against the positions of type parameters in the parameter types; multiple inferences of the same type parameter must agree, otherwise an error is reported (`类型参数 T 推断冲突: i64 vs f64`);
+
 - **显式类型实参优先**：`max<i64>(...)` 指定部分不参与推断；未指定部分继续推断；
+
+- **Explicit type arguments take priority**: the part specified in `max<i64>(...)` does not participate in inference; unspecified parts continue to be inferred;
+
 - **无法推断**：无信息实参（如 `identity<T>()` 无参调用）→ 报错要求显式指定
   （`无法推断类型参数 T（调用点无足够信息，请显式指定类型实参）`）；
+
+- **Cannot infer**: arguments without information (e.g. `identity<T>()` no-arg call) → an error requires explicit specification (`无法推断类型参数 T（调用点无足够信息，请显式指定类型实参）`);
+
 - 返回类型含类型参数且由参数推断 → 调用表达式类型 = 替换后的返回类型。
+
+- When the return type contains a type parameter and is inferred from the arguments → the call expression's type = the substituted return type.
 
 **泛型 struct 方法（数据逻辑分离）**：方法定义在绑定 struct 名的命名空间，
 接收者类型为 `Box<T>` 时 T 从接收者实例类型推断：
+
+**Generic struct methods (data/logic separation)**: methods are defined in the namespace bound to the struct name; when the receiver type is `Box<T>`, T is inferred from the receiver instance type:
 
 ```c
 namespace Box {
@@ -438,23 +724,37 @@ var v: i64 = b.get()     // T 从接收者 Box<i64> 推断
 单态化展开产物走现有类型检查：模板体内对 T 的操作在替换为具体类型后被现有
 类型系统验证，错误在实例化点报告。
 
+**Symbol mangling (monomorphization products)**: instantiated functions/structs are named `full name + '$' + type-argument fragment` (e.g. `max$i64`, `Box$table_i64`, `pick$i64$string`), with fragments normalized recursively (`table<i64>` → `table_i64`, `map<string>` → `map_string`). Monomorphized products go through the existing type check: operations on T in the template body are verified by the existing type system after substitution with concrete types, and errors are reported at the instantiation point.
+
 **内建泛型**：`table<T>` / `map<T>` 保持内建，不改为用户泛型；用户泛型实参
 可为内建泛型实例，用户泛型函数形参可为 `table<T>`（T 为类型参数时：
 `func sum<T>(xs: table<T>) -> T`——实例化时整体替换）。
 
+**Built-in generics**: `table<T>` / `map<T>` stay built-in and are not changed to user generics; a user-generic argument may be an instance of a built-in generic, and a user-generic function parameter may be `table<T>` (when T is a type parameter: `func sum<T>(xs: table<T>) -> T` — replaced wholesale at instantiation).
+
 **错误用例**：推断冲突 / 无法推断 / 实例化后类型错误 / 实例化深度超限
 （递归自引用模板触发 64 层防御）。
+
+**Error cases**: inference conflicts / cannot infer / post-instantiation type errors / instantiation-depth exceeded (recursive self-referential templates trigger a 64-level defense).
 
 **参考验收**：`tests/language/generics.tie`（9 个正例：推断/显式/嵌套/方法/多类型
 参数）、`tests/language/generics_neg.tie`（5 个负例）。
 
+**Reference acceptance**: `tests/language/generics.tie` (9 positive cases: inference/explicit/nesting/methods/multi-type parameters), `tests/language/generics_neg.tie` (5 negative cases).
+
 ### 3.8 枚举 enum（ADT 标签联合，2026-08-15 实现）
+
+*EN: 3.8 Enumerations enum (ADT tagged unions, implemented 2026-08-15)*
 
 tie 支持 **Rust 风格 ADT 枚举**：无数据变体（C 风格常量组）与带数据变体
 （payload 元组式），并支持泛型 enum。枚举在 LLVM 层表示为静态结构体
 `{ i64 tag, i64×K 槽 }`（K = 最大变体 payload 字段数），零运行时开销。
 
+tie supports **Rust-style ADT enums**: data-less variants (C-style constant groups) and data-bearing variants (tuple-style payloads), and generic enums. At the LLVM layer an enum is represented as a static struct `{ i64 tag, i64×K slots }` (K = the maximum number of payload fields among variants), with zero runtime overhead.
+
 **无数据变体**：
+
+**Data-less variants**:
 
 ```c
 enum Color {
@@ -466,6 +766,8 @@ enum Color {
 
 **带数据变体（payload）**：
 
+**Data-bearing variants (payload)**:
+
 ```c
 enum Shape {
     Circle(i64)
@@ -475,6 +777,8 @@ enum Shape {
 
 **泛型 enum**：
 
+**Generic enums**:
+
 ```c
 enum Option<T> {
     Some(T)
@@ -483,11 +787,21 @@ enum Option<T> {
 ```
 
 - 变体之间无分隔符（ASI 自动分号，与 struct 字段同风格）。
+
+- Variants have no separator between them (ASI auto-semicolon, the same style as struct fields).
+
 - payload 为类型列表（元组式，无字段名）。
+
+- The payload is a type list (tuple-style, no field names).
+
 - 泛型：`enum Name<T1, T2>`，变体 payload 可引用类型参数（编译期单态化，
   与泛型 struct 同机制）。
 
+- Generics: `enum Name<T1, T2>`, variant payloads may reference type parameters (compile-time monomorphization, the same mechanism as generic structs).
+
 **构造**：
+
+**Construction**:
 
 ```c
 var c = Color.Red            // 无 payload 变体 = 常量
@@ -497,10 +811,20 @@ var c2: Color = Color.Green  // 类型注解
 ```
 
 - `EnumName.Variant`（无括号）引用无 payload 变体 → 常量值；
+
+- `EnumName.Variant` (no parentheses) referencing a data-less variant → a constant value;
+
 - `EnumName.Variant(args...)`（带括号）构造带 payload 变体；
+
+- `EnumName.Variant(args...)` (with parentheses) constructs a data-bearing variant;
+
 - 带 payload 变体裸引用（无参数）→ 报错"需要 payload 参数"。
 
+- A bare reference (no arguments) to a data-bearing variant → error "需要 payload 参数" (payload arguments required).
+
 **匹配（switch）**：
+
+**Matching (switch)**:
 
 ```c
 switch s {
@@ -512,25 +836,57 @@ switch s {
 
 - switch 对象可为枚举（case 变体引用解析为 tag 常量，走整数比较链）。
 
+- The switch subject may be an enum (case variant references resolve to tag constants and go through an integer comparison chain).
+
 **当前限制（一期）**：
+
+**Current limitations (phase one)**:
+
 - payload 类型白名单：整数族（i8..u64）/bool/char/trit；f32/f64、string、
   struct、table/map payload 暂不支持（报"变体 payload 暂不支持类型"）；
+
+- Payload type whitelist: the integer family (i8..u64)/bool/char/trit; f32/f64, string, struct and table/map payloads are not yet supported (reports "变体 payload 暂不支持类型");
+
 - 枚举值 `==`/`!=` 比较暂不支持（报"枚举暂不支持 == 比较"）；
+
+- `==`/`!=` comparison of enum values is not yet supported (reports "枚举暂不支持 == 比较");
+
 - REPL（interp）暂不支持 enum 定义（报"REPL v1 暂不支持 enum 定义"）；
+
+- REPL (interp) does not yet support enum definitions (reports "REPL v1 暂不支持 enum 定义");
+
 - 泛型 enum 无 payload 变体裸引用（如 `Option.None`）无法推断 T → 报错。
+
+- A bare reference to a data-less variant of a generic enum (e.g. `Option.None`) cannot infer T → error.
 
 **参考验收**：`tests/language/enum.tie`（无数据/带数据/泛型/struct 字段/跨函数）、
 `tests/language/enum_neg.tie`（重名变体/payload 白名单/== 比较/函数名冲突）。
 
+**Reference acceptance**: `tests/language/enum.tie` (data-less/data-bearing/generic/struct fields/cross-function), `tests/language/enum_neg.tie` (duplicate variant names/payload whitelist/== comparison/function-name conflict).
+
 ## 4. 语句与分隔符（ASI 自动补全）
+
+*EN: 4. Statements and separators (ASI auto-completion)*
 
 ### 4.1 分号规则（核心特性）
 
+*EN: 4.1 Semicolon rules (core feature)*
+
 **单行一条语句时，行尾不需要写分号，编译器自动补全。**
 
+**When a single statement occupies one line, no semicolon is needed at the end of the line — the compiler inserts it automatically.**
+
 - 换行处语句已完整 → 自动插入分号（类似 JS 的 ASI）。
+
+- The statement is complete at the newline → a semicolon is inserted automatically (like ASI in JS).
+
 - 同一行写多条语句 → 必须用分号显式分隔。
+
+- Multiple statements on the same line → they must be separated explicitly with semicolons.
+
 - 语句跨行（如函数调用换行、`if` 条件跨行）→ 行尾按"语句是否完整"判断，不完整则不补。
+
+- A statement spanning multiple lines (e.g. a function call wrapped, an `if` condition spanning lines) → the line end is judged by "whether the statement is complete"; if incomplete, no semicolon is inserted.
 
 ```c
 var a = 1          // 行尾自动补 ;
@@ -548,14 +904,31 @@ var arr = [
 
 ### 4.2 补全判定规则（实现要点）
 
+*EN: 4.2 Completion-decision rules (implementation points)*
+
 1. 遇到换行时，若当前语句"语法上可结束"，则补 `;`。
+
+1. On encountering a newline, if the current statement "can syntactically end", a `;` is inserted.
+
 2. 括号 `()` `[]` `{}` 未闭合 → 不补。
+
+2. Unclosed parentheses `()` `[]` `{}` → no insertion.
+
 3. 行尾是二元运算符 / `,` / `.` / 开括号 → 语句未结束，不补。
+
+3. The line ends with a binary operator / `,` / `.` / an opening bracket → the statement is not finished, so no insertion.
+
 4. 行尾是关键字（如 `else`、`in`）→ 不补，与上一结构连读。
+
+4. The line ends with a keyword (e.g. `else`, `in`) → no insertion; it continues together with the previous construct.
 
 实现位置：**词法分析阶段**（token 流层面插入 `Semi` token），供解析器直接消费。
 
+Implementation location: **the lexing stage** (a `Semi` token is inserted at the token-stream level) for the parser to consume directly.
+
 ## 5. 控制流
+
+*EN: 5. Control flow*
 
 ```c
 if cond { } else if cond2 { } else { }     // 条件分支
@@ -573,6 +946,8 @@ string），循环变量 c 是单字符 string。与字节索引分离——中�
 （UTF-8 一个汉字 3 字节）每次迭代得一个完整字符，无需手动 utf8_seq_len
 步进。等价手写：
 
+**String codepoint iteration** `for c in s.chars()`: iterates character by character over Unicode codepoints (s is a string), and the loop variable c is a single-character string. It is decoupled from byte indexing — multi-byte characters such as Chinese (a UTF-8 Han character is 3 bytes) yield one complete character per iteration, with no need to step manually by utf8_seq_len. The equivalent hand-written form:
+
 ```c
 var pos: i64 = 0
 while pos < len(s) {
@@ -586,13 +961,21 @@ while pos < len(s) {
 随机码点索引（O(1)）：先 `utf.to_chars(s)` 转码点表再下标访问；码点数用
 `utf.codepoint_count(s)`（与字节数 `utf.byte_len(s)` 分离）。
 
+Random codepoint indexing (O(1)): first convert with `utf.to_chars(s)` into a codepoint table, then access by subscript; the codepoint count uses `utf.codepoint_count(s)` (separate from the byte count `utf.byte_len(s)`).
+
 ### 5.1 break / continue 与循环标签（E1+E5）
+
+*EN: 5.1 break / continue and loop labels (E1+E5)*
 
 **break**：立即退出所在循环（while/for），继续执行循环之后的语句。
 **continue**：跳过本次迭代剩余语句，进入循环的下一次迭代——while 重新判断条件；
 for 先执行步进（自增）再判断条件。
 
+**break**: immediately exits the enclosing loop (while/for) and continues executing the statements after the loop. **continue**: skips the remaining statements of the current iteration and enters the loop's next iteration — while re-evaluates its condition; for first performs the step (increment) and then evaluates the condition.
+
 **循环标签（E5）**：给循环命名后，`break L` / `continue L` 可跳出/跳过多层嵌套循环：
+
+**Loop labels (E5)**: once a loop is named, `break L` / `continue L` can break out of / skip across multiple nested loops:
 
 ```c
 outer: for a in 0..10 {                     // 标签 outer
@@ -604,12 +987,28 @@ outer: for a in 0..10 {                     // 标签 outer
 ```
 
 - 标签语法：`标识符: while/for …`（语句开头的 `标识符 : while|for` 才被识别为循环标签）；
+
+- Label syntax: `identifier: while/for …` (only an `identifier : while|for` at the start of a statement is recognized as a loop label);
+
 - 无标签 `break` / `continue` 作用于最近一层循环；
+
+- An unlabeled `break` / `continue` acts on the innermost loop;
+
 - 带标签跳转：标签必须匹配某个外层循环（从内向外查找，编译期校验，未匹配报错）；
+
+- Labeled jumps: the label must match some outer loop (searched from the inside out, validated at compile time; an error on no match);
+
 - `break` / `continue` 只能出现在循环体内（编译期报错）；
+
+- `break` / `continue` may appear only inside a loop body (compile-time error);
+
 - switch 分支天然自动退出（无 fallthrough），分支内无需 break。
 
+- switch branches naturally exit automatically (no fallthrough); no break is needed inside a branch.
+
 ### 5.1 switch 多分支（M1 已实现；模式匹配增强 M2 后）
+
+*EN: 5.1 switch multi-branch (implemented in M1; pattern-matching enhancements after M2)*
 
 ```c
 switch n {                                  // 多分支：case 值: 后接语句（无 break，无 fallthrough）
@@ -628,26 +1027,58 @@ switch n {                                  // 多分支：case 值: 后接语�
 
 **语法**：`switch 对象 { case 模式[, 模式]... [when 条件]: 语句… default: 语句… }`。
 
+**Syntax**: `switch subject { case pattern[, pattern]... [when condition]: statements… default: statements… }`.
+
 **case 模式类型**（每个 pattern 须与 switch 对象类型一致）：
 
+**case pattern kinds** (each pattern must match the switch subject's type):
+
 - **字面量**：整数 / 浮点 / 字符 / 布尔 / 负数 / 字符串；
+
+- **Literals**: integer / float / char / boolean / negative number / string;
+
 - **区间**：`case 3..7:`（整数）或 `case 'a'..'e':`（字符）——左闭右开，`start < end`；
   浮点区间明确不支持；
+
+- **Ranges**: `case 3..7:` (integers) or `case 'a'..'e':` (chars) — left-inclusive right-exclusive, `start < end`; float ranges are explicitly unsupported;
+
 - **类型匹配**：`case string:` / `case i64:`——按对象的动态类型匹配，仅在宽类型/动态
   容器对象（表、元组等）上有意义；普通静态类型对象上报错（类型恒定，恒真/恒假无意义）。
 
+- **Type matching**: `case string:` / `case i64:` — matches by the subject's dynamic type, meaningful only on wide-type/dynamic-container subjects (tables, tuples, etc.); on ordinary statically-typed subjects an error is reported (the type is constant, so always-true/always-false is meaningless).
+
 **规则**：
 
+**Rules**:
+
 - **多值** = 多个相等比较的 OR 合并；与区间/守卫可自由组合（`case 1, 3..5 when cond:`）；
+
+- **Multiple values** = an OR combination of several equality comparisons; freely combinable with ranges/guards (`case 1, 3..5 when cond:`);
+
 - **守卫** `when`：值为真才进入分支体，守卫不满足时落入下一个 case（顺序匹配）；
+
+- **Guard** `when`: the branch body is entered only when the value is true; if the guard is not satisfied, it falls through to the next case (sequential matching);
+
 - 无 break、无 fallthrough（一个 case 执行完自动跳出）；
+
+- No break, no fallthrough (a case exits automatically after running);
+
 - `default` 可选且至多一个，全不匹配时执行；
+
+- `default` is optional and at most one; it runs when nothing matches;
+
 - 重复的 case 值/区间在语义层报错。
+
+- Duplicate case values/ranges report errors at the semantic level.
 
 **双路径一致**：编译（IR 展开为比较链：多值 OR、区间 `sge && slt` AND、守卫 AND）与
 解释（tie-interp 按 Value 动态求值）行为一致。
 
+**Two-path consistency**: compilation (IR expands into comparison chains: multi-value OR, range `sge && slt` AND, guard AND) and interpretation (tie-interp evaluates dynamically by Value) behave consistently.
+
 ## 6. 函数
+
+*EN: 6. Functions*
 
 ```c
 func add(a: i64, b: i64) -> i64 {
@@ -660,11 +1091,20 @@ func main() {                 // 程序入口（logic 文件）
 ```
 
 - 一等函数：函数可赋值给变量、作为参数传递——**已实现**，见 §9（一等函数与闭包）。
+
+- First-class functions: a function can be assigned to a variable and passed as an argument — **implemented**, see §9 (first-class functions and closures).
+
 - 方法重载：后续版本。
+
+- Method overloading: a later version.
 
 ### 6.1 默认值参数（M2.1 已实现）
 
+*EN: 6.1 Default-value parameters (implemented in M2.1)*
+
 函数参数可带默认值，调用时可省略可选参数：
+
+Function parameters may carry default values, and optional parameters may be omitted at the call site:
 
 ```c
 func greet(name: string, prefix: string = "Hello") -> string {
@@ -679,24 +1119,51 @@ func main() {
 
 **语法**：`参数名: 类型 = 字面量`（在参数列表中，形如 `prefix: string = "Hello"`）。
 
+**Syntax**: `param-name: type = literal` (in the parameter list, e.g. `prefix: string = "Hello"`).
+
 **规则**：
+
+**Rules**:
 
 - 可选参数**必须连续排在必选参数之后**（一旦出现默认值，其后参数都必须有默认值），
   否则编译报错。
+
+- Optional parameters **must be placed contiguously after the required parameters** (once a default value appears, all subsequent parameters must have default values), otherwise a compile error is reported.
+
 - 默认值限**字面量**：数字 / 布尔 / 字符 / 字符串 / 空表 `[]`（与类字段默认值规则一致）。
   非空表字面量、变量引用等表达式默认值 → 编译报错「默认值必须是字面量」。
+
+- Default values are limited to **literals**: numbers / booleans / chars / strings / the empty table `[]` (consistent with the class-field default-value rule). Expressions such as non-empty table literals or variable references as defaults → compile error「默认值必须是字面量」(default value must be a literal).
+
 - 默认值类型须与形参类型匹配（如 `i64` 形参不能给 `"x"` 字符串默认值）。
+
+- The default value's type must match the parameter type (e.g. an `i64` parameter cannot be given a `"x"` string default).
+
 - 调用点按实参数**区间检查**：少传（< 必选个数）或多传（> 总个数）都报
   `期望 N 个参数` / `期望 N-M 个参数`（N = 必选参数个数，M = 总参数个数）。
+
+- The call site checks the **argument-count range**: passing too few (< the number of required) or too many (> the total) reports `期望 N 个参数` / `期望 N-M 个参数` (N = number of required parameters, M = total number of parameters).
+
 - **方法参数默认值暂不支持**（报「方法默认值参数留待 M3」），仅普通函数可用。
+
+- **Method parameter defaults are not yet supported** (reports「方法默认值参数留待 M3」); only ordinary functions may use them.
 
 **实现要点**（双路径一致）：
 
+**Implementation points** (two-path consistency):
+
 - 函数签名不变（LLVM 含全部形参），缺省实参在**调用点**补齐——默认值无函数体作用域依赖，
   直接按字面量求值即可；
+
+- The function signature is unchanged (LLVM contains all parameters); missing arguments are filled in at the **call site** — a default value has no dependency on the function body's scope and is simply evaluated as a literal;
+
 - 解释器（tie-interp）与编译器（IR 层）行为一致：省略可选参数 → 默认值，显式传参 → 覆盖。
 
+- The interpreter (tie-interp) and the compiler (IR layer) behave consistently: omitting an optional parameter → the default value; passing an explicit argument → override.
+
 **标准库示例**（`ext/log.tie` 综合方案，空表 `[]` 作「未提供」信号）：
+
+**Standard-library example** (`ext/log.tie` combined scheme, with the empty table `[]` as a "not provided" signal):
 
 ```c
 func no_file(langs: table, texts: table = []) -> string {
@@ -709,8 +1176,12 @@ func no_file(langs: table, texts: table = []) -> string {
 
 ### 6.2 ref 表参数按引用传递（T0.3 已实现）
 
+*EN: 6.2 ref table parameters passed by reference (implemented in T0.3)*
+
 形参类型前加 `ref` 修饰，声明该表参数**按引用传递**。**仅限表参数**：
 非表类型使用 `ref` → 编译期报错。
+
+Prefix the parameter type with `ref` to declare that the table parameter is **passed by reference**. **Table parameters only**: using `ref` on a non-table type → compile-time error.
 
 ```c
 // fill：函数内对 ref 表参数做内容修改（push / 下标写），调用方变量直接可见。
@@ -740,34 +1211,60 @@ func main() {
 
 **语义（真引用）**：函数内对该参数的一切修改都写回调用方实参槽：
 
+**Semantics (true reference)**: every modification to the parameter inside the function is written back to the caller's argument slot:
+
 - **内容修改写回**：`table_push` 追加、`x[i] = v` 下标写 → 调用方变量直接可见；
+
+- **Content modifications write back**: `table_push` append, `x[i] = v` subscript write → directly visible to the caller's variable;
+
 - **变量重绑定写回**：`x = table_new_i64()` 等重绑定 → 调用方实参跟随指向新表。
 
+- **Variable rebinding writes back**: rebinding such as `x = table_new_i64()` → the caller's argument follows to point at the new table.
+
 **与值语义（非 ref 表参数）的区别**：
+
+**Difference from value semantics (non-ref table parameters)**:
 
 | 行为 | `ref table<T>` | 非 ref 表参数 |
 | --- | --- | --- |
 | 内容修改（push/下标写） | 写回调用方（真引用） | IR 路径共享同一动态表指针，内容修改仍可见；interp 路径值拷贝隔离 |
 | 变量重绑定（`x = ...`） | 写回调用方 | 只改形参局部绑定，调用方不受影响 |
 
+EN: For content modifications (push/subscript write), `ref table<T>` writes back to the caller (true reference); a non-ref table parameter shares the same dynamic-table pointer on the IR path so content changes remain visible, but the interp path isolates via value copy. For variable rebinding (`x = ...`), `ref` writes back to the caller, while a non-ref parameter changes only its local binding and does not affect the caller.
+
 > 注：非 ref 表参数的 IR 路径当前与 ref 共享底层动态表指针（内容修改可见），
 > 但重绑定隔离；interp 路径为值拷贝（内容修改也隔离）。需严格内容隔离时
 > 显式传值拷贝（见 std 库惯例）。
 
+> Note: on the IR path a non-ref table parameter currently shares the underlying dynamic-table pointer with ref (content changes are visible), but rebinding is isolated; the interp path is a value copy (content changes are also isolated). When strict content isolation is needed, pass an explicit value copy (see the std-library convention).
+
 **调用点约束（编译期报错）**：
+
+**Call-site constraints (compile-time errors)**:
 
 - 实参必须是**可寻址的表变量**（动态表）：表字面量 `g([1, 2])`、下标、调用
   结果等无变量槽可写回 → `调用 'g' 的 ref 参数需要可寻址的表变量实参（字面量/下标/调用结果不可取地址）`；
+
+- The argument must be an **addressable table variable** (a dynamic table): a table literal `g([1, 2])`, a subscript, or a call result has no variable slot to write back to → `调用 'g' 的 ref 参数需要可寻址的表变量实参（字面量/下标/调用结果不可取地址）`;
+
 - 实参必须是**动态表变量**（`table_new_*` 创建，定长表变量不满足）→
   `调用 'g' 的 ref 参数实参 't' 必须是动态表变量（table_new_* 创建）`。
+
+- The argument must be a **dynamic table variable** (created by `table_new_*`; fixed-length table variables do not qualify) → `调用 'g' 的 ref 参数实参 't' 必须是动态表变量（table_new_* 创建）`.
 
 **参考验收**：`tests/language/byref_table.tie`（运行输出 3/42/99/100/1/7）、
 `tests/language/byref_table_neg.tie`（负例 @6:7）。
 
+**Reference acceptance**: `tests/language/byref_table.tie` (run output 3/42/99/100/1/7), `tests/language/byref_table_neg.tie` (negative case @6:7).
+
 ### 6.3 extern 函数声明（T0.7 已实现）
+
+*EN: 6.3 extern function declarations (implemented in T0.7)*
 
 顶层声明**外部 C 函数符号**（无函数体），链接期由 clang 解析 libc（Windows
 为 msvcrt）符号：
+
+Top-level declarations of **external C function symbols** (no function body); at link time clang resolves the libc (msvcrt on Windows) symbols:
 
 ```c
 // 顶层裸名声明：extern fn 函数名(参数列表) -> 返回类型;
@@ -777,26 +1274,59 @@ extern fn rand() -> i32;                // libc rand：无参数返回 int
 
 **语法**：
 
+**Syntax**:
+
 - `extern fn` 为固定标识符序列（`fn` 是关键字，不可省略或替换）；
+
+- `extern fn` is a fixed identifier sequence (`fn` is a keyword; it cannot be omitted or replaced);
+
 - 参数类型 / 返回类型**仅限标量**：`i8`..`u64` / `f32` / `f64` / `bool` /
   `char` / `string` / `void`（返回 `void` 可省略 `-> void`）；
+
+- Parameter types / return types are **scalars only**: `i8`..`u64` / `f32` / `f64` / `bool` / `char` / `string` / `void` (a `void` return may omit `-> void`);
+
 - 声明后即可像普通函数调用（IR 发射 LLVM `declare`，调用点 `call`）；
+
+- Once declared, it can be called like an ordinary function (IR emits LLVM `declare`, and a `call` at the call site);
+
 - extern 声明只能出现在**文件顶层**（函数体内 → 编译期报错）。
+
+- extern declarations may appear only at the **file top level** (inside a function body → compile-time error).
 
 **约束（编译期报错）**：
 
+**Constraints (compile-time errors)**:
+
 - 参数为表/结构体等容器类型 → `extern 函数 'foo' 的参数 't' 必须是标量类型（i8..u64/f32/f64/bool/char/string），实际是 table<i64>`；
+
+- A parameter of a container type such as a table/struct → `extern 函数 'foo' 的参数 't' 必须是标量类型（i8..u64/f32/f64/bool/char/string），实际是 table<i64>`;
+
 - 返回类型非标量且非 void → 同理报「返回类型必须是标量…或 void」；
+
+- A non-scalar and non-void return type → similarly reports「返回类型必须是标量…或 void」;
+
 - 与已有函数同名重复声明 → `extern 函数 'foo' 与已有函数重复定义`；
+
+- Re-declaring the same name as an existing function → `extern 函数 'foo' 与已有函数重复定义`;
+
 - extern 不能带默认值参数 / 不能带 ref 形参；
+
+- extern cannot carry default-value parameters / cannot have ref parameters;
+
 - **REPL / 解释路径不支持调用 extern**（仅编译路径可用）：REPL 调用 →
   `REPL 不支持调用 extern 函数 'foo'（仅编译路径可用，请用 tie-llvm 编译运行）`。标准库 std/process.tie
   的 `exec_code` / `exec_output` 因此在 REPL 中不可用，需 `tie` 编译运行。
 
+- **Calls to extern are not supported on the REPL / interpretation path** (compilation path only): a REPL call → `REPL 不支持调用 extern 函数 'foo'（仅编译路径可用，请用 tie-llvm 编译运行）`. Accordingly, `exec_code` / `exec_output` of the standard-library std/process.tie are unavailable in the REPL and must be compiled and run with `tie`.
+
 **参考验收**：`tests/language/extern_decl.tie`（运行 rand 随机值/0/3/hello）、
 `tests/language/extern_decl_neg.tie`（负例）。
 
+**Reference acceptance**: `tests/language/extern_decl.tie` (runs rand random value/0/3/hello), `tests/language/extern_decl_neg.tie` (negative cases).
+
 ## 7. 模块与数据交换
+
+*EN: 7. Modules and data interchange*
 
 ```c
 import "./ui/main.tie" as ui     // 导入其他 tie 文件（按头类型分派）
@@ -804,17 +1334,29 @@ import "./config.tie" as cfg     // 导入 data 文件 → 类型化为只读数
 ```
 
 - `type tie<data>` 文件可被任何其他文件导入，作为数据交换格式使用。
+
+- A `type tie<data>` file can be imported by any other file and used as a data-interchange format.
+
 - 头类型不同，导入后可见的符号集不同（`data` 只导出数据，`logic` 导出函数）。
+
+- Different header kinds expose different sets of visible symbols after import (`data` exports only data, `logic` exports functions).
+
 - **当前实现状态（M2）**：`import` 已实现——导入文件中的函数递归加载、内联可用。
   import 展开逻辑位于 tie-frontend 的 `imports` 模块，编译器（tie-llvm）与语言服务器
   （tie-lsp）共享同一实现；语言服务器的诊断 / hover / 跳转定义 / 补全同样支持跨文件语义。
   `data` 文件导入为只读数据表、按头类型分派可见符号集仍属规划（后续版本）。
 
+- **Current implementation status (M2)**: `import` is implemented — functions in imported files are recursively loaded and usable inline. The import expansion logic lives in the `imports` module of tie-frontend, shared by the compiler (tie-llvm) and the language server (tie-lsp); the language server's diagnostics / hover / go-to-definition / completions also support cross-file semantics. Importing `data` files as read-only tables and dispatching the visible symbol set by header kind are still planned (later versions).
+
 ### 7.1 单文件命名空间（M2.1.7 已实现）
+
+*EN: 7.1 Single-file namespaces (implemented in M2.1.7)*
 
 命名空间成为**真正的模块边界**：命名空间内函数默认**私有**（仅同命名空间可见），
 `pub func` 显式导出后跨命名空间 / 跨文件可调；`import` 可用别名重命名入口；
 `using` 把已导入命名空间的公有函数引入当前文件，支持裸调用。
+
+Namespaces become **true module boundaries**: functions within a namespace are **private** by default (visible only within the same namespace); after being explicitly exported with `pub func`, they are callable across namespaces / across files; `import` can rename the entry point with an alias; `using` brings the public functions of an imported namespace into the current file, supporting bare calls.
 
 ```c
 // 文件 tools.tie（library）：
@@ -839,19 +1381,36 @@ func main() {
 
 规则要点：
 
+Key rules:
+
 - **可见性**：命名空间内函数默认私有；`pub func` 显式导出。同命名空间内裸调用不受限；
   跨命名空间（含 import 展开后的跨文件）调用私有函数 → 编译期报错。顶层函数恒公有。
+
+- **Visibility**: functions within a namespace are private by default; `pub func` exports explicitly. Bare calls within the same namespace are unrestricted; calling a private function across namespaces (including cross-file after import expansion) → compile-time error. Top-level functions are always public.
+
 - **别名唯一入口**：`import "./x.tie" as f2` 后，原命名空间前缀在导入方**不可用**，
   必须用别名访问（避免两个文件同名命名空间冲突）。
+
+- **Alias as the only entry point**: after `import "./x.tie" as f2`, the original namespace prefix is **unavailable** in the importer and must be accessed via the alias (to avoid two files having same-named namespaces conflicting).
+
 - **using 引入**：`using fmt;` / `using fmt.inner;` / `using f2.inner;`（别名 + 子路径），
   目标必须是已 import 引入的命名空间前缀或别名；引入后其公有函数可**裸名调用**。
   多个 using 都含同名函数 → 裸调用歧义报错（改用前缀调用）。
+
+- **Introducing with using**: `using fmt;` / `using fmt.inner;` / `using f2.inner;` (alias + sub-path); the target must be a namespace prefix or alias already introduced via import; after introduction its public functions can be called by **bare name**. If multiple `using`s contain a same-named function → a bare-call ambiguity error (call with the prefix instead).
+
 - 裸调用解析顺序：顶层裸名 → 当前命名空间前缀补全 → using 引入的命名空间（唯一候选）。
+
+- Bare-call resolution order: top-level bare names → current namespace prefix completion → namespaces introduced via using (the unique candidate).
 
 #### 7.1.1 单文件形式（无花括号）
 
+*EN: 7.1.1 Single-file form (without braces)*
+
 `namespace foo` 后不加花括号（独占一行，或以 `;` 结尾），表示**从声明处起整份文件
 的剩余内容都属于命名空间 foo**：
+
+A `namespace foo` without following braces (alone on a line, or ending with `;`) means **the entire remaining content of the file from the declaration point belongs to namespace foo**:
 
 ```c
 namespace foo            // 等价于 namespace foo;
@@ -859,15 +1418,29 @@ func add(a: i64, b: i64) -> i64 { return a + b }
 ```
 
 - `namespace foo` 换行（ASI 自动补分号）与手写 `namespace foo;` 产生**完全一致的 AST**；
+
+- A `namespace foo` on its own line (ASI auto-semicolon) and a hand-written `namespace foo;` produce **exactly identical ASTs**;
+
 - 单文件模式下的嵌套递归生效：`namespace a` 后出现块式/单文件 `namespace b` → b 是 a 的成员；
+
+- Nesting takes effect recursively in single-file mode: a block-style/single-file `namespace b` after `namespace a` → b is a member of a;
+
 - 块式 `namespace foo { ... }` 依旧可用，与单文件形式并存。
+
+- The block-style `namespace foo { ... }` remains usable, coexisting with the single-file form.
 
 ### 7.2 标准库：字符串池 intern（T0.6 已实现）与进程原语 process（T0.7）
 
+*EN: 7.2 Standard library: string pool intern (implemented in T0.6) and process primitives (T0.7)*
+
 #### 7.2.1 字符串池 intern（std/intern.tie）
+
+*EN: 7.2.1 String pool intern (std/intern.tie)*
 
 `std/intern.tie` 提供**字符串 → 稳定整数 id** 的登记机制（命名空间 `intern`），
 供编译器/符号表把 O(len) 字符串比较降为 O(1) 整数比较：
+
+`std/intern.tie` provides a **string → stable integer id** registration mechanism (namespace `intern`), letting the compiler/symbol table reduce O(len) string comparisons to O(1) integer comparisons:
 
 ```c
 import "../../std/intern.tie"
@@ -885,27 +1458,41 @@ func main() {
 
 **接口**（命名空间 `intern`）：
 
+**Interface** (namespace `intern`):
+
 | 函数 | 签名 | 语义 |
 | --- | --- | --- |
 | `intern` | `intern(s: string) -> i64` | 登记串并返回稳定 id：同串同 id（id 从 0 递增），重复登记返回原 id 不新增条目 |
 | `lookup` | `lookup(id: i64) -> string` | id → 原串（O(1) 下标）；未登记 id（负数或越界）返回空串哨兵 `""` |
 | `interned_len` | `interned_len() -> i64` | 已登记的不同串数量 |
 
+EN: The `intern` interface: `intern(s)` registers a string and returns a stable id (same string → same id, ids increment from 0, re-registration returns the original id without adding an entry); `lookup(id)` maps an id back to the original string (O(1) subscript; an unregistered id, negative or out of range, returns the empty-string sentinel `""`); `interned_len()` returns the number of distinct registered strings.
+
 **实现要点**：三个并行全局动态表（T0.4 全局表特性的首次生产消费）——
 `intern_pool`（id → 串，登记序）、`intern_keys` / `intern_vals`（串 → id，
 键按 strcmp 升序，正查二分 O(log n)）。池为**模块级全局状态**：跨函数、
 跨模块（import 文本内联）调用 id 稳定。
 
+**Implementation points**: three parallel global dynamic tables (the first production use of the T0.4 global-table feature) — `intern_pool` (id → string, in registration order), `intern_keys` / `intern_vals` (string → id, keys in ascending strcmp order, forward binary search O(log n)). The pool is **module-level global state**: ids stay stable across functions and across modules (import text inlining).
+
 **约定**：`lookup` 对未登记 id 返回空串 `""` 哨兵，与编译器侧 `-1`
 「无名字」哨兵是**不同约定**——调用方须先判空串再判 `-1`。
 
+**Convention**: `lookup` returns the empty-string `""` sentinel for an unregistered id, which is a **different convention** from the compiler-side `-1` "no name" sentinel — callers must check for the empty string first, then for `-1`.
+
 **参考验收**：`tests/language/intern.tie`（全部断言通过）。
 
+**Reference acceptance**: `tests/language/intern.tie` (all assertions pass).
+
 #### 7.2.2 进程原语 process（std/process.tie，基于 extern）
+
+*EN: 7.2.2 Process primitives process (std/process.tie, based on extern)*
 
 `std/process.tie` 用 T0.7 extern 声明**重新实现进程原语**（命名空间
 `process`），替代/补充内置 `exec_code` / `exec_output` 的 C ABI 桥——
 0-Rust 路径（阶段 4）的关键证明：tie 程序直接声明并调用 libc 函数：
+
+`std/process.tie` **reimplements the process primitives** (namespace `process`) using T0.7 extern declarations, replacing/supplementing the C-ABI bridge of the built-in `exec_code` / `exec_output` — a key demonstration of the 0-Rust path (phase 4): a tie program directly declares and calls libc functions.
 
 ```c
 import "../../std/process.tie"
@@ -920,22 +1507,40 @@ func main() {
 
 **接口**（命名空间 `process`）：
 
+**Interface** (namespace `process`):
+
 | 函数 | 签名 | 语义 |
 | --- | --- | --- |
 | `exec_code` | `exec_code(cmd: string) -> i32` | 执行命令并返回退出码（包装 extern `system`） |
 | `exec_output` | `exec_output(cmd: string) -> string` | 执行命令并返回全部输出（stdout+stderr 合并；重定向临时文件 → `file_read` → 删除） |
 
+EN: The `process` interface: `exec_code(cmd)` runs a command and returns its exit code (wrapping the extern `system`); `exec_output(cmd)` runs a command and returns all output (stdout+stderr combined; redirect to a temporary file → `file_read` → delete).
+
 **要点**：
+
+**Key points**:
 
 - `system` 的 C 原型是 `int system(const char*)`，用 **`i32`** 声明精确匹配
   （tie 无 i32→i64 隐式转换，i64 读负退出码有 RAX 高位风险）；
+
+- The C prototype of `system` is `int system(const char*)`; declaring it with **`i32`** matches it precisely (tie has no implicit i32→i64 conversion, and reading a negative exit code as i64 risks the high RAX bits);
+
 - `exec_output` 不用 popen（tie 无指针类型，无法处理 FILE*/char*），用
   `cmd > tmpfile 2>&1` 重定向 + 文件读回等价实现；
+
+- `exec_output` does not use popen (tie has no pointer types and cannot handle FILE*/char*); it uses `cmd > tmpfile 2>&1` redirection + file read-back as an equivalent implementation;
+
 - 二者均依赖 extern 调用，**REPL 中不可用**（仅编译路径，见 §6.3）。
+
+- Both rely on extern calls and are **unavailable in the REPL** (compilation path only, see §6.3).
 
 **参考验收**：`tests/language/extern_decl.tie`（输出 rand 随机值/0/3/hello）。
 
+**Reference acceptance**: `tests/language/extern_decl.tie` (outputs rand random value/0/3/hello).
+
 #### 7.2.3 文件系统原语（file_* 内置，UTF-8 路径安全）
+
+*EN: 7.2.3 Filesystem primitives (file_* built-ins, UTF-8 path safety)*
 
 文件系统内置原语 `file_read` / `file_write` / `file_append` / `file_exists` /
 `file_delete` / `file_size` / `file_is_dir` / `file_is_file`（M2 起；**2026-08-14 起
@@ -943,7 +1548,11 @@ func main() {
 原生支持。曾用 libc `fopen` / `remove`，按 ANSI 代码页（GBK）误读 UTF-8 字节，
 中文路径的存在性检查/写入/删除必失败）。
 
+The built-in filesystem primitives `file_read` / `file_write` / `file_append` / `file_exists` / `file_delete` / `file_size` / `file_is_dir` / `file_is_file` (from M2; **as of 2026-08-14 all migrated to the UTF-8-safe bridge** — a Rust `std::fs` implementation and Windows wide-character APIs, with native support for Chinese/Unicode paths. They previously used libc `fopen` / `remove`, which misread UTF-8 bytes per the ANSI codepage (GBK), making existence checks/writes/deletes of Chinese paths fail inevitably).
+
 **接口**（语言底座原语）：
+
+**Interface** (language-base primitives):
 
 | 原语 | 签名 | 语义 |
 | --- | --- | --- |
@@ -956,6 +1565,8 @@ func main() {
 | `file_is_dir` | `file_is_dir(path: string) -> bool` | 路径是否为目录 |
 | `file_is_file` | `file_is_file(path: string) -> bool` | 路径是否为普通文件 |
 
+EN: The filesystem primitives with signatures and semantics: `file_read` reads the full text (empty string on failure); `file_write` overwrites; `file_append` appends (creating the file if it does not exist); `file_exists` checks existence (read-probe; directories/unreadable → false); `file_delete` deletes the file (→ false if absent); `file_size` returns the byte size (−1 on failure such as absence); `file_is_dir` tests whether the path is a directory; `file_is_file` tests whether the path is a regular file.
+
 **完整封装**：`std/fs`（命名空间 `fs`，Rust std::fs 风格 API）：读取
 `read_to_string` / `read_text` / `read_bytes` / `read_lines`，写入 `write` /
 `write_text` / `append` / `append_text` / `write_lines`，元数据 `exists` /
@@ -964,14 +1575,22 @@ func main() {
 `copy_dir`，复制移动 `copy` / `rename` / `move`，归档 `untar_gz` / `unzip`。
 全部基于上述 UTF-8 桥，中文路径安全。
 
+**Full wrapper**: `std/fs` (namespace `fs`, a Rust std::fs-style API): reading `read_to_string` / `read_text` / `read_bytes` / `read_lines`, writing `write` / `write_text` / `append` / `append_text` / `write_lines`, metadata `exists` / `is_file` / `is_dir` / `size`, deletion `remove_file` / `delete` / `remove_dir_all` / `remove_all`, directories `create_dir_all` / `mkdir_all` / `read_dir` / `list` / `walk` / `copy_dir`, copy/move `copy` / `rename` / `move`, and archives `untar_gz` / `unzip`. All are based on the UTF-8 bridge above and are safe for Chinese paths.
+
 ## 8. 数据结构与逻辑分离（struct / 命名空间函数 / 继承）
+
+*EN: 8. Data structures and logic separation (struct / namespace functions / inheritance)*
 
 **M2.1.8**：`class` 改名为 `struct` 并成为**纯数据**（只含字段）；逻辑（方法）移出为
 **绑定 struct 名的命名空间函数**（`namespace Point { pub func dist(p: Point) }`）。
 `obj.method()` 调用由编译器**转发**为命名空间函数（首参 = 接收者，按引用传递）。
 `this`/`static` 关键字随之废弃（`this` 变普通标识符，接收者改为显式首参）。
 
+**M2.1.8**: `class` is renamed to `struct` and becomes **pure data** (containing only fields); the logic (methods) is moved out into **namespace functions bound to the struct name** (`namespace Point { pub func dist(p: Point) }`). An `obj.method()` call is **forwarded** by the compiler to the namespace function (first parameter = receiver, passed by reference). The `this`/`static` keywords are consequently deprecated (`this` becomes an ordinary identifier, and the receiver becomes an explicit first parameter).
+
 ### 8.1 struct 定义与字段
+
+*EN: 8.1 struct definition and fields*
 
 ```c
 struct Point {
@@ -991,12 +1610,24 @@ namespace Point {
 ```
 
 - struct 体**只允许字段**；方法语法出现在 struct 体内 → 报错并提示用命名空间函数定义。
+
+- The struct body **allows only fields**; method syntax inside a struct body → an error suggests defining it as a namespace function.
+
 - 字段类型：显式标注（`var x: i64`）优先；否则从默认值字面量推导；两者皆无 → 编译报错。
+
+- Field type: an explicit annotation (`var x: i64`) takes priority; otherwise it is inferred from the default-value literal; without either → compile error.
+
 - 字段访问：`obj.x` 读（`GEP + load`）、`obj.x = 值` 写（`GEP + store`）。
+
+- Field access: `obj.x` reads (`GEP + load`), `obj.x = value` writes (`GEP + store`).
 
 ### 8.2 构造
 
+*EN: 8.2 Construction*
+
 `Struct名(实参…)` 是**构造表达式**（值类型，非 `new` 引用）：
+
+`Struct-name(args…)` is a **construction expression** (a value type, not a `new` reference):
 
 ```c
 var p = Point(3, 4)        // 按字段声明顺序传参
@@ -1006,13 +1637,28 @@ var r = Point(1)           // 部分实参：缺省字段用默认值
 
 ### 8.3 方法调用（转发）
 
+*EN: 8.3 Method calls (forwarding)*
+
 - 实例方法：`obj.method(...)` → 编译器转发为 `命名空间函数(obj, ...)`——
   接收者作为**首参按引用传递**（LLVM ptr），函数内字段修改反映到调用方；
+
+- Instance methods: `obj.method(...)` → the compiler forwards to `namespace-function(obj, ...)` — the receiver is passed **by reference as the first parameter** (LLVM ptr), so field modifications inside the function are reflected in the caller;
+
 - 静态风格：`Point.origin(...)`（receiver 是 struct 名）→ 直接调用，无接收者实参；
+
+- Static style: `Point.origin(...)` (the receiver is the struct name) → direct call, no receiver argument;
+
 - 方法函数必须 `pub`（与普通命名空间函数一致，私有则转发被拦截）；
+
+- Method functions must be `pub` (consistent with ordinary namespace functions; if private, the forwarding is blocked);
+
 - 方法函数首参类型 == struct 名即视为「实例方法」（引用传递）；否则为普通参数。
 
+- A method function whose first-parameter type == the struct name is treated as an "instance method" (passed by reference); otherwise the parameter is ordinary.
+
 ### 8.4 继承（字段复用）
+
+*EN: 8.4 Inheritance (field reuse)*
 
 ```c
 struct Animal {
@@ -1030,30 +1676,67 @@ namespace Dog {
 ```
 
 - 布局：子 struct 实例 = 父 struct 字段 + 自身字段（拍平，无嵌套指针）。
+
+- Layout: a child struct instance = the parent struct's fields + its own fields (flattened, no nested pointers).
+
 - 方法解析：`obj.method()` 沿继承链查找（子 → 父）；子类同名遮蔽父类；
   子实例调用父类方法时接收者地址直接可用（字段布局前缀一致）。
+
+- Method resolution: `obj.method()` searches along the inheritance chain (child → parent); a same-named method in the child shadows the parent's; when a child instance calls a parent method, the receiver address is directly usable (the field layout prefix is consistent).
+
 - **限制**：无向上转型（子类不能当父类用）、无虚方法/动态分派、字段名必须跨继承链唯一（否则报错）、继承不得成环（否则报错）。
+
+- **Limitations**: no upcasting (a subclass cannot be used as its parent), no virtual methods/dynamic dispatch, field names must be unique across the inheritance chain (otherwise an error), and inheritance must not form a cycle (otherwise an error).
 
 ### 8.5 语义限制（编译期报错）
 
+*EN: 8.5 Semantic limitations (compile-time errors)*
+
 - struct 定义仅允许出现在**文件顶层**（函数体内定义 → 语法错误）。
+
+- struct definitions may appear only at the **file top level** (defining one inside a function body → syntax error).
+
 - struct 实例字段访问/方法调用要求对象**可寻址**：`Point(0).x`、`make().dist()` 报错
   （寄存器中的 struct 值无内存地址；请先存入变量再访问）。
+
+- struct field access/method calls require an **addressable** object: `Point(0).x`, `make().dist()` report errors (a struct value in a register has no memory address; store it into a variable first, then access).
+
 - 方法函数必须 `pub` 才可被 `obj.method()` 转发；无接收者方法经实例调用 → 参数个数报错。
+
+- Method functions must be `pub` to be forwarded by `obj.method()`; calling a receiver-less method through an instance → an argument-count error.
+
 - struct 名与函数名冲突、struct 重复定义 → 报错。
+
+- A struct name conflicting with a function name, or a duplicate struct definition → error.
+
 - 本期不支持：对象比较（`==`）、`println` 直接打印对象、方法重载、析构。
+
+- Not supported in this version: object comparison (`==`), `println` printing objects directly, method overloading, and destructors.
 
 ### 8.6 与元组的关系
 
+*EN: 8.6 Relationship with tuples*
+
 - 二者都是**字面结构体值类型**（LLVM `{...}`）；元组字段可匿名/数字/命名访问，struct 字段仅命名访问。
+
+- Both are **literal-struct value types** (LLVM `{...}`); tuple fields allow anonymous/numeric/named access, while struct fields allow only named access.
+
 - 元组字段访问对寄存器值开放（`divmod(9,2).q` 合法）；struct 字段访问要求可寻址对象。
 
+- Tuple field access is open to register values (`divmod(9,2).q` is legal); struct field access requires an addressable object.
+
 ## 9. 一等函数与闭包（S2.2 已实现；后置项：嵌套捕获 + fn×泛型 + C 回调）
+
+*EN: 9. First-class functions and closures (implemented in S2.2; follow-ups: nested capture + fn×generic + C callbacks)*
 
 > 早期草案「一等函数……后续版本」已落地：`func` 字面量 = 闭包，`fn(A)->R` = 函数类型，
 > 支持高阶函数与环境捕获。设计见 [docs/plans/closure-model.md](plans/closure-model.md)。
 
+> The early-draft statement "first-class functions… later versions" has landed: a `func` literal = a closure, `fn(A)->R` = a function type, with support for higher-order functions and environment capture. Design: [docs/plans/closure-model.md](plans/closure-model.md).
+
 **函数字面量（闭包）**：`func(形参) -> ret { 体 }`，类型为 `fn(A)->R`：
+
+**Function literals (closures)**: `func(params) -> ret { body }`, of type `fn(A)->R`:
 
 ```c
 var d = func(x: i64) -> i64 { return x * 2 }   // 无捕获闭包
@@ -1062,6 +1745,8 @@ var g: fn(i64) -> i64 = add1                    // 命名函数提升（函数�
 
 **函数类型 `fn(A)->R`**：可作参数 / 返回 / 变量 / struct 字段：
 
+**Function type `fn(A)->R`**: usable as a parameter / return / variable / struct field:
+
 ```c
 func apply(f: fn(i64) -> i64, x: i64) -> i64 { return f(x) }   // 高阶函数
 func make() -> fn(i64) -> i64 { ... return func(x: i64) -> i64 { ... } }  // 闭包返回
@@ -1069,18 +1754,38 @@ func make() -> fn(i64) -> i64 { ... return func(x: i64) -> i64 { ... } }  // 闭
 
 - 闭包值 = `{env, entry}` 聚合：捕获变量 **move 进环境**（堆分配），调用走
   `call_indirect`（opcode 70，间接调用 `br i1 ... label` 语法层级）；
+
+- A closure value = a `{env, entry}` aggregate: captured variables are **moved into the environment** (heap-allocated), and calls go through `call_indirect` (opcode 70, indirect-call via `br i1 ... label` syntax levels);
+
 - **命名函数提升**：顶层/命名空间 `func` 名可直接作为函数值使用（自动生成适配器）；
+
+- **Named-function promotion**: a top-level/namespace `func` name can be used directly as a function value (an adapter is generated automatically);
+
 - 捕获规则：闭包内引用的外层局部变量 move 进 env；按值捕获、所有权转移；
+
+- Capture rules: outer local variables referenced inside the closure are moved into env; captured by value with ownership transfer;
+
 - 嵌套捕获：闭包内再闭包，内层可捕获外层闭包所捕获的变量（捕获沿父链传播）；
+
+- Nested capture: a closure inside a closure — the inner one can capture the variables captured by the outer closure (capture propagates along the parent chain);
+
 - 泛型 × 闭包：`fn` 类型与泛型函数可组合；C 回调：函数值可传 extern C 边界。
+
+- Generic × closure: `fn` types and generic functions can be combined; C callbacks: function values can cross the extern C boundary.
 
 练习用例：`examples/oop.tie`、`tests/s22_probe/*.tie`（探针 1-8：无捕获/高阶/命名
 函数/返回闭包/组合/嵌套捕获/泛型闭包/C 回调）。
 
+Practice cases: `examples/oop.tie`, `tests/s22_probe/*.tie` (probes 1-8: no-capture/higher-order/named function/returning closures/composition/nested capture/generic closures/C callbacks).
+
 ## 10. 接口（port / impl，S2.4 已实现）
+
+*EN: 10. Interfaces (port / impl, implemented in S2.4)*
 
 tie 的 interface：方法签名集合 + 显式实现，**静态 / 动态双形态分发**（二分法 vtable）。
 设计见 [docs/plans/port-model.md](plans/port-model.md)。
+
+tie's interface: a set of method signatures + explicit implementation, with **static / dynamic dual-form dispatch** (halving vtable). Design: [docs/plans/port-model.md](plans/port-model.md).
 
 ```c
 port Drawable {
@@ -1103,19 +1808,37 @@ unsafe { var d: Drawable = button; d.draw(ctx) }   // 走 vtable 间接调用
 ```
 
 - `port Name { pub func 签名; ... }`：只声明方法签名（`self` 为接收者占位），无实现；
+
+- `port Name { pub func signature; ... }`: declares only method signatures (`self` is the receiver placeholder), with no implementations;
+
 - `impl P for S { pub func ... }`：给 struct 实现接口；**漏方法 = 编译错误**
   （「impl 'P for S' 缺少方法 'M'」）；
+
+- `impl P for S { pub func ... }`: implements an interface for a struct; **a missing method = a compile error** ("impl 'P for S' 缺少方法 'M'");
+
 - **静态分发**：`func f<T: Drawable>(d: T)` 以泛型约束限定；T 实参化时校验必须
   `impl Drawable`，单态化绑定具体实现，零开销、无 vtable；
+
+- **Static dispatch**: `func f<T: Drawable>(d: T)` is constrained by a generic bound; when T is instantiated, it is verified to `impl Drawable` and monomorphized to bind the concrete implementation, with zero overhead and no vtable;
+
 - **动态分发**：`unsafe { var d: Drawable = struct_val }` 把 struct 装箱为 port 值
   （data + 隐式 vtable 全局常量），`d.method()` 间接调用；支持 `table<Drawable>`
   异构容器；
+
+- **Dynamic dispatch**: `unsafe { var d: Drawable = struct_val }` boxes a struct into a port value (data + an implicit vtable global constant), with `d.method()` calling indirectly; heterogeneous containers such as `table<Drawable>` are supported;
+
 - port 值（动态）持有时须 `unsafe`（借用语义、安全边界显式化）；`self` 作普通首参。
+
+- Holding a port value (dynamic) requires `unsafe` (borrow semantics, making the safety boundary explicit); `self` acts as an ordinary first parameter.
 
 ## 11. 错误处理（S2.3 已实现；组合子 + 可捕获 panic 于 dev33 批次7 补齐）
 
+*EN: 11. Error handling (implemented in S2.3; combinators + catchable panic completed in dev33 batch 7)*
+
 tie 无异常；错误显式表示为值（`Result` / `Option`），配合 `?` 提前解包与 `panic`。
 预置类型在 [std/result.tie](../std/result.tie)。
+
+tie has no exceptions; errors are represented explicitly as values (`Result` / `Option`), combined with `?` for early unwrapping and `panic`. The preloaded types are in [std/result.tie](../std/result.tie).
 
 ```c
 import "../../std/result.tie"
@@ -1131,18 +1854,39 @@ func main() {
 
 - `Result<T, E>`：`Result.Ok(v)` / `Result.Err(e)`；`Option<T>`：`Some(v)` / `None`
   （由预置枚举实现，见 §3.8）；
+
+- `Result<T, E>`: `Result.Ok(v)` / `Result.Err(e)`; `Option<T>`: `Some(v)` / `None` (implemented by preloaded enums, see §3.8);
+
 - `?` 后缀：仅限**返回 `Result`/`Option` 的函数**内使用——Err/None 提前返回，
   Ok/Some 解出 payload 继续；
+
+- The `?` suffix: usable only inside **functions returning `Result`/`Option`** — Err/None return early, Ok/Some unwrap the payload and continue;
+
 - `panic(msg)`：打印 + 非零退出；`catch_panic`（可捕获）：在 `unsafe` 上下文用
   `setjmp/longjmp` 把 panic 转为可控结果（见 dev33 批次7、`tests/language/catch_panic_probe.tie`）；
+
+- `panic(msg)`: prints + non-zero exit; `catch_panic` (catchable): in an `unsafe` context uses `setjmp/longjmp` to turn a panic into a controlled result (see dev33 batch 7, `tests/language/catch_panic_probe.tie`);
+
 - **switch 解构**：`switch r { case Result.Ok(v): ... case Result.Err(e): ... }`
   按变体载荷解构（`case Shape.Circle:` 的变体带值形态，§5.1 匹配扩展）；
+
+- **switch destructuring**: `switch r { case Result.Ok(v): ... case Result.Err(e): ... }` destructures by variant payload (the variant-with-value form of `case Shape.Circle:`, the §5.1 matching extension);
+
 - 组合子机制：`unwrap` / `unwrap_or` / `map` / `and_then` 等（std/result，dev33 批次7）；
+
+- Combinator mechanism: `unwrap` / `unwrap_or` / `map` / `and_then`, etc. (std/result, dev33 batch 7);
+
 - 目标类型引导：`?` 与函数返回类型互推，报错带类型信息。
+
+- Target-type guidance: `?` and the function return type infer each other, and errors carry type information.
 
 ## 12. 宏与元编程（S3.3 已实现；过程/语句级/跨文件三大方向 dev33 批次8-10 落地）
 
+*EN: 12. Macros and metaprogramming (implemented in S3.3; the three directions — procedural/statement-level/cross-file — landed in dev33 batches 8-10)*
+
 编译期 **AST→AST** 函数（宏），参数与返回都是 `code`（编译期代码值）。
+
+Compile-time **AST→AST** functions (macros) whose parameters and returns are both `code` (compile-time code values).
 
 ```c
 macro double(x: code) -> code {
@@ -1155,17 +1899,38 @@ func main() {
 
 - **code 三形态**：准引用 `` `(expr) ``（表达式）与 `` `{ stmts } ``（块）；插值
   `$x` / `$(expr)`；`gensym("前缀")` 防命名冲突（词法卫生，展开不与用户码冲突）；
+
+- **Three forms of code**: quasiquotation `` `(expr) `` (expression) and `` `{ stmts } `` (block); interpolation `$x` / `$(expr)`; `gensym("prefix")` prevents name collisions (lexical hygiene so expansion does not clash with user code);
+
 - 函数式宏展开 pass `mexpand`（轮次上限 64 防死循环）；由 tie-interp 编译期执行；
+
+- The functional-macro expansion pass `mexpand` (a 64-round upper bound to prevent infinite loops); executed at compile time by tie-interp;
+
 - **过程宏（#[macro] 声明，dev33 批次9）**：`#[macro] macro name(...) -> code`，
   宏体可驱动 **token 流 API**（`tokenize`/`deparse`/`token_*`/`eval_expr`），
   处理非语法结构；`compile_error` 内置在调用点报错（宏错误传播）；
+
+- **Procedural macros (#[macro] declaration, dev33 batch 9)**: `#[macro] macro name(...) -> code`; the macro body can drive the **token-stream API** (`tokenize`/`deparse`/`token_*`/`eval_expr`), handling non-syntactic constructs; the built-in `compile_error` reports at the call site (macro-error propagation);
+
 - **语句级宏（批次10 任务28）**：展开为语句/块，可定义自定义循环/守卫结构；
+
+- **Statement-level macros (batch 10, task 28)**: expand into statements/blocks, allowing custom loop/guard constructs;
+
 - **跨文件宏（批次10 任务29）**：`pub macro` 可被其他文件 import 使用，未导入引用报错；
+
+- **Cross-file macros (batch 10, task 29)**: a `pub macro` can be used by other files via import; referencing without import reports an error;
+
 - **编译期常量计算**：宏内 `eval_expr`/常量折叠（`tests/s33_probe/b9_ct_const.tie`）。
+
+- **Compile-time constant evaluation**: `eval_expr` / constant folding within macros (`tests/s33_probe/b9_ct_const.tie`).
 
 ## 13. 移动语义与所有权（S1.5 已实现；smove 独立 pass）
 
+*EN: 13. Move semantics and ownership (implemented in S1.5; smove standalone pass)*
+
 变量默认可复制；可用 `move` 显式转移所有权，转移后源变量作废（不可再用）。
+
+Variables are copyable by default; `move` can explicitly transfer ownership, after which the source variable is invalidated (cannot be used again).
 
 ```c
 var a = "hello"
@@ -1175,38 +1940,77 @@ var b = move a        // 所有权移到 b；此后 a 不可用（编译期报�
 
 - **smove 独立 pass**（`smove` / `move` 检查）：`TIE_MOVE_CHECK=1` 用其自举整棵
   compiler/，移动后使用报错；
+
+- **smove standalone pass** (`smove` / `move` check): with `TIE_MOVE_CHECK=1`, it bootstraps the whole compiler/; using a value after it is moved reports an error;
+
 - 编译期所有权检查：move 后越界使用 / 双重 move → 编译期报错；
+
+- Compile-time ownership checks: use after move / double move → compile-time errors;
+
 - 作用域：所有权随作用域结束回收（表/闭包 env 等堆对象请用 move 显式转移所有权）。
 
+- Scope: ownership is reclaimed at the end of the scope (for heap objects such as tables/closure env, explicitly transfer ownership with `move`).
+
 ## 14. 不安全机制（S1.2 + dev33 批次6）
+
+*EN: 14. Unsafe mechanisms (S1.2 + dev33 batch 6)*
 
 安全子集之外的能力集中到 `unsafe`：指针/切片、原子与 MMIO、内联汇编、repr(C)、
 以及 2026-08-23 定稿的**凭据门禁**（`#[unsafe.*]` 属性 + `guard<share>`，见 §7 注与
 [docs/designs/concurrency-model.md](designs/concurrency-model.md) §7）。
 
+Capabilities outside the safe subset are concentrated into `unsafe`: pointers/slices, atomics and MMIO, inline assembly, repr(C), and the **credential gate** finalized on 2026-08-23 (`#[unsafe.*]` attributes + `guard<share>`, see the §7 note and [docs/designs/concurrency-model.md](designs/concurrency-model.md) §7).
+
 - **`unsafe fn` / `unsafe { }`**：进入不安全上下文；非 unsafe 路径引用下述能力 → 报错；
+
+- **`unsafe fn` / `unsafe { }`**: enters an unsafe context; referencing the following capabilities on a non-unsafe path → error;
+
 - **指针与切片**：`ptr<T>` / `slice<T>` 类型；`slice_of(表)` 把动态表转连续内存切片
   （dev33 批次6 任务16）；`*p` 解引 / 偏移；可捕获 panic + 边界防护见负例；
+
+- **Pointers and slices**: `ptr<T>` / `slice<T>` types; `slice_of(table)` converts a dynamic table into a contiguous-memory slice (dev33 batch 6, task 16); `*p` dereference / offset; catchable panic + bounds protection in the negative cases;
+
 - **原子与 MMIO**：`atomic<T>`、`atomic_load/atomic_store/atomicrmw/cmpxchg`
   （`tests/language/atomic_asm.tie`、s21）；`volatile_load / volatile_store`
   （MMIO 语义，禁止优化删除/合并，`tests/language/volatile_*.tie`）；
+
+- **Atomics and MMIO**: `atomic<T>`, `atomic_load/atomic_store/atomicrmw/cmpxchg` (`tests/language/atomic_asm.tie`, s21); `volatile_load / volatile_store` (MMIO semantics, forbidding the optimizer from deleting/merging, `tests/language/volatile_*.tie`);
+
 - **内联汇编 asm!**：`asm!("...", 约束, 输入, 输出)`；平台条件编译
   `asm!(target("arch")) { branch }` 按目标分支 + 无目标平台报错（dev33 批次6 任务17）；
+
+- **Inline assembly asm!**: `asm!("...", constraints, inputs, outputs)`; platform-conditional compilation `asm!(target("arch")) { branch }` branches by target, with an error when no target platform (dev33 batch 6, task 17);
+
 - **repr(C)**：`#[repr(C)] struct` 固定 ABI 布局（与 C 互操作）；
+
+- **repr(C)**: `#[repr(C)] struct` fixes the ABI layout (for C interop);
+
 - **extern 强制 unsafe**：`extern fn` 声明后需在 unsafe 上下文调用（S1.2）；
+
+- **extern forces unsafe**: after `extern fn` declaration, calls must be in an unsafe context (S1.2);
+
 - **角色扩展（S1.4）**：`type tie<logic> + unsafe` 等多角色叠加 / 参数化 / 与文件名
   一致性校验；
+
+- **Role extension (S1.4)**: multiple-role stacking / parameterization such as `type tie<logic> + unsafe`, and consistency validation with the file name;
+
 - **凭据门禁（2026-08-23 定稿，见 concurrency-model §7.1）**：`#[unsafe.share]` /
   `#[unsafe.trm]` / `#[unsafe.mem]` / `#[unsafe.ext]` 声明属性 + `unsafe.get(share)` /
   `unsafe use g { }` / `unsafe.with(share) { }` guard 凭据；`#[tag.x]` 标签 + `unsafe goto #x`
   无条件跳转（§7.1.5）。这些面向打破「状态私有 / 消息串行 / 执行模型」三大边界的越界
   逃生，属三期并发语法，详情以 concurrency-model §7 与 [unsafe-model.md](plans/unsafe-model.md) 为准。
 
+- **Credential gate (finalized 2026-08-23, see concurrency-model §7.1)**: the `#[unsafe.share]` / `#[unsafe.trm]` / `#[unsafe.mem]` / `#[unsafe.ext]` declaration attributes + the guard credentials of `unsafe.get(share)` / `unsafe use g { }` / `unsafe.with(share) { }`; the `#[tag.x]` label + `unsafe goto #x` unconditional jump (§7.1.5). These target breaking-out escape hatches across the three boundaries "state privacy / message serialization / execution model", and belong to phase-three concurrency syntax; the details are governed by concurrency-model §7 and [unsafe-model.md](plans/unsafe-model.md).
+
 ## 15. 并发：actor（一期并发语法层已实现；多参标量 dev33 批次 B 组落地）
+
+*EN: 15. Concurrency: actors (phase-one concurrency syntax layer implemented; multi-parameter scalars landed in dev33 batch B)*
 
 actor 是**原生并发**（零运行时）：`run Typed()` 启动 OS 工作线程，方法调用即跨线程
 **消息传递**，私有状态字段由单消费者串行消费（免锁）。执行层纯编译期降级到
 `CreateThread` + 互斥/条件变量。详见 [docs/designs/concurrency-model.md](designs/concurrency-model.md) §5。
+
+An actor is **native concurrency** (zero runtime): `run Typed()` starts an OS worker thread, method calls are cross-thread **message passing**, and private state fields are consumed serially by a single consumer (lock-free). The execution layer degrades purely at compile time to `CreateThread` + mutex/condition-variable. See [docs/designs/concurrency-model.md](designs/concurrency-model.md) §5.
 
 ```c
 actor Counter {
@@ -1222,21 +2026,45 @@ func main() {
 ```
 
 - **`actor Name { ... }`**：声明 actor；私有状态基元为字段（`var name: Ty [= 默认]`）；
+
+- **`actor Name { ... }`**: declares an actor; private-state primitives are fields (`var name: Ty [= default]`);
+
 - **`run Typed()`**：分配 per-actor record + 初始化 OS 锁/条件变量 + 启动工作线程，
   返回句柄（可复制，Erlang PID 式；`move` 可收紧所有权）；
+
+- **`run Typed()`**: allocates a per-actor record + initializes the OS lock/condition-variable + starts the worker thread, returning a handle (copyable, Erlang-PID-style; `move` can tighten ownership);
+
 - **消息方法**：`pub func m(...) -> R`（同步，阻塞等应答）与
   `pub async func`（fire-and-forget，**必须 void**）；缺省同步；方法参数限**标量**
   且支持**多参**（2-3 及更多，实参写 record 消息槽段 @80+k*8）、字段区起 @176；
+
+- **Message methods**: `pub func m(...) -> R` (synchronous, blocking for the reply) and `pub async func` (fire-and-forget, **must be void**); synchronous by default; method parameters are limited to **scalars** and support **multiple arguments** (2-3 and more; arguments are written into the record message-slot section @80+k*8), with the field area starting at @176;
+
 - **`?`** （消息方法可在方法体处理失败，处理器 panic → 调用方原地 raise）；
+
+- **`?`** (message methods can handle failure within the method body; a handler panic → the caller is raised in place);
+
 - **私有状态字段**为 actor 独占（串行消费免锁）；字段初值暂用类型默认值
   （如 i64=0，显式 `= N` 尚未捕获）；
+
+- **Private state fields** are exclusive to the actor (serial consumption, lock-free); field initial values temporarily use the type's default (e.g. i64=0; explicit `= N` is not yet captured);
+
 - **多参标量（B 组）**：同步 RPC + async 投递均支持多标量实参；宽类型（指针/slice）
   共享消息属 unsafe 凭据门禁（§7.1.2），安全路径限标量；
+
+- **Multi-argument scalars (group B)**: both synchronous RPC and async delivery support multiple scalar arguments; wide-type (pointer/slice) shared messages fall under the unsafe credential gate (§7.1.2), and the safe path is limited to scalars;
+
 - 句柄 `c.method(...)` 经 dispatch（`actor_disp_<n>`）按 method_id 转给对应 handler。
+
+- The handle `c.method(...)` goes through dispatch (`actor_disp_<n>`) to the corresponding handler by method_id.
 
 ## 16. 语法速查表
 
+*EN: 16. Syntax quick reference*
+
 ### 16.1 所有关键词
+
+*EN: 16.1 All keywords*
 
 | 关键词         | 用途                       | 示例                           |
 | ----------- | ------------------------ | ---------------------------- |
@@ -1290,10 +2118,16 @@ func main() {
 | `panic`     | 打印 + 非零退出（§11）              | `panic("fail")`               |
 | `move`      | 所有权转移（软关键字/上下文，§13）       | `var b = move a`              |
 
+EN: The keyword tables list every keyword with its purpose and an example; they are preserved verbatim and each entry maps a keyword to its role (function definition, variable/const declarations, control flow, import/module, struct/enum, wide types, concurrency, interfaces, unsafe, macros, etc.) per the cited sections.
+
 > `let`/`fn` 为早期名称，已分别由 `var`/`const` 与 `func` 取代；`class`/`static`/`this`
 > 已随 M2.1.8 废弃（`struct` 取代 `class`，接收者改为显式首参），均不再作为关键字。
 
+> `let`/`fn` are early names, already replaced by `var`/`const` and `func` respectively; `class`/`static`/`this` were deprecated with M2.1.8 (`struct` replaces `class`, and the receiver becomes an explicit first parameter); none of them are keywords anymore.
+
 ### 16.2 所有类型
+
+*EN: 16.2 All types*
 
 | 类型         | 类别    | 说明                       | 对应 LLVM 类型              |
 | ---------- | ----- | ------------------------ | ----------------------- |
@@ -1328,10 +2162,17 @@ func main() {
 | `atomic<T>`| 复合类型  | 原子类型（unsafe，§14.2）          | `i64` + 原子指令           |
 | `Result<T,E>` / `Option<T>` | 标准库 | 错误处理枚举（§11，std/result） | tag+payload 结构体   |
 | `guard<cap>` | 凭据   | move-only 并发凭据（§14.6）       | move-only guard          |
+
+EN: The type tables enumerate every type with its category, description and corresponding LLVM type; they are preserved verbatim. Categories span primitive types, wide types, composite types (table/map/tuple/struct name), functions/closures, unsafe types (ptr/slice/atomic), and standard-library error-handling enums / move-only credentials.
+
 > 宽类型与 `code`/`table` 均为编译期概念：语义分析阶段展开为具体类型或校验归类，
 > IR 生成阶段不出现。表字面量 `[col, col; row]` 语法见 §3.3；元组语法见 §3.4；类见 §8。
 
+> Wide types and `code`/`table` are all compile-time concepts: expanded into concrete types or validated/categorized during semantic analysis, and absent from the IR generation stage. The table literal `[col, col; row]` syntax is in §3.3; tuple syntax in §3.4; classes in §8.
+
 ### 16.3 所有符号
+
+*EN: 16.3 All symbols*
 
 | 符号                          | 名称/用途     | 说明                                               |
 | --------------------------- | --------- | ------------------------------------------------ |
@@ -1371,6 +2212,8 @@ func main() {
 | `!`                         | 逻辑非（一元）   | 操作数必须为 `bool`                                    |
 | `//`                        | 行注释       | 行内 `//` 及之后内容忽略                                    |
 
+EN: The symbol table lists every operator and punctuation with its name/use and meaning; it is preserved verbatim.
+
 > **字符串拼接性能陷阱（重要）**：`+`/`+=` 拼接与大多数语言相同是**分配新缓冲再整串拷贝**。
 > 在循环里写 `out = out + c` 是 O(n²)：每次迭代拷贝当前全长。实测 `out = out + ("a")`
 > 重复 524288 次 → 内存操作总量 ≈ 134GB，可在 32GB 机器上打满内存并崩溃。
@@ -1379,6 +2222,11 @@ func main() {
 > `repeat`/`join`（已按该方式实现）。串联已知数量的短串（非循环）用 `+` 无碍。
 > 已知限制：编译器暂无就地追加自动优化（无引用计数的 {ptr,len} 模型下改写可能破坏
 > 别名缓冲；曾实现实测 300× 提速但自举不稳已回退——见 docs/ 性能记录），SB 仍是唯一推荐路径。
+
+> **String-concatenation performance trap (important)**: like most languages, `+`/`+=` concatenation **allocates a new buffer and copies the whole string**. Writing `out = out + c` in a loop is O(n²): every iteration copies the current full length. Measured: `out = out + ("a")` repeated 524288 times → total memory operations ≈ 134GB, which can exhaust memory on a 32GB machine and crash.
+> **For looping concatenation / batch-building strings, you MUST use `string_builder()` + `sb_append`/`sb_append_byte` + `sb_build()`** (in-place append, capacity doubling, O(n)), or directly call `repeat`/`join` from `std/string.tie` (implemented that way). Concatenating a known small number of short strings (not in a loop) with `+` is fine.
+> Known limitation: the compiler currently has no automatic in-place-append optimization (under the non-reference-counted {ptr,len} model, rewriting may break aliased buffers; a 300× speed-up was once implemented but reverted because bootstrapping was unstable — see the docs/ performance notes); SB remains the only recommended path.
+
 | `/*` `*/`                   | 块注释       | 跨行注释                                             |
 | `"..."`                     | 字符串字面量    | 支持转义 `\n` `\t` `\\` `\"` `\'` `\0`               |
 | `'...'`                     | 字符字面量     | 单字符                                              |
