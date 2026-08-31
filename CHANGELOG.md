@@ -2,40 +2,41 @@
 
 > **写作规范（写死，改此文件必守）**：
 > 1. 写完即记：每个开发/修复完成立即追加一条（与 commit 同内容），不批量攒。
-> 2. 条目格式：`## [类型] 一句话标题（YYYY-MM-DD）`；新条目加在版本段标题之下、更旧条目之上（时间倒序）。
+> 2. 条目格式：`## [类型] 一句话标题（YYYY-MM-DD）`，可附编号 `（p.x.y.z）`；新条目加在版本段标题之下、更旧条目之上（时间倒序）。
 > 3. 版本段标题：`## Harbor-2026.1-preview.N（YYYY-MM-DD）` / `## 2026.1（正式版，进行中）`；条目必须位于其版本段标题**之下**，归属以 git tag 边界为准。
 > 4. 禁止：重复条目、`---##` 等烂格式、正文夹带旧标题残留、删除历史条目。
 > 5. 大版本归档：正式版发布时把本文件复制为仓库根 `<版本>.CHANGELOG`，清空重记下一版本。
+> 6. **编号只用 p.x.x.x**：p=预发布，大版本号省略（preview.5 → p.5）；第一段为发布档，第二段为开发模块（旧称「里程碑」），第三段为子项；每版开发前只定第一、二段，第三段自动递增。禁止 H1/M1/P1 等字母数字混合标记。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 2026.1（正式版，进行中）
 
 > **定位**：trm 开发周期长于预期，2026.1 正式版提前发布。对比 preview.5，
 > 正式版以**修复缺陷与性能问题**为主，不再新增功能面。
 
-### 修复计划（按优先级）
+### 修复计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能）
 
-**正确性（必查）**
-- [ ] H1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出
-- [ ] H2 smove.check_fn_walk 对 extern 越界隐患（TIE_MOVE_CHECK=1 门控，评估是否修）
-- [ ] H3 lld 解析 tie_interp.lib CRT printf 缺陷（无 MSVC 环境 interp 桥受影响）
-- [ ] H4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push）：保持拆小函数纪律，
+**正确性（p.6.1，必查）**
+- [ ] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出
+- [ ] p.6.1.2 smove.check_fn_walk 对 extern 越界隐患（TIE_MOVE_CHECK=1 门控，评估是否修）
+- [ ] p.6.1.3 lld 解析 tie_interp.lib CRT printf 缺陷（无 MSVC 环境 interp 桥受影响）
+- [ ] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push）：保持拆小函数纪律，
       考虑在 ir.add_operand 加交错检测断言，把未知暴露点转编译期错误
-- [ ] H5 config 深合并边合并边 push 全局扁平表：复核规避注释仍安全
+- [ ] p.6.1.5 config 深合并边合并边 push 全局扁平表：复核规避注释仍安全
 
-**功能限制（评估是否在正式版放开）**
-- [ ] 枚举 payload 白名单（暂不支持 table/f64 → Result<table> 不可用）
-- [ ] import result.tie 对 import assert.tie 的扫描顺序依赖
-- [ ] 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持
-- [ ] 闭包参数 ref / 变参
-- [ ] runtime.a 与 repl.exe 种子通道：C ABI 桥符号 tie 化（TIE_INTERP_LIB 回退）
-- [ ] driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用）
+**功能限制（p.6.2，评估是否在正式版放开）**
+- [ ] p.6.2.1 枚举 payload 白名单（暂不支持 table/f64 → Result<table> 不可用）
+- [ ] p.6.2.2 import result.tie 对 import assert.tie 的扫描顺序依赖
+- [ ] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持
+- [ ] p.6.2.4 闭包参数 ref / 变参
+- [ ] p.6.2.5 runtime.a 与 repl.exe 种子通道：C ABI 桥符号 tie 化（TIE_INTERP_LIB 回退）
+- [ ] p.6.2.6 driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用）
 
-**性能（O(n²) 根治）**
-- [ ] P1 config.parse_string 循环逐字符 `out = out + c` → 改 StringBuilder（每日路径）
-- [ ] P2 std/encoding base64 逐块拼接 → 大 payload 内存爆炸，改 StringBuilder
-- [ ] P3 std 哈希 hex 输出逐字节拼接（热度低，随 P2 一并改）
-- [ ] P4 std/args 逐字符 + str_char 双重平方
-- [ ] P5 driver:1257/1299 残余逐字符拼接点
+**性能（p.6.3，O(n²) 根治）**
+- [ ] p.6.3.1 config.parse_string 循环逐字符 `out = out + c` → 改 StringBuilder（每日路径）
+- [ ] p.6.3.2 std/encoding base64 逐块拼接 → 大 payload 内存爆炸，改 StringBuilder
+- [ ] p.6.3.3 std 哈希 hex 输出逐字节拼接（热度低，随 p.6.3.2 一并改）
+- [ ] p.6.3.4 std/args 逐字符 + str_char 双重平方
+- [ ] p.6.3.5 driver:1257/1299 残余逐字符拼接点
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
 

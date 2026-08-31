@@ -23,8 +23,9 @@ tie 是一门**通用编程语言**：用一门语言写逻辑、写界面、写
 | [docs/ai-guide.md](docs/ai-guide.md)                       | AI 教学指南：语言用法 + 负例 + 编译器架构（教 AI 用/开发 tie）                                                          |
 | [docs/prompt-pack.md](docs/prompt-pack.md)                 | 可粘贴 Prompt 包：自包含简介，直接发给任何 AI                                                                      |
 | [NEW.md](NEW.md)                                           | 发行版新鲜事：本发行版的新功能与特色速览                                                                              |
-| [docs/plans/](docs/plans/)                                 | 后续里程碑设计规划（仍在推进：trm/tiu/UI/LSP/PQC/硬件加速/plugin-kernel 等；已实现的规划已归档至 [tie-archive](https://github.com/tie-lang/tie-archive)） |
-| [CHANGELOG.md](CHANGELOG.md)                               | 版本变更记录（按里程碑）                                                                                      |
+| [docs/plans/](docs/plans/)                                 | 后续开发模块设计规划（仍在推进：trm/tiu/UI/LSP/PQC/硬件加速/plugin-kernel 等；已实现的规划已归档至 [tie-archive](https://github.com/tie-lang/tie-archive)） |
+| [CHANGELOG.md](CHANGELOG.md)                               | 版本变更记录（按发布档）                                                                                      |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                         | 贡献指南：p.x.x.x 编号规范、CHANGELOG 规范、发布流程                                                                 |
 
 ## 快速开始
 
