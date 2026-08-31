@@ -68,18 +68,18 @@ tie 运行时无法构造嵌套表 → 表字面量树按 **DFS 序平铺**为�
 
 * **zd record 字段号（固定，只追加；已实现）**：
 
-  | 字段号 | 内容                | wire type | tag |
-  | ---- | ----------------- | ------- | --- |
-  | 1    | kind（zd i64 数组）     | 2       | 10  |
-  | 2    | key（zd string 数组）   | 2       | 18  |
-  | 3    | value\_i64（zd i64 数组） | 2       | 26  |
-  | 4    | value\_f64（zd f64 数组） | 2       | 34  |
-  | 5    | value\_str（zd string 数组） | 2    | 42  |
-  | 6    | child\_count（zd i64 数组） | 2    | 50  |
+  | 字段号 | 内容                       | wire type | tag |
+  | --- | ------------------------ | --------- | --- |
+  | 1   | kind（zd i64 数组）          | 2         | 10  |
+  | 2   | key（zd string 数组）        | 2         | 18  |
+  | 3   | value\_i64（zd i64 数组）    | 2         | 26  |
+  | 4   | value\_f64（zd f64 数组）    | 2         | 34  |
+  | 5   | value\_str（zd string 数组） | 2         | 42  |
+  | 6   | child\_count（zd i64 数组）  | 2         | 50  |
 
   文件 = zd v2 头（10 字节：`TIEDBZD` + `"02"` + flags 0）+ 依次 6 个字段（每字段 = varint tag + varint 载荷长度 + 载荷 zd 数组）。bool 归整数列（true=1/false=0）。
 
-* 消费者（jcc-pack）按 kind/key/child_count 遍历读取字段，无需自带 td 解析器。
+* 消费者（jcc-pack）按 kind/key/child\_count 遍历读取字段，无需自带 td 解析器。
 
 ## 5. 消费方
 
@@ -106,12 +106,12 @@ tie 运行时无法构造嵌套表 → 表字面量树按 **DFS 序平铺**为�
 
 ## 8. 里程碑与小任务序列（一次一个小任务）
 
-| 内容                                                        | 产物            |
-| --------------------------------------------------------- | ------------- |
+| 内容                                                          | 产物            |
+| ----------------------------------------------------------- | ------------- |
 | ✅ tiec 语法层支持 data 文件裸表/可选表名（无 var）+ 校验探针                    | tiec 识别 td 形态 |
 | ✅ tiec `--compress-data` 子命令：表字面量 → DFS 平铺 → zd record + 探针 | td→zd 绿       |
-| config.data.tie 等内部 data 文件统一走 --compress-data 解析 + 回归    | 内部统一          |
-| jcc-pack 读 zd 产物替换自带解析器（随 dp 里程碑）                         | dp 集成绿        |
+| config.data.tie 等内部 data 文件统一走 --compress-data 解析 + 回归      | 内部统一          |
+| jcc-pack 读 zd 产物替换自带解析器（随 dp 里程碑）                           | dp 集成绿        |
 
 ## 9. 非目标（YAGNI，本阶段不做）
 

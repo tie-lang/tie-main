@@ -1,0 +1,96 @@
+import "../../std/result.tie"
+import "../../std/assert.tie"
+import "../../std/fs.tie"
+import "../../std/path.tie"
+using assert;
+using fs;
+using path;
+
+namespace fs {
+pub func str_contains(s: string, sub: string) -> bool {
+    var n: i64 = str_len(s)
+    var m: i64 = str_len(sub)
+    var i: i64 = 0
+    while i + m <= n {
+        var j: i64 = 0
+        var ok: bool = true
+        while j < m {
+            if str_char(s, i + j) != str_char(sub, j) {
+                ok = false
+            }
+            j = j + 1
+        }
+        if ok {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+}
+namespace path {
+pub func str_contains(s: string, sub: string) -> bool {
+    var n: i64 = str_len(s)
+    var m: i64 = str_len(sub)
+    var i: i64 = 0
+    while i + m <= n {
+        var j: i64 = 0
+        var ok: bool = true
+        while j < m {
+            if str_char(s, i + j) != str_char(sub, j) {
+                ok = false
+            }
+            j = j + 1
+        }
+        if ok {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+}
+func main() {
+    println("m1 exists=" + to_string(fs.exists("examples/hello.tie")))
+    println("m2 exists_empty=" + to_string(fs.exists("不存在文件_xyz_2026")))
+    var lines = fs.read_lines("examples/hello.tie")
+    println("m3 lines=" + to_string(len(lines)))
+    println("m4 L0=" + lines[0])
+    println("m5 L7=" + lines[7])
+    println("m6 L0=" + str_char_slice(lines[0]))
+    println("m7 L7=" + str_char_slice(lines[7]))
+    var tmp = "C:/Users/Jiro/AppData/Local/Temp/opencode/dbg_fsp.txt"
+    println("m8 w=" + to_string(fs.write_text(tmp, "abc")))
+    var rt1 = fs.read_text(tmp)
+    println("m9 readText1")
+    switch rt1 {
+        case Ok(v): println("m9 Ok=" + v)
+        case Err(e): println("m9 Err=" + e)
+    }
+    println("m10 append=" + to_string(fs.append_text(tmp, "def")))
+    var rt2 = fs.read_text(tmp)
+    switch rt2 {
+        case Ok(v): println("m10 Ok=" + v)
+        case Err(e): println("m10 Err=" + e)
+    }
+    println("m11 remove=" + to_string(fs.remove(tmp)))
+    println("m12 existsAfter=" + to_string(fs.exists(tmp)))
+    var full = "F:\\Projects\\tie\\examples\\hello.tie"
+    println("m13 basename=" + path.basename(full))
+    println("m14 dirname=" + path.dirname(full))
+    println("m15 abscwd=" + to_string(str_len(path.abs("examples/hello.tie"))))
+    println("m16 cwd=" + to_string(str_len(path.cwd())) + ":" + path.cwd())
+}
+func str_char_slice(s: string) -> string {
+    var n: i64 = str_len(s)
+    if n > 40 {
+        n = 40
+    }
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}

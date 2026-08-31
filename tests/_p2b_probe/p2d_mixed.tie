@@ -1,0 +1,18 @@
+type tie<logic>
+// 最小复现：同模块混合 table<i64> 与 table<string> 的 ref push
+
+func push_i64(t: ref table<i64>, v: i64) {
+    table_push(t, v)
+}
+func push_str(t: ref table<string>, v: string) {
+    table_push(t, v)
+}
+
+func main() {
+    var a: table<i64> = [1, 2]
+    push_i64(a, 3)
+    println(len(a))
+    var s: table<string> = ["x"]
+    push_str(s, "y")
+    println(len(s))
+}
