@@ -774,7 +774,8 @@ pub func check_stmt(s: i64) -> i64 {
                 return 0
             }
         }
-        if !stype.types_compatible(target_ty, vt) && !stype.types_match(target_ty, vt, sstate.child(s, 0)) {
+        if !stype.types_compatible(target_ty, vt) && !stype.types_match(target_ty, vt, sstate.child(s, 0)) &&
+            !stype.types_narrow_int(target_ty, vt, sstate.child(s, 0)) {
             sm_err_line = s_lines[s]
             sm_err_col = s_cols[s]
             sm_err_msg = "赋值类型不匹配：变量 '" + nm + "' 类型为 " + types.type_name(target_ty) + "，表达式为 " + types.type_name(vt)
@@ -1291,7 +1292,8 @@ pub func check_var_decl(s: i64) -> i64 {
             }
         }
         if init >= 0 {
-            if !stype.types_match(ty, it, init) && !stype.types_compatible(ty, it) {
+            if !stype.types_match(ty, it, init) && !stype.types_compatible(ty, it) &&
+                !stype.types_narrow_int(ty, it, init) {
                 sm_err_line = s_lines[s]
                 sm_err_col = s_cols[s]
                 sm_err_msg = "变量 '" + nm + "' 类型不匹配：标注 " + types.type_name(ty) + "，表达式推导为 " + types.type_name(it)

@@ -302,7 +302,8 @@ func infer_arrow(id: i64, op: i64) -> i64 {
             return -1
         }
         var want = types.fn_param_of(t_ty, 0)
-        if !stype.types_compatible(want, data_ty) && !stype.types_match(want, data_ty, data_n) {
+        if !stype.types_compatible(want, data_ty) && !stype.types_match(want, data_ty, data_n) &&
+            !stype.types_narrow_int(want, data_ty, data_n) {
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
             sm_err_msg = "箭头传参实参类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(data_ty)
@@ -314,7 +315,8 @@ func infer_arrow(id: i64, op: i64) -> i64 {
         return frt
     }
     // 赋值：`x <- data` / `data -> x`——数据类型可赋给目标变量类型
-    if !stype.types_compatible(t_ty, data_ty) && !stype.types_match(t_ty, data_ty, data_n) {
+    if !stype.types_compatible(t_ty, data_ty) && !stype.types_match(t_ty, data_ty, data_n) &&
+        !stype.types_narrow_int(t_ty, data_ty, data_n) {
         sm_err_line = s_lines[id]
         sm_err_col = s_cols[id]
         sm_err_msg = "箭头赋值类型不匹配：" + types.type_name(t_ty) + " 与 " + types.type_name(data_ty)
@@ -1487,7 +1489,8 @@ pub func infer_generic_fn_call(full_name: string, gti: i64, id: i64, args: table
     while j2 < nc {
         var want = sp_tys[off + j2]
         var at = arg_tys[j2]
-        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j2]) {
+        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j2]) &&
+            !stype.types_narrow_int(want, at, args[j2]) {
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
             sm_err_msg = "调用 '" + full_name + "' 参数类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(at)
@@ -1776,7 +1779,8 @@ pub func infer_method_call(id: i64) -> i64 {
                 want = sstate_fn_variadic_elem(sig)   // 变参：元素类型匹配
             }
         }
-        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j]) {
+        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j]) &&
+            !stype.types_narrow_int(want, at, args[j]) {
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
             sm_err_msg = "调用 '" + full + "' 参数类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(at)
@@ -2139,7 +2143,8 @@ func infer_port_method(pty: i64, mname: string, args: table<i64>, id: i64) -> i6
             return -1
         }
         var want = sstate.port_method_param(pi, mi, 1 + j)  // 去 self
-        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j]) {
+        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j]) &&
+            !stype.types_narrow_int(want, at, args[j]) {
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
             sm_err_msg = "方法 '" + mname + "' 参数类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(at)
@@ -2179,7 +2184,8 @@ func infer_actor_method(aty: i64, mname: string, args: table<i64>, id: i64) -> i
             return -1
         }
         var want = sstate.actor_method_param(ai, mname, j)
-        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j]) {
+        if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[j]) &&
+            !stype.types_narrow_int(want, at, args[j]) {
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
             sm_err_msg = "方法 '" + mname + "' 参数类型不匹配：期望 " + types.type_name(want) + "，实际 " + types.type_name(at)
@@ -2282,7 +2288,8 @@ pub func infer_struct_method(recv: i64, recv_ty: i64, mname: string, args: table
                 want2 = sstate_fn_variadic_elem(sig)   // 变参：元素类型匹配
             }
         }
-        if !stype.types_compatible(want2, at) && !stype.types_match(want2, at, args[j]) {
+        if !stype.types_compatible(want2, at) && !stype.types_match(want2, at, args[j]) &&
+            !stype.types_narrow_int(want2, at, args[j]) {
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
             sm_err_msg = "方法 '" + full + "' 参数类型不匹配：期望 " + types.type_name(want2) + "，实际 " + types.type_name(at)
@@ -2363,7 +2370,8 @@ func infer_generic_method(rec: i64, m_gti: i64, tmpl_method: string, recv: i64, 
             return -1
         }
         var want2 = sp_tys[off + 1 + j]
-        if !stype.types_compatible(want2, at) && !stype.types_match(want2, at, args[j]) {
+        if !stype.types_compatible(want2, at) && !stype.types_match(want2, at, args[j]) &&
+            !stype.types_narrow_int(want2, at, args[j]) {
             sm_err_line = s_lines[id]
             sm_err_col = s_cols[id]
             sm_err_msg = "方法 '" + tmpl_method + "' 参数类型不匹配：期望 " + types.type_name(want2) + "，实际 " + types.type_name(at)
