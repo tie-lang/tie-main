@@ -47,6 +47,14 @@ Gamma 的字段），构造/字段访问报错或读错字段。改为经 `sstat
 tests/language/crossfile_struct_misorder.tie（旧编译器必现，新编译器绿）。
 
 
+## Harbor-2026.1-preview.5（2026-08-31）
+
+> **preview.5 = 数据流互联首版 + 表运算深化 + 哈希算法谱系**：tink 帧协议与
+> zd v2 序列化规范落地、tiec `--compress-data`、P2 复合元素/异构表与高阶表运算、
+> TSHA1 家族性能内核（状态随位长）+ 全谱系 hash/crypto 标准库、f64↔i64 bitcast、
+> 自定义角色插件化、library-v2 三层内置库重写。
+> 对比基线：Harbor-2026.1-preview.4（自其累计提交见下方条目）。
+
 ## [自定义角色] 插件化（S3.4 v2，2026-08-28）
 
 角色体系彻底表驱动：内建默认表 + config roles（兼容）+ 项目 roles.data.tie
@@ -63,15 +71,6 @@ tiec（driver 编译路径）支持在构建配置 config.data.tie 的 roles 段
 基础/修饰角色与扩展参数（kind/params/output=lib|check|exe）；注册表在头部扫描
 前经 config 分层合并加载，R3 文件名-头部一致性检查同步支持；与内建重名警告忽略。
 prep/tie-prep 仍仅内建白名单（错误消息已提示）。Docs: docs/plans/role-model.md。
-
-
-## Harbor-2026.1-preview.5（2026-08-31）
-
-> **preview.5 = 数据流互联首版 + 表运算深化 + 哈希算法谱系**：tink 帧协议与
-> zd v2 序列化规范落地、tiec `--compress-data`、P2 复合元素/异构表与高阶表运算、
-> TSHA1 家族性能内核（状态随位长）+ 全谱系 hash/crypto 标准库、f64↔i64 bitcast、
-> 自定义角色插件化、library-v2 三层内置库重写。
-> 对比基线：Harbor-2026.1-preview.4（自其累计提交见下方条目）。
 
 ## [新增] tink 数据流互联服务：节点帧协议 + zd v2 序列化 + tiec --compress-data（2026-08-31）
 
@@ -160,7 +159,7 @@ byte_read/byte_write/byte_concat/bit_read/bit_write 五底座原语原以 tie_in
 
 ---
 
----## [新增] 三层内置库重写 library-v2：新特性 + 统一风格 + 全新接口（2026-08-26）
+## [新增] 三层内置库重写 library-v2：新特性 + 统一风格 + 全新接口（2026-08-26）
 
 按 [docs/plans/library-v2.md](docs/plans/library-v2.md) 重写 std/rdu/ext 三层内置库（旧版
 v1 已归档至 github.com/tie-lang/lib_v1）。设计文档含三层逐模块新接口表与实施纪要。
@@ -185,38 +184,15 @@ v1 已归档至 github.com/tie-lang/lib_v1）。设计文档含三层逐模块�
 
 ---
 
-## Harbor-2026.1-preview.4（2026-08-23）
+## [开发期补录] preview.5 平台桥/动态库链面（git 提交 2026-08-24~08-25，preview.4 与 preview.5 tag 之间）
 
-> **preview.4 = tie 的「并发首版」**：原生 actor + 凭据门禁成型 + 自举性能 61× + 动态库打通 C 生态。
-> 自 Harbor-2026.1-preview.3 共 90 提交。发行亮详见 [NEW.md](NEW.md)。
-
-- **原生并发 actor 一期**：`actor`/`run` + 1:1 OS 线程（零运行时）；同步 RPC / async / 私有状态 /
-  方法 dispatch / 多参标量消息槽 / 处理器 panic → 调用方 raise。
-- **三期 A 组并发语法**：`guard<share>` 凭据闭环（`unsafe.get/use/with` + `#[unsafe.share]`）、
-  `guard<cap>.delegate` 同域派生（含 `guard<cap>` 类型语法）、通用 `#[unsafe.*]` 属性通道、goto/标签。
-- **M5 动态库编译**：tie 库 → `.dll`/`.so` + dllexport 导出面，C 语言可运行期加载。
-- **去 Rust 桥收尾**：表/字典/字符串码点/数字转串/parse_* 逐批 irgen 内联；`std/runtime.a` 退役，
-  纯程序可零运行时依赖。
-- **性能**：自举编译 1281s→21s（61×）；emit 提速 53%。
-- **语言补充**：i128/u128、volatile/slice_of/asm! 条件编译、闭包后置（嵌套捕获/fn×泛型/C 回调）、
-  `s.chars()` 码点迭代、错误处理增强（switch 解构/catch_panic/组合子）、宏三大方向落地。
-- **工程**：compiler 自举化解耦重构（irgen 分层 tig_*）、trm/concurrency-model 设计定稿、文档 infra
-  （tie-dev skill 随包分发、NEW.md 聚焦化、language.md 补全 Harbor 特性）。
-- **修复**：字符串字面量/缓冲 32 字节尾部填充（漏洞 B 宽读越界）、import 缺失优雅报错等。
-
-逐一细节见下方随提交累积的条目（本条为版本汇总）。
-
----
-
-## Harbor-2026.1-preview.5（未发布，开发中）
-
-> **preview.5 开发中**：trm 平台桥与动态库扩展链面——extern 指针/切片桥接、动态库边界
+> **preview.5 开发期补录**：平台桥与动态库扩展链面——extern 指针/切片桥接、动态库边界
 > （`slice<T>` + repr(C) pod struct 跨库）、深层/多导入越界读修复、repr(C) 窄字段 struct
-> store 修复等；详见下方随提交累积条目。
+> store 修复、alloc 缓冲误扫等；详见下方条目。
 
 ---
 
----## [修复] alloc(n) 原始缓冲被误做字符串补头扫描——多会话字节串线/丢失根因（漏洞 A 类）
+## [修复] alloc(n) 原始缓冲被误做字符串补头扫描——多会话字节串线/丢失根因（漏洞 A 类）
 
 `alloc(n)` 内置的 malloc 返回类型此前标 TK_STR，llvmgen op36 对「返回 TK_STR 的 extern
 调用」自动做字符串补头扫描（`strlen + tie_sso_alloc + memcpy`）。对**未初始化**堆缓冲
@@ -239,7 +215,7 @@ strlen 读的是垃圾：返回缓冲实际容量 = 垃圾长度——小则 n �
 
 ---
 
----## [修复] repr(C) struct 对齐缺陷——生成模块补 target datalayout，结构体与 C ABI 对齐
+## [修复] repr(C) struct 对齐缺陷——生成模块补 target datalayout，结构体与 C ABI 对齐
 
 生成的 LLVM 模块此前无 `target datalayout`，`opt` 优化默认把结构体字段按 4 字节对齐装箱
 （i64/指针字段对齐到 4），而链接阶段 clang 采用 x86-64 标准布局（i64 对齐 8），两者对
@@ -258,7 +234,7 @@ strlen 读的是垃圾：返回缓冲实际容量 = 垃圾长度——小则 n �
 
 ---
 
----## [新增] extern 参数/返回扩展 ptr<T>/slice<T>——平台桥指针桥接解锁（S10）
+## [新增] extern 参数/返回扩展 ptr<T>/slice<T>——平台桥指针桥接解锁（S10）
 
 `unsafe extern fn` 的参数/返回边界从「仅标量 + string」扩展为**标量 + string + `ptr<T>` +
 `slice<T>`**，由编译期门禁放行（extern 本身即 unsafe 上下文，安全代码不可触达指针）。
@@ -275,7 +251,7 @@ strlen 读的是垃圾：返回缓冲实际容量 = 垃圾长度——小则 n �
 - **验证**：正/负例均达期望；m5-dynlib 回归 6 项全绿（动态库链路不受影响）；
   自举（tiec 编译 driver → tiec2）通过。
 
----## [修复] extern 声明无函数体越界读——深层/多导入假报「语句只能出现在文件顶层」（S10）
+## [修复] extern 声明无函数体越界读——深层/多导入假报「语句只能出现在文件顶层」（S10）
 
 `frontend/scheck.tie` `check_fn` 对**每个已登记函数**（含 `unsafe extern` 无函数体声明）求函数体时，
 `child(fn_node, slot_off+1+nparams)` 在下标 == `nchild` 处**越界读**。单/浅导入时越界落空（-1）
@@ -291,7 +267,7 @@ strlen 读的是垃圾：返回缓冲实际容量 = 垃圾长度——小则 n �
 - **遗留（默认关闭）**：`smove.check_fn_walk` 对 extern 有同类越界隐患，受 `TIE_MOVE_CHECK=1`
   门控（默认关），未改动以免越界扩面。
 
----## [修复] repr(C) 窄字段 struct store 未收窄 + extern 实参未收窄（S10）
+## [修复] repr(C) 窄字段 struct store 未收窄 + extern 实参未收窄（S10）
 
 两处 codegen 缺陷：窄整数字段/形参值未按目标类型截断，导致 `opt: '%X' defined i64 but
 expected i32`。
@@ -307,7 +283,7 @@ expected i32`。
 - **验证**：自举三次重建 + 二次自举（新 tiec 重编 driver 逐字节一致）；trm 平台桥 `StartupInfoW`
   等窄字段 struct 均能干净编译（.a/.dll）；m5-dynlib 8/8；s21 无新增失败。
 
----## [新增] 动态库边界扩展——slice<T> + repr(C) pod struct 跨库（S10 扩展链面）
+## [新增] 动态库边界扩展——slice<T> + repr(C) pod struct 跨库（S10 扩展链面）
 
 M5 动态库（`--shared`/`.dll`）的导出边界从「仅标量 + string」扩展为**标量 + string +
 `slice<T>` + repr(C) pod struct**，落实 trm 最终设计 §6.2「扩展链面」与 §9 的改点
@@ -323,7 +299,7 @@ M5 动态库（`--shared`/`.dll`）的导出边界从「仅标量 + string」扩
   调用，验证 ABI 端到端）；
 - **验证**：m5-dynlib 回归 8 项全绿（新增 4b 导出面 / 4c C 冒烟）；自举通过。
 
----## [新增] M5 动态库编译——tie 库 → .dll/.so + dllexport 导出面（dev33 批次 12）
+## [新增] M5 动态库编译——tie 库 → .dll/.so + dllexport 导出面（dev33 批次 12）
 
 tie 库（`type tie<class>`）可编译为**动态库**（Windows `.dll` / Linux `.so`），
 C/其他语言可在运行期 `LoadLibrary`/`dlopen` 加载调用——插件体系、跨语言模块
@@ -343,6 +319,29 @@ C/其他语言可在运行期 `LoadLibrary`/`dlopen` 加载调用——插件体
   边界负例 / 角色校验 / 静态库无回归）；
 - **验证**：6 个 pub 符号导出、私有函数未导出（llvm-readobj 核验）；C 调用断言全过；
   一/二/三阶自举成功且三阶二进制 hash 一致；regress-s21 无回归。
+
+## Harbor-2026.1-preview.4（2026-08-23）
+
+> **preview.4 = tie 的「并发首版」**：原生 actor + 凭据门禁成型 + 自举性能 61× + 动态库打通 C 生态。
+> 自 Harbor-2026.1-preview.3 共 90 提交。发行亮详见 [NEW.md](NEW.md)。
+
+- **原生并发 actor 一期**：`actor`/`run` + 1:1 OS 线程（零运行时）；同步 RPC / async / 私有状态 /
+  方法 dispatch / 多参标量消息槽 / 处理器 panic → 调用方 raise。
+- **三期 A 组并发语法**：`guard<share>` 凭据闭环（`unsafe.get/use/with` + `#[unsafe.share]`）、
+  `guard<cap>.delegate` 同域派生（含 `guard<cap>` 类型语法）、通用 `#[unsafe.*]` 属性通道、goto/标签。
+- **M5 动态库编译**：tie 库 → `.dll`/`.so` + dllexport 导出面，C 语言可运行期加载。
+- **去 Rust 桥收尾**：表/字典/字符串码点/数字转串/parse_* 逐批 irgen 内联；`std/runtime.a` 退役，
+  纯程序可零运行时依赖。
+- **性能**：自举编译 1281s→21s（61×）；emit 提速 53%。
+- **语言补充**：i128/u128、volatile/slice_of/asm! 条件编译、闭包后置（嵌套捕获/fn×泛型/C 回调）、
+  `s.chars()` 码点迭代、错误处理增强（switch 解构/catch_panic/组合子）、宏三大方向落地。
+- **工程**：compiler 自举化解耦重构（irgen 分层 tig_*）、trm/concurrency-model 设计定稿、文档 infra
+  （tie-dev skill 随包分发、NEW.md 聚焦化、language.md 补全 Harbor 特性）。
+- **修复**：字符串字面量/缓冲 32 字节尾部填充（漏洞 B 宽读越界）、import 缺失优雅报错等。
+
+逐一细节见下方随提交累积的条目（本条为版本汇总）。
+
+---
 
 ## [去 Rust 桥] `std/runtime.a` 退役——exec_code/get_env/time_now 内联 libc
 
@@ -735,27 +734,6 @@ S2.2 闭包前端（5f0762d，N_FN_LIT/N_FN_TYPE + fn 类型系统 + 捕获分�
   16+val=7）；S2.3 探针 9 个全过（panic exit=1 预期）；tests/language
   30 正例全过（extern_decl/std_fs_path 为 stage0 同款基线问题）；
   自举链 tiec_new → tiec_v2 行为一致（--emit-ir 逐字节相同）
-
-## [新增] 阶段 2 错误处理（S2.3 Result/Option + `?` 解包 + panic）—— 2026-08-16
-
-tie 语言阶段 2 错误处理模型（docs/plans/error-model.md）全链路落地，tiec
-（tie 自写编译器，compiler/）实现，完全不用 Rust：
-
-- **预置枚举**：`std/result.tie`（type tie<class>）预置
-  `enum Result<T, E> { Ok(T) Err(E) }` 与 `enum Option<T> { Some(T) None }`，
-  import 即用，与用户自定义 enum 无差别
-- **`?` 解包后缀**：lex_question 关键字 + parse_postfix 后缀解析 +
-  sinfer.infer_try_unwrap 语义推断——Err/None 提前 return、Ok/Some 解包
-  payload；仅限返回 Result/Option 的函数内使用（main 返回 void 报语义错误）
-- **panic("msg")**：语句级，运行时 printf + exit(1)（"致命错误：" 前缀）
-- **gen_try 解包路径**：irgen 生成展开；gen_enum_construct string payload
-  槽统一 i64（字符串字面量与 str_cat 拼接已是 i64 指针值，双重 ptrtoint 修复）
-- **ASI 修复**：`?` 不再被误判为二元运算符（is_bin_op 排除 lex_question，
-  frontend + proto 同步），行尾 `?` 正确补分号；单行三目 `?:` 不受影响
-- **验收**：tests/s23_probe/ 探针全过（try_probe ok/err/panic + EXIT=1、
-  result_probe、result_import_probe、opt_none_arg_probe、tmp_t7 三目、
-  tmp_t8 Option 解包、tmp_t9 string payload 判别、tmp_t10 解包值还原）；
-  回归 12/13 PASS；自举链 tiec_verify → tiec_verify2 行为一致
 
 ## [新增] S3.1 构建配置系统——统一 config.data.tie + 分层合并 + profile + backend 选择 —— 2026-08-16
 
@@ -1172,10 +1150,6 @@ hello / import_main 单文件已**反超 Rust**（ratio 0.87 / 0.97）。
 - 首轮 ratio 1.007（6/74 可编译，irgen 最小集限制）——可编译子集 tiec 与
   Rust 几乎同速（验证无 renumber/语义单遍/类型表直查净收益）
 - 67 个不可编译文件缺口清单化（docs/bench/phase5.md + phase5.json）
-# CHANGELOG
-
-tie 语言项目的变更记录，按里程碑组织。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
-里程碑命名：**M0–M4 = 预开发版本**（正式发行前的语言核心基础建设）；**Harbor（2026.1）架构：M0 = 正式发行版基础、M1 = VSCode 插件、M2 = 标准库、M3 = 预处理器自举、M4 = 标准库重构**。
 
 ## [自举 v2 T2.8] LLVM IR 文本生成器打通 + 标准库大规模扩展 — 2026-08-12
 
