@@ -1,0 +1,62 @@
+type tie<logic>
+// 临时性能探针：config.parse_string 渐进规模（O(n²) 检测，分离计时）
+// 先构造一批不同规模的源串（make_src 本文不受测，仅计时 parse）。
+// 规模翻倍：O(n²) 时间约 ×4，O(n) 约 ×2。
+import "./../../compiler/config.tie"
+
+// 生成含 n 个 'a' 的 config 文本（用 sb 头顶开；文案本身不受测）
+func make_src(n: i64) -> string {
+    var sb = string_builder()
+    sb_append(sb, "[\"k\": \"")
+    var i: i64 = 0
+    while i < n {
+        sb_append(sb, "a")
+        i = i + 1
+    }
+    sb_append(sb, "\"]")
+    return sb_build(sb)
+}
+
+unsafe extern fn clock() -> i64;
+
+func main() {
+    var sizes = [100000, 200000, 400000, 800000]
+    var i: i64 = 0
+    // 预构建全部源串（parse 计时不含构造）
+    var roots: table<i64> = table_new_i64()
+    var t_pre0 = 0
+    unsafe {
+        t_pre0 = clock()
+    }
+    var j: i64 = 0
+    while j < len(sizes) {
+        var src = make_src(sizes[j])
+        var r = config.parse(src)
+        if r < 0 {
+            println("size " + to_string(sizes[j]) + ": parse FAIL: " + config.err_msg())
+            return
+        }
+        table_push(roots, r)
+        j = j + 1
+    }
+    unsafe {
+        var t_pre1 = clock()
+        println("构造+首测 总 ms=" + to_string((t_pre1 - t_pre0) / 1000))
+    }
+    // 逐规模重解析计时（取冷启动后稳定值）
+    i = 0
+    while i < len(sizes) {
+        var n = sizes[i]
+        var src2 = make_src(n)
+        unsafe {
+            var t0 = clock()
+        }
+        var r2 = config.parse(src2)
+        unsafe {
+            var t1 = clock()
+            var v = config.get_str(r2, "k")
+            println("size " + to_string(n) + ": parse ms=" + to_string((t1 - t0) / 1000) + " len=" + to_string(str_len(v)))
+        }
+        i = i + 1
+    }
+}
