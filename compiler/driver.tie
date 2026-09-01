@@ -14,9 +14,11 @@ type tie<logic>
 // 角色识别：**头部扫描**（`type tie` / `type tie<X>` 声明），不依赖
 // prep/core.tie 的 import（避免 import 路径与编译兼容性风险；prep 协议
 // 后续可替换）。识别 logic/script/class/type/data/ui/db/port/ir/zd；
-// logic/script/class/type → 编译工具链，data/ui/db/port/zd → 提示对应
-// 工具链未实现。zd 是 tie:data 的二进制压缩变体（xxx.zd.tie），人类不可读，
-// 必须在 file_read（文本读取）之前按文件名预判并直接短接。
+// logic/script/class/type → 编译工具链，data → --compress-data 子命令
+// （tdzd.tie：表字面量 → zd record），zd → tiedb compact/decompress 处理，
+// ui/db/port → 提示对应工具链未实现。zd 是 tie:data 的二进制压缩变体
+// （xxx.zd.tie），人类不可读，必须在 file_read（文本读取）之前按文件名
+// 预判并直接短接。
 //
 // opt/target 优先级：CLI 显式 > 头部 `// tie:opt=N` / `// tie:target=` > 默认 O2/无。
 import "./backend/irgen.tie"
@@ -934,7 +936,7 @@ func main() -> i64 {
     var disp = role_output(str.clone(g_role))
     if disp == "pass" {
         if g_role == "data" {
-            println("[预处理] 识别为 data 数据交换文件（头: " + g_input + "），已转交数据解析工具链 —— v0.1 数据交换工具链尚未实现")
+            println("[预处理] 识别为 data 数据交换文件（头: " + g_input + "），可用 --compress-data 压缩为 zd（见 tdzd）")
         } else if g_role == "ui" {
             println("[预处理] 识别为 ui 界面文件（头: " + g_input + "），已转交 UI 工具链 —— v0.1 UI 工具链尚未实现")
         } else if g_role == "db" {
@@ -942,7 +944,7 @@ func main() -> i64 {
         } else if g_role == "port" {
             println("[预处理] 识别为 port 端口文件（头: " + g_input + "），已转交端口工具链 —— v0.1 端口工具链尚未实现")
         } else if g_role == "zd" {
-            println("[预处理] 识别为 zd 压缩数据文件（头: " + g_input + "），已转交 tiedb 压缩工具链 —— v0.1 尚未实现")
+            println("[预处理] 识别为 zd 压缩数据文件（头: " + g_input + "），tie:data 压缩格式，用 tiedb compact/decompress 处理")
         } else {
             println("[预处理] 识别为 " + g_role + " 角色文件（头: " + g_input + "），已转交对应工具链 —— 由注册包提供，v0.1 尚未实现")
         }

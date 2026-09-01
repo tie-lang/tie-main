@@ -1,244 +1,320 @@
 # tie 更改记录
+
 *EN: Changelog*
 
 > **写作规范（写死，改此文件必守）**：
+>
 > 1. 写完即记：每个开发/修复完成立即追加一条（与 commit 同内容），不批量攒。
 > 2. 条目格式：`## [类型] 一句话标题（YYYY-MM-DD）`，可附编号 `（p.x.y.z）`；新条目加在版本段标题之下、更旧条目之上（时间倒序）。
 > 3. 版本段标题：`## Harbor-2026.1-preview.N（YYYY-MM-DD）` / `## 2026.1（正式版，进行中）`；条目必须位于其版本段标题**之下**，归属以 git tag 边界为准。
 > 4. 禁止：重复条目、`---##` 等烂格式、正文夹带旧标题残留、删除历史条目。
 > 5. 大版本归档：正式版发布时把本文件复制为仓库根 `<版本>.CHANGELOG`，清空重记下一版本。
-> 6. **编号只用 p.x.x.x**：p=预发布，大版本号省略（preview.5 → p.5）；第一段为发布档，第二段为开发模块（旧称「里程碑」），第三段为子项；每版开发前只定第一、二段，第三段自动递增。禁止 H1/M1/P1 等字母数字混合标记。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+> 6. **编号只用 p.x.x.x**：p=预发布，大版本号省略（preview\.5 → p.5）；第一段为发布档，第二段为开发模块（旧称「里程碑」），第三段为子项；每版开发前只定第一、二段，第三段自动递增。禁止 H1/M1/P1 等字母数字混合标记。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 > EN (writing rules, fixed — must follow when editing this file):
+>
 > 1. Log each change immediately (same content as the commit); do not batch.
 > 2. Entry format: `## [type] one-line title (YYYY-MM-DD)`, optionally with `（p.x.y.z）`; new entries go under their version heading, above older ones (newest first).
 > 3. Version headings: `## Harbor-2026.1-preview.N（YYYY-MM-DD）` / `## 2026.1（stable, in progress）`; entries must sit **under** their version heading; membership follows git tag boundaries.
 > 4. Forbidden: duplicate entries, malformed headings (`---##`), stray legacy headers in the body, deleting history.
 > 5. Major-version archive: on stable release, copy this file to `<version>.CHANGELOG` at the repo root, then start a fresh one.
-> 6. **Use p.x.x.x numbering only**: p = preview, major version omitted (preview.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
+> 6. **Use p.x.x.x numbering only**: p = preview, major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 2026.1（正式版，进行中）
 
-> **定位**：trm 开发周期长于预期，2026.1 正式版提前发布。对比 preview.5，
+> **定位**：trm 开发周期长于预期，2026.1 正式版提前发布。对比 preview\.5，
 > 正式版以**修复缺陷与性能问题**为主，不再新增功能面。
 
 ### 修复计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全）
 
 **正确性（p.6.1，必查）**
-- [x] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出（已修复 4095ee1，回归 err_066–068）
-- [x] p.6.1.2 smove.check_fn_walk 对 extern 越界隐患（TIE_MOVE_CHECK=1 门控，评估结论：越界读为真实缺陷，已修复）
-- [x] p.6.1.3 lld 解析 tie_interp.lib CRT printf 缺陷（评估结论：当前 clang 22.1.8 + lld-link 未复现，规避保留）
+
+- [x] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出（已修复 4095ee1，回归 err\_066–068）
+
+- [x] p.6.1.2 smove.check\_fn\_walk 对 extern 越界隐患（TIE\_MOVE\_CHECK=1 门控，评估结论：越界读为真实缺陷，已修复）
+
+- [x] p.6.1.3 lld 解析 tie\_interp.lib CRT printf 缺陷（评估结论：当前 clang 22.1.8 + lld-link 未复现，规避保留）
+
 - [x] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push / 循环内字符串累加内存无界增长）：
-  根治完成（2026-09-01）——根因定位为 str_cat 每次 `+` 全新分配、旧中间串永不释放（tie 无 GC），
+  根治完成（2026-09-01）——根因定位为 str\_cat 每次 `+` 全新分配、旧中间串永不释放（tie 无 GC），
   `out = out + seg` 循环累加 = 时间/内存双 O(n²)；跨模块 struct 扩字段后 encode 型大函数 4 s 内 3–26 GB
-  落地三件套：① ir.add_operand 交错检测断言 + 修复 4 处潜伏交错点（操作数段错位）；② 循环内字符串自加
-  自动 StringBuilder 提升（s21_sb_*：循环入口预扫 AST 装载+注入循环前值、体内原地 append、出口 build 回写，
+  落地三件套：① ir.add\_operand 交错检测断言 + 修复 4 处潜伏交错点（操作数段错位）；② 循环内字符串自加
+  自动 StringBuilder 提升（s21\_sb\_\*：循环入口预扫 AST 装载+注入循环前值、体内原地 append、出口 build 回写，
   安全核对=局部 string/引用纯净/无 goto；不满足保持原语义）——报告同源用例 n=20000 由 95 s 崩溃降至 656 ms、
-  n=100000 784 ms 线性、输出逐字节一致；③ 回归探针 tests/hoist_probe/（encode 复现 + 边界 31 断言）。
+  n=100000 784 ms 线性、输出逐字节一致；③ 回归探针 tests/hoist\_probe/（encode 复现 + 边界 31 断言）。
   此前"过渡规避（断言+4 处交错）"并入。
   字节表同族根治（跟进 dpcodec/jcc-pack 实机闭环）：`t = byte_concat(t, seg)` 循环累积每迭代新建整表且
-  旧表永不释放 → 同构 O(n²) 无名分配（jcc-pack encode_pack→build_champ_seg 实测修复前 3.7s 冲 4.5GB+）。
-  irgen 循环入口 cbs_scan 预扫 AST，对安全形态（首参=局部表槽名/引用纯净/无 goto）自动提升：循环前拷贝到
-  私有累积表 acc（唯一引用），体内 tbl_ensure+memcpy+set_len 就地追加（摊销 O(1)），循环出口写回 t 槽；
-  `zd.concat`（byte_concat 薄包装）也纳入识别。实机验证：同一 jcc-pack + official-s19，修复前 4579MB 护栏
-  终止 → 修复后 232MB 完整通过（65 棋子/35 羁绊/157 装备）；最小复现探针 tests/hoist_probe/cbs_encode_repro.tie
+  旧表永不释放 → 同构 O(n²) 无名分配（jcc-pack encode\_pack→build\_champ\_seg 实测修复前 3.7s 冲 4.5GB+）。
+  irgen 循环入口 cbs\_scan 预扫 AST，对安全形态（首参=局部表槽名/引用纯净/无 goto）自动提升：循环前拷贝到
+  私有累积表 acc（唯一引用），体内 tbl\_ensure+memcpy+set\_len 就地追加（摊销 O(1)），循环出口写回 t 槽；
+  `zd.concat`（byte\_concat 薄包装）也纳入识别。实机验证：同一 jcc-pack + official-s19，修复前 4579MB 护栏
+  终止 → 修复后 232MB 完整通过（65 棋子/35 羁绊/157 装备）；最小复现探针 tests/hoist\_probe/cbs\_encode\_repro.tie
   （跨模块 7 字段 struct + 数百字符中文文本合成 4000 条，修复前 2.5GB+ 终止→修复后 PASS）+
-  cbs_edge.tie 边界探针（单循环/多循环链/break/非纯净引用/空表入口）全绿；自举不动点 tiec2==tiec3 通过。
-- [x] p.6.1.5 config 深合并边合并边 push 全局扁平表：复核结论——规避纪律安全（parse_map_body/
-  parse_array_body/build_defaults/merge_maps/concat_arrays 均先局部收集后统一登记或自我 append 全局末尾，
-  map_set 原地覆盖；新增 tests/s31/config_merge_stress.tie 四层链式深合并+嵌套/数组 concat/重置/交错访问
-  31 断言全绿，config_smoke 48/48）
-- [x] p.6.1.6 str_char 越界读（多字节 UTF-8 串 + len(s) 字节数上界 → 0xC0000005，jcc-pack extract 崩溃根因）：
-  根治完成（2026-09-01）——根因定位 irgen 内联 str_char(s,i) 的码点定位循环仅以 `k < i` 终止、无 pos 边界
+  cbs\_edge.tie 边界探针（单循环/多循环链/break/非纯净引用/空表入口）全绿；自举不动点 tiec2==tiec3 通过。
+
+- [x] p.6.1.5 config 深合并边合并边 push 全局扁平表：复核结论——规避纪律安全（parse\_map\_body/
+  parse\_array\_body/build\_defaults/merge\_maps/concat\_arrays 均先局部收集后统一登记或自我 append 全局末尾，
+  map\_set 原地覆盖；新增 tests/s31/config\_merge\_stress.tie 四层链式深合并+嵌套/数组 concat/重置/交错访问
+  31 断言全绿，config\_smoke 48/48）
+
+- [x] p.6.1.6 str\_char 越界读（多字节 UTF-8 串 + len(s) 字节数上界 → 0xC0000005，jcc-pack extract 崩溃根因）：
+  根治完成（2026-09-01）——根因定位 irgen 内联 str\_char(s,i) 的码点定位循环仅以 `k < i` 终止、无 pos 边界
   检查：调用方以 `i < len(s)`（len 读头 O(1) 返回**字节数**）为上界遍历含中文等多字节 UTF-8 的串时，
-  i 会超过实际码点数，pos 越过串尾继续 s21_utf8_seq_len/s21_str_byte 越界 GEP+load（拆分/不拆分 extract 均
+  i 会超过实际码点数，pos 越过串尾继续 s21\_utf8\_seq\_len/s21\_str\_byte 越界 GEP+load（拆分/不拆分 extract 均
   触发，此前"拆小函数规避"对含中文束方数据无效）。修复：cond 增补 `pos < blen` 终止 + 越界返回空串
-  （res 槽 + after/ok/bad/merge CFG，与 s21_codepoint_to_str 非法码点空串语义一致）。验证：
-  极简探针（循环内 qs_clean(skill_desc) 中文 148 字节）修复前 AV → 修复后 A6 total=7414 全过；
-  main_unsplit 未拆分 extract official-s19 518 文件完整通过（65 棋子/35 羁绊/157 装备/258 符文）；
-  自举 tiec_s1→s2→s3 --emit-ir 逐字节一致（不动点）；tests/language 全量 PASS=96 与基线零差。
-- [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持（落地 2026-09-01）：
-  ① **语句级宏**（块式准引用 `/` 展开为多条语句）探针全绿（tests/s33_probe/b10_stmt_macro、
-  _probe62/s_stmt_macro*：多语句展开 + 插值 + 宏内循环控制结构）；② **命名空间路径调用
-  前缀丢失**：`ns::add(5)` 被 lexer/parser 拆成 N_CALL(name=最后段) 丢弃 `ns::` 前缀 →
+  （res 槽 + after/ok/bad/merge CFG，与 s21\_codepoint\_to\_str 非法码点空串语义一致）。验证：
+  极简探针（循环内 qs\_clean(skill\_desc) 中文 148 字节）修复前 AV → 修复后 A6 total=7414 全过；
+  main\_unsplit 未拆分 extract official-s19 518 文件完整通过（65 棋子/35 羁绊/157 装备/258 符文）；
+  自举 tiec\_s1→s2→s3 --emit-ir 逐字节一致（不动点）；tests/language 全量 PASS=96 与基线零差。
+
+- [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns\_call\_full\_name 的 using 支持（落地 2026-09-01）：
+  ① **语句级宏**（块式准引用 `/` 展开为多条语句）探针全绿（tests/s33\_probe/b10\_stmt\_macro、
+  \_probe62/s\_stmt\_macro\*：多语句展开 + 插值 + 宏内循环控制结构）；② **命名空间路径调用
+  前缀丢失**：`ns::add(5)` 被 lexer/parser 拆成 N\_CALL(name=最后段) 丢弃 `ns::` 前缀 →
   报「未定义的函数 'add'」（自举编译链失效、显式路径调用不可用）。修复：
-  pexpr 路径调用拼接全名（join_path_segs：`a::b::c` → N_CALL name=完整路径，含泛型
+  pexpr 路径调用拼接全名（join\_path\_segs：`a::b::c` → N\_CALL name=完整路径，含泛型
   `ns::max<i64>()` 路径）；③ **默认值参数 LLVM 路径补齐缺失**：语义层已校验可选参数
-  （sg_required），但 irgen 调用点不生成缺省实参——`add(5)`（b 默认 10）运行时 b 取
-  0/垃圾返回 5；struct 方法转发（tig_struct_method_call）同样缺。修复：irgen_call
-  实参求值后按 sp_defs 补齐函数定义参数节点的默认值字面量（含 u8/f64 等窄/宽类型
-  tig_coerce 转换，变参位保持打包逻辑）。验证：_probe62/s_default2/s_method_default/
-  s_default3 探针（普通函数/:: 路径调用/struct 方法/泛型多可选/u8 窄默认值）输出全符
+  （sg\_required），但 irgen 调用点不生成缺省实参——`add(5)`（b 默认 10）运行时 b 取
+  0/垃圾返回 5；struct 方法转发（tig\_struct\_method\_call）同样缺。修复：irgen\_call
+  实参求值后按 sp\_defs 补齐函数定义参数节点的默认值字面量（含 u8/f64 等窄/宽类型
+  tig\_coerce 转换，变参位保持打包逻辑）。验证：\_probe62/s\_default2/s\_method\_default/
+  s\_default3 探针（普通函数/:: 路径调用/struct 方法/泛型多可选/u8 窄默认值）输出全符
   预期；自举 tiec2→tiec3 --emit-ir 逐字节一致（不动点）；tests/language PASS=56 与
-  基线零差（3 项失败均为既有基线：db-vector-unsafe 工具链未实现 / filetype_ir.ir 纯
-  IR 不产 exe / extern_decl 语义漂移）。
+  基线零差（3 项失败均为既有基线：db-vector-unsafe 工具链未实现 / filetype\_ir.ir 纯
+  IR 不产 exe / extern\_decl 语义漂移）。
+
 - [x] p.6.2.4 闭包参数 ref / 变参（落地 2026-09-01）：
   ① **闭包 ref 参数**（`ref table<T>`）：参数节点按 `s_vals` 记录引用标志；类型登记
-  携带 ref 元数据（fn_param_refs + fn_of2 查重，避免同签名多次登记拆开元数据段）；
+  携带 ref 元数据（fn\_param\_refs + fn\_of2 查重，避免同签名多次登记拆开元数据段）；
   语义校验值调用时 ref 形参的实参必须是可寻址的表变量（字面量/下标/调用结果报错，
   类型须为表）；IR 生成直接绑定实参槽地址（不 alloca、不 store），体内读写即作用于
   调用方表；② **闭包变参**（`...T`，仅末位；parser 已拦非末尾，语义层兜底校验）：
-  签名登记为 `table<T>`（与普通函数变参登记一致，保证 fn_of2 查重命中同一签名）；
+  签名登记为 `table<T>`（与普通函数变参登记一致，保证 fn\_of2 查重命中同一签名）；
   调用点实参求值后按 `fixed_n = nparams-1` 切分，多余实参 `tig_variadic_table`
   打包为动态表（无多余实参也传空表），ref 实参传全局槽地址（kind 3 对齐普通函数
-  by_ref）；③ **函数值调用语义检查**按 `fn_has_var` 放行个数区间（必选 n-1 起，
-  非变参仍严格等数），并校验 ref 实参可寻址。验证：_probe62/s_closure_check /
-  s_closure2 探针（基础闭包 / 变参求和 / ref 写表 / 固定+变参混合 / ref+变参组合 /
-  表元素间接调用 `funcs[0](...)` / 捕获+变参）输出全符预期；负例探针 s_closure_neg*
+  by\_ref）；③ **函数值调用语义检查**按 `fn_has_var` 放行个数区间（必选 n-1 起，
+  非变参仍严格等数），并校验 ref 实参可寻址。验证：\_probe62/s\_closure\_check /
+  s\_closure2 探针（基础闭包 / 变参求和 / ref 写表 / 固定+变参混合 / ref+变参组合 /
+  表元素间接调用 `funcs[0](...)` / 捕获+变参）输出全符预期；负例探针 s\_closure\_neg\*
   （非末尾变参 / ref 字面量实参 / 固定闭包缺参）均按预期报错；回归 tests/language
-  variadic / byref_table / table_fn_elem 与 p2b 函数值 p2d_hof / p2d_map / p1_arrow
+  variadic / byref\_table / table\_fn\_elem 与 p2b 函数值 p2d\_hof / p2d\_map / p1\_arrow
   全绿；自举 tiec2→tiec3 --emit-ir 逐字节一致（不动点）。
 
 **功能限制（p.6.2，评估是否在正式版放开）**
+
 - [x] p.6.2.1 枚举 payload 白名单（放开 f64/table/map；struct/嵌套 enum 仍限制——2026-09-01 落地，见已落地修复）
+
 - [x] p.6.2.2 import result.tie 对 import assert.tie 的扫描顺序依赖（已修复——2026-09-01 落地，见已落地修复）
-- [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持（落地 2026-09-01，见已落地修复）
+
+- [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns\_call\_full\_name 的 using 支持（落地 2026-09-01，见已落地修复）
+
 - [x] p.6.2.4 闭包参数 ref / 变参（落地 2026-09-01，见已落地修复）
-- [ ] p.6.2.5 driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用）
+
+- [x] p.6.2.5 driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用，data 分支改指 --compress-data、zd 分支改指 tiedb；文件头注释同步。探针验证 + 自举 tiec→tiec2→tiec3 不动点）
 
 **性能（p.6.3，O(n²) 根治）**
-- [ ] p.6.3.1 config.parse_string 循环逐字符 `out = out + c` → 改 StringBuilder（每日路径）
+
+- [ ] p.6.3.1 config.parse\_string 循环逐字符 `out = out + c` → 改 StringBuilder（每日路径）
+
 - [ ] p.6.3.2 std/encoding base64 逐块拼接 → 大 payload 内存爆炸，改 StringBuilder
+
 - [ ] p.6.3.3 std 哈希 hex 输出逐字节拼接（热度低，随 p.6.3.2 一并改）
-- [ ] p.6.3.4 std/args 逐字符 + str_char 双重平方
+
+- [ ] p.6.3.4 std/args 逐字符 + str\_char 双重平方
+
 - [ ] p.6.3.5 driver:1257/1299 残余逐字符拼接点
 
 **原语tie化（p.6.4，消除 Rust 桥原语）**
-- [ ] p.6.4.1 UTF-16 宽字符共享桥 + 基础原语（args/cwd/set_env/print_err/rand_range/path_*）
-- [ ] p.6.4.2 文件系统基础（file_read/write/append/exists/delete/size/is_dir/is_file、mkdir_all）
-- [ ] p.6.4.3 文件系统扩展（copy_dir/file_copy/file_move/remove_dir_all/list_dir/walk_dir）
-- [ ] p.6.4.4 数值/字符串（parse_float、to_string_f64）
-- [ ] p.6.4.5 网络（net_*：Winsock2 extern 或 std/net 重写）
-- [ ] p.6.4.6 进程捕获（exec_output：CreatePipe+CreateProcessW+ReadFile）
-- [ ] p.6.4.7 消息系统（msg_*：std 纯 tie）
-- [ ] p.6.4.8 正则（regex_*：纯 tie 引擎，先最小子集）
-- [ ] p.6.4.9 归档/HTTP（untar_gz/unzip、http_get/http_get_file）
-- [ ] p.6.4.10 脚本通道+收尾（read_line/eval/eval_call；全量零 tie_interp.lib 链接验证，TIE_INTERP_LIB 回退保留）
+
+- [ ] p.6.4.1 UTF-16 宽字符共享桥 + 基础原语（args/cwd/set\_env/print\_err/rand\_range/path\_\*）
+
+- [ ] p.6.4.2 文件系统基础（file\_read/write/append/exists/delete/size/is\_dir/is\_file、mkdir\_all）
+
+- [ ] p.6.4.3 文件系统扩展（copy\_dir/file\_copy/file\_move/remove\_dir\_all/list\_dir/walk\_dir）
+
+- [ ] p.6.4.4 数值/字符串（parse\_float、to\_string\_f64）
+
+- [ ] p.6.4.5 网络（net\_\*：Winsock2 extern 或 std/net 重写）
+
+- [ ] p.6.4.6 进程捕获（exec\_output：CreatePipe+CreateProcessW+ReadFile）
+
+- [ ] p.6.4.7 消息系统（msg\_\*：std 纯 tie）
+
+- [ ] p.6.4.8 正则（regex\_\*：纯 tie 引擎，先最小子集）
+
+- [ ] p.6.4.9 归档/HTTP（untar\_gz/unzip、http\_get/http\_get\_file）
+
+- [ ] p.6.4.10 脚本通道+收尾（read\_line/eval/eval\_call；全量零 tie\_interp.lib 链接验证，TIE\_INTERP\_LIB 回退保留）
 
 **trm-lite 完善（p.6.5，复杂形态完整实现）**
+
 - [ ] p.6.5.1 复杂形态静态链接外壳：import trm-lite → tiec 静态链接复杂 runtime
+
 - [ ] p.6.5.2 work-stealing 调度器：多 OS 线程池 + 双端队列 + 任务窃取 + 抢占 + M:N 承托
+
 - [ ] p.6.5.3 并发三色 GC：标记栈/写屏障 + 后台回收器 + 精确根扫描（无栈图降级保守根）
+
 - [ ] p.6.5.4 分代 + 整理：新生代/老年代 + mark-compact（老年代）
+
 - [ ] p.6.5.5 可迁移栈：分段/拷贝栈切换 + 与调度抢占/GC 根扫描咬合
+
 - [ ] p.6.5.6 精确栈图：语言栈图供精确根扫描（设计 §9 待决拍板）
-- [ ] p.6.5.7 channel 语言原语：ch_send/ch_recv/ch_close（tiec codegen + trm-lite mailbox）
-- [ ] p.6.5.8 actor × 复杂形态咬合：actor 消息经 trm-lite mailbox；#[unsafe.trm] 接入门
+
+- [ ] p.6.5.7 channel 语言原语：ch\_send/ch\_recv/ch\_close（tiec codegen + trm-lite mailbox）
+
+- [ ] p.6.5.8 actor × 复杂形态咬合：actor 消息经 trm-lite mailbox；#\[unsafe.trm] 接入门
+
 - [ ] p.6.5.9 多执行体分配/回收 + 消息传收 demo（两形态验收载体：exit 0 + 内存平衡）
-- [ ] p.6.5.10 回归与对比验收：m6_actor 零回归、路线 A/B 不受影响、简单 vs 复杂行为一致
-- [ ] p.6.5.11 收尾：trm-lite preview.2、README/CHANGELOG、已知限制清单
+
+- [ ] p.6.5.10 回归与对比验收：m6\_actor 零回归、路线 A/B 不受影响、简单 vs 复杂行为一致
+
+- [ ] p.6.5.11 收尾：trm-lite preview\.2、README/CHANGELOG、已知限制清单
 
 **库补全（p.6.6，一库一子项；前置 p.6.4 原语全面 tie 化完成后启动；设计见 docs/superpowers/specs/2026-09-01-p66-library-completion-design.md）**
+
 - [ ] p.6.6.1 ext/tls：TLS 1.3 + 1.2 客户端（纯 tie）、X.509 解析与完整链校验、字节级网络 IO（p.6.4.5 承接）
+
 - [ ] p.6.6.2 std/http 升级：完整 HTTP 客户端（https/POST/headers/cookies/重定向），命名空间 httpc，旧 http.get 保留兼容
+
 - [ ] p.6.6.3 std/sse：SSE 流式解码（event/data/id/retry；LLM/WebSocket/Web 框架前置件）
+
 - [ ] p.6.6.4 ext/html：HTML 分词 + DOM 树 + 选择器抽取 + 链接提取 + HTML→纯文本
+
 - [ ] p.6.6.5 ext/xml：XML 分词 + 解析（与 html 共用标记语言分词底座；供 svg/配置消费）
+
 - [ ] p.6.6.6 ext/spidey：爬虫治理（robots.txt + 限速 + URL 去重 + 编排，依赖 p.6.6.4）
+
 - [ ] p.6.6.7 std/ws：WebSocket 客户端（握手 + 帧编解码 + 掩码，依赖 p.6.6.2）
+
 - [ ] p.6.6.8 std/smtp：SMTP 发信（EHLO/AUTH/MAIL/RCPT/DATA，可配 STARTTLS，依赖 p.6.6.1）
+
 - [ ] p.6.6.9 std/dns：DNS 解析（A/AAAA/TXT/MX 查询，依赖 std/net UDP）
+
 - [ ] p.6.6.10 std/yaml：YAML 解析（块缩进/流式/标量类型 → 平行表）
+
 - [ ] p.6.6.11 ext/config：TOML 支持提升（表/数组表/内联表，与 INI/KV 统一入口）
+
 - [ ] p.6.6.12 std/markdown：markdown 解析（块级元素/行内标记 → 结构表）
+
 - [ ] p.6.6.13 ext/png：PNG 编解码（chunk 遍历 + 滤波 + 位深/色彩类型）
+
 - [ ] p.6.6.14 ext/qr：QR 码生成（RS 纠错 + 矩阵布局 + 版本/掩码）
+
 - [ ] p.6.6.15 ext/svg：SVG 解析（元素树 + 路径/形状结构，依赖 p.6.6.5）
+
 - [ ] p.6.6.16 std/tpl：模板引擎（`{{expr}}` 求值 + 渲染字符串/文件）
+
 - [ ] p.6.6.17 std/diff：文本 diff（LCS → 行级增删改 + 统一格式输出）
+
 - [ ] p.6.6.18 std/cron：cron 调度（5 字段表达式 → 下次触发时间/到期判断）
+
 - [ ] p.6.6.19 std/jwt：JWT（HS256/RS256 签发验证，供 p.6.6.21 会话）
+
 - [ ] p.6.6.20 数据库：SQLite 驱动（C ABI 桥，参考 ext/ecdsa extern 范式）
-- [ ] p.6.6.21 Web 服务框架：std/http_server 升级（路由表 / keep-alive / 静态文件 / SSE 推送 / JWT 会话）
+
+- [ ] p.6.6.21 Web 服务框架：std/http\_server 升级（路由表 / keep-alive / 静态文件 / SSE 推送 / JWT 会话）
+
 - [ ] p.6.6.22 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式，依赖 p.6.6.2/p.6.6.3）
-- [ ] p.6.6.23 sys/win32：平台专用层首期（命名空间 sys_win32；注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息 + 进程枚举/服务控制/网络接口/硬件信息）
+
+- [ ] p.6.6.23 sys/win32：平台专用层首期（命名空间 sys\_win32；注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息 + 进程枚举/服务控制/网络接口/硬件信息）
   - 依赖方向（单向）：tls → httpc → sse；html → xml → svg；httpc → ws；tls → smtp/jwt；httpc+sse → llm
-  - 平台层：sys/win32 之后 linux/mac 同名层（sys_linux / sys_mac）
+
+  - 平台层：sys/win32 之后 linux/mac 同名层（sys\_linux / sys\_mac）
+
   - 计划文档：docs/superpowers/plans/2026-09-01-p661-tls-client.md（p.6.6.1 实施计划）
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+
+## [修复] driver 工具链占位提示清理（2026-09-01）（p.6.2.5）
+
+data/ui/db/port/zd 五类文件的预处理分派提示仍标注「v0.1 尚未实现」，但
+`--compress-data`（tdzd：表字面量 → zd record）已落地可用。更新：
+- data 分支提示改指 `--compress-data 压缩为 zd`（不再说工具链未实现）
+- zd 分支提示与后缀预判路径统一为 `用 tiedb compact/decompress 处理`
+- ui/db/port 保留未实现提示（确未实现）；文件头角色识别注释同步
+验证：--compress-data 实机压缩 + data/zd 分支提示输出正确；自举
+tiec→tiec2→tiec3 不动点 IR 哈希一致；回归探针 probe_tdzd / probe_bitcast 全 PASS。
+
 ## [修复] 泛型模板名恢复改用 gty_full 模板索引直查表——消除 import 扫描顺序依赖（2026-09-01）（p.6.2.2）
 
-import result.tie 与 assert.tie 的扫描顺序敏感根因：gt_find 返回**模板索引**
-（gty_vals，登记计数器），而 instantiate_fn/instantiate_enum/instantiate_struct 及
-sinfer 三处用 `intern.lookup(gty_keys[gti])` 恢复模板全名——gty_keys 是按 intern id
+import result.tie 与 assert.tie 的扫描顺序敏感根因：gt\_find 返回**模板索引**
+（gty\_vals，登记计数器），而 instantiate\_fn/instantiate\_enum/instantiate\_struct 及
+sinfer 三处用 `intern.lookup(gty_keys[gti])` 恢复模板全名——gty\_keys 是按 intern id
 升序的**位置表**，模板索引与其一致时（登记序 == 名字序）恰好工作，顺序不同（如
-assert.tie 先于 result.tie 导入）则 gty_keys[gti] 取到别的模板名（如 Result），
-实例化出错误符号（Result$i64），调用点却已改写为 assert::assert_eq$i64 → IR 报
-"函数 'assert::assert_eq$i64' 无签名"。修复：新增 gty_full（模板索引 -> 全名 id），
-reg_generic 登记时同步填充，六处取名全部改走 gty_full[gti]。验证：
-tests/_p6_probe/import_order_a/b.tie（result/assert 两顺序均 PASS）、自举 tiec2→tiec3
-不动点、tests/language 正例 56/56 + 负例 18/18 拒 + config_smoke 48/48、p.6.2.1 探针
+assert.tie 先于 result.tie 导入）则 gty\_keys\[gti] 取到别的模板名（如 Result），
+实例化出错误符号（Result$i64），调用点却已改写为 assert::assert\_eq$i64 → IR 报
+"函数 'assert::assert\_eq$i64' 无签名"。修复：新增 gty\_full（模板索引 -> 全名 id），
+reg\_generic 登记时同步填充，六处取名全部改走 gty\_full\[gti]。验证：
+tests/\_p6\_probe/import\_order\_a/b.tie（result/assert 两顺序均 PASS）、自举 tiec2→tiec3
+不动点、tests/language 正例 56/56 + 负例 18/18 拒 + config\_smoke 48/48、p.6.2.1 探针
 仍 ALL PASS、std 库编译零错误。
 
-## [修复] 枚举 payload 白名单放开 f64/table/map + 多枚举 payload 字段错位（2026-09-01）（p.6.2.1）
+## \[修复] 枚举 payload 白名单放开 f64/table/map + 多枚举 payload 字段错位（2026-09-01）（p.6.2.1）
 
 枚举 payload 白名单从「整数族/bool/char/trit/string」扩展 + f64/table<T>/map<V>（p.6.2.1 评估结论：正式版放开）：
 f64 槽 i64 与 double 同宽，type-punned 直存、读侧 load double 还原；table/map 值是 ptr，
 槽存 ptrtoint、消费侧 inttoptr 还原（与 string 桥同构）；struct/嵌套 enum 仍需堆拷贝/
-多槽布局，保持拒绝。改动：scollect_port 白名单、irgen_agg 构造侧 + switch case 绑定读侧、
-irgen_rt `?` 解包读侧。
+多槽布局，保持拒绝。改动：scollect\_port 白名单、irgen\_agg 构造侧 + switch case 绑定读侧、
+irgen\_rt `?` 解包读侧。
 
-顺带修复同批暴露的潜伏缺陷（多枚举实例共存错位）：collect_enum_variants 把 en_vfldoff
-存**相对**偏移，消费方按 en_ftys[foff+jj] **绝对**索引——单枚举时相对==绝对==0 掩盖；
-同文件第二个枚举实例（如 Result<table<i64>,string> 与 Result<table<string>,string> 共存）
+顺带修复同批暴露的潜伏缺陷（多枚举实例共存错位）：collect\_enum\_variants 把 en\_vfldoff
+存**相对**偏移，消费方按 en\_ftys\[foff+jj] **绝对**索引——单枚举时相对==绝对==0 掩盖；
+同文件第二个枚举实例（如 Result\<table<i64>,string> 与 Result\<table<string>,string> 共存）
 的 Ok 相对偏移 0 会读到首个枚举的 payload（报"期望 i64，实际 string"）。落盘时加
-fbase（len(en_ftys)）转绝对偏移修复。验证：tests/_p6_probe/enum_payload_lift.tie
+fbase（len(en\_ftys)）转绝对偏移修复。验证：tests/\_p6\_probe/enum\_payload\_lift.tie
 （table<i64>/table<string>/f64/map payload 构造 + switch 解构 + `?` 解包五场景 ALL PASS）、
-result_multi_scalar.tie（多实例共存）、自举 tiec2→tiec3 不动点 IR 逐字节一致、
-tests/language 正例 56/56 + 负例 18/18 拒 + config_smoke 48/48、err_064 golden 由 f64
+result\_multi\_scalar.tie（多实例共存）、自举 tiec2→tiec3 不动点 IR 逐字节一致、
+tests/language 正例 56/56 + 负例 18/18 拒 + config\_smoke 48/48、err\_064 golden 由 f64
 负例改为 struct 负例（f64 已放开）；std fs/bytes/csv 注释同步说明（签名保持哨兵不破坏 API）。
 
+## \[修复] ir.add\_operand 交错检测断言 + 4 处潜伏操作数段交错（2026-08-31）
 
-## [修复] ir.add_operand 交错检测断言 + 4 处潜伏操作数段交错（2026-08-31）
+给 `ir.add_operand` 加操作数段连续性断言（off+cnt 必须等于段尾，否则 panic 报编译器内部错误，把未知交错点转编译期错误）。断言立即暴露 4 处潜伏交错：`tig_not_i1`（位越界判定 xor 两操作数之间内联 `tig_bool_lit`）、`tig_print_any` 复合 tag 阈值比较三处（`tig_int_lit_ty(BASE_STRUCT/ENUM/FN)` 内联在 icmp 两操作数之间）——这些点旧编译器静默生成错乱操作数（值引用/立即数错位），是"跨模块大函数 + 多表 push 交错"机器码不稳定的根因之一。修复按"常量先存变量再逐项 add\_operand"约定。验证：tests/language 正例 55/58（3 个基线已知失败不变）、examples 全量与旧编译器一致、tiec 自举产物逐字节一致、移动语义正负例照常。
 
-给 `ir.add_operand` 加操作数段连续性断言（off+cnt 必须等于段尾，否则 panic 报编译器内部错误，把未知交错点转编译期错误）。断言立即暴露 4 处潜伏交错：`tig_not_i1`（位越界判定 xor 两操作数之间内联 `tig_bool_lit`）、`tig_print_any` 复合 tag 阈值比较三处（`tig_int_lit_ty(BASE_STRUCT/ENUM/FN)` 内联在 icmp 两操作数之间）——这些点旧编译器静默生成错乱操作数（值引用/立即数错位），是"跨模块大函数 + 多表 push 交错"机器码不稳定的根因之一。修复按"常量先存变量再逐项 add_operand"约定。验证：tests/language 正例 55/58（3 个基线已知失败不变）、examples 全量与旧编译器一致、tiec 自举产物逐字节一致、移动语义正负例照常。
+## \[修复] smove.check\_fn 对 extern 声明越界读取防护（2026-08-31）
 
-## [修复] smove.check_fn 对 extern 声明越界读取防护（2026-08-31）
+extern 声明经 `reg_fn` 登记进 `fn_keys`/`fn_def_nodes`（S\_N\_EXTERN 节点），TIE\_MOVE\_CHECK=1 时 `smove.check_fn_walk` 快路径把 S\_N\_EXTERN 节点当函数体遍历——`body = child(fn_node, slot_off+1+nparams)` 的索引 == nchild，`child()` 无边界检查，越界读会把相邻/后续顶层节点或 arena 尾部未初始化内存误当函数体（假报错误或 0xC0000005）。为 `smove.check_fn` 补 `nchild` 边界防护（对齐 scheck.check\_fn 既有防护）：extern 声明（slots 不足 1+nparams）直接返回 0，不遍历 body。验证：tests/s15/extern\_move\_check\_probe.tie（extern 置于文件末尾 + import 扰动布局）在 TIE\_MOVE\_CHECK=1 下编译运行通过；tests/language 全量正例 55/58 与旧 tiec 一致（3 个基线已知失败不变）；tiec 与 tiec\_fix 产物哈希/IR 逐字节一致；移动语义正例过、负例拒。
 
-extern 声明经 `reg_fn` 登记进 `fn_keys`/`fn_def_nodes`（S_N_EXTERN 节点），TIE_MOVE_CHECK=1 时 `smove.check_fn_walk` 快路径把 S_N_EXTERN 节点当函数体遍历——`body = child(fn_node, slot_off+1+nparams)` 的索引 == nchild，`child()` 无边界检查，越界读会把相邻/后续顶层节点或 arena 尾部未初始化内存误当函数体（假报错误或 0xC0000005）。为 `smove.check_fn` 补 `nchild` 边界防护（对齐 scheck.check_fn 既有防护）：extern 声明（slots 不足 1+nparams）直接返回 0，不遍历 body。验证：tests/s15/extern_move_check_probe.tie（extern 置于文件末尾 + import 扰动布局）在 TIE_MOVE_CHECK=1 下编译运行通过；tests/language 全量正例 55/58 与旧 tiec 一致（3 个基线已知失败不变）；tiec 与 tiec_fix 产物哈希/IR 逐字节一致；移动语义正例过、负例拒。
+## \[修复] 顶层 const 整数全局初始值（2026-08-31）
 
-## [修复] 顶层 const 整数全局初始值（2026-08-31）
+顶层 const 的整数字面量初始值此前只在类型为 i64 时输出（llvmgen emit\_globals 的 ty=="i64" 限制），i8/i16/i32/u\* 等 const 全局恒为 0——extern 以 const 传参时收到 0（如 GetSystemMetrics(1 的 const i32) 返回屏幕宽而非高）。改为对全部整数类型（types.is\_int）应用初始值。回归测试 tests/language/const\_global\_int\_init.tie。
 
-顶层 const 的整数字面量初始值此前只在类型为 i64 时输出（llvmgen emit_globals 的 ty=="i64" 限制），i8/i16/i32/u* 等 const 全局恒为 0——extern 以 const 传参时收到 0（如 GetSystemMetrics(1 的 const i32) 返回屏幕宽而非高）。改为对全部整数类型（types.is_int）应用初始值。回归测试 tests/language/const_global_int_init.tie。
-
-## [修复] 跨文件 struct 字段收集错位（2026-08-31）
+## \[修复] 跨文件 struct 字段收集错位（2026-08-31）
 
 跨文件使用多 struct 时，若 struct 名在主文件先被 intern（消费方在 import
-展开前引用该名），st_keys 按 intern id 的排序序与 struct 登记序不一致，
+展开前引用该名），st\_keys 按 intern id 的排序序与 struct 登记序不一致，
 而 `collect_struct_fields` 用 `st_keys[si]`（按名排序表直接用 struct 索引
 取下标）取 struct 名 → 取到别的 struct 名，字段收集整体旋转（如 Alpha 拿到
 Gamma 的字段），构造/字段访问报错或读错字段。改为经 `sstate.struct_name_of(si)`
 按索引反查名字（含继承环报错与两处"没有字段"错误消息），回归测试
-tests/language/crossfile_struct_misorder.tie（旧编译器必现，新编译器绿）。
+tests/language/crossfile\_struct\_misorder.tie（旧编译器必现，新编译器绿）。
 
+## Harbor-2026.1-preview\.5（2026-08-31）
 
-## Harbor-2026.1-preview.5（2026-08-31）
-
-> **preview.5 = 数据流互联首版 + 表运算深化 + 哈希算法谱系**：tink 帧协议与
+> **preview\.5 = 数据流互联首版 + 表运算深化 + 哈希算法谱系**：tink 帧协议与
 > zd v2 序列化规范落地、tiec `--compress-data`、P2 复合元素/异构表与高阶表运算、
 > TSHA1 家族性能内核（状态随位长）+ 全谱系 hash/crypto 标准库、f64↔i64 bitcast、
 > 自定义角色插件化、library-v2 三层内置库重写。
-> 对比基线：Harbor-2026.1-preview.4（自其累计提交见下方条目）。
+> 对比基线：Harbor-2026.1-preview\.4（自其累计提交见下方条目）。
 
-## [自定义角色] 插件化（S3.4 v2，2026-08-28）
+## \[自定义角色] 插件化（S3.4 v2，2026-08-28）
 
 角色体系彻底表驱动：内建默认表 + config roles（兼容）+ 项目 roles.data.tie
-+ tie.pkg 依赖包角色定义（path/.tie/deps）依序合并；编译器只读表做校验与
-管线分派（lib/check/exe/pass）。安全模型：包可扩展编译器（纯数据声明），
-不可扩展加载器（字段白名单 kind/params/output），加载器安全模块审计未知
-字段并 [audit] 拦截。依赖发现由 tie.pkg 清单驱动（不列目录）。
-Docs: docs/plans/role-model.md。
 
+- tie.pkg 依赖包角色定义（path/.tie/deps）依序合并；编译器只读表做校验与
+  管线分派（lib/check/exe/pass）。安全模型：包可扩展编译器（纯数据声明），
+  不可扩展加载器（字段白名单 kind/params/output），加载器安全模块审计未知
+  字段并 \[audit] 拦截。依赖发现由 tie.pkg 清单驱动（不列目录）。
+  Docs: docs/plans/role-model.md。
 
-## [自定义角色] config.data.tie roles 段注册（S3.4，2026-08-28）
+## \[自定义角色] config.data.tie roles 段注册（S3.4，2026-08-28）
 
 tiec（driver 编译路径）支持在构建配置 config.data.tie 的 roles 段注册自定义
 基础/修饰角色与扩展参数（kind/params/output=lib|check|exe）；注册表在头部扫描
 前经 config 分层合并加载，R3 文件名-头部一致性检查同步支持；与内建重名警告忽略。
 prep/tie-prep 仍仅内建白名单（错误消息已提示）。Docs: docs/plans/role-model.md。
 
-## [新增] tink 数据流互联服务：节点帧协议 + zd v2 序列化 + tiec --compress-data（2026-08-31）
+## \[新增] tink 数据流互联服务：节点帧协议 + zd v2 序列化 + tiec --compress-data（2026-08-31）
 
 tink 为语言无关的通用数据流互联服务：任何组件遵守统一的字节级帧协议即可接入
 tink 管道（组件独立进程，统一 zd 字节 ABI）。本批落地协议侧核心：
@@ -247,19 +323,22 @@ tink 管道（组件独立进程，统一 zd 字节 ABI）。本批落地协议�
   帧格式 `[len u32 BE][payload][crc u32 BE]`，CRC32-IEEE（复用 rdu/crc 增量实现，
   与 zlib.crc32 向量一致 `crc32("123456789")==0xCBF43926`）；`crc32 / frame_encode /
   frame_next / frame_skip` 四函数，解析失败返回空表/-1 哨兵不 panic；
-  探针 std/tink_probe.tie 全通过；
+  探针 std/tink\_probe.tie 全通过；
+
 - **zd v2 通用二进制序列化规范**（语言无关，多语言可独立实现）：10 字节头
   `TIEDBZD` 魔数 + base-48 版本 + flags；核心类型 i64/u64/f64/string/bool/array/
   map/bytes/blob/null + ext 扩展类型；字符串字典/列式容器等体积优化，v1 兼容读取；
   扩展名统一 `.zd`；
-- **tiec `--compress-data`**：把 `.data.tie`（tie 表字面量，含 type 头与可选表名）
-  经 DFS 平铺 + 平行表（kind/key/value/child_count）转换为 zd record，输出 `.zd`
-  文件；tdzd.tie/zdwrite.tie 驱动接线，探针 probe_tdzd* 全通过；
+
+- **tiec** **`--compress-data`**：把 `.data.tie`（tie 表字面量，含 type 头与可选表名）
+  经 DFS 平铺 + 平行表（kind/key/value/child\_count）转换为 zd record，输出 `.zd`
+  文件；tdzd.tie/zdwrite.tie 驱动接线，探针 probe\_tdzd\* 全通过；
+
 - tink 设计文档、跨语言示例文档与 td 数据编译器设计文档就位。
 
-## [接入] actor 消息处理改由 trm-lite 简单执行体承载（2026-08-27）
+## \[接入] actor 消息处理改由 trm-lite 简单执行体承载（2026-08-27）
 
-actor 由 1:1 CreateThread + mailbox（CRITICAL_SECTION/CONDITION_VARIABLE）改为
+actor 由 1:1 CreateThread + mailbox（CRITICAL\_SECTION/CONDITION\_VARIABLE）改为
 **trm-lite 简单执行体承载**（设计 §4.1 默认承载，trm-lite 阶段1块2）。单线程协作
 调度，天然无锁无竞态；`spawn_task` 消息任务 + `yield` 驱动调度器排空队列。
 
@@ -268,20 +347,25 @@ actor 由 1:1 CreateThread + mailbox（CRITICAL_SECTION/CONDITION_VARIABLE）改
   不再初始化 OS 锁/条件变量、不再起 1:1 线程；每条方法调用 = 一个 trm-lite 调度
   任务（通用 `actor_task(ptr rec)`：setjmp 捕获 handler panic → 读 mid → 清
   pending → 间接调 dispatch → 写 result/fail → 置 done）；
+
 - **调用方同步 RPC**：等 pending 空闲 / 等 done 由 `while … { yield() }` 驱动调度器
   （共享 `tig_yield_drain` / 新增 `tig_actor_wait`）；async 投递即返回（fire-and-forget，
-  FIFO 由 spawn_task 队列序保证）；
+  FIFO 由 spawn\_task 队列序保证）；
+
 - **yield 内置重构**：排空逻辑抽为 `tig_yield_drain`，与 actor 等待循环共用；
-- **删除线程路径**：`gen_actor_loop_eager`（@actor_loop）→ `gen_actor_task_eager`
-  （actor_task）；`tig_actor_spawn`/`tig_null_ptr` 删除；kernel32 线程原语不再被
+
+- **删除线程路径**：`gen_actor_loop_eager`（@actor\_loop）→ `gen_actor_task_eager`
+  （actor\_task）；`tig_actor_spawn`/`tig_null_ptr` 删除；kernel32 线程原语不再被
   actor 使用（用户仍可自用 extern CreateThread，threadprobe/syncprobe 零回归）；
+
 - **依赖**：actor 程序现须静态链接 `trm_lite.a`（`TIE_TRM_LITE_LIB` 定位，与
-  tie_interp.lib 同范式）；actor 与 import trm-lite 为替代路径，混用编译期报错；
-- 回归：tests/m6_actor 全部通过（a1 语法/a2 run/a3 方法/a4 同步 RPC+async+FIFO+
-  panic 存活+panic raise+run_state/a5 属性+b1 多参数/guard delegate 正负例）；
+  tie\_interp.lib 同范式）；actor 与 import trm-lite 为替代路径，混用编译期报错；
+
+- 回归：tests/m6\_actor 全部通过（a1 语法/a2 run/a3 方法/a4 同步 RPC+async+FIFO+
+  panic 存活+panic raise+run\_state/a5 属性+b1 多参数/guard delegate 正负例）；
   二阶自举通过（tiec 编译自身同尺寸）。
 
-## [修复] 闭包字面量解析器：语句结束符统一（2026-08-27）
+## \[修复] 闭包字面量解析器：语句结束符统一（2026-08-27）
 
 闭包字面量 `func(x: i64) -> i64 { ... }` 此前在 var 初始化 / 调用实参 / 多行嵌套
 位置全部无法解析（`期望 语句结束符，实际是 …`）。根因：语句结束符完全依赖词法器
@@ -294,94 +378,105 @@ ASI 补出的 `lex_semi`，而 ASI 对两类边界不补分号——① 行尾 t
   闭包体 `return … }`）/ **新行即语句边界**（`'}'` 后换行无分号 + 闭包体 re-parse
   时外层多行调用抑制分号）。tie 的 ASI 除括号内不支持跨行续行，表达式解析器已
   消费完续行，新行即真语句结束，接受安全。
+
 - `putil.advance()` 记录最近已消费 token 的 tag/行（`g_last_tag`/`g_last_line`，
   pst.tie 新增全局）；全部 14 处语句结束符 `expect(lex_semi, "语句结束符")`
-  （pstmt/pstmt_flow）改用 `expect_stmt_end()`。
-- 回归：m6_actor 全量、s22_probe 闭包探针 8/8、trm-lite demos、s15/s40/s31
-  config_smoke 48 项全过；二阶自举同尺寸。
+  （pstmt/pstmt\_flow）改用 `expect_stmt_end()`。
 
----
+- 回归：m6\_actor 全量、s22\_probe 闭包探针 8/8、trm-lite demos、s15/s40/s31
+  config\_smoke 48 项全过；二阶自举同尺寸。
 
----
+***
 
----
+***
 
-## [修复] 字节原语零 Rust 重写：byte_write/byte_concat 运行崩溃修复（2026-08-26）
+***
 
-byte_read/byte_write/byte_concat/bit_read/bit_write 五底座原语原以 tie_interp Rust 桥
-实现（tie_byte_*），Rust 桥对**原生 32 字节表句柄**的 ABI 约定不匹配，任一调用运行即
+## \[修复] 字节原语零 Rust 重写：byte\_write/byte\_concat 运行崩溃修复（2026-08-26）
+
+byte\_read/byte\_write/byte\_concat/bit\_read/bit\_write 五底座原语原以 tie\_interp Rust 桥
+实现（tie\_byte\_\*），Rust 桥对**原生 32 字节表句柄**的 ABI 约定不匹配，任一调用运行即
 0xC0000005 崩溃（同 871d65f alloc 补头扫描漏洞族；std/bytes 的 write/concat 一并受影响）。
 本次改为 tie 内联 IR 全量重写，**跨 Unix/Windows、零 Rust 依赖**：
 
-- **字节表操作**（byte_concat/bit_read/bit_write）纯内存：原生 32 字节表句柄
+- **字节表操作**（byte\_concat/bit\_read/bit\_write）纯内存：原生 32 字节表句柄
   {cap,len,data,esz} + malloc/memcpy + 位指令（shr/and/shl/or/xor），零外部依赖；
-- **文件 IO**（byte_read/byte_write）走 libc fopen/fread/fwrite/fseek/ftell/fclose（CRT
+
+- **文件 IO**（byte\_read/byte\_write）走 libc fopen/fread/fwrite/fseek/ftell/fclose（CRT
   提供，无需任何系统头/链接库）——往返二进制安全（i64 元素低字节截断，0/255 字节不丢）；
-- **失败语义保持文档约定**：byte_read 打不开/读不全 → 打印路径并 exit(1)；byte_write 失败
+
+- **失败语义保持文档约定**：byte\_read 打不开/读不全 → 打印路径并 exit(1)；byte\_write 失败
   → false；
-- 运行时循环由 irgen 手工块生成（k 存槽 + cond_br 回边），回避「后端 while 变量是 IR 值
+
+- 运行时循环由 irgen 手工块生成（k 存槽 + cond\_br 回边），回避「后端 while 变量是 IR 值
   id」的编译期数值比较陷阱；
-- 新增 tests/language/bytes_roundtrip.tie 回归（往返/覆盖写/concat 不动入参/位越界/空表）。
 
----
+- 新增 tests/language/bytes\_roundtrip.tie 回归（往返/覆盖写/concat 不动入参/位越界/空表）。
 
-## [新增] 三层内置库重写 library-v2：新特性 + 统一风格 + 全新接口（2026-08-26）
+***
+
+## \[新增] 三层内置库重写 library-v2：新特性 + 统一风格 + 全新接口（2026-08-26）
 
 按 [docs/plans/library-v2.md](docs/plans/library-v2.md) 重写 std/rdu/ext 三层内置库（旧版
-v1 已归档至 github.com/tie-lang/lib_v1）。设计文档含三层逐模块新接口表与实施纪要。
+v1 已归档至 github.com/tie-lang/lib\_v1）。设计文档含三层逐模块新接口表与实施纪要。
 
 - **新特性**：std/rdu 的 `math` 泛型化（`abs<T>/max<T>/min<T>/clamp<T>` 替代成对
   `max_i/max_f` 等，调用点单态化零开销）；rdu 的 `crc`（Crc8/Crc16/Crc32/Fnv1a）、`rnd`
   （Rng）改为 **struct 状态封装**（值语义、无堆，保持无栈纪律）；std 表数据接口全面换成
   真表参数（sort/graph/linalg/exmath/optsearch/ml 的逗号字符串编码表废弃）；
   `fs.read_text`/`json.parse_file`/`http.get` 改为 `Result<string|i64, string>` 错误表达
-  （编译器 enum payload 白名单暂不支持 table/f64，read_bytes/read_lines/csv.read 保留
+  （编译器 enum payload 白名单暂不支持 table/f64，read\_bytes/read\_lines/csv.read 保留
   空表哨兵，见设计文档 §0）；ext/test `expect_eq<T>` 泛型合并。
+
 - **风格统一**：表参数/返回全部标注元素类型；一语义一名删重复别名（string.copy、
-  fs 的 read_to_string/write/append/remove_file/delete/remove_dir_all/mkdir_all/move、
-  http.url_encode/url_decode 等）；rdu/fixed 去前缀（mul/div/floor/frac）。
+  fs 的 read\_to\_string/write/append/remove\_file/delete/remove\_dir\_all/mkdir\_all/move、
+  http.url\_encode/url\_decode 等）；rdu/fixed 去前缀（mul/div/floor/frac）。
+
 - **编译器泛型修复**（支撑库泛型化的前置）：命名空间/跨文件泛型函数此前解析失败
   （`命名空间函数 'ns::f' 未定义`）——sinfer 命名空间调用分支补 `gt_find` 模板查找、
-  irgen_call 对已 mangled 全名的调用不再二次加前缀；自举不动点 tiec→tiec2→tiec3 逐字节一致。
+  irgen\_call 对已 mangled 全名的调用不再二次加前缀；自举不动点 tiec→tiec2→tiec3 逐字节一致。
+
 - **已知限制（记录未修）**：① enum payload 白名单不支持 table/f64（Result<table> 不可
   表达，已放开见 p.6.2.1）；② `import result.tie` 须置于 `import assert.tie` 之前（泛型 enum 与断言模板
   的扫描顺序敏感性，已修复见 p.6.2.2）；③ 泛型模板体内整数字面量单态化时类型固化
   （`abs<T>` 用 `x - x` 取 T 型零值规避）。
 
----
+***
 
-## [开发期补录] preview.5 平台桥/动态库链面（git 提交 2026-08-24~08-25，preview.4 与 preview.5 tag 之间）
+## \[开发期补录] preview\.5 平台桥/动态库链面（git 提交 2026-08-24\~08-25，preview\.4 与 preview\.5 tag 之间）
 
-> **preview.5 开发期补录**：平台桥与动态库扩展链面——extern 指针/切片桥接、动态库边界
+> **preview\.5 开发期补录**：平台桥与动态库扩展链面——extern 指针/切片桥接、动态库边界
 > （`slice<T>` + repr(C) pod struct 跨库）、深层/多导入越界读修复、repr(C) 窄字段 struct
 > store 修复、alloc 缓冲误扫等；详见下方条目。
 
----
+***
 
-## [修复] alloc(n) 原始缓冲被误做字符串补头扫描——多会话字节串线/丢失根因（漏洞 A 类）
+## \[修复] alloc(n) 原始缓冲被误做字符串补头扫描——多会话字节串线/丢失根因（漏洞 A 类）
 
-`alloc(n)` 内置的 malloc 返回类型此前标 TK_STR，llvmgen op36 对「返回 TK_STR 的 extern
+`alloc(n)` 内置的 malloc 返回类型此前标 TK\_STR，llvmgen op36 对「返回 TK\_STR 的 extern
 调用」自动做字符串补头扫描（`strlen + tie_sso_alloc + memcpy`）。对**未初始化**堆缓冲
 strlen 读的是垃圾：返回缓冲实际容量 = 垃圾长度——小则 n 字节整写越界（SSO 静态池/堆
 损坏，多会话交错读写出现字节串线/丢失，临界崩溃 0xC0000005），大则扫描越界读未映射
-内存。编译器内部原始分配（`s21_raw_alloc_str`）早已用 K_PTR 返回绕开扫描，仅用户面
-`alloc`、动态表连续缓冲、闭包环境盒、port 打包对象四处裸 malloc 仍标 TK_STR——多会话
+内存。编译器内部原始分配（`s21_raw_alloc_str`）早已用 K\_PTR 返回绕开扫描，仅用户面
+`alloc`、动态表连续缓冲、闭包环境盒、port 打包对象四处裸 malloc 仍标 TK\_STR——多会话
 会话泵交错 `run_avail`/`run_read`（各 alloc 一次 4KB 缓冲）即触发串线/丢失。
 
-- **修复**：四处统一改走 `s21_raw_alloc_str`（K_PTR 返回绕开扫描 + ptrtoint/inttoptr 包回
-  TK_STR 值，与编译器内部原始分配同范式）：`alloc` 内置（irgen_expr）、动态表连续缓冲
-  （irgen_expr）、闭包环境盒（irgen_closure）、port 打包对象（irgen_vtable）。
+- **修复**：四处统一改走 `s21_raw_alloc_str`（K\_PTR 返回绕开扫描 + ptrtoint/inttoptr 包回
+  TK\_STR 值，与编译器内部原始分配同范式）：`alloc` 内置（irgen\_expr）、动态表连续缓冲
+  （irgen\_expr）、闭包环境盒（irgen\_closure）、port 打包对象（irgen\_vtable）。
+
 - **新增验收**：`tests/language/alloc_raw_buf.tie`——alloc(1MB) 写满读回逐字节一致 + 双缓冲
   交错写读无串扰 + 其后新建字符串不受 SSO 池/堆波及；修复前同一测试立即
   0xC0000005 访问冲突，修复后通过。
+
 - **回归**：自举不动点 tiec→tiec2→tiec3 逐字节一致；m5-dynlib 8/8；语言测试集
-  （reprc_narrow_store / proc_createprocessw_pipe / unsafe_full / extern_s10_ptr /
-  ffi_recv_string / sso_probe / narrow_full / 闭包 s22 探针等）通过；trm 平台桥
+  （reprc\_narrow\_store / proc\_createprocessw\_pipe / unsafe\_full / extern\_s10\_ptr /
+  ffi\_recv\_string / sso\_probe / narrow\_full / 闭包 s22 探针等）通过；trm 平台桥
   regress-platform 7/7 全绿。
 
----
+***
 
-## [修复] repr(C) struct 对齐缺陷——生成模块补 target datalayout，结构体与 C ABI 对齐
+## \[修复] repr(C) struct 对齐缺陷——生成模块补 target datalayout，结构体与 C ABI 对齐
 
 生成的 LLVM 模块此前无 `target datalayout`，`opt` 优化默认把结构体字段按 4 字节对齐装箱
 （i64/指针字段对齐到 4），而链接阶段 clang 采用 x86-64 标准布局（i64 对齐 8），两者对
@@ -392,32 +487,37 @@ strlen 读的是垃圾：返回缓冲实际容量 = 垃圾长度——小则 n �
 - **修复**：`backend/llvmgen.tie` 模块头发射目标 ABI 的 `target datalayout`
   （`x86_64-pc-windows-msvc`，i64 对齐 8），令 `opt` 与链接阶段采用一致对齐；结构体现
   直接与 C ABI 兼容，无需手工填充绕过。
+
 - **新增验收**：`tests/language/proc_createprocessw_pipe.tie`——结构化 CreateProcessW +
-  repr(C) STARTUPINFOW/PROCESS_INFORMATION 指针传参 + CreatePipe 管道 + 手拼 UTF-16 命令行，
+  repr(C) STARTUPINFOW/PROCESS\_INFORMATION 指针传参 + CreatePipe 管道 + 手拼 UTF-16 命令行，
   父进程经管道捕获子进程 stdout。
-- **回归**：reprc_narrow_store 窄字段 store、语言测试集、编译器自举
+
+- **回归**：reprc\_narrow\_store 窄字段 store、语言测试集、编译器自举
   （tiec→tiec2→tiec3）均通过。
 
----
+***
 
-## [新增] extern 参数/返回扩展 ptr<T>/slice<T>——平台桥指针桥接解锁（S10）
+## \[新增] extern 参数/返回扩展 ptr<T>/slice<T>——平台桥指针桥接解锁（S10）
 
-`unsafe extern fn` 的参数/返回边界从「仅标量 + string」扩展为**标量 + string + `ptr<T>` +
+`unsafe extern fn` 的参数/返回边界从「仅标量 + string」扩展为**标量 + string +** **`ptr<T>`** **+
 `slice<T>`**，由编译期门禁放行（extern 本身即 unsafe 上下文，安全代码不可触达指针）。
 这解锁 trm 平台桥的指针类 OS 桥接（如 Win32 `GetConsoleMode` 指针出参、`CreatePipe`
 句柄数组），是 raw terminal / 进程管道的编译器前提。
 
-- **语义**：`frontend/scollect.tie` 新增 `is_extern_ok_t`（标量 ∥ K_PTR ∥ K_SLICE）；
+- **语义**：`frontend/scollect.tie` 新增 `is_extern_ok_t`（标量 ∥ K\_PTR ∥ K\_SLICE）；
   `frontend/scollect_port.tie` 返回与参数检查改用之（表/map/struct/enum 等堆布局仍拒绝，
   错误文案更新为「必须是标量/string/ptr/slice 类型」）；
+
 - **链路复用**：调用降级（op36）已直接把签名类型传给 declare/call，指针形参自动经
   `addr_of(x)` 传引用；无需改 irgen/llvmgen；
+
 - **回归**：新增正例 `tests/language/extern_s10_ptr.tie`（GetConsoleMode + `addr_of` 端到端）；
   负例 `extern_decl_neg.tie` 改 `unsafe extern fn` 以真正命中类型门禁并校验新文案；
+
 - **验证**：正/负例均达期望；m5-dynlib 回归 6 项全绿（动态库链路不受影响）；
   自举（tiec 编译 driver → tiec2）通过。
 
-## [修复] extern 声明无函数体越界读——深层/多导入假报「语句只能出现在文件顶层」（S10）
+## \[修复] extern 声明无函数体越界读——深层/多导入假报「语句只能出现在文件顶层」（S10）
 
 `frontend/scheck.tie` `check_fn` 对**每个已登记函数**（含 `unsafe extern` 无函数体声明）求函数体时，
 `child(fn_node, slot_off+1+nparams)` 在下标 == `nchild` 处**越界读**。单/浅导入时越界落空（-1）
@@ -426,46 +526,54 @@ strlen 读的是垃圾：返回缓冲实际容量 = 垃圾长度——小则 n �
 
 - **修复**：`check_fn` 在取函数体前加守卫 `slot_off+1+nparams >= nchild` → 无函数体声明（extern）
   直接返回（goto 表为空，语义等价）。真实函数恒有 body 子节点，该分支绝不误伤。
+
 - **影响**：解锁 trm 平台桥经库里层传递导入接入 main 汇总（`lib/terminal → impl-win32`，深层多库）；
   单文件/单层导入行为不变。
+
 - **验证**：trm `main.tie`（8 库 + platform 传递导入 + `trm_terminal.is_tty`）编译 rc=0 运行通过；
   自举（driver → tiec）Stage-2 稳定；m5-dynlib 回归 8/8 全绿；language 正/负例无回归。
+
 - **遗留（默认关闭）**：`smove.check_fn_walk` 对 extern 有同类越界隐患，受 `TIE_MOVE_CHECK=1`
   门控（默认关），未改动以免越界扩面。
 
-## [修复] repr(C) 窄字段 struct store 未收窄 + extern 实参未收窄（S10）
+## \[修复] repr(C) 窄字段 struct store 未收窄 + extern 实参未收窄（S10）
 
 两处 codegen 缺陷：窄整数字段/形参值未按目标类型截断，导致 `opt: '%X' defined i64 but
 expected i32`。
 
 - **struct 默认/零值字段 store**：`backend/irgen_agg.tie` `tig_struct_construct` 的窄整数收窄
-  （tig_coerce）原只作用于「构造实参」分支；「字段默认值」「零值」分支的 `v` 对 u32/u16 等
+  （tig\_coerce）原只作用于「构造实参」分支；「字段默认值」「零值」分支的 `v` 对 u32/u16 等
   是 i64（`tig_default_val`/默认字面量恒产 i64 零），直接 `store i32 %i64` 类型不匹配。修复：
-  收窄提取为逐字段通用，按来源分支正确取 `vt`（实参→node_types；默认/零值→按 fty 产 i64/f64），
-  store 前统一 tig_coerce（含 i8 特例）。
+  收窄提取为逐字段通用，按来源分支正确取 `vt`（实参→node\_types；默认/零值→按 fty 产 i64/f64），
+  store 前统一 tig\_coerce（含 i8 特例）。
+
 - **extern 实参收窄**：`backend/irgen_call.tie` extern 分支缺 op35 已具备的 S1.3 数字形参收窄，
   i64 字面量传给 i32/BOOL 形参（如 `CreateProcessW(bInheritHandle: BOOL)`）崩 opt。修复：镜像
-  op35 的 tig_coerce(node 类型, 形参类型) 逻辑到 extern 分支。
+  op35 的 tig\_coerce(node 类型, 形参类型) 逻辑到 extern 分支。
+
 - **验证**：自举三次重建 + 二次自举（新 tiec 重编 driver 逐字节一致）；trm 平台桥 `StartupInfoW`
   等窄字段 struct 均能干净编译（.a/.dll）；m5-dynlib 8/8；s21 无新增失败。
 
-## [新增] 动态库边界扩展——slice<T> + repr(C) pod struct 跨库（S10 扩展链面）
+## \[新增] 动态库边界扩展——slice<T> + repr(C) pod struct 跨库（S10 扩展链面）
 
 M5 动态库（`--shared`/`.dll`）的导出边界从「仅标量 + string」扩展为**标量 + string +
-`slice<T>` + repr(C) pod struct**，落实 trm 最终设计 §6.2「扩展链面」与 §9 的改点
+`slice<T>`** **+ repr(C) pod struct**，落实 trm 最终设计 §6.2「扩展链面」与 §9 的改点
 （把 M5 pipeline 序的边界负例升级为正例）。
 
 - **边界判定**：`backend/irgen.tie` `dynlib_ty_ok` 新增放行——`slice<T>`（`{ptr,len}`，
   C ABI 良定义）与 strict pod struct；新增 `is_repr_c_pod`（字段全为标量 int/float/bool/
-  trit/char 的 K_STRUCT，布局确定、无指针/嵌套可序列化）；表/map/enum/非 pod struct 仍拒；
+  trit/char 的 K\_STRUCT，布局确定、无指针/嵌套可序列化）；表/map/enum/非 pod struct 仍拒；
+
 - **ABI**：slice 签名发为 `{ ptr, i64 }`，pod struct 发为 `%struct.X`（按值），与
   x64 Win64 C 调用约定一致；
+
 - **回归**：负例 `dynlib_boundary_neg.tie` 的 struct 改含 string 字段（非 pod，仍拒）；
-  新增正例 `dynbound_pos.tie`（sum_slice/pod_add）+ C 冒烟 `dynbound_c.c`（LoadLibrary
+  新增正例 `dynbound_pos.tie`（sum\_slice/pod\_add）+ C 冒烟 `dynbound_c.c`（LoadLibrary
   调用，验证 ABI 端到端）；
+
 - **验证**：m5-dynlib 回归 8 项全绿（新增 4b 导出面 / 4c C 冒烟）；自举通过。
 
-## [新增] M5 动态库编译——tie 库 → .dll/.so + dllexport 导出面（dev33 批次 12）
+## \[新增] M5 动态库编译——tie 库 → .dll/.so + dllexport 导出面（dev33 批次 12）
 
 tie 库（`type tie<class>`）可编译为**动态库**（Windows `.dll` / Linux `.so`），
 C/其他语言可在运行期 `LoadLibrary`/`dlopen` 加载调用——插件体系、跨语言模块
@@ -473,110 +581,131 @@ C/其他语言可在运行期 `LoadLibrary`/`dlopen` 加载调用——插件体
 
 - **CLI**：`--shared` 开关或输出扩展名 `.dll`/`.so` 触发动态库模式（要求 library 角色，
   否则报错）；默认输出 win `.dll` / linux `.so`；`--target linux-x64` 交叉 `.so`；
+
 - **导出面**：顶层函数恒导出 + 命名空间 `pub func` 导出（`ir.func_export_set`），
   llvmgen 在动态库模式输出 `define dllexport`；私有函数不导出（GetProcAddress 取不到）；
   符号名 = 全名 `::`→`$`（`mathdyn::add` → `mathdyn$add`）；
+
 - **链接**：`tc.link_shared`——win `clang -shared`（dllexport 自动导出）；linux
-  `-fuse-ld=lld -shared -fPIC`；需 Rust 桥时同样链 tie_interp.lib；
+  `-fuse-ld=lld -shared -fPIC`；需 Rust 桥时同样链 tie\_interp.lib；
+
 - **边界规则**（表/struct 不跨库）：导出函数参数/返回仅标量与 string；表/map/struct/
   enum/元组/fn/port 违例 → 「动态库边界错误」编译错误（irgen `dynlib_ty_ok`）；
+
 - **示例与回归**：`examples/lib_math_dyn/`（tie 库 + C `main.c` LoadLibrary 冒烟 +
   run.ps1）；`scripts/regress-m5-dynlib.ps1`（6 项全绿：.dll 编译 / 导出面 / C 冒烟 /
   边界负例 / 角色校验 / 静态库无回归）；
+
 - **验证**：6 个 pub 符号导出、私有函数未导出（llvm-readobj 核验）；C 调用断言全过；
   一/二/三阶自举成功且三阶二进制 hash 一致；regress-s21 无回归。
 
-## Harbor-2026.1-preview.4（2026-08-23）
+## Harbor-2026.1-preview\.4（2026-08-23）
 
-> **preview.4 = tie 的「并发首版」**：原生 actor + 凭据门禁成型 + 自举性能 61× + 动态库打通 C 生态。
-> 自 Harbor-2026.1-preview.3 共 90 提交。发行亮详见 [NEW.md](NEW.md)。
+> **preview\.4 = tie 的「并发首版」**：原生 actor + 凭据门禁成型 + 自举性能 61× + 动态库打通 C 生态。
+> 自 Harbor-2026.1-preview\.3 共 90 提交。发行亮详见 [NEW.md](NEW.md)。
 
 - **原生并发 actor 一期**：`actor`/`run` + 1:1 OS 线程（零运行时）；同步 RPC / async / 私有状态 /
   方法 dispatch / 多参标量消息槽 / 处理器 panic → 调用方 raise。
+
 - **三期 A 组并发语法**：`guard<share>` 凭据闭环（`unsafe.get/use/with` + `#[unsafe.share]`）、
   `guard<cap>.delegate` 同域派生（含 `guard<cap>` 类型语法）、通用 `#[unsafe.*]` 属性通道、goto/标签。
+
 - **M5 动态库编译**：tie 库 → `.dll`/`.so` + dllexport 导出面，C 语言可运行期加载。
-- **去 Rust 桥收尾**：表/字典/字符串码点/数字转串/parse_* 逐批 irgen 内联；`std/runtime.a` 退役，
+
+- **去 Rust 桥收尾**：表/字典/字符串码点/数字转串/parse\_\* 逐批 irgen 内联；`std/runtime.a` 退役，
   纯程序可零运行时依赖。
+
 - **性能**：自举编译 1281s→21s（61×）；emit 提速 53%。
-- **语言补充**：i128/u128、volatile/slice_of/asm! 条件编译、闭包后置（嵌套捕获/fn×泛型/C 回调）、
-  `s.chars()` 码点迭代、错误处理增强（switch 解构/catch_panic/组合子）、宏三大方向落地。
-- **工程**：compiler 自举化解耦重构（irgen 分层 tig_*）、trm/concurrency-model 设计定稿、文档 infra
-  （tie-dev skill 随包分发、NEW.md 聚焦化、language.md 补全 Harbor 特性）。
+
+- **语言补充**：i128/u128、volatile/slice\_of/asm! 条件编译、闭包后置（嵌套捕获/fn×泛型/C 回调）、
+  `s.chars()` 码点迭代、错误处理增强（switch 解构/catch\_panic/组合子）、宏三大方向落地。
+
+- **工程**：compiler 自举化解耦重构（irgen 分层 tig\_\*）、trm/concurrency-model 设计定稿、文档 infra
+  （tie-dev skill 随包分发、NEW\.md 聚焦化、language.md 补全 Harbor 特性）。
+
 - **修复**：字符串字面量/缓冲 32 字节尾部填充（漏洞 B 宽读越界）、import 缺失优雅报错等。
 
 逐一细节见下方随提交累积的条目（本条为版本汇总）。
 
----
+***
 
-## [去 Rust 桥] `std/runtime.a` 退役——exec_code/get_env/time_now 内联 libc
+## \[去 Rust 桥] `std/runtime.a` 退役——exec\_code/get\_env/time\_now 内联 libc
 
 运行时静态库 `std/runtime.a`（tie 自写，提供 `tie_exec_code`/`tie_get_env`/
 `tie_time_now` 三符号）**退役**。这三个语言内置改为 **irgen 内联**到 libc 直调
 （`system`/`getenv`/`time`），纯程序（只用这些内置 + 其它纯逻辑）**零运行时依赖**，
-不链接 runtime.a、也不链接 Rust tie_interp.lib。
+不链接 runtime.a、也不链接 Rust tie\_interp.lib。
 
 - **后端**：`builtin_expr` 对 `exec_code`→`@system`、`time_now`→`@time(0)`、
   `get_env`→`@getenv` 内联发射；`is_libc_sym` 补 system/getenv/time（不置
   `g_used_interp`）；`llvmgen_str.extern_decl` 删除死掉的 `tie_exec_code/_
   get_env/_time_now` 特例，declare 由 `user_extern_decl` 从 op36 签名自动推导；
   `exec_output` 因依赖 ptr 无法内联，改置 `g_used_interp` 走 Rust tie-interp；
+
 - **链接**：删除 `link_exe` 的 `prefer_interp` 分支与 `find_runtime_lib`，`need_interp`
-  一律链 tie_interp.lib；driver 去掉 `g_used_runtime`；
+  一律链 tie\_interp.lib；driver 去掉 `g_used_runtime`；
+
 - **删除** `std/runtime.tie` 源 + `std/runtime.a`；G3 闸门脚本与 package 打包不再
   依赖 runtime.a；`tests/language/runtime_staticlib.tie` 改为验证内联路径；
-- **验证**：纯程序（exec_code/get_env/time_now）IR 只含 `@system/@getenv/@time`、
+
+- **验证**：纯程序（exec\_code/get\_env/time\_now）IR 只含 `@system/@getenv/@time`、
   无 `tie_*` 符号、零运行时链接；探针运行正确；一/二/三阶自举成功且三阶不动点
   二进制 hash 一致（tiec3==tiec4）；regress-s21 PASS=79 / FAIL=2 / SKIP=2（既定基线，
   零回归），`runtime_staticlib.tie` 通过。
 
-## [去 Rust 桥 第六批] 表容器 tie 化——动态表脱离 Rust tie_interp.lib
+## \[去 Rust 桥 第六批] 表容器 tie 化——动态表脱离 Rust tie\_interp.lib
 
 动态表容器（`table<T>`）的运行时实现从 Rust `tie_table_*` 桥改为 **irgen 内联生成**，
 编译器自身与用户程序的表运算不再依赖 Rust tie-interp 库（`g_used_interp` 不再因表
 运算置位）。表句柄 = 32 字节 `{cap, len, data, esz}`（cap/len=元素数、data=元素数组
 首指针、esz=单元素字节数 bool=1 其余=8），`data` 缓冲 = 元素连续数组，原始分配统一
-走 `s21_raw_alloc_str`（绕开 op36 的 TK_STR 垃圾 strlen 扫描，含 32 字节尾部填充）。
+走 `s21_raw_alloc_str`（绕开 op36 的 TK\_STR 垃圾 strlen 扫描，含 32 字节尾部填充）。
 
 - **新增内联组**（compiler/backend/irgen.tie）：`s21_table_new/len/grow/push/at/set`
-  + 辅助 `t21_zero/t21_data/t21_esz`；空表零拷贝起步、容量 **1.5x 增长**（摊还 O(1)），
-  越界读置 ok 位、越界写静默失败（对齐 Rust 桥语义）；
+
+  - 辅助 `t21_zero/t21_data/t21_esz`；空表零拷贝起步、容量 **1.5x 增长**（摊还 O(1)），
+    越界读置 ok 位、越界写静默失败（对齐 Rust 桥语义）；
+
 - **覆盖**：`len(表)`、`table_new_*`、`table_push`、`table_at`（内置 + 下标读 +
-  for-in 表迭代 + slice_of）、`t[i]=v` 下标写（含复合赋值读旧值）、变参打包、表
+  for-in 表迭代 + slice\_of）、`t[i]=v` 下标写（含复合赋值读旧值）、变参打包、表
   字面量、全局表 init 全部改内联；map/正则/文件等其余桥留后续批（第 7 批起）；
-- **验证**：表探针（byref_table/global_table/2d_table/variadic/chars_iter/
-  slice_table_probe/examples.table）全绿；纯表程序 IR 的 `tie_table_*` 引用 = 0；
+
+- **验证**：表探针（byref\_table/global\_table/2d\_table/variadic/chars\_iter/
+  slice\_table\_probe/examples.table）全绿；纯表程序 IR 的 `tie_table_*` 引用 = 0；
   一阶 + 二阶自举（tiec 编译自身）成功，闭环确认编译器自身表运算脱离 Rust。
 
-## [去 Rust 桥 第五批] 补漏：`for c in s.chars()` 码点迭代去桥
+## \[去 Rust 桥 第五批] 补漏：`for c in s.chars()` 码点迭代去桥
 
-`for c in s.chars()` 后端此前仍残留 `tie_str_from_code` 调用（第三批除 str_char 时
+`for c in s.chars()` 后端此前仍残留 `tie_str_from_code` 调用（第三批除 str\_char 时
 漏了 `gen_for_chars`）。本批改为 `s21_codepoint_to_str`（纯 tie 内联），并移除误置的
 `g_used_interp`。纯字符串码点迭代程序 `tie_interp.lib` 引用 = 0。
 
-## [修复] 漏洞 B 残余根因：字符串字面量 .rodata 无 32 字节尾部填充
+## \[修复] 漏洞 B 残余根因：字符串字面量 .rodata 无 32 字节尾部填充
 
 缺口排查收敛到唯一未覆盖尾部填充的字符串存储点——**字符串字面量**：`emit_strings`
 （llvmgen）此前输出 `{ i64 头, [N+1 x i8] 数据+\0 }`（整块 N+9，**无 32 字节填充**），
 而 `str_cat`(op56) 对操作数做 CRT `strlen`（**无论调用方 opt 级别，MSVC strlen 恒为
 向量化 8 字节宽读**）。字面量处于 `.rodata` 末端时，该宽读跨出段尾触发 0xC0000005——
-即 probe3_chars 在 -O1/-O2 的「布局敏感闪崩」（~75%）与自举第二轮编译器自身崩溃的
+即 probe3\_chars 在 -O1/-O2 的「布局敏感闪崩」（\~75%）与自举第二轮编译器自身崩溃的
 共同根因。
 
 - **修复**：`emit_strings` 把字面量数组扩为 `[N+33 x i8]`（整块 `8 + N+33 = N+41`，
   含 32 字节尾部填充），`str_data_ref` 的 GEP 类型同步；常量显式追加 32 个 `\00`
   （LLVM 字符串常量须精确填满数组，短串 `c""` 不会自动补零，否则 opt 报 type mismatch）；
-- **验证**：probe3_chars 以 -O1/-O2 各运行 50 次零崩溃（此前 ~75% 崩）；生成的 IR
+
+- **验证**：probe3\_chars 以 -O1/-O2 各运行 50 次零崩溃（此前 \~75% 崩）；生成的 IR
   确认 `"A"` → `[34 x i8]`、空串 → `[33 x i8]`，均带 32 字节 `\00` 填充；配合既有
-  70d91c5 的堆/SSO padded 分配，全部字符串存储（字面量/str_cat/FFI 扫描/toString）
+  70d91c5 的堆/SSO padded 分配，全部字符串存储（字面量/str\_cat/FFI 扫描/toString）
   均达 `len+41` 安全余量；
+
 - **回归**：s21 探针（binary/len/chars/ffi/sb）以修复后编译器全绿，无新增失败；
+
 - **遗留（自举顺序问题，非本修复缺陷）**：当前 committed tiec.exe 为陈旧种子（早于
   70d91c5，未填充发射器），其自身 rodata 未填充，自举第二轮会因自身向量化 strlen
   宽读越界崩溃。需用含填充的字面量发射器（本修复 src 产物）重新自举出 rodata 已填充
   的健壮 tiec 后替换种子。
 
-## [新增] 闭包后置项：嵌套捕获 + fn×泛型 + C 回调（dev33 批次 8）
+## \[新增] 闭包后置项：嵌套捕获 + fn×泛型 + C 回调（dev33 批次 8）
 
 dev33 计划批次 8（任务 21-23）：闭包模型（closure-model.md §10 未决项）落地——
 
@@ -586,14 +715,16 @@ dev33 计划批次 8（任务 21-23）：闭包模型（closure-model.md §10 �
   （`scheck.propagate_captures`）：闭包 k 的有效捕获 = 直接捕获 ∪ 子闭包传播
   捕获，再减自身参数/局部（自身槽直接访问，无需进 env）；沿 `cl_parent` 父链
   从内到外上溯。配套修复：延迟闭包/准引用回填加 `g_defer_done`/`g_defer_code_done`
-  游标（避免 parse_deferred_all 重复回填把内层闭包二次登记 → count 无限增长
+  游标（避免 parse\_deferred\_all 重复回填把内层闭包二次登记 → count 无限增长
   死循环）、`check_pending_closures` 改动态边界（嵌套闭包在外层体检查期间登记，
   固定 n 会漏检内层）；
+
 - **fn×泛型单态化（任务 22）**：泛型函数作闭包体/返回闭包，多次实例化各生成
   独立闭包入口。`probe7_gen_closure.tie` 全绿（`make_adder<T>` 于 i64/f64 两次
-  实例化，各捕获自己的 base，输出 15 / 3.5）。机制：instantiate_fn 克隆函数时
-  TypeVar 替换为具体类型，体内闭包 N_FN_LIT 随实例化登记、入口名 clos_<新节点id>
+  实例化，各捕获自己的 base，输出 15 / 3.5）。机制：instantiate\_fn 克隆函数时
+  TypeVar 替换为具体类型，体内闭包 N\_FN\_LIT 随实例化登记、入口名 clos\_<新节点id>
   天然区分；
+
 - **闭包作 extern 回调（任务 23）**：新增内建 `cb_ptr(f) -> string`——无捕获
   闭包/命名函数转 C 兼容回调 thunk（`cb_<节点id>`，签名去掉隐藏 env 参数，体内
   call 闭包入口传 env=null / call 命名函数），返回函数地址（string/ptr 槽）。
@@ -601,36 +732,42 @@ dev33 计划批次 8（任务 21-23）：闭包模型（closure-model.md §10 �
   注册 2 个无捕获闭包回调 + 1 个命名函数回调，进程退出 LIFO 触发打印（C 运行时
   经 thunk 回调进 tie）。配套：llvmgen `typed_ref` 补 opcode 63（函数地址 → 直引
   @sym，extern string/ptr 参数消费回调地址）；负例 `cb_ptr_neg.tie` 捕获闭包被拒；
-- **回归**：s21/s22/s23 探针 + tests/language 全量 PASS=65（probe6/7/8 新增全过，
-  cb_ptr_neg 正确拒绝）；既有 11 个 import 大库失败为既有漏洞 B（HEAD 对照确认
-  非本批引入；probe3_chars 亦为漏洞 B 布局敏感闪崩——tiec2/tiec2b 生成 IR 逐字节
-  一致证明非本批逻辑回归，已记入 .omo/evidence/regress-b8.txt）；try_probe/
-  shift_neg_free 为已知基线。
 
-## [新增] 错误处理 C2：switch 解构 + 可捕获 panic + 组合子机制（dev33 批次 7）
+- **回归**：s21/s22/s23 探针 + tests/language 全量 PASS=65（probe6/7/8 新增全过，
+  cb\_ptr\_neg 正确拒绝）；既有 11 个 import 大库失败为既有漏洞 B（HEAD 对照确认
+  非本批引入；probe3\_chars 亦为漏洞 B 布局敏感闪崩——tiec2/tiec2b 生成 IR 逐字节
+  一致证明非本批逻辑回归，已记入 .omo/evidence/regress-b8.txt）；try\_probe/
+  shift\_neg\_free 为已知基线。
+
+## \[新增] 错误处理 C2：switch 解构 + 可捕获 panic + 组合子机制（dev33 批次 7）
 
 dev33 计划批次 7（任务 18-20）：错误处理 C2 落地——
 
-- **switch 枚举变体解构 `case Ok(v)`**：`case Ok(v):` / `case Err(e):`（也支持
+- **switch 枚举变体解构** **`case Ok(v)`**：`case Ok(v):` / `case Err(e):`（也支持
   裸变体名 `case Ok(v)`）——命中变体后把 payload 绑定到变量（string → inttoptr、
   窄整数 → trunc 还原），case 体可直接使用；泛型 enum（Result/Option）与裸
   `Enum.Variant(v)` 均支持（parser + semantic + irgen 三层）；
-- **可捕获 panic `catch_panic(f) -> bool`**：f（fn() -> T 闭包）内 panic 在捕获域
+
+- **可捕获 panic** **`catch_panic(f) -> bool`**：f（fn() -> T 闭包）内 panic 在捕获域
   中打印消息 + longjmp 回跳（不 exit），宿主判定捕获（true）后继续运行；未处于
   捕获域的 panic 保持 printf + exit(1)。对齐 MSVC setjmp 生成（`_setjmp(env,
-  frameaddr)` returns_twice + `llvm.frameaddress.p0` + `longjmp` noreturn；
-  jmp_buf 256B align16）；深层调用链内 panic 亦可捕获；
+  frameaddr)` returns\_twice + `llvm.frameaddress.p0` + `longjmp` noreturn；
+  jmp\_buf 256B align16）；深层调用链内 panic 亦可捕获；
+
 - **Result/Option 组合子机制验证**：非泛型演示探针全绿（switch 解构 payload 绑定
-  + fn 类型参数 + Result 构造/透传全链路：map/map_err/unwrap/unwrap_or/is_ok 等）。
-  **泛型组合子（result_fmap 等）受语言限制后置**：泛型函数 enum 模板形参
-  （`r: Result<T,E>`）解析缺失（struct 模板 `Box<T>` 形参可用、enum 模板不可用，
-  语义层 stype/sgen 类型解析 + 单态化缺口），已记入 error-model.md §10；
+
+  - fn 类型参数 + Result 构造/透传全链路：map/map\_err/unwrap/unwrap\_or/is\_ok 等）。
+    **泛型组合子（result\_fmap 等）受语言限制后置**：泛型函数 enum 模板形参
+    （`r: Result<T,E>`）解析缺失（struct 模板 `Box<T>` 形参可用、enum 模板不可用，
+    语义层 stype/sgen 类型解析 + 单态化缺口），已记入 error-model.md §10；
+
 - **验收探针**：`catch_panic_probe.tie`（直接/正常/状态保持/深层 4 场景全过）、
   `result_combinator_probe.tie`（组合子机制全过）、`sso_probe.tie` 无回归；
-- **回归**：全量 PASS 提升（新增 2 探针全过；既有 11 个 import 大库失败为既有
-  漏洞 B——HEAD 对照确认非本批引入；try_probe/shift_neg_free 为已知基线）。
 
-## [新增] SSO 短串池（字符串短串优化）—— 2026-08-21
+- **回归**：全量 PASS 提升（新增 2 探针全过；既有 11 个 import 大库失败为既有
+  漏洞 B——HEAD 对照确认非本批引入；try\_probe/shift\_neg\_free 为已知基线）。
+
+## \[新增] SSO 短串池（字符串短串优化）—— 2026-08-21
 
 dev33 计划批次 3（任务 7-9）：短串（≤31 字节 UTF-8 数据）运行时构造改为从
 **静态线性池** bump 分配（零 malloc），长串照旧 malloc——保留 {ptr,len} 值
@@ -639,43 +776,54 @@ dev33 计划批次 3（任务 7-9）：短串（≤31 字节 UTF-8 数据）运�
 - **短串池**：`@s21_sso_pool` 256KB 静态线性池（.bss）+ `@s21_sso_off` bump
   偏移；块 = 8 长度头 + 数据 + `\0` + 32 字节尾部填充（漏洞 B 安全余量不变）。
   池满自动回退 malloc（`@s21_sso_malloc_cnt` 计数，探针断言 = 0）；
+
 - **构造点接入**（全部短串运行时构造）：`str_cat` 拼接（llvmgen op56）、
   StringBuilder `sb_build`、`to_string`（i64/i128→十进制）、`str_from_code`
   （码点→单字符）、FFI 接收方向自动扫描——5 处统一走 `s21_sso_alloc`
   （irgen 内联生成）或 `@tie_sso_alloc` helper（llvmgen 侧）；
+
 - **字面量**天然零分配（.rodata 不变）；长串（32+ 字节）malloc 照旧；
+
 - **验收**：`tests/language/sso_probe.tie` 全绿——短串（拼接/数字转串/sb/
   码点转串）`sso_malloc_count()==0`、31 字节短串走池、32 字节长串回退、
   中文/emoji 拼接与码点遍历正确、循环拼接正确；
-- **回归**：全量 PASS=62 + sso_probe（既有 11 个 import 大库失败为既有
-  漏洞 B——HEAD 对照确认非本批引入；try_probe/shift_neg_free 为已知基线）；
+
+- **回归**：全量 PASS=62 + sso\_probe（既有 11 个 import 大库失败为既有
+  漏洞 B——HEAD 对照确认非本批引入；try\_probe/shift\_neg\_free 为已知基线）；
+
 - **内建**：新增 `sso_malloc_count()`（回退 malloc 累计次数，诊断/验收用）。
 
-## [新增] 字符串码点迭代器（s.chars()）—— 2026-08-20
+## \[新增] 字符串码点迭代器（s.chars()）—— 2026-08-20
 
 dev33 计划批次 4（任务 10-12）：`for c in s.chars()` 语法糖（Unicode 码点
-逐字符遍历），替代手写 while + utf8_seq_len/utf8_char_at 组合：
+逐字符遍历），替代手写 while + utf8\_seq\_len/utf8\_char\_at 组合：
 
 - **语法/语义（sinfer/scheck）**：`string.chars()` 无参方法调用识别（返回
   string，非法实参报错）；`for c in s.chars()` 循环变量登记为单字符 string
   （码点级，与字节索引分离）；
+
 - **后端（irgen）**：新增 `gen_for_chars` 码点步进循环——字节位置计数器
-  + `s21_utf8_seq_len` 步进 + `s21_utf8_char_at` 解码 + `tie_str_from_code`
-  得单字符；continue/break/标签语义与表迭代一致；
-- **REPL/interp**：`exec_stmt_for` 增 T_STR 分支（str_len/str_char 码点
+
+  - `s21_utf8_seq_len` 步进 + `s21_utf8_char_at` 解码 + `tie_str_from_code`
+    得单字符；continue/break/标签语义与表迭代一致；
+
+- **REPL/interp**：`exec_stmt_for` 增 T\_STR 分支（str\_len/str\_char 码点
   遍历）+ `gen_method_call` 支持 `.chars()`；
+
 - **标准库（utf.tie）**：新增 `to_chars(s)`（字符串 → 单字符码点表
   table<string>，随机码点索引 O(1)）与 `codepoint_count(s)`（码点数，
-  与字节数 byte_len 分离）；
+  与字节数 byte\_len 分离）；
+
 - **修复既有 bug**：`s21_utf8_char_at` 对 1 字节（ASCII）序列解码错误
   （原 l==1 落入 4 字节分支，用后续字节算出错码点，如 'h'=0x68 得
   0x25B2C）——补 l==1 直返分支，ASCII 码点正确；
-- **验收**：tests/language/chars_iter.tie 全绿（ASCII/中文/emoji/空串/
-  截断/to_chars）；全量回归 PASS=66（较批次 2 的 65 多 1 = 新增探针），
-  FAIL 仅 try_probe（panic exit=1 预期）与 shift_neg_free（stage0 同款
+
+- **验收**：tests/language/chars\_iter.tie 全绿（ASCII/中文/emoji/空串/
+  截断/to\_chars）；全量回归 PASS=66（较批次 2 的 65 多 1 = 新增探针），
+  FAIL 仅 try\_probe（panic exit=1 预期）与 shift\_neg\_free（stage0 同款
   基线接受），均非本批引入；S2.1 探针 probe1-5 全过。
 
-## [新增] 128 位整数（i128/u128）—— 2026-08-19
+## \[新增] 128 位整数（i128/u128）—— 2026-08-19
 
 dev33 计划批次 2（任务 3-6）：tiec 全链路支持 128 位有/无符号整数，前端
 （词法/语法/语义）→ 中端（类型系统）→ 后端（IR/LLVM）贯通：
@@ -683,230 +831,277 @@ dev33 计划批次 2（任务 3-6）：tiec 全链路支持 128 位有/无符号
 - **类型系统**：Named id 21/22 新增 `i128`/`u128`（TyKw 索引 <100 不破坏
   Named 编码，kind(id) 用 id < 100 判 Named）；LLVM 映射到原生 i128 类型，
   宽度拓宽/缩窄判定自动覆盖；
+
 - **词法/语法**：`123i128` / `7u128` 四字符后缀 + 字面量值域与溢出检测
-  （parse_int_lit 超 i64 可表示范围静默回绕检测）；
-- **语义**：sinfer 后缀类型含 TK_I128/TK_U128；stype 类型名映射 128 位；
+  （parse\_int\_lit 超 i64 可表示范围静默回绕检测）；
+
+- **语义**：sinfer 后缀类型含 TK\_I128/TK\_U128；stype 类型名映射 128 位；
+
 - **后端**：加减乘除/比较/位运算生成 LLVM 原生 i128 运算；整数除法/取余
   生成 `__divti3`/`__umodti3` 等 compiler-rt 辅助；`to_string`/`println`
   128 位十进制经**内联除法循环**打印（Rust 桥只收 i64，绕过桥限制）；
   同宽 sext/zext 修复（曾生成 `zext i128 to i128` 类型错）；
+
 - **验收**：`tests/language/i128_full.tie` 全过——加减乘除/负数/比较/左移
-  100 位/边界值（2^127-1、2^127、2^128-1）/i64+i128 混合宽度/to_string；
+  100 位/边界值（2^127-1、2^127、2^128-1）/i64+i128 混合宽度/to\_string；
+
 - **自举**：tiec.exe stage0 晋升为新版（含 i128），自举两轮（tiec→tiec2→
-  tiec3）SHA-256 一致（可复现构建）；回归 PASS=65 无新增失败（try_probe
-  panic exit=1、shift_neg_free 被脚本误分类为负例，二者均为既有脚本判定项）。
+  tiec3）SHA-256 一致（可复现构建）；回归 PASS=65 无新增失败（try\_probe
+  panic exit=1、shift\_neg\_free 被脚本误分类为负例，二者均为既有脚本判定项）。
 
-## Harbor-2026.1-preview.3（2026-08-18）
+## Harbor-2026.1-preview\.3（2026-08-18）
 
-> **preview.3 = tie 的「阶段 2/3 语言深化」**：宏/闭包/port/错误处理全链路、字符串模型、库包模型、
-> S1 语言地基（unsafe/窄整数/角色扩展）、LLVM 22 升级。对比 preview.2 的增量见下方条目。
+> **preview\.3 = tie 的「阶段 2/3 语言深化」**：宏/闭包/port/错误处理全链路、字符串模型、库包模型、
+> S1 语言地基（unsafe/窄整数/角色扩展）、LLVM 22 升级。对比 preview\.2 的增量见下方条目。
 
-## [文档] 新增 NEW.md：发行版新鲜事（新功能与特色速览）—— 2026-08-18
+## \[文档] 新增 NEW\.md：发行版新鲜事（新功能与特色速览）—— 2026-08-18
 
 - 根目录新增 [NEW.md](NEW.md)：面向读者「想知道这个发行版有什么新东西」——
   一句话定位 + 亮点速览表 + 按主题分组的语言特性（宏/闭包/port/错误处理/enum/
   泛型/字符串模型/语言地基）与工具链特色（0-Rust 自举/构建配置/库包模型/包管理器/
   vendored LLVM）+ 标准库生态（std:fs/rdu/trit）+ 快速上手与获取方式；
-- README 文档目录表补 NEW.md 条目（置于 CHANGELOG 之前）。
 
-## [已完成] 阶段 3 宏/元编程整合（S3.3 合入 main + 自举链稳定 + 工具链 lld 化）—— 2026-08-18
+- README 文档目录表补 NEW\.md 条目（置于 CHANGELOG 之前）。
+
+## \[已完成] 阶段 3 宏/元编程整合（S3.3 合入 main + 自举链稳定 + 工具链 lld 化）—— 2026-08-18
 
 S3.3 宏分支（feat/s3.3-macro）合入 main，五单元并行整合收官（分支 s2.3-s2.4
 主线已完成，main 现为「含宏」可自举状态）：
 
 - **合入**：merge feat/s3.3-macro（35fb36e）；宏节点 135-137 与 port/impl
-  错开（N_PORT=138/N_IMPL=139）；lex_tokdefs is_decl_start 合并宏/port/impl；
-  semantic 采用 main 循环折叠版 normalize_path + 删 merge 残留 `var full`
+  错开（N\_PORT=138/N\_IMPL=139）；lex\_tokdefs is\_decl\_start 合并宏/port/impl；
+  semantic 采用 main 循环折叠版 normalize\_path + 删 merge 残留 `var full`
+
 - **自举链修复（鸡生蛋）**：mexpand→interp 深递归使大树编译递归深度超过
-  16MB 栈（0xC00000FD）；两步自举（禁 mexpand 编译 tiec_A → 恢复后 tiec_B
-  → tiec_C）破局后治本——toolchain 链接参数 `/STACK` 提至 128MB
-  （134217728，命令行工具虚拟内存充裕无副作用）+ 设置 TIE_LLVM_HOME=D:\LLVM
+  16MB 栈（0xC00000FD）；两步自举（禁 mexpand 编译 tiec\_A → 恢复后 tiec\_B
+  → tiec\_C）破局后治本——toolchain 链接参数 `/STACK` 提至 128MB
+  （134217728，命令行工具虚拟内存充裕无副作用）+ 设置 TIE\_LLVM\_HOME=D:\LLVM
   （22.1.8 项目配套 LLVM，链接走 lld-link 替代 MSVC link.exe）→
-  tiec_F/G/H 稳定自举无 editbin 依赖，PE 栈天然 128MB
+  tiec\_F/G/H 稳定自举无 editbin 依赖，PE 栈天然 128MB
+
 - **验收**：二阶自举 IR 逐字节一致（SHA256 同）；表达式宏 probe0 输出 14
-  （double(3+4)=(3+4)*2）；s21/s22/s23/s24/s32 探针全过（含此前遗留的
-  probe2_hof 段错误、probe5_compose 编译失败——现已修复）；tests/language
-  49 无新增回归（extern_decl/std_fs_path/shift_neg_free 为 stage0 同款
+  （double(3+4)=(3+4)\*2）；s21/s22/s23/s24/s32 探针全过（含此前遗留的
+  probe2\_hof 段错误、probe5\_compose 编译失败——现已修复）；tests/language
+  49 无新增回归（extern\_decl/std\_fs\_path/shift\_neg\_free 为 stage0 同款
   基线）；tiec.exe stage0 升级为 128MB 栈 + lld 链接版
-- **测试修正**：s33_probe imp1/imp2/imp5 的 import 路径上溯差一级
+
+- **测试修正**：s33\_probe imp1/imp2/imp5 的 import 路径上溯差一级
   （`./../` 应为 `./../../`、`../` 应为 `../../`，对齐 imp4 正确写法），
   修正后全绿
+
 - **已知问题（遗留）**：import 文件不存在 → tiec 段错误（0xC0000005，既有
   bug，非本批引入，需 import 打开失败优雅报错）；语句级宏/跨文件宏/过程宏
   为 S3.3 声明遗留
 
-## [新增] 阶段 2 字符串模型（S2.1 {ptr,len} 二进制安全 + 迭代器 + StringBuilder）—— 2026-08-17
+## \[新增] 阶段 2 字符串模型（S2.1 {ptr,len} 二进制安全 + 迭代器 + StringBuilder）—— 2026-08-17
 
 字符串内部表示升级为 `{ptr,len}`（docs/plans/string-model.md 决策 O2+F1），
 tiec（tie 自写编译器）全链路落地，S2.1 探针 1-5 全过，自举闭环 IR 逐字节一致：
 
 - **表示层（llvmgen）**：字符串常量升级为带头布局
   `{ i64 长度头, [N+1 x i8] 数据+\0 }`（.rodata）；新增 `str_data_ref` 内联
-  GEP 常量表达式统一数据指针引用（const_str/printf 格式串/全局串初始化/
-  typed_ref/to_ptr/ptr_arg_ref 全部改道）；str_cat(56) malloc 8 头+数据+\0，
+  GEP 常量表达式统一数据指针引用（const\_str/printf 格式串/全局串初始化/
+  typed\_ref/to\_ptr/ptr\_arg\_ref 全部改道）；str\_cat(56) malloc 8 头+数据+\0，
   返回数据指针（头部 i64 总长）——数据仍 NUL 结尾，旧 strlen/strcmp/printf
   与 FFI 传方向零拷贝全兼容
-- **桥返回自动补头**：extern_call(36) 对 tie_ 桥返回字符串（ptr）自动补头
+
+- **桥返回自动补头**：extern\_call(36) 对 tie\_ 桥返回字符串（ptr）自动补头
   （strlen+malloc+memcpy+尾 \0）——所有字符串值统一"有头"不变量；表句柄桥
-  （tie_table_new/tie_list_dir/tie_walk_dir/tie_byte_read/tie_regex_find_all）
-  黑名单排除（irgen 标 TK_STR 复用 ptr 槽，补头会错乱句柄）
+  （tie\_table\_new/tie\_list\_dir/tie\_walk\_dir/tie\_byte\_read/tie\_regex\_find\_all）
+  黑名单排除（irgen 标 TK\_STR 复用 ptr 槽，补头会错乱句柄）
+
 - **原语层（irgen 新原语 + sbuitin 注册）**：`len(s)` 由 strlen 升级为读
   长度头（O(1)，字节数语义不变）；新原语 `str_byte(s,i)`（二进制安全取字节）、
   `utf8_seq_len(s,i)` / `utf8_char_at(s,i)`（UTF-8 码点解码，无分支序列长度
   判定 + 分支解码）、StringBuilder 句柄族 `string_builder()` / `sb_append(h,s)`
   / `sb_append_byte(h,b)` / `sb_build(h)`（两级指针 {cap,len,data}，容量倍增
   重分配，memcpy 走 libc）——全部生成普通 tie-IR 指令，零新 opcode 零新桥
-- **验收**：tests/s21_probe/ 探针 1-5 全过（\0 字符串往返 + len O(1) 长度头
-  6/5/9/2、码点迭代 1/2/3/4 字节序列与 0x4F60/0x1F600 解码、FFI 中文输出 +
-  exec_code 传参、StringBuilder 拼接/1000 段倍增/句柄复用）；tests/language
-  30 正例全过（extern_decl/std_fs_path 为 stage0 同款基线问题）+ 负例全拒
-  （shift_neg_free 为 stage0 同款基线接受）；S2.2/S2.3 探针全过（try_probe
-  panic exit=1 预期）；自举链 tiec_new → tiec_v2 的 --emit-ir 逐字节一致
-- **已知差异（汇报）**：语法级 `for c in s.chars()` 迭代器与 to_chars 表
-  转换未做（需迭代器协议/表布局桥，超最小完整集，用 utf8_seq_len/utf8_char_at
-  组合等价）；str_cat 保持旧 NUL 语义（含 \0 串拼接走 StringBuilder）；
-  SSO 短串优化未做（表示升级后字符串值恒为堆/.rodata 指针）；FFI 接收方向
-  （extern 返回 char* 自动扫描）未做（探针仅覆盖传方向）
 
-## [新增] 库/包模型（S3.2：tieir 序列化 + 多文件包 L1c + MVS + 签名 P5c）—— 2026-08-17
+- **验收**：tests/s21\_probe/ 探针 1-5 全过（\0 字符串往返 + len O(1) 长度头
+  6/5/9/2、码点迭代 1/2/3/4 字节序列与 0x4F60/0x1F600 解码、FFI 中文输出 +
+  exec\_code 传参、StringBuilder 拼接/1000 段倍增/句柄复用）；tests/language
+  30 正例全过（extern\_decl/std\_fs\_path 为 stage0 同款基线问题）+ 负例全拒
+  （shift\_neg\_free 为 stage0 同款基线接受）；S2.2/S2.3 探针全过（try\_probe
+  panic exit=1 预期）；自举链 tiec\_new → tiec\_v2 的 --emit-ir 逐字节一致
+
+- **已知差异（汇报）**：语法级 `for c in s.chars()` 迭代器与 to\_chars 表
+  转换未做（需迭代器协议/表布局桥，超最小完整集，用 utf8\_seq\_len/utf8\_char\_at
+  组合等价）；str\_cat 保持旧 NUL 语义（含 \0 串拼接走 StringBuilder）；
+  SSO 短串优化未做（表示升级后字符串值恒为堆/.rodata 指针）；FFI 接收方向
+  （extern 返回 char\* 自动扫描）未做（探针仅覆盖传方向）
+
+## \[新增] 库/包模型（S3.2：tieir 序列化 + 多文件包 L1c + MVS + 签名 P5c）—— 2026-08-17
 
 S3.2 库/包模型落地（docs/plans/tieir-format.md S3 + package-model.md
 L1c/P2c/P5c/P4b 子集），tiec（tie 自写编译器）+ pkg（tie 自写包管理器）
 全链路实现，纯 tie 零 Rust：
 
-### tieir 序列化（compiler/middle/tieir_ser.tie，新模块）
+### tieir 序列化（compiler/middle/tieir\_ser.tie，新模块）
+
 - **二进制 .tieir 分发格式（段 1-7）**：魔数 "TIEIR" + 版本 → 模块头（包名/
   版本/IR 版本/编译器版本/依赖图）→ 字符串池（interner 全量，id 即下标，
   重建后 id 一致）→ 符号表 → IR 主体（函数/块/指令/操作数列式直写，指令
   显式携带所属块）→ 导出表（L4b 载体）→ span 段；i64 定宽 8 字节大端、
-  字符串码点序列（任意 Unicode，str_from_code 还原）
+  字符串码点序列（任意 Unicode，str\_from\_code 还原）
+
 - **反序列化 + 语法校验**：魔数/版本/段号/长度/列长/边界逐项校验，防损坏
   防伪造（对齐 tieir-format.md §7）；块区间在指令重建后统一比对
+
 - **内容哈希（P5c 载体）**：FNV-1a 32 位字节版（段 2-7；与 std/crc.fnv1a
   字符串版同算法，探针对照一致）
+
 - **CLI**：`--tieir-out <f>`（编译后序列化分发单元）+ `--dump-irt <f>`
   （只读 .tieir 输出可读摘要，不编译）
 
 ### 多文件包 L1c（pkg/ 扩展）
+
 - **`tie pack`**：打包分发单元 = 源码 + tie.pkg + .tieir + signature +
   tar.gz（入口文件编译 tieir，exports 字段声明对外导出面）
+
 - **`tie verify <包名>`**：校验已安装包（signature 包名一致性 + tieir 哈希
   比对）；**install/update 自动校验签名**（P5c 安全底线：校验失败 = 安装报错，
   未签名旧包兼容跳过）
+
 - **包结构**：tie.pkg main/exports 指向入口，包内模块互相 import 私有，
   消费方 import 包入口编译链接（探针全链路验证）
 
 ### MVS P2c（pkg/fetch.tie）
+
 - 版本解析改为**最小版本选择**（Go 风格）：约束/多约束冲突重选取**最低**
   满足版本（原取最高），可复现、幂等
 
 ### P4b 接口依赖（标注待 S2.4）
+
 - tie.pkg 依赖 `port:` 前缀识别并跳过解析（提示待 S2.4 port 支持；
   实现绑定走 --backend 构建参数）
 
-### 编译器修复（S3.2 引入 tieir_ser 树时暴露的既有缺陷）
-- **llvmgen.typed_ref**：call 实参补 OK_GLOBAL(kind 3) 处理（ref 全局表
+### 编译器修复（S3.2 引入 tieir\_ser 树时暴露的既有缺陷）
+
+- **llvmgen.typed\_ref**：call 实参补 OK\_GLOBAL(kind 3) 处理（ref 全局表
   实参此前输出未定义 %N → opt 报 use of undefined value）
-- **irgen by_ref 实参**：ref 全局实参操作数 kind 用 3（全局地址 @sym）
-- **semantic.resolve_import_path 归一化**：折叠 "段/../"，import 去重键
+
+- **irgen by\_ref 实参**：ref 全局实参操作数 kind 用 3（全局地址 @sym）
+
+- **semantic.resolve\_import\_path 归一化**：折叠 "段/../"，import 去重键
   统一（多入口树正确去重；此前 "compiler/backend/../middle/x" 与
   "compiler/middle/x" 字符串不同 → 同一文件二次内联 → 重复定义）
-- **ir_meta 命名冲突**：doc_keys/doc_vals 与 lex_state 同名 → 改名
-  meta_doc_keys/meta_doc_vals
+
+- **ir\_meta 命名冲突**：doc\_keys/doc\_vals 与 lex\_state 同名 → 改名
+  meta\_doc\_keys/meta\_doc\_vals
+
 - **llvmgen import 归一**："./../middle/ir.tie" → "../middle/ir.tie"
 
 ### 验收
-- tests/s32_probe/probe1_tieir_roundtrip.tie：23 项断言全过（序列化/反序列化/
-  文件往返/哈希/损坏拒绝）
-- tests/s32_probe/probe_pkg_lib + probe_pkg_app：包打包 → 安装（自动签名
-  校验）→ verify → 消费方 import 编译链接运行（add(2,3)=5、calc(5)=11）
-- 回归：tests/language 正例 + s22/s23 探针 13 项编译全过，probe1/probe2/
-  config_smoke 运行输出正确（42/21/48 通过）
 
-## [新增] 阶段 2 接口模型（S2.4 port 全链路：显式 impl + 双形态分发 + 隐式 vtable）—— 2026-08-17
+- tests/s32\_probe/probe1\_tieir\_roundtrip.tie：23 项断言全过（序列化/反序列化/
+  文件往返/哈希/损坏拒绝）
+
+- tests/s32\_probe/probe\_pkg\_lib + probe\_pkg\_app：包打包 → 安装（自动签名
+  校验）→ verify → 消费方 import 编译链接运行（add(2,3)=5、calc(5)=11）
+
+- 回归：tests/language 正例 + s22/s23 探针 13 项编译全过，probe1/probe2/
+  config\_smoke 运行输出正确（42/21/48 通过）
+
+## \[新增] 阶段 2 接口模型（S2.4 port 全链路：显式 impl + 双形态分发 + 隐式 vtable）—— 2026-08-17
 
 S2.4 接口模型（docs/plans/port-model.md，语法 P1 + 分发 D3 + 实现 I1）全链路
 落地，tiec（tie 自写编译器）实现，完全不用 Rust：
 
-- **前端**：`port` 声明语法（N_PORT=135，方法签名集合，self 接收者可省略
-  类型标注）、`impl X for Y` 块（N_IMPL=136）、泛型约束 `<T: Port>`
-  （N_TYPE_PARAM children 挂约束类型节点）；port/impl 体内 ASI 分号吞并
+- **前端**：`port` 声明语法（N\_PORT=135，方法签名集合，self 接收者可省略
+  类型标注）、`impl X for Y` 块（N\_IMPL=136）、泛型约束 `<T: Port>`
+  （N\_TYPE\_PARAM children 挂约束类型节点）；port/impl 体内 ASI 分号吞并
+
 - **语义**：port 方法集收集（pub + self 首参 + 无函数体校验）、impl 完整性
   检查（漏方法 = 编译错误「impl 'P for S' 缺少方法 'M'」+ 签名逐项匹配）、
   泛型约束校验（`render_all<T: Drawable>` 实参化时查 impl，违反报「类型 X
   未实现 port Y」）；impl 方法以 `<struct 名>::<方法名>` 全名登记（复用
   namespace 方法机制 + M2.1.8 自动 ref，self 参数类型节点改写为 struct 类型）
-- **类型系统**：port 对象类型段（11<<40，K_PORT）；LLVM 表示 = 单个 ptr
+
+- **类型系统**：port 对象类型段（11<<40，K\_PORT）；LLVM 表示 = 单个 ptr
   （指向堆上打包对象 {data, vtable}）——表/传参/字段/返回天然支持
+
 - **后端**：vtable 全局常量（`@vt.<port>.<struct> = global {ptr,...}`，
   方法指针按 port 声明序）；提升代码（unsafe 上下文内，malloc(16) 打包
-  data + vtable 地址）；动态分发 = vtable[方法序号] → call_indirect(70)
+  data + vtable 地址）；动态分发 = vtable\[方法序号] → call\_indirect(70)
   （entry(data, args...)，复用闭包 C2 机制）；table<Drawable> 异构容器
   （push/at 走 string 桥存 ptr）
+
 - **安全边界**：提升（struct → port）必须在 unsafe 块/函数（借用语义归
   unsafe，port-model.md §4.5）；port → port 拷贝安全；全局 port 变量暂
   不支持（生命周期自证，第一版拒绝）
-- **验收**：tests/s24_probe/ 探针 3 个——probe1 静态分发（泛型约束 +
-  单态化 render_all$Button/$Text）、probe2 动态分发（提升 + 异构
-  table<Drawable> + vtable 间接调用，输出全对）、probe3 负例（impl 漏
-  方法报错）；自举链 tiec → tiec_v2 编译零错误
 
-## [新增] 阶段 3 宏/元编程（S3.3 code 三形态 + 函数式宏 + 卫生）—— 2026-08-17
+- **验收**：tests/s24\_probe/ 探针 3 个——probe1 静态分发（泛型约束 +
+  单态化 render\_all$Button/$Text）、probe2 动态分发（提升 + 异构
+  table<Drawable> + vtable 间接调用，输出全对）、probe3 负例（impl 漏
+  方法报错）；自举链 tiec → tiec\_v2 编译零错误
+
+## \[新增] 阶段 3 宏/元编程（S3.3 code 三形态 + 函数式宏 + 卫生）—— 2026-08-17
 
 S3.3 宏/元编程（docs/plans/macro-model.md：M3 函数式宏 + C1+C2+C3 code
 三形态 + H2+H3 卫生）首版落地（主控接管续作）：
 
-- **前端**：`macro name(x: code) -> code { 体 }` 宏定义（N_MACRO_DEF=135）、
-  准引用字面量 `` `(expr) ``（N_CODE_LIT=136，表达式形式立即解析）与
+- **前端**：`macro name(x: code) -> code { 体 }` 宏定义（N\_MACRO\_DEF=135）、
+  准引用字面量 `` `(expr) ``（N\_CODE\_LIT=136，表达式形式立即解析）与
   `` `{ stmts } ``（块形式，延迟解析回填）、插值 `$x` / `$(expr)`
-  （N_CODE_INTERP=137）、gensym("前缀") 内置
+  （N\_CODE\_INTERP=137）、gensym("前缀") 内置
+
 - **宏展开 pass**（compiler/frontend/mexpand.tie）：顶层宏收集移除 →
-  宏体协议序列化注册进 interp（eval_proto）→ 调用点递归展开（轮次上限 64，
-  孤儿节点跳过防死循环）；展开期间 s_* 池快照保存/恢复（10 表 + s_n）
-- **interp 准引用求值**（gen_code_lit）：绑定名收集 + H2 词法卫生改名
-  （__hygN_）+ 子树克隆 + 插值嵌入（splice_proto 协议拼接：id 连续重编号、
-  按 id 降序处理多插值）+ H3 gensym（__tie_gensymN_）
+  宏体协议序列化注册进 interp（eval\_proto）→ 调用点递归展开（轮次上限 64，
+  孤儿节点跳过防死循环）；展开期间 s\_\* 池快照保存/恢复（10 表 + s\_n）
+
+- **interp 准引用求值**（gen\_code\_lit）：绑定名收集 + H2 词法卫生改名
+  （\__hygN_）+ 子树克隆 + 插值嵌入（splice\_proto 协议拼接：id 连续重编号、
+  按 id 降序处理多插值）+ H3 gensym（\__tie\_gensymN_）
+
 - **修复（自举链阻塞）**：interp import 路径写法（`./../X` → `../X`，旧编译器
-  去重失效 g_pos 双定义）；clone_node 段布局（父段与子段重叠 → 先占位再
+  去重失效 g\_pos 双定义）；clone\_node 段布局（父段与子段重叠 → 先占位再
   原位覆盖，准引用块结构断裂根因）
-- **验收**：表达式宏全链路通过（tests/s33_probe/probe0：`double(3+4)` →
-  `(3+4)*2` 输出 14）；自举链 tiec_B2 → tiec_C --emit-ir 逐字节一致；
-  language 30 正例全过（extern_decl/std_fs_path 为基线已知）
+
+- **验收**：表达式宏全链路通过（tests/s33\_probe/probe0：`double(3+4)` →
+  `(3+4)*2` 输出 14）；自举链 tiec\_B2 → tiec\_C --emit-ir 逐字节一致；
+  language 30 正例全过（extern\_decl/std\_fs\_path 为基线已知）
+
 - **已知限制（遗留）**：语句级宏（块形式准引用展开为多条语句）在
-  splice_call 段重建处存在父引用丢失（s_children 扁平段一致性深水区），
+  splice\_call 段重建处存在父引用丢失（s\_children 扁平段一致性深水区），
   第一版宏调用点限表达式位置；跨文件宏不支持；过程宏 M4 后置
 
-## [新增] 阶段 2 闭包后端全链路（S2.2 函数值/闭包 IR 生成 + 间接调用）—— 2026-08-17
+## \[新增] 阶段 2 闭包后端全链路（S2.2 函数值/闭包 IR 生成 + 间接调用）—— 2026-08-17
 
-S2.2 闭包前端（5f0762d，N_FN_LIT/N_FN_TYPE + fn 类型系统 + 捕获分析）的
+S2.2 闭包前端（5f0762d，N\_FN\_LIT/N\_FN\_TYPE + fn 类型系统 + 捕获分析）的
 后端补齐，tiec（tie 自写编译器）全链路落地，闭包探针 1-5 全过：
 
-- **irgen 闭包生成**：gen_closure_lit（闭包值 {env, entry} 构造：捕获 env
-  malloc + 逐字段 store）、gen_closure_entry_fn（入口函数 `clos_<id>`，
+- **irgen 闭包生成**：gen\_closure\_lit（闭包值 {env, entry} 构造：捕获 env
+  malloc + 逐字段 store）、gen\_closure\_entry\_fn（入口函数 `clos_<id>`，
   统一签名 `fn(ptr env, A...) -> R`，捕获绑定 = env 字段地址入作用域）、
-  gen_named_fn_value（命名函数提升：适配器 `adapt_<id>` 包 @my_func）、
-  gen_call_indirect（fn 值调用：GEP 取 env/entry 字段 + call_indirect(70)）
-- **llvmgen**：`%fn.N = type { ptr, ptr }` 聚合类型输出、llvm_ty 的 K_FN
-  映射、const_global(63) 函数地址（ptrtoint @sym）、call_indirect(70)
-  发射（entry 为 ptr 值直接作被调函数）、to_ptr 对 const_global 直引
-  @sym / const_i 0 → null（闭包 env=null 的 store 路径）
-- **ir 新 opcode**：call_indirect(70)（操作数 [entry, ret_ty IMM, env,
+  gen\_named\_fn\_value（命名函数提升：适配器 `adapt_<id>` 包 @my\_func）、
+  gen\_call\_indirect（fn 值调用：GEP 取 env/entry 字段 + call\_indirect(70)）
+
+- **llvmgen**：`%fn.N = type { ptr, ptr }` 聚合类型输出、llvm\_ty 的 K\_FN
+  映射、const\_global(63) 函数地址（ptrtoint @sym）、call\_indirect(70)
+  发射（entry 为 ptr 值直接作被调函数）、to\_ptr 对 const\_global 直引
+  @sym / const\_i 0 → null（闭包 env=null 的 store 路径）
+
+- **ir 新 opcode**：call\_indirect(70)（操作数 \[entry, ret\_ty IMM, env,
   (ty IMM, val)...]）
-- **sinfer 命名函数提升**：S_N_VAR 查找失败后查函数签名（裸名 + 命名空间
-  补全），命中 → types.fn_of 构造 fn 类型（`var f: fn(A)->R = my_func`）
-- **修复 1（语义）**：scheck 闭包返回类型栈 g_clo_ret_stack 的 push 漏用
-  「复用槽位」模式（lp_stack/ns_push 同款）——直接 table_push 导致旧值
+
+- **sinfer 命名函数提升**：S\_N\_VAR 查找失败后查函数签名（裸名 + 命名空间
+  补全），命中 → types.fn\_of 构造 fn 类型（`var f: fn(A)->R = my_func`）
+
+- **修复 1（语义）**：scheck 闭包返回类型栈 g\_clo\_ret\_stack 的 push 漏用
+  「复用槽位」模式（lp\_stack/ns\_push 同款）——直接 table\_push 导致旧值
   残留错位，第二个闭包起 return 类型基准错乱（多闭包探针编译报错根因）
-- **修复 2（后端）**：gen_call_indirect 在实参求值后读取 g_lookup_alloca
-  （全局副作用被实参 scope_get_global 覆盖）→ 实参求值后重新查找调用名，
+
+- **修复 2（后端）**：gen\_call\_indirect 在实参求值后读取 g\_lookup\_alloca
+  （全局副作用被实参 scope\_get\_global 覆盖）→ 实参求值后重新查找调用名，
   否则 fn 值地址错取实参槽（probe2/probe5 运行崩溃 0xC0000005 根因）
-- **验收**：tests/s22_probe/ 探针 1-5 全过（无捕获闭包 42 / 高阶函数+捕获
+
+- **验收**：tests/s22\_probe/ 探针 1-5 全过（无捕获闭包 42 / 高阶函数+捕获
   实参 21 / 命名函数提升 42 / 闭包返回 102 / 链式 compose+string 捕获
   16+val=7）；S2.3 探针 9 个全过（panic exit=1 预期）；tests/language
-  30 正例全过（extern_decl/std_fs_path 为 stage0 同款基线问题）；
-  自举链 tiec_new → tiec_v2 行为一致（--emit-ir 逐字节相同）
+  30 正例全过（extern\_decl/std\_fs\_path 为 stage0 同款基线问题）；
+  自举链 tiec\_new → tiec\_v2 行为一致（--emit-ir 逐字节相同）
 
-## [新增] S3.1 构建配置系统——统一 config.data.tie + 分层合并 + profile + backend 选择 —— 2026-08-16
+## \[新增] S3.1 构建配置系统——统一 config.data.tie + 分层合并 + profile + backend 选择 —— 2026-08-16
 
 tie 构建配置模型落地（docs/plans/build-config.md 实现记录）：统一 `config.data.tie`
 配置文件（type tie<data> 角色，分节配置 tiec/prep/pkg 等子工具）+ L2 三层分层合并
@@ -915,159 +1110,220 @@ Cargo 风格）+ D1-D7 全 7 域 + --backend 实现选择。tiec（tie 自写编
 compiler/）全链路实现，纯 tie 零 Rust：
 
 ### 配置模块 compiler/config.tie（type tie<class> 独立库）
+
 - **统一文件**：`config.data.tie`（type tie<data>），分节：通用节（target/opt/debug/
-  profile）+ tiec 节（backend/features/emit/link/bounds_check）+ prep 节（modules/
-  strict_roles）+ pkg 节（registry/cache_dir/verify_signature）+ roles 节（test/bench）
-  + advanced/cache 节（现状兼容）+ profiles 节（dev/release）
+  profile）+ tiec 节（backend/features/emit/link/bounds\_check）+ prep 节（modules/
+  strict\_roles）+ pkg 节（registry/cache\_dir/verify\_signature）+ roles 节（test/bench）
+
+  - advanced/cache 节（现状兼容）+ profiles 节（dev/release）
+
 - **L2 分层合并**：`load_merge` = 内置默认 < 用户 `~/.config/tie/config.data.tie`
-  < 项目 config.data.tie < profile 覆盖 < CLI 显式覆盖；`apply_cli` 用 map_set
+  < 项目 config.data.tie < profile 覆盖 < CLI 显式覆盖；`apply_cli` 用 map\_set
   原地改槽位（不 push 全局扁平表）
+
 - **P3 profile**：profiles 节解析 + 激活（顶层 `profile` 键或 CLI `--profile`）；
-  dev = debug:true/opt:0/bounds_check:true，release = debug:false/opt:2/bounds_check:false
+  dev = debug:true/opt:0/bounds\_check:true，release = debug:false/opt:2/bounds\_check:false
+
 - **D1-D7 全覆盖**：target/backend/opt/features/roles/link/modules 七大域
+
 - **合并规则**：同键标量覆盖、列表追加（除非 `"="` 重置标记）、独有键保留、
   数组/表嵌套深合并
-- **关键修复**：全局扁平键值表布局纪律——所有构造路径（parse_map_body /
-  merge_maps / build_defaults / parse_array_body）改为「先收集到局部表、
+
+- **关键修复**：全局扁平键值表布局纪律——所有构造路径（parse\_map\_body /
+  merge\_maps / build\_defaults / parse\_array\_body）改为「先收集到局部表、
   完成后统一登记」，杜绝嵌套子表交错 push 破坏父表键区间连续性的 bug
-  （此前 root 键区间混入 tiec 子表键导致 map_get 错位）
-- **访问器**：get_str / get_int / get_bool / get_list / type_of / dump / err_msg
+  （此前 root 键区间混入 tiec 子表键导致 map\_get 错位）
+
+- **访问器**：get\_str / get\_int / get\_bool / get\_list / type\_of / dump / err\_msg
 
 ### driver.tie 集成（tiec CLI）
-- **--config <f>**：指定构建配置文件（默认查当前目录 config.data.tie；原
+
+- **--config** **<f>**：指定构建配置文件（默认查当前目录 config.data.tie；原
   「协调统筹配置文件（单文件编译暂忽略）」升级为真实构建配置加载）
-- **--profile <p>**：构建 profile（覆盖配置顶层 profile 键）
-- **--backend <b>**：后端实现选择（win32/LLVM 工具链为当前唯一后端，其余
+
+- **--profile** **<p>**：构建 profile（覆盖配置顶层 profile 键）
+
+- **--backend** **<b>**：后端实现选择（win32/LLVM 工具链为当前唯一后端，其余
   port 明确报错提示未接入）
+
 - **opt/target 优先级**：CLI 显式 > 配置（含 profile 激活）> 默认 O2 / 本机
 
 ### 验收
+
 - `tests/s31/config_smoke.tie`：48 断言全绿（解析完整示例/注释尾逗号容错/
-  错误处理/深合并/重置标记/内置默认+profile 激活/apply_cli/dump）
+  错误处理/深合并/重置标记/内置默认+profile 激活/apply\_cli/dump）
+
 - 配置驱动 backend 选择端到端：config.data.tie 写 `tiec.backend: wasm` →
   driver 报「尚未接入」；写 win32 → 正常编译
+
 - 自举回归：新 tiec 编译自身成功；语言测试套件全绿（负例失败为预期）
 
-## [新增] 阶段 2 错误处理（S2.3 Result/Option + `?` 解包 + panic）—— 2026-08-16
+## \[新增] 阶段 2 错误处理（S2.3 Result/Option + `?` 解包 + panic）—— 2026-08-16
 
 tie 语言阶段 2 错误处理模型落地（docs/plans/error-model.md），tiec（tie 自写
 编译器）全链路实现，完全不用 Rust：
 
 ### S2.3 错误处理（docs/plans/error-model.md 实现记录）
+
 - **预置枚举**：`std/result.tie`（type tie<class>）预置 `enum Result<T, E> { Ok(T) Err(E) }`
   与 `enum Option<T> { Some(T) None }`——与用户自定义 enum 无差别，生态统一；
   `import` 后即可用（双类型参数 + 泛型变体 + 跨文件枚举单态化）
-- **`?` 解包后缀**：`var v = expr ?`（lex_question 关键字 + parse_postfix 后缀解析 +
-  sinfer.infer_try_unwrap 语义推断）——Expr 为 Err/None 时函数提前 return
+
+- **`?`** **解包后缀**：`var v = expr ?`（lex\_question 关键字 + parse\_postfix 后缀解析 +
+  sinfer.infer\_try\_unwrap 语义推断）——Expr 为 Err/None 时函数提前 return
   Err/None（提前 return 路径发射 `%ret = load 聚合 → ret`），Ok/Some 时解包
   payload 继续；**仅限返回 Result/Option 的函数内**（main 返回 void 报语义错误）
-- **panic**：`panic("msg")` 语句（N_PANIC）→ 运行时 `printf` + `exit(1)`
+
+- **panic**：`panic("msg")` 语句（N\_PANIC）→ 运行时 `printf` + `exit(1)`
   （"致命错误：" 前缀），不可恢复错误
-- **gen_try**（irgen）：解包路径展开（tag 槽比较 + 分支 + 提前 return + payload
-  读取）；**gen_enum_construct string payload**：槽统一 i64，string 字面量
-  （const_str 已按 ptrtoint 发射）与 string 拼接（str_cat 输出同为 i64）直接
+
+- **gen\_try**（irgen）：解包路径展开（tag 槽比较 + 分支 + 提前 return + payload
+  读取）；**gen\_enum\_construct string payload**：槽统一 i64，string 字面量
+  （const\_str 已按 ptrtoint 发射）与 string 拼接（str\_cat 输出同为 i64）直接
   存储，变量/调用返回值 ptrtoint 转 i64；读取侧由消费方按需 inttoptr 还原
+
 - **ASI 修复**：`is_bin_op` 排除 `lex_question`（frontend + proto 两处）——
   `?` 行尾不再被识别为二元运算符而漏补分号（修复前 `var v = expr ?` 换行后
   会与下一行粘连），单行三目 `?:` 不受影响
-- **验收**：tests/s23_probe/ 探针（try_probe/result_probe/result_import_probe/
-  opt_none_arg_probe/try_mini + tmp_t7 三目 + tmp_t8 Option 解包 + tmp_t9
-  string payload 判别 + tmp_t10 string payload 解包值内容）——`?` 链式传播
-  （两层嵌套 Option/Result）、Err 提前 return、panic 致命错误、string payload
-  跨函数解包值正确还原（"直接解包: hello cfg"）全对；自举链 tiec_verify2
-  编译探针行为一致；回归 12/13 PASS（extern_decl 为 S1.2 unsafe 旧规则问题）
 
-## [新增] 阶段 1 语言地基三件套（S1.2 unsafe + S1.3 窄整数 + S1.4 角色扩展）—— 2026-08-15
+- **验收**：tests/s23\_probe/ 探针（try\_probe/result\_probe/result\_import\_probe/
+  opt\_none\_arg\_probe/try\_mini + tmp\_t7 三目 + tmp\_t8 Option 解包 + tmp\_t9
+  string payload 判别 + tmp\_t10 string payload 解包值内容）——`?` 链式传播
+  （两层嵌套 Option/Result）、Err 提前 return、panic 致命错误、string payload
+  跨函数解包值正确还原（"直接解包: hello cfg"）全对；自举链 tiec\_verify2
+  编译探针行为一致；回归 12/13 PASS（extern\_decl 为 S1.2 unsafe 旧规则问题）
+
+## \[新增] 阶段 1 语言地基三件套（S1.2 unsafe + S1.3 窄整数 + S1.4 角色扩展）—— 2026-08-15
 
 tie 语言阶段 1 语言地基（M0 级）三任务全部落地，tiec（tie 自写编译器，
 compiler/）全链路实现（词法→语法→语义→IR→LLVM），完全不用 Rust：
 
 ### S1.2 unsafe 模型（docs/plans/unsafe-model.md 实现记录）
+
 - **语法**：`unsafe fn`（fn 字样）/ `unsafe { }` 块 / `type tie<..., unsafe>` 文件级
-- **类型**：`ptr<T>` / `slice<T>` / `atomic<T>` 走 N_STRUCT_TYPE 标识符引用
+
+- **类型**：`ptr<T>` / `slice<T>` / `atomic<T>` 走 N\_STRUCT\_TYPE 标识符引用
   （不做关键字，避免与 str.slice 等方法名冲突）；types 编码段 7/8/9<<40
+
 - **语义**：安全边界检查（5 处调用点拦截）、E3 extern 强制 unsafe
   （std 三文件 path/process/runtime 一次性改造）、指针类型安全上下文限制
-- **操作集**：addr_of/addr_of_field/deref/deref_write/is_null/ptr_add/ptr_to_int/
-  int_to_ptr/alloc/free/memcpy/memset/slice_of（字符串）/slice_len/slice_index
-- **atomic\<T\>**：load/store/fetch_add/sub/and/or/xor/compare_exchange
+
+- **操作集**：addr\_of/addr\_of\_field/deref/deref\_write/is\_null/ptr\_add/ptr\_to\_int/
+  int\_to\_ptr/alloc/free/memcpy/memset/slice\_of（字符串）/slice\_len/slice\_index
+
+- **atomic\<T>**：load/store/fetch\_add/sub/and/or/xor/compare\_exchange
   （方法形态，内存序 Relaxed/Acquire/Release/AcqRel/SeqCst，LLVM 原子指令发射）
-- **asm!**：Rust 风格 `{N}` 占位符 → LLVM `$N` 自动转换（asm_tmpl_convert）；
+
+- **asm!**：Rust 风格 `{N}` 占位符 → LLVM `$N` 自动转换（asm\_tmpl\_convert）；
   in/out/inout(reg) 约束
-- **repr(C)**：LLVM 结构体天然 C 布局，窄字段构造/赋值经 gen_coerce 转换
+
+- **repr(C)**：LLVM 结构体天然 C 布局，窄字段构造/赋值经 gen\_coerce 转换
+
 - **llvmgen 补全**：gep(23)/ptrtoint(24)/inttoptr(25) 原来全是 TODO 占位，已实现
-- **验收**：tests/language/unsafe_full（指针读写/alloc+ptr_add/slice 视图/
-  ptr↔int roundtrip 全对）、atomic_asm（store Release→fetch_add AcqRel→
-  load Acquire→CAS SeqCst→load 全对）、reprc_probe（窄字段 C 布局全对）、
+
+- **验收**：tests/language/unsafe\_full（指针读写/alloc+ptr\_add/slice 视图/
+  ptr↔int roundtrip 全对）、atomic\_asm（store Release→fetch\_add AcqRel→
+  load Acquire→CAS SeqCst→load 全对）、reprc\_probe（窄字段 C 布局全对）、
   asm 两探针 + 4 个安全边界负例全拒（unsafe fn/内置/无 unsafe extern/指针参数）
 
 ### S1.3 窄整数（docs/plans/int-model.md 实现记录）
+
 - **后缀字面量**：`42i32` / `7u8` / `0x80u16` / `1.5f32`（lexer 吞并 + parser aux）
+
 - **C2 拓宽**：同符号窄→宽 + u→i 无损拓宽（zext）；float→int 不隐式
+
 - **C3 常量范围**：`var b: i8 = 200` 编译错误；表达式窄域回绕
-- **as_\* 族**：as_i8..as_u64/as_f32/as_f64（trunc/sext/zext/fptosi/sitofp 映射）
-- **checked_\* 族**：checked_add/sub/mul/div/neg/shl/shr → (值, 溢出标志) 二元组
+
+- **as\_\* 族**：as\_i8..as\_u64/as\_f32/as\_f64（trunc/sext/zext/fptosi/sitofp 映射）
+
+- **checked\_\* 族**：checked\_add/sub/mul/div/neg/shl/shr → (值, 溢出标志) 二元组
   （比较法检测 + select 防 poison；无符号用 ult/ugt + udiv 反算）
+
 - **A1/B2**：窄宽度算术类型保持 + 混合提升；无符号逻辑右移（lshr）/有符号
   算术右移（ashr），移过量≥位宽有定义（select 保护）
+
 - **新增 tie-IR opcode**：zext(29)/trunc(37)/fptosi(38)/fpext(39)/udiv(46) +
   icmp 无符号比较码 6-9
-- **验收**：tests/language/narrow_full（42/7/128/300/200/44/44/3/1100/-56/
-  overflow/120/no-overflow/56/overflow/0 全对）、shift_neg_free、负例 3 个全拒
+
+- **验收**：tests/language/narrow\_full（42/7/128/300/200/44/44/3/1100/-56/
+  overflow/120/no-overflow/56/overflow/0 全对）、shift\_neg\_free、负例 3 个全拒
 
 ### S1.4 角色系统扩展（docs/plans/role-model.md 实现记录）
+
 - **多角色**：`type tie<db:vector, unsafe>` 逗号叠加（基础唯一 + 修饰可叠加）
+
 - **参数化**：参数白名单（ui:window/web/embedded、db:schema/seed/vector、
   data:config/asset）；ROLE 协议扩展 `<base>[:<param>][;<mod>...]`
+
 - **文件名一致性**：F1 连字符格式（xxx.db-vector.tie / xxx.class-unsafe.tie）；
   **R3 升级为编译错误**（基础/参数/修饰集合比较，顺序无关）
-- **文件级 unsafe**：type tie<..., unsafe> → g_unsafe_depth +1（与 S1.2 咬合）
+
+- **文件级 unsafe**：type tie<..., unsafe> → g\_unsafe\_depth +1（与 S1.2 咬合）
+
 - **新增角色**：tieir/test/bench（白名单 + 分派）
+
 - **验收**：db-vector-unsafe/lib.class-unsafe 正例 + R3 不一致负例
   （参数 db:schema vs db:vector、修饰 class-unsafe vs class 均报编译错误）
 
-**回归**：tests/language 24/24 PASS + 新测试全绿 + _driver_test PASS。
+**回归**：tests/language 24/24 PASS + 新测试全绿 + \_driver\_test PASS。
 
-## [升级] LLVM 工具链 18.1.8 → 22.1.8（S1.1 独立里程碑）—— 2026-08-15
+## \[升级] LLVM 工具链 18.1.8 → 22.1.8（S1.1 独立里程碑）—— 2026-08-15
 
 - **版本**：LLVM 从 18.1.8 升级到 22.1.8（最新稳定版；23 仍 RC3 未用，等稳定再议）
-- **破坏点适配**：clang 22 起 Windows 默认链接器从 link.exe 改为 lld-link（18 为 link.exe），而 lld-link 解析 Rust staticlib（tie_interp.lib）的 CRT 符号有缺陷（`undefined symbol: printf`）→ `toolchain.tie` `link_exe` 非 vendored 场景（无 TIE_LLVM_HOME）显式加 `-fuse-ld=link` 恢复 link.exe 行为；vendored（TIE_LLVM_HOME）场景保持 `-fuse-ld=lld`（无 VS 环境用随包 lld）
+
+- **破坏点适配**：clang 22 起 Windows 默认链接器从 link.exe 改为 lld-link（18 为 link.exe），而 lld-link 解析 Rust staticlib（tie\_interp.lib）的 CRT 符号有缺陷（`undefined symbol: printf`）→ `toolchain.tie` `link_exe` 非 vendored 场景（无 TIE\_LLVM\_HOME）显式加 `-fuse-ld=link` 恢复 link.exe 行为；vendored（TIE\_LLVM\_HOME）场景保持 `-fuse-ld=lld`（无 VS 环境用随包 lld）
+
 - **SwitchInst 验证**：tie 的 switch 走 icmp 比较链（非 LLVM switch 指令，irgen 注释明确），22 的 SwitchInst case 值不再作 operand 变更对 tie **零影响**（实测确认）
-- **回归全绿**：interp 11/11 + _driver_test 行为等价 PASS + tests/language 24 PASS（无新增失败，3 个预存失败 18/22 一致）+ 自举闭环 tiec2==tiec3 sha 一致（可复现构建）+ G4 闸门 PASS（91 文件 88 可编译 96.7%，ratio 1.458 < 硬性 3.0）+ vendored 场景 hello 与库编译链（clang -c + llvm-ar rcs）正常
+
+- **回归全绿**：interp 11/11 + \_driver\_test 行为等价 PASS + tests/language 24 PASS（无新增失败，3 个预存失败 18/22 一致）+ 自举闭环 tiec2==tiec3 sha 一致（可复现构建）+ G4 闸门 PASS（91 文件 88 可编译 96.7%，ratio 1.458 < 硬性 3.0）+ vendored 场景 hello 与库编译链（clang -c + llvm-ar rcs）正常
+
 - **本机切换**：D:\LLVM 升级为 22.1.8（18.1.8 备份至 D:\LLVM18 便于回退）；打包脚本 package.ps1 默认 -LlvmDir D:\LLVM 路径不变自动取 22
 
-## Harbor-2026.1-preview.2（2026-08-15）
+## Harbor-2026.1-preview\.2（2026-08-15）
 
-> **preview.2 = enum 语言特性 + 0-Rust 工具链**：enum ADT 全链路（tiec 实现）、
-> 剔除 Rust 工具链（tiec_rust 归档）、P0 库级四件套（net/HTTP/集合/向量 db）。
+> **preview\.2 = enum 语言特性 + 0-Rust 工具链**：enum ADT 全链路（tiec 实现）、
+> 剔除 Rust 工具链（tiec\_rust 归档）、P0 库级四件套（net/HTTP/集合/向量 db）。
 
-## [新增] enum 枚举语言特性（ADT 标签联合 + 泛型，tiec 全链路实现）—— 2026-08-15
+## \[新增] enum 枚举语言特性（ADT 标签联合 + 泛型，tiec 全链路实现）—— 2026-08-15
 
 tie 语言新增 **enum 枚举**（Rust 风格 ADT），tiec（tie 自写编译器，compiler/）
 全链路实现（词法→语法→语义→IR→LLVM），完全不用 Rust：
 
 - **语法**：`enum Color { Red Green Blue }`（无数据变体）+ `enum Shape { Circle(i64) Rect(i64, i64) }`（带 payload 变体）+ `enum Option<T> { Some(T) None }`（泛型）
+
 - **构造**：`Color.Red`（无 payload 常量）/ `Shape.Circle(5)`（构造调用）/ `Option.Some(42)`（实参推断 T）
+
 - **匹配**：switch 对枚举 subject 匹配变体（case 变体引用解析为 tag 常量，走整数比较链）
-- **LLVM 表示**：静态结构体 `{ i64 tag, i64×K 槽 }`（K = 最大变体 payload 字段数，Oracle 确认方案 B），零运行时开销；泛型枚举编译期单态化（mangle + clone_subst + gin_reg）
+
+- **LLVM 表示**：静态结构体 `{ i64 tag, i64×K 槽 }`（K = 最大变体 payload 字段数，Oracle 确认方案 B），零运行时开销；泛型枚举编译期单态化（mangle + clone\_subst + gin\_reg）
+
 - **一期限制**：payload 白名单限整数族/bool/char/trit（string/f64 等报暂不支持）；枚举 `==` 比较暂不支持；REPL 报"暂不支持 enum 定义"
+
 - **修复两个 latent bug**：llvmgen `opnd_ref` 全局地址（kind 3）优先于参数检查（防全局 value id 与参数撞号）；pnames `tok_debug_name`/`node_tag_name` 越界保护（防新增 token tag 越界崩溃）
-- **验收**：`tests/language/enum.tie`（11 输出全对）、`enum_neg.tie`、错误 golden err_063-065；自举链 tiec→tiec2 编译自身成功、IR 逐字节一致；行为等价回归 24/26（2 个 extern declare 既有失败）
 
-## [新增] P0 库级四件套（std/net + HTTP 服务端 + 集合 + 向量 db）—— 2026-08-15
+- **验收**：`tests/language/enum.tie`（11 输出全对）、`enum_neg.tie`、错误 golden err\_063-065；自举链 tiec→tiec2 编译自身成功、IR 逐字节一致；行为等价回归 24/26（2 个 extern declare 既有失败）
 
+## \[新增] P0 库级四件套（std/net + HTTP 服务端 + 集合 + 向量 db）—— 2026-08-15
 
 对比报告（docs/language-comparison.md）路线图 P0 全部落地，tie 实现优先：
 
-- **std/net**：TCP/UDP 网络库——Rust 底座原语（net_tcp_listen/accept/connect/send/recv、net_udp_bind/send/recv、net_close，句柄模型 i64）+ std/net.tie 封装；echo 验证（Rust + tiec 双路径）
-- **std/http_server**：HTTP/1.1 服务端框架（纯 tie，请求解析/响应构造/if 链路由，短连接）；demo 经 curl 验证（200/JSON/echo/404）
+- **std/net**：TCP/UDP 网络库——Rust 底座原语（net\_tcp\_listen/accept/connect/send/recv、net\_udp\_bind/send/recv、net\_close，句柄模型 i64）+ std/net.tie 封装；echo 验证（Rust + tiec 双路径）
+
+- **std/http\_server**：HTTP/1.1 服务端框架（纯 tie，请求解析/响应构造/if 链路由，短连接）；demo 经 curl 验证（200/JSON/echo/404）
+
 - **std/set + std/deque**：集合补全——HashSet 语义（有序表+二分，i64/string 双 API）+ VecDeque（双端队列）
+
 - **ext/vecsearch**：向量检索 Flat 精确索引（L2/余弦距离 + 展平存储 add/remove/get/search top-k）+ 双路径验证
+
 - **std/db**：tie:data 数据载体（表 ↔ tie:data 文本序列化/解析）
+
 - **tieDB**：统一数据库 API（tiedb.connect/collection/insert/search/remove/size/save/load），zd 压缩持久化 roundtrip 验证；rdu/rdb 嵌入式纯标量子集
+
 - **tie:zd 角色**：	ype tie<zd> + xxx.zd.tie 文件名声明（压缩的 tie:data），角色识别三处同步（prep/tiec/crates），二进制预判在文本读前短接
-- **tie:zd 序列化格式**（2026-08-15 批次）：MessagePack 思路 + Protobuf 参考，纯 tie 实现（varint/fixint/定宽/字符串/表/map/record 字段编码），40/40 断言；str_from_code 原语（码点→字符）
-- **配套编译器修复**：tiec struct import 展开（find_struct_node 扫 g_extra_tops）、void main 内 return（ret i32 0）、import 读取失败崩溃、map 段错误（字面量当普通表生成 + 循环内 alloca 未提升）、嵌套表 for 遍历桥选择## [修复] tiec 嵌套表 for 遍历桥选错（for row in t，t 为 table<table<i64>>） — 2026-08-14
+
+- **tie:zd 序列化格式**（2026-08-15 批次）：MessagePack 思路 + Protobuf 参考，纯 tie 实现（varint/fixint/定宽/字符串/表/map/record 字段编码），40/40 断言；str\_from\_code 原语（码点→字符）
+
+- **配套编译器修复**：tiec struct import 展开（find\_struct\_node 扫 g\_extra\_tops）、void main 内 return（ret i32 0）、import 读取失败崩溃、map 段错误（字面量当普通表生成 + 循环内 alloca 未提升）、嵌套表 for 遍历桥选择## \[修复] tiec 嵌套表 for 遍历桥选错（for row in t，t 为 table\<table<i64>>） — 2026-08-14
 
 tie 自写编译器 compiler/（tiec）在 `for row in t`（t 为二维表 desugar 出的
 嵌套表 `table<table<i64>>`）时生成错误桥 `tie_table_at_i64`，返回 i64 存入
@@ -1075,43 +1331,49 @@ tie 自写编译器 compiler/（tiec）在 `for row in t`（t 为二维表 desug
 
 - **根因**：irgen.tie `gen_for_table` 用 `bridge_suffix(elem)` 选桥，而
   `bridge_suffix` 对表类型（行类型 table<i64>）兜底返回 "i64"。
+
 - **修复**：元素类型是表/map 时改走 `tie_table_at_string`（返回 ptr）桥，
-  循环变量 LLVM 类型取 TK_STR（ptr）——与 gen_table_at 3228 行既有修复
-  （嵌套表元素读取 at_string）同约定；`len(t[0])`/`len(u[1])`（内层行数）
-  路径无需改动（gen_table_at 已返回 ptr）。
+  循环变量 LLVM 类型取 TK\_STR（ptr）——与 gen\_table\_at 3228 行既有修复
+  （嵌套表元素读取 at\_string）同约定；`len(t[0])`/`len(u[1])`（内层行数）
+  路径无需改动（gen\_table\_at 已返回 ptr）。
+
 - **验证**：`2d_table.tie` 输出 `2 / 3 / 2 / 2 / 2 / 2 / 10` 与头注释一致；
   自举链 tiec→tiec2 IR 逐字节一致；examples/hello.tie 正常；
   compiler/tests/interp 11 文件全 PASS。
 
-## [四语言特性] 二维表字面量 / 元组 ==/!= / const 全局表 / 变参函数（tiec 实现） — 2026-08-14
+## \[四语言特性] 二维表字面量 / 元组 ==/!= / const 全局表 / 变参函数（tiec 实现） — 2026-08-14
 
 tie 语言新增 4 个语言级特性，**全部在 tie 自写编译器 compiler/（tiec）实现**，
 Rust 侧并行实现同语义（仅作行为对照基线）。
 
 - **二维表字面量** `[1,2;3,4]`：parser 层 desugar 为嵌套表 `[[1,2],[3,4]]`
-  （N_TABLE_CELL 包装，与手写嵌套表结构一致）；多行 + id 元素报错
+  （N\_TABLE\_CELL 包装，与手写嵌套表结构一致）；多行 + id 元素报错
   「二维表不支持 id 元素」。连带修复 irgen 嵌套表字面量 push 选桥
-  （按值类型选 push_string）与嵌套表元素读取（at_string 返回 ptr）——
+  （按值类型选 push\_string）与嵌套表元素读取（at\_string 返回 ptr）——
   此前 `[[1,2],[3,4]]` 字面量/读取在 LLVM 层类型错。
+
 - **元组 ==/!=**：`(1,2) == (1,2)` → true；`< > <= >=` 对元组仍报错
   「比较运算符不能用于 tuple」。逐字段递归比较（标量 icmp / 浮点 fcmp /
   字符串 strcmp / 嵌套元组递归），`==` 全部字段 and 合并、`!=` 取反；
-  新增 stype.tuple_equal 深层结构相等判定（嵌套元组字段独立 tuple id）。
+  新增 stype.tuple\_equal 深层结构相等判定（嵌套元组字段独立 tuple id）。
+
 - **const 全局表**：`const g: table<i64>;` 合法；整变量重绑定
-  `g = ...` 报「不能给 const 变量赋值」（scheck 既有 gb_const_of 拦截）；
-  table_push / 下标修改内容允许。
+  `g = ...` 报「不能给 const 变量赋值」（scheck 既有 gb\_const\_of 拦截）；
+  table\_push / 下标修改内容允许。
+
 - **变参函数**：`func f(a: i64, rest: ...i64)`（元素类型限标量
   i8..u64/f32/f64/bool/char/string）；只允许最后一个、与 ref/默认值互斥；
   调用点 `f(1, 2, 3)` 多余实参打包为动态表实参，函数体内 `rest` 以
   table<T> 动态表登记（支持 len/下标/for）；interp 同步打包 Value 表。
-  连带修复 tie 自写 interp 的**泛型槽偏移**缺陷（Call/MethodCall/table_push/
-  FnDef 参数访问按 slot_off 偏移——此前所有函数调用多收一个哑参、
-  形参错位，interp_eval_call 用例转绿）。
+  连带修复 tie 自写 interp 的**泛型槽偏移**缺陷（Call/MethodCall/table\_push/
+  FnDef 参数访问按 slot\_off 偏移——此前所有函数调用多收一个哑参、
+  形参错位，interp\_eval\_call 用例转绿）。
+
 - **验证**：`compiler/tests/interp` 11 文件全 PASS（含此前失败的
-  interp_eval_call）；semantic_test / parse_test 回归通过；自举链
+  interp\_eval\_call）；semantic\_test / parse\_test 回归通过；自举链
   tiec→tiec2 全程；新增最小探针覆盖 4 特性正反用例。
 
-## [泛型系统] 泛型函数 + 泛型 struct——编译期单态化全链路落地（tiec 实现） — 2026-08-14
+## \[泛型系统] 泛型函数 + 泛型 struct——编译期单态化全链路落地（tiec 实现） — 2026-08-14
 
 tie 语言引入用户可定义泛型（此前仅内建 `table<T>`/`map<T>` 预置类型参数），
 按「能用 tie 就用 tie」原则**全部在 tie 自写编译器 compiler/（tiec）实现**，
@@ -1121,137 +1383,171 @@ Rust 链不做泛型（仅作行为对照基线）。
   `struct Box<T> { var value: T }`、多类型参数 `pick<A, B>`、嵌套
   `Box<table<i64>>`、显式类型实参 `max<i64>(9, 4)`、构造推断 `Box(3.14)`、
   泛型方法 `Box::get<T>(b: Box<T>) -> T`（接收者推断）；
+
 - **实例化机制**：编译期单态化——模板按类型实参组合展开为独立代码，零运行时
   开销；去重缓存（同组合只展开一次）；递归实例化深度上限 64（超限报
   「实例化深度超限」）；mangling `全名$类型片段`（`max$i64`、`Box$table_i64`）；
+
 - **类型推断**：调用点逐实参匹配（同一类型参数多处推断必须一致，冲突报
   「类型参数 T 推断冲突」）；显式实参优先；无信息实参报「无法推断类型参数 T」；
   实例化后类型错误在实例化点报告（模板体操作经替换后走现有类型检查）；
-- **实现分层**（compiler/）：parser 泛型语法（AST 泛型槽布局 + N_TYPE_PARAMS/
-  N_TYPE_ARGS 节点 + `<` 前瞻歧义处理，parse_test 7 用例）→ TypeVar 类型编码
-  （5<<40|intern(name)，types.var_of/is_typevar）→ 语义/irgen 泛型槽适配 +
-  模板表（slot_off/reg_generic/gt_*）→ 单态化展开器 sgen.tie + 调用点推断 +
+
+- **实现分层**（compiler/）：parser 泛型语法（AST 泛型槽布局 + N\_TYPE\_PARAMS/
+  N\_TYPE\_ARGS 节点 + `<` 前瞻歧义处理，parse\_test 7 用例）→ TypeVar 类型编码
+  （5<<40|intern(name)，types.var\_of/is\_typevar）→ 语义/irgen 泛型槽适配 +
+  模板表（slot\_off/reg\_generic/gt\_\*）→ 单态化展开器 sgen.tie + 调用点推断 +
   mangling；
+
 - **验收**：`tests/language/generics.tie` 9 正例输出全对（5/3.5/y/42/7/9/99/3.14/5）、
   `tests/language/generics_neg.tie` 5 负例（推断冲突/无法推断/实例化后类型错误/
   深度超限）、行为等价回归 93.5% PASS（≥90% 达标）、自举闭环
-  tiec→tiec2→tiec3 全绿、semantic_test/parse_test 回归通过。
+  tiec→tiec2→tiec3 全绿、semantic\_test/parse\_test 回归通过。
 
-## [文件类型 ir] 新增 IR 角色 `type tie<ir>`——检测到即直接生成 LLVM IR（.ll），不继续 opt/clang 链接 — 2026-08-14
+## \[文件类型 ir] 新增 IR 角色 `type tie<ir>`——检测到即直接生成 LLVM IR（.ll），不继续 opt/clang 链接 — 2026-08-14
 
-- **新子类型 `ir`**（第 9 种）：`type tie<ir>` 声明 / `xxx.ir.tie` 文件名默认；
+- **新子类型** **`ir`**（第 9 种）：`type tie<ir>` 声明 / `xxx.ir.tie` 文件名默认；
   语义 = 等价 `--emit-ir`，但由角色触发而非 CLI 选项——直接产出 `.ll` 后停止编译链；
+
 - **prep/core.tie（tie 语言自写权威）**：`is_valid_subtype` 接受 `ir`；
   头部注释（子类型列表 / 协议角色列表 / "8 个子类型"）与声明错误消息同步含 `ir`；
-- **tie-prep（Rust 壳）**：`FileRole` 新增 `Ir` 变体（Db 之后）+ as_str/from_str 映射 +
+
+- **tie-prep（Rust 壳）**：`FileRole` 新增 `Ir` 变体（Db 之后）+ as\_str/from\_str 映射 +
   文件名推断（`code.ir.tie` → Ir）+ 声明解析/文件名/双向映射测试补齐；
+
 - **tie-llvm driver**：`Dispatch` 新增 `EmitIr`——dispatch 识别 ir 角色后构造
-  `emit_ir_only=true` 的选项副本走 compile_program，写 `.ll` 后返回
+  `emit_ir_only=true` 的选项副本走 compile\_program，写 `.ll` 后返回
   `已生成 LLVM IR: <path>`（main 入口检查已被 `!emit_ir_only` 守卫，ir 不需 main）；
+
 - **tie CLI**：`dispatch_role` 新增 `FileRole::Ir` 分支（`emit_ir_only: true`）转交 tie-llvm；
+
 - **端到端语料**：`tests/language/filetype_ir.ir.tie`（ir 角色文件名约定，头部与文件名一致）；
+
 - **文档同步**：README / docs/language.md 角色表、子类型全集、角色分派表、协议文本注释补 `ir`。
 
-## [文件类型声明系统] 头部声明重构——`type tie` / `type tie<X>` 取代 `// tie:xxx` 注释指令 — 2026-08-14
+## \[文件类型声明系统] 头部声明重构——`type tie` / `type tie<X>` 取代 `// tie:xxx` 注释指令 — 2026-08-14
 
 文件类型声明系统全面重构：旧「`// tie:xxx` 注释头指令」体系彻底移除，改为真正的语法行声明。
 
 - **新头部声明**：文件最前面的连续前导行（允许其间空行）写 `type tie`（Type 角色，
   由裸 `type tie` 表达）或 `type tie<子类型>`（script/data/ui/class/logic/port/db）；
   无声明时默认角色 `logic`；
+
 - **旧指令体系彻底移除**：`// tie:xxx` 注释指令（角色 + `opt=` / `target=` 头部选项）
   不再被提取/剥离——该类注释作为普通注释留在正文；`opt`/`target` 仅 CLI；
+
 - **文件命名约定**：`xxx.<角色>.tie`（如 `app.script.tie`）作为默认角色，
   头部声明优先——文件名与头部不一致时**警告并采用头部声明**；
+
 - **单文件命名空间**：`namespace foo` 无花括号（独占一行，或以 `;` 结尾）表示
   从声明处起整份文件剩余内容都属于 foo——`namespace foo` 换行（ASI 补分号）与
   手写 `namespace foo;` 完全等价（AST 一致），嵌套递归生效；
+
 - **tiec 同步支持**：头部扫描识别 `type tie` / `type tie<X>` 声明；
   opt/target 仅 CLI；文件名校验警告规则与 tie 主入口一致；
+
 - **全项目迁移脚本**：`scripts/migrate_tie_type.tie`（`.tie` 文件头迁移，另行运行）。
 
-## [rdu] 内置库新增 rdu 层级：嵌入式基础层（无栈）——独立于 std/ext 的第三层 — 2026-08-14
+## \[rdu] 内置库新增 rdu 层级：嵌入式基础层（无栈）——独立于 std/ext 的第三层 — 2026-08-14
 
 新增第三层内置库 `rdu/`（Rudimentary，嵌入式基础层），专为嵌入式（MCU/裸机
 freestanding）定制：无堆/无 OS/无 libc 环境可用的最小基础库。
 
 - **定位**：`rdu/` 独立于 std/ext——不依赖 std、不依赖 ext、不 import 任何东西；
   随发行版内置，`scripts/package.ps1` 库目录列表收录为 `@("std", "ext", "rdu")`；
+
 - **无栈纪律（rdu 模块硬性约束）**：
-  1. **零原语调用**——不调用语言底座内建函数（table_*/str_*/to_string/println/
-     rand_range 等），只用标量运算；
+
+  1. **零原语调用**——不调用语言底座内建函数（table\_*/str\_*/to\_string/println/
+     rand\_range 等），只用标量运算；
   2. **零动态内存**——无表、无字符串拼接、无字符串参数，纯 i64/f64/bool 标量；
   3. **无递归**（调用深度恒定）；
   4. **无全局可变状态**（纯函数，同输入同输出）；
   5. **零运行时依赖**——编译出的 .a 不链接 runtime.a/tie-interp 桥，裸机
      freestanding 可直接链接。
-  原因：嵌入式目标没有堆/OS/libc，tie 字符串与表原语底层走堆分配（如
-  `str_char` 返回 `CString::into_raw`），故 rdu 完全绕开；
-- **六个模块**（文件头 `// tie:library`，命名空间统一 `rdu_` 前缀避免与 std/ext 冲突）：
-  - `rdu/bits.tie`（rdu_bits）：set/clear/toggle/test/rol/ror/bswap16/bswap32/
-    bswap64/popcount/clz/ctz；
-  - `rdu/math.tie`（rdu_math）：移植自 std/math 的纯标量函数
-    abs/abs_f/max_i/min_i/max_f/min_f/clamp/clamp_i/is_odd/is_even/avg_f/sign_i/
-    deg_to_rad/rad_to_deg/gcd/lcm/pow_i；
-  - `rdu/ascii.tie`（rdu_ascii）：移植自 std/ascii 的码点纯函数
-    is_digit/is_alpha/is_alnum/is_lower/is_upper/is_print/is_space/to_lower/to_upper
-    （去掉字符串版 to_code/to_char）；
-  - `rdu/crc.tie`（rdu_crc）：增量式校验 crc8/16/32 的 init/update + crc32_final
-    （CRC-32/IEEE 802.3，逐位无查表）、fnv1a 的 init/update（32 位 FNV-1a）；
-  - `rdu/fixed.tie`（rdu_fixed）：Q16.16 定点数 fixed_mul/fixed_div/fixed_floor/
-    fixed_frac；
-  - `rdu/rnd.tie`（rdu_rnd）：确定性伪随机 xorshift64(state)（无状态纯函数，
-    调用方持状态）；
-- **文档**：新增 docs/plans/embedded-rdu.md（定位/分层对比/无栈纪律/模块函数表/
-  验收标准/不做的事），README 工程结构新增 rdu/ 段（典型调用 rdu_crc.crc32_init()）。
+     原因：嵌入式目标没有堆/OS/libc，tie 字符串与表原语底层走堆分配（如
+     `str_char` 返回 `CString::into_raw`），故 rdu 完全绕开；
 
-## [std:fs] 完整文件系统标准库 + 中文路径修复——file_* 内置全面迁移 UTF-8 桥 — 2026-08-14
+- **六个模块**（文件头 `// tie:library`，命名空间统一 `rdu_` 前缀避免与 std/ext 冲突）：
+
+  - `rdu/bits.tie`（rdu\_bits）：set/clear/toggle/test/rol/ror/bswap16/bswap32/
+    bswap64/popcount/clz/ctz；
+
+  - `rdu/math.tie`（rdu\_math）：移植自 std/math 的纯标量函数
+    abs/abs\_f/max\_i/min\_i/max\_f/min\_f/clamp/clamp\_i/is\_odd/is\_even/avg\_f/sign\_i/
+    deg\_to\_rad/rad\_to\_deg/gcd/lcm/pow\_i；
+
+  - `rdu/ascii.tie`（rdu\_ascii）：移植自 std/ascii 的码点纯函数
+    is\_digit/is\_alpha/is\_alnum/is\_lower/is\_upper/is\_print/is\_space/to\_lower/to\_upper
+    （去掉字符串版 to\_code/to\_char）；
+
+  - `rdu/crc.tie`（rdu\_crc）：增量式校验 crc8/16/32 的 init/update + crc32\_final
+    （CRC-32/IEEE 802.3，逐位无查表）、fnv1a 的 init/update（32 位 FNV-1a）；
+
+  - `rdu/fixed.tie`（rdu\_fixed）：Q16.16 定点数 fixed\_mul/fixed\_div/fixed\_floor/
+    fixed\_frac；
+
+  - `rdu/rnd.tie`（rdu\_rnd）：确定性伪随机 xorshift64(state)（无状态纯函数，
+    调用方持状态）；
+
+- **文档**：新增 docs/plans/embedded-rdu.md（定位/分层对比/无栈纪律/模块函数表/
+  验收标准/不做的事），README 工程结构新增 rdu/ 段（典型调用 rdu\_crc.crc32\_init()）。
+
+## \[std:fs] 完整文件系统标准库 + 中文路径修复——file\_\* 内置全面迁移 UTF-8 桥 — 2026-08-14
 
 制造完整 `std/fs` 文件系统库（对齐 Rust std::fs API 风格），根治中文/Unicode 路径问题。
 
 - **根因**：`file_exists` / `file_write` / `file_append` / `file_delete` 内置原走 libc
   `fopen` / `remove`——Windows ANSI 代码页将 UTF-8 中文路径按 GBK 误读，中文路径的
   存在性检查/写入/删除必失败（tiec 编译中文路径源文件报"读取源码失败"）；
+
 - **7 个 UTF-8 安全桥**（interp.lib，Rust std::fs 实现，Windows 宽字符 API）：
   `tie_file_exists` / `tie_file_write` / `tie_file_append` / `tie_file_delete` /
   `tie_file_size` / `tie_file_is_dir` / `tie_file_is_file`；
+
 - **内置迁移**：irgen 与 Rust 基线 ir.rs 的 `file_exists` / `file_write` / `file_append` /
   `file_delete` 由 libc 改为桥调用（llvmgen 补 7 声明，语义层 sbuitin/semantic 补签名）；
   新增 `file_size` / `file_is_dir` / `file_is_file` 三个内置；
-- **std/fs.tie 完整重写**（Rust std::fs 风格 API）：读取（read_to_string / read_text /
-  read_bytes / read_lines）、写入（write / append / write_lines）、元数据（exists /
-  is_file / is_dir / size）、删除（remove_file / remove_dir_all）、目录（create_dir_all /
-  read_dir / walk / copy_dir）、复制移动（copy / rename）、归档（untar_gz / unzip），
-  全部保留早期命名别名（write_text / delete / list / mkdir_all 等）；
+
+- **std/fs.tie 完整重写**（Rust std::fs 风格 API）：读取（read\_to\_string / read\_text /
+  read\_bytes / read\_lines）、写入（write / append / write\_lines）、元数据（exists /
+  is\_file / is\_dir / size）、删除（remove\_file / remove\_dir\_all）、目录（create\_dir\_all /
+  read\_dir / walk / copy\_dir）、复制移动（copy / rename）、归档（untar\_gz / unzip），
+  全部保留早期命名别名（write\_text / delete / list / mkdir\_all 等）；
+
 - **自举链更新**：tiec.exe 二阶自洽版入库（新 tiec 编译自身后 driver 主体行为与新 irgen
   一致——一阶产物 driver 的内置调用仍固化旧逻辑，须二阶自举）；
+
 - **验证**：中文路径下 tiec 编译源文件成功、std/fs 全功能测试通过（创建/写入/追加/
   读取/行读取/大小/类型判定/删除）；行为等价回归 96.2%（≥90% 达标）；repl/pkg/driver
   编译通过。
 
-## Harbor-2026.1-preview.1（2026-08-13）
+## Harbor-2026.1-preview\.1（2026-08-13）
 
-> **preview.1 = tiec 性能反超 + vendored LLVM + tiec 升格一级编译器**：G4 ratio 6.9→1.09、
+> **preview\.1 = tiec 性能反超 + vendored LLVM + tiec 升格一级编译器**：G4 ratio 6.9→1.09、
 > LLVM 随包分发（zip 自包含）、repl/pkg 自举改由 tiec、tie Logo 定稿。对比基线见下方条目。
 
-## [阶段 A] tiec 升格一级编译器——repl/pkg 自举改用 tiec，tiec.exe 入库版本化 — 2026-08-13
+## \[阶段 A] tiec 升格一级编译器——repl/pkg 自举改用 tiec，tiec.exe 入库版本化 — 2026-08-13
 
 tiec（自举 v2 编译器）升格为主编译器：编译链路上不再依赖 Rust 种子产出 repl/pkg。
 
 - **repl / pkg 自举升格**：`scripts/package.ps1` 第 2 步由 `tie-llvm.exe repl/repl.tie` 改为
   `compiler/tiec.exe repl/repl.tie`；`pkg/main.tie` 改由 tiec 编译（README / main.rs 构建指引同步）；
+
 - **irgen 修复：map 下标赋值/读取桥**（E3 键值表）——`gen_index_assign` / `gen_index_read`
   新增 map 分支（`tie_map_set` / `tie_map_set_string` / `tie_map_get` / `tie_map_get_string`，
   llvmgen 补齐 4 个桥声明），此前 map 赋值误走 `tie_table_set_i64` 导致 pkg 无法编译；
+
 - **irgen 修复：table 元素类型完整推断链**——`gen_index_assign` 对齐 `gen_index_read`
-  （tblvar_get → 作用域类型 → node_types → sinfer → 索引表达式类型 fallback），修复
+  （tblvar\_get → 作用域类型 → node\_types → sinfer → 索引表达式类型 fallback），修复
   `table<string>` 变量赋值推断为 i64 的错误；
+
 - **tiec.exe 入库版本化**：`.gitignore` 豁免 `/compiler/tiec.exe`（stage0 引导二进制，
   自举语言惯例），clone 即用；源码变更后重新自举并提交同步更新；
+
 - **验证**：tiec 编译 pkg 行为与 Rust 种子产物字节等价（help 输出一致、init 功能正常）；
   行为等价回归 93.7%（≥90% 达标，可编译文件 57→59）；repl-parity PASS（tie 通道 = Rust 通道）。
 
-## [LLVM 随包分发] vendored LLVM——发行版 zip 内置精简 LLVM 工具链，解压即用免安装 — 2026-08-13
+## \[LLVM 随包分发] vendored LLVM——发行版 zip 内置精简 LLVM 工具链，解压即用免安装 — 2026-08-13
 
 LLVM 随包分发（vendored）：发行版 zip 内置精简 LLVM 工具链，解压即用免安装，
 编译链路不再要求用户单独安装 LLVM。
@@ -1259,637 +1555,874 @@ LLVM 随包分发（vendored）：发行版 zip 内置精简 LLVM 工具链，�
 - **工具发现统一**：新增 `TIE_LLVM_HOME` 环境变量（`TIE_LLVM_HOME\bin` 最先探测），Rust 侧
   tie.exe / tie-llvm 另支持同目录 `llvm\bin` 探测，随后回落到 PATH 与固定目录
   （`D:\LLVM\bin`、`C:\Program Files\LLVM\bin`、`C:\LLVM\bin`）；
-- **`-fuse-ld=lld` 仅 vendored 场景生效**：clang 来自随包 LLVM 时链接命令加 `-fuse-ld=lld`，
+
+- **`-fuse-ld=lld`** **仅 vendored 场景生效**：clang 来自随包 LLVM 时链接命令加 `-fuse-ld=lld`，
   让随包 lld-link.exe 在无 MSVC/VS 的机器上完成链接；普通开发机保持默认链接器（lld 解析 Rust
-  staticlib tie_interp.lib 存在 CRT 符号缺陷 `undefined symbol: printf`，会破坏 repl 自举）；
+  staticlib tie\_interp.lib 存在 CRT 符号缺陷 `undefined symbol: printf`，会破坏 repl 自举）；
+
 - **打包增强**：`scripts/package.ps1` 新增 LLVM 精简打包（新参数 `-LlvmDir` / `-SkipLlvm`），
   zip 内置 `bin/llvm/bin/{clang,opt,llvm-ar,lld-link}.exe`、clang 头文件（`bin/llvm/lib/clang/...`）
   与许可文本，zip 约 113 MB、自包含；
+
 - **许可随包**：`third_party/llvm/LICENSE.TXT` 保存 LLVM 官方许可（Apache-2.0 with LLVM
   Exceptions），随包分发为 `bin/llvm/LICENSE.txt`；
-- **脚本去硬编码**：`scripts/zero-rust-check.ps1` 改用 `Find-LlvmTool` 辅助函数发现 LLVM 工具
-  （TIE_LLVM_HOME → 固定目录 → PATH），不再写死 `D:\LLVM`。
 
-## [Harbor-2026.1-preview.1] 自举 v2 T5.3 tiec 性能优化——G4 ratio 6.9 → 1.09（目标超老编译器）— 2026-08-13
+- **脚本去硬编码**：`scripts/zero-rust-check.ps1` 改用 `Find-LlvmTool` 辅助函数发现 LLVM 工具
+  （TIE\_LLVM\_HOME → 固定目录 → PATH），不再写死 `D:\LLVM`。
+
+## \[Harbor-2026.1-preview\.1] 自举 v2 T5.3 tiec 性能优化——G4 ratio 6.9 → 1.09（目标超老编译器）— 2026-08-13
 
 针对"新编译器（tie 自写 tiec）性能超过老编译器（Rust tie-llvm）"目标的热点优化，
 G4 全量基准总比从 **6.900 → 1.086**（tiec 总耗时 2538ms vs Rust 2337ms，6.3× 提速），
-hello / import_main 单文件已**反超 Rust**（ratio 0.87 / 0.97）。
+hello / import\_main 单文件已**反超 Rust**（ratio 0.87 / 0.97）。
 
 ### 热点根因（4 个）
-- **前端重复执行 2×**：driver.frontend 已 parse+check，irgen.gen_src 内部 check_src 又全套一遍；
-- **AST 文本协议往返**：parser 内存节点池 → build_protocol 序列化文本 → load_ast 反序列化
+
+- **前端重复执行 2×**：driver.frontend 已 parse+check，irgen.gen\_src 内部 check\_src 又全套一遍；
+
+- **AST 文本协议往返**：parser 内存节点池 → build\_protocol 序列化文本 → load\_ast 反序列化
   （O(n²) 拼接 + 每行 8+ 次子串 slice）；
+
 - **std/intern 冒泡插入 O(n²)**：新串尾部追加 + 逐元素 strcmp 交换（lexer 每 token intern）；
-- **print_err 调试跟踪**：每次编译向 stderr 刷 300+ 行（77 处调用）。
+
+- **print\_err 调试跟踪**：每次编译向 stderr 刷 300+ 行（77 处调用）。
 
 ### 6 项优化
-1. **消除重复前端**：irgen 新增 `gen_ast()`（复用 check_impl 后的内存状态），driver 主路径改用；
-   `gen_src` 保留给 driver-lite/_driver_test；
-2. **build_protocol 分治 join**（parser）：行收集 + 两两合并，O(n²) → O(n log n)；
+
+1. **消除重复前端**：irgen 新增 `gen_ast()`（复用 check\_impl 后的内存状态），driver 主路径改用；
+   `gen_src` 保留给 driver-lite/\_driver\_test；
+2. **build\_protocol 分治 join**（parser）：行收集 + 两两合并，O(n²) → O(n log n)；
 3. **intern 二分定位+位移**（std/intern.tie）：插入省去全部 strcmp 交换；
-4. **load_ast/append_ast 单扫描**（sstate）：parse_row 整行一次扫描，零字段子串分配；
+4. **load\_ast/append\_ast 单扫描**（sstate）：parse\_row 整行一次扫描，零字段子串分配；
 5. **AST 内存传递**：`parser.parse_ast`（不序列化）+ `semantic.check_ast` + `copy_ast_tables` /
    `append_ast_mem`（内存直拷 9 列），import 展开同步内存化——彻底消除协议文本往返；
-6. **print_err 清理**：正式版 77 处/81 行删除（proto 原型保留）。
+6. **print\_err 清理**：正式版 77 处/81 行删除（proto 原型保留）。
 
 ### 验收
-- 回归全绿：interp 套件 11/11、行为等价回归 92.3%（12/13，无新增 DIFF）、错误 golden 与基线一致
-- G4 判定 PASS（硬线 ≤3.0、目标 ≤2.0 均达标；部分基准 + 缺口清单，可编译 30/74）
-- 单文件（不固定核心 median-of-5）：graph_demo 15.78×→1.44×、optsearch 16.45×→1.36×、
-  std_encoding 15.45×→1.64×、std_demo 11.34×→1.39×、hello 1.12×→0.87×
 
-## [品牌] tie Logo 定稿：缺口环 + tie/θ 组合标 — 2026-08-13
+- 回归全绿：interp 套件 11/11、行为等价回归 92.3%（12/13，无新增 DIFF）、错误 golden 与基线一致
+
+- G4 判定 PASS（硬线 ≤3.0、目标 ≤2.0 均达标；部分基准 + 缺口清单，可编译 30/74）
+
+- 单文件（不固定核心 median-of-5）：graph\_demo 15.78×→1.44×、optsearch 16.45×→1.36×、
+  std\_encoding 15.45×→1.64×、std\_demo 11.34×→1.39×、hello 1.12×→0.87×
+
+## \[品牌] tie Logo 定稿：缺口环 + tie/θ 组合标 — 2026-08-13
 
 品牌标识正式定稿，落地 `assets/` 目录与 VSCode 插件：
 
 - **主图标（Trit Ring 缺口环）**：石墨黑粗环 + 对角双缺口（代码进出编译器的通道）
-  + 顶部悬浮青点（语言内核/trit），负空间设计，两段对称弧无接缝；
+
+  - 顶部悬浮青点（语言内核/trit），负空间设计，两段对称弧无接缝；
+
 - **组合版（tie/θ）**：缺口环 + 手绘几何字形 "tie"——第三字母采用希腊 theta（θ，
   数学角度符号）样式：瘦椭圆环 + 平头中横，与 t/i 严格等高（140px）、笔画统一
   （30px）、字母间视觉空隙相等（36px）、基线齐平；t 竖笔不超横笔、θ 中横不超椭圆；
+
 - **深色模式适配**：`prefers-color-scheme` 媒体查询，深色背景下环/文字自动切换为
   浅色（#F8FAFC）、青点切换为亮青（#38BDF8），单文件两用；
+
 - **透明背景 PNG 预览**：`assets/preview/`（Pillow 渲染脚本 `render_png.py`，PIL
   ellipse/arc 外缘语义与 SVG 居中描边对齐）；
+
 - **GitHub 社交预览**：`assets/social-preview.png`（1280×640，深靛渐变底 + 组合
   logo + 中英双语标语，生成脚本 `make_social_preview.py`）；
+
 - **VSCode 插件图标**：`editor/vscode-tie/icon.svg/png` 同步替换（深色圆角底 +
   白环 + 亮青点）；
+
 - **README**：顶部横幅引用 `assets/tie-logo-full.svg`。
 
-## [自举 v2 T5.1] tiec 前端全局表修复 + G4 性能基准 — 2026-08-12
+## \[自举 v2 T5.1] tiec 前端全局表修复 + G4 性能基准 — 2026-08-12
 
 ### tiec 前端语义修复（自举闭环关键）
-- 修复全局表元素类型误判：table<i64> 顶层全局被当 table<string>（gb_telem 解析）
-- 修复全局表 const 误判：顶层 var 被当 const（gb_const 槽位）
+
+- 修复全局表元素类型误判：table<i64> 顶层全局被当 table<string>（gb\_telem 解析）
+
+- 修复全局表 const 误判：顶层 var 被当 const（gb\_const 槽位）
+
 - driver.tie 自编译成功（种子 tiec 编译自身）、repl 编译语义错误消失
-- 回归全绿（interp 套件 11 文件 / driver_test / tiec hello）
+
+- 回归全绿（interp 套件 11 文件 / driver\_test / tiec hello）
 
 ### G4 性能基准（scripts/bench.ps1 gate4）
-- --emit-ir 通道、median-of-5、per-file ratio = tiec中位/Rust中位
+
+- \--emit-ir 通道、median-of-5、per-file ratio = tiec中位/Rust中位
+
 - 首轮 ratio 1.007（6/74 可编译，irgen 最小集限制）——可编译子集 tiec 与
   Rust 几乎同速（验证无 renumber/语义单遍/类型表直查净收益）
+
 - 67 个不可编译文件缺口清单化（docs/bench/phase5.md + phase5.json）
 
-## [自举 v2 T2.8] LLVM IR 文本生成器打通 + 标准库大规模扩展 — 2026-08-12
+## \[自举 v2 T2.8] LLVM IR 文本生成器打通 + 标准库大规模扩展 — 2026-08-12
 
 自举 v2 后端收尾与标准库扩展批：`irgen（AST→tie-IR）+ llvmgen（tie-IR→.ll）` 端到端
 跑通 hello.tie（opt -O2 + clang 链接生成可执行文件，输出对比 PASS），同时标准库从
 7 模块扩展至 20+ 模块、扩展库新增 5 模块。
 
 ### T2.8 后端：irgen + llvmgen 端到端打通
+
 - **irgen.tie（compiler/backend/）**：AST 协议文本 → tie-IR 列式表。支持语句 VarDecl/
   ExprStmt/Return/If/For（范围）；表达式 IntLit/StrLit/Var/Binary（算术+比较）/Range/
   Call（println/print）。
-- **llvmgen.tie**：tie-IR → .ll 文本。字符串常量自省收集（const_str/call_vararg 池 id →
-  `@.str.N`）；UTF-8 字节级转义（中文 → `\E5\9B\9B`，对齐 Rust escape_ir_string）；
-  指令映射 alloca/load/store/const_i/const_str/算术/icmp/br/cond_br/ret/call_vararg。
-- **验收**：`_driver_test.tie` 端到端（读 hello.tie → gen_src → emit → 写 .ll → opt -O2 →
+
+- **llvmgen.tie**：tie-IR → .ll 文本。字符串常量自省收集（const\_str/call\_vararg 池 id →
+  `@.str.N`）；UTF-8 字节级转义（中文 → `\E5\9B\9B`，对齐 Rust escape\_ir\_string）；
+  指令映射 alloca/load/store/const\_i/const\_str/算术/icmp/br/cond\_br/ret/call\_vararg。
+
+- **验收**：`_driver_test.tie` 端到端（读 hello.tie → gen\_src → emit → 写 .ll → opt -O2 →
   clang 链接 → 运行对比输出）PASS。
+
 - **修复的关键缺陷**：
-  - const_str/call_vararg 结果值缺失（`new_inst` 对 ty<0 不分配结果寄存器，而 llvmgen
+
+  - const\_str/call\_vararg 结果值缺失（`new_inst` 对 ty<0 不分配结果寄存器，而 llvmgen
     期望 `%N = ...`）——ty 补 i64/i32；
-  - i32 变量初始化类型不匹配（const_i 硬编码 i64，store i32 %N 失败）——const_i 按
-    ins_ty 输出、VarDecl 整数初始化按声明类型生成常量；
+
+  - i32 变量初始化类型不匹配（const\_i 硬编码 i64，store i32 %N 失败）——const\_i 按
+    ins\_ty 输出、VarDecl 整数初始化按声明类型生成常量；
+
   - LLVM 新版不支持内联 `sext (i32 %N to i64)` 实参——改为独立 sext 指令；
+
   - 字符串字面量带引号（自举前端 lexeme 原样存池）——irgen 去引号 + 反转义再登记。
-- **去重**：llvmgen 的 UTF-8 编码复用 std/utf（hex_escape/byte_len），删除内联重复实现。
+
+- **去重**：llvmgen 的 UTF-8 编码复用 std/utf（hex\_escape/byte\_len），删除内联重复实现。
 
 ### 标准库扩展（7 → 20+ 模块，均命名空间形式）
-- 新增：**utf**（UTF-8 码点/字节：codepoint/byte_len/hex_escape）、**ascii**（字符分类/
+
+- 新增：**utf**（UTF-8 码点/字节：codepoint/byte\_len/hex\_escape）、**ascii**（字符分类/
   转换）、**encoding**（base64/hex/url percent）、**json**（JSON 解析/序列化，节点式
-  访问器 parse/to_str/obj_get/arr_at，扁平登记表表示）、**fs**（文件系统：读改写删/
+  访问器 parse/to\_str/obj\_get/arr\_at，扁平登记表表示）、**fs**（文件系统：读改写删/
   目录/解压）、**path**（路径：basename/dirname/ext/stem，T0.7 extern 桥）、**args**
   （命令行参数）、**http**（HTTP GET + URL 编码）、**regex**（正则包装）、**random**、
   **bytes**（字节表）、**time**（计时）、**collection**（最小堆/栈/KMP）、**crypto**
   （crc32/fnv1a 校验向量验证）。
-- 测试：tests/language/ 新增 9 个验收测试（utf_ascii/std_args_time/std_encoding/
-  std_net_text/std_coll_crc/std_fs_path/std_json/ext_test_bench/ext_ui_cfg）全部通过。
+
+- 测试：tests/language/ 新增 9 个验收测试（utf\_ascii/std\_args\_time/std\_encoding/
+  std\_net\_text/std\_coll\_crc/std\_fs\_path/std\_json/ext\_test\_bench/ext\_ui\_cfg）全部通过。
 
 ### 扩展库新增（ext/）
-- **test**：断言收集框架（expect 系列 + 计数 + summary/exit_code，无函数指针的语言
+
+- **test**：断言收集框架（expect 系列 + 计数 + summary/exit\_code，无函数指针的语言
   采用手动收集模型）。
-- **bench**：基准计时（start/end/lap/summary，time_now 秒→毫秒换算）。
+
+- **bench**：基准计时（start/end/lap/summary，time\_now 秒→毫秒换算）。
+
 - **tui**：终端装饰（进度条/文本框/对齐）——无 ANSI 颜色（tie 词法不支持 \xHH 转义，
   TODO 词法器扩展后补）。
+
 - **config**：KV/INI 配置解析（交错表表示，map 原语未注册语言层）。
+
 - **pretty**：文本表格输出（边框/对齐）。
 
 ### 已知限制（记录待自举后端落地）
+
 - Rust tie-llvm 后端字符串常量 bug：运行期字符串被错误烘焙为 `@.str.N`（复现常量
-  `c"a%140b\00"` 声明 [6 x i8] 实际 7 字节，opt 拒绝），循环内 str_char 返回值跨
-  函数调用被破坏——http.url_encode/url_decode 测试暂缓（自举后端显式池 id 无此问题）。
+  `c"a%140b\00"` 声明 \[6 x i8] 实际 7 字节，opt 拒绝），循环内 str\_char 返回值跨
+  函数调用被破坏——http.url\_encode/url\_decode 测试暂缓（自举后端显式池 id 无此问题）。
+
 - tie 词法不支持 \b \f 与 \xHH 转义：json 的 \b/\f 转义报错、tui 无 ANSI 颜色。
 
-## [自举 v2 T3] tiec 完整编译器（工具链驱动 + CLI + 可复现构建）— 2026-08-12
+## \[自举 v2 T3] tiec 完整编译器（工具链驱动 + CLI + 可复现构建）— 2026-08-12
 
 Phase 3 收尾：driver-lite（T2.9 临时入口）升级为 tiec 完整编译器。
 
 ### T3.1 工具链驱动（compiler/backend/toolchain.tie，命名空间 tc）
+
 - 工具发现：PATH → D:\LLVM\bin → C:\Program Files\LLVM\bin → C:\LLVM\bin
-  （对齐 Rust backend.rs find_clang/find_llvm_ar）
+  （对齐 Rust backend.rs find\_clang/find\_llvm\_ar）
+
 - opt -O{0..3} -S 中间优化；clang 链接可执行（--target 交叉、tie-interp 按需）；
-  clang -c + llvm-ar rcs 库编译；exec_code/exec_output 退出码 + stderr 捕获
-- 命令拼接注意：exec_code 经 system() 调 cmd，可执行路径不加引号（cmd 不认
+  clang -c + llvm-ar rcs 库编译；exec\_code/exec\_output 退出码 + stderr 捕获
+
+- 命令拼接注意：exec\_code 经 system() 调 cmd，可执行路径不加引号（cmd 不认
   "C:\path\exe" 作命令名——踩坑修复）
 
 ### T3.2 完整 CLI（compiler/driver.tie → compiler/tiec.exe）
+
 - 参数：-o/-O0..3/--target/--emit-ir/--keep-ir/--prep-only/--config/--help；
   参数错误退出码 2；--prep-only 只打印识别结果
+
 - 角色识别：头部扫描（// tie:xxx），logic/library → 编译工具链，
   data/ui/db → 提示对应工具链未实现（对齐 Rust driver.rs 消息）
+
 - opt/target 优先级：CLI 显式 > 头部 // tie:opt=/// tie:target= > 默认 O2/无
+
 - 消息格式对齐 Rust：编译成功/库编译成功/已生成 LLVM IR/读取源码失败/语法/语义/
-  [中间优化]/[后端]
+  \[中间优化]/\[后端]
+
 - 验收：tiec.exe hello 全链路 PASS、--emit-ir、--prep-only、--help、
   参数错误 exit 2、library 编译 .a、--keep-ir 保留中间文件 全部正确
 
 ### T3.3 可复现构建
+
 - clang 链接加 -Wl,/Brepro（lld-link 去时间戳）——同一源码两次构建 .exe
   MD5 一致（验证通过）
+
 - 行为等价回归（regress-driver-lite.ps1 改用 tiec）：72 文件，
   可编译文件等价率 100%（1/1 >= 90% 达标）
-## [自举 v2 T4] 解释器 tie 化（core + env + REPL + 测试移植）— 2026-08-12
+
+## \[自举 v2 T4] 解释器 tie 化（core + env + REPL + 测试移植）— 2026-08-12
 
 T4 阶段：Rust tie-interp 逐步替换为 tie 自写解释器（0-Rust 关键路径）。
 
 ### T4.1 解释器核心（0830ef7）
+
 - compiler/interp/{value,session,interp}.tie：Value 编码（9 类型节点 id + 平行表）、
-  Session（globals/funcs/AST 归档池）、树遍历求值器 eval/eval_call（两遍解析）
+  Session（globals/funcs/AST 归档池）、树遍历求值器 eval/eval\_call（两遍解析）
+
 - 54 项 golden 验收 PASS（对齐 Rust interp 行为与错误文本）
 
 ### T4.3 REPL parity（d3adfc0）
-- compiler/repl.tie：tie 自写解释器 REPL（read_line→interp.eval→print）
+
+- compiler/repl.tie：tie 自写解释器 REPL（read\_line→interp.eval→print）
+
 - scripts/repl-parity.ps1：18 命令 golden 会话，tie repl 与 Rust 通道 233 字节逐字节一致
 
 ### T4.4 interp 行为测试移植（d3adfc0）
+
 - compiler/tests/interp/ 11 文件 198 断言全 PASS + scripts/run-interp-tests.ps1 runner
+
 - 7 项 tie interp 已知缺陷 SKIP 注释化；42 项 env 依赖用例清单化
 
 ### T4.2 环境原语（env.tie）
+
 - compiler/interp/env.tie：C ABI 桥函数 tie 化（文件/字符串/数学/进程/环境/时间/
   路径/目录/字节转发底座 + 表/键值表 Value 语义 + 限制清单文档化）
-- 16 项验收 PASS（interp_env_file 9 + interp_env_value 7）
+
+- 16 项验收 PASS（interp\_env\_file 9 + interp\_env\_value 7）
+
 - **已知 Rust 后端缺陷（记录）**：exit 的底座调用生成 unreachable → tie-llvm
-  renumber_ir 在 if 链尾编号断链（"instruction expected to be numbered %44"）——
+  renumber\_ir 在 if 链尾编号断链（"instruction expected to be numbered %44"）——
   已通过 exit 移出 if 链绕过；自举后端单调编号无此问题
-## [自举 v2 T4.5/4.6] tie 运行时静态库 + G3 闸门（0-Rust）— 2026-08-12
+
+## \[自举 v2 T4.5/4.6] tie 运行时静态库 + G3 闸门（0-Rust）— 2026-08-12
 
 ### T4.5 tie runtime staticlib（747ef1a）
+
 - std/runtime.tie → std/runtime.a：T0.7 extern fn 声明 libc（system/getenv/time）
-  实现 tie_exec_code/tie_get_env/tie_time_now 桥符号；顶层裸函数不 mangle 与
+  实现 tie\_exec\_code/tie\_get\_env/tie\_time\_now 桥符号；顶层裸函数不 mangle 与
   语言底座 declare 字节级匹配
-- irgen gen_tie_call（extern_call 指令 + g_used_runtime）、llvmgen collect_externs/
-  extern_decl、driver/toolchain need_interp 优先链接 std/runtime.a（回退 tie_interp.lib）
-- 验收：**移走 tie_interp.lib 后 tiec 仍编译运行** exec_code/time_now/get_env 程序
-- 限制：ptr 桥（file_read/str_char/rand_range/arg_*）无法 tie 化（tie 无指针类型）
+
+- irgen gen\_tie\_call（extern\_call 指令 + g\_used\_runtime）、llvmgen collect\_externs/
+  extern\_decl、driver/toolchain need\_interp 优先链接 std/runtime.a（回退 tie\_interp.lib）
+
+- 验收：**移走 tie\_interp.lib 后 tiec 仍编译运行** exec\_code/time\_now/get\_env 程序
+
+- 限制：ptr 桥（file\_read/str\_char/rand\_range/arg\_\*）无法 tie 化（tie 无指针类型）
 
 ### T4.6 G3 闸门（0-Rust 验证）
+
 - scripts/zero-rust-check.ps1 + docs/bench/zero-rust.md：**G3 PASS**
   7 项矩阵全绿（tiec 编译 hello/运行时程序、运行时栈 Rust-free、runtime.a 允许集、
   REPL parity 空 diff、interp 套件全 PASS）
+
 - 种子界限：tiec 由 Rust 种子编译（唯一接触点），其后一切 0-Rust
+
 - 修复 tiec 缺陷：llvmgen ret 类型硬编码（显式 return 值类型）、irgen main 补 ret
-  （TK_I32 显式类型）
-## [自举准备] 表能力加强（E0 + E1 + E3）— 2026-08-10
+  （TK\_I32 显式类型）
+
+## \[自举准备] 表能力加强（E0 + E1 + E3）— 2026-08-10
 
 自举障碍清零批：修复表变量传参缺陷（E0）、打通嵌套表 `table<table<T>>`（E1）、
 落地键值表 `map`（E3）——B1 tag 表 AST 的全部语言前提就绪（见 docs/plans/self-hosting.md §3 修订）。
 
 ### 修复：定长表变量实参 IR 缺陷（E0）
+
 - **根因**：表字面量变量（`var nums: table<i64> = [1,2,3]`）布局是 `[N x T]` 数组，
   作实参时直接传给 ptr 形参 → opt 报 "defined with type `[5 x i64]` but expected ptr"；
+
 - **IR**：`gen_table_var_arg`——定长表变量实参按声明布局逐元素展开为动态表
   （`tie_table_new + push`，与字面量实参 A6 同路径）；动态表变量直接传指针；
-- **语义**：未标注表字面量变量（`var arr = [1,2,3]`）scope 存元素类型的既有行为下，
-  传参时按 table_vars 元数据还原表身份；`arg_table_elem_ty` 的 Str 错误兜底改放行；
-- 表变量（标注/未标注/动态）作 table\<T\> 实参六场景实测全过。
 
-### 新增：嵌套表 table\<table\<T\>\>（E1）
+- **语义**：未标注表字面量变量（`var arr = [1,2,3]`）scope 存元素类型的既有行为下，
+  传参时按 table\_vars 元数据还原表身份；`arg_table_elem_ty` 的 Str 错误兜底改放行；
+
+- 表变量（标注/未标注/动态）作 table\<T> 实参六场景实测全过。
+
+### 新增：嵌套表 table\<table\<T>>（E1）
+
 - **语法**：`>>` 复合 token 分裂（`table<table<i64>>` 的闭括号，C++/Rust 同款问题）——
   Shr/Ge/ShrEq 原地分裂并插入剩余 token（parser.rs `expect_type_gt`）；
+
 - **语义**：嵌套表字面量（元素是表字面量）元素类型 = 表（内层元素类型），
   类型递归兼容；`dynamic=true` 登记——IR 恒按动态表（元素指针）布局；
   下标链 `node[0][0]` 递归取型（Index base 是 Index 表达式）；for/len 对
   未登记表变量（循环变量/下标推导的表）按语义类型兜底；
-- **IR**：表元素桥后缀按语义类型选择（`table_bridge_suffix`：表元素 → push/at/set_ptr）；
-  嵌套表字面量/变量/实参递归展开（外层 `tie_table_new(8)` + 内层动态表 push_ptr）；
-  Index 下标链生成（at_ptr → 递归下标）；len/for/IndexAssign 动态路径兜底；
+
+- **IR**：表元素桥后缀按语义类型选择（`table_bridge_suffix`：表元素 → push/at/set\_ptr）；
+  嵌套表字面量/变量/实参递归展开（外层 `tie_table_new(8)` + 内层动态表 push\_ptr）；
+  Index 下标链生成（at\_ptr → 递归下标）；len/for/IndexAssign 动态路径兜底；
+
 - **解释**：`Value::Table(Vec<Value>)` 天然嵌套，eval 下标链直接工作；
+
 - 新增 ptr 元素 C ABI 桥：`tie_table_push_ptr` / `tie_table_at_ptr` / `tie_table_set_ptr`；
+
 - 嵌套表七场景（字面量/标注/下标链/实参/嵌套 for/动态构造）编译+解释双路径全过。
 
 ### 新增：键值表 map（E3）
-- **语法**：`map` 类型关键字 + `map<T>` 值类型（默认 map\<i64\>）；字面量
+
+- **语法**：`map` 类型关键字 + `map<T>` 值类型（默认 map\<i64>）；字面量
   `["a":1, "b":2]`（cell 带字符串键）推导为 map；
+
 - **语义**：`TypeSpec::Map(Box<值类型>)` + 递归类型兼容；混合元素（字符串键 +
   位置元素）报错；`m["key"]` 下标读/写校验（键必须字符串、值类型匹配）；
   map 变量登记（值类型、dynamic=true）；map 形参/实参匹配；
+
 - **IR**：map = 16 字节元素动态表（键指针 + 8 字节值）——字面量/变量/实参
-  展开 `tie_table_new(16) + tie_map_set*` 序列；下标读写走 map_get/set 桥
-  （键不存在 → 运行时错误，与解释路径同文本）；len 走 tie_table_len；
+  展开 `tie_table_new(16) + tie_map_set*` 序列；下标读写走 map\_get/set 桥
+  （键不存在 → 运行时错误，与解释路径同文本）；len 走 tie\_table\_len；
+
 - **解释**：`Value::Map(HashMap)`——字面量/下标读/下标赋值/复合赋值/len/实参全支持；
+
 - 新增 C ABI 桥：`tie_map_new` / `tie_map_get(字符串)` / `tie_map_set(字符串)`
   （线性扫描键查找——自举期符号表规模小，后续可换哈希，接口不变）；
+
 - 符号表场景实测（`map<string>` 存函数名 → 地址）；frontend 156 / interp 82
   （+4 map 测试）/ llvm 41 / lsp 75 全绿。
 
-## [自举准备] 语言能力补足（E1/E5 + F1 + A1/A6 + C5 + D3）— 2026-08-10
+## \[自举准备] 语言能力补足（E1/E5 + F1 + A1/A6 + C5 + D3）— 2026-08-10
 
 自举前置方案落地（见 docs/plans/self-hosting.md）：六个障碍逐个解决，
 为「前端 + IR 生成用 tie 语言重写」铺路。
 
 ### 新增：循环控制 break/continue + 标签跳转（E1 + E5）
+
 - **词法**：`break` / `continue` 关键字（crates/tie-frontend/src/lexer.rs）；
+
 - **语法**：`Stmt::Break` / `Stmt::Continue` + 循环标签前缀 `L: while / L: for`
   （parser.rs）；
+
 - **语义**：循环上下文栈校验——循环外 break/continue 报错、标签未匹配报错
   （semantic.rs）；
+
 - **IR**：循环跳转上下文（break → exit、continue → cond/step）；for 自增抽为
   独立 step 块（ir.rs）；
+
 - **解释**：Flow::Break/Continue 携带标签，循环层消费/传播（tie-interp）；
+
 - 示例 `examples/loop_control_demo.tie`；frontend 153 / interp 77 / llvm 38 全绿。
 
 ### 修复：LLVM 后端 alloca 栈溢出（F1，0xC00000FD）
+
 - **根因**：循环体内生成的 alloca 指令每次迭代分配新栈空间（表读 ok 标志、
   临时变量等），总执行量约 5-9 万次时爆 1MB 栈；
+
 - **修复**：`emit_alloca` 统一收集，函数体生成后拼接到 entry block（LLVM 规范）；
   配套全局重编号 pass（编号倒挂修复：按行重映射 %N、变参 call 占 2 编号槽、
   void 指令不编号、按函数重置编号）；
+
 - 验证：1000 万次循环内表读压力测试 2.2s 无栈溢出；zstd/brotli 长文本回归 PASS。
 
-### 新增：table\<T\> 类型参数（A1）+ 表实参动态表化（A6）
-- **`table<T>` 语法**：`func sum(t: table<i64>)`——函数内 `t[i]` 下标访问、
+### 新增：table\<T> 类型参数（A1）+ 表实参动态表化（A6）
+
+- **`table<T>`** **语法**：`func sum(t: table<i64>)`——函数内 `t[i]` 下标访问、
   `len(t)`、`for x in t` 遍历的元素类型静态确定（ast/parser/semantic/ir 四层）；
+
 - **实参校验**：表字面量/动态表变量元素类型与 `table<T>` 一致（编译期报错）；
+
 - **A6 修复**：表字面量实参展开为 `tie_table_new + push` 序列再传指针——
   消除编译路径「表参数拼接 UB（段错误）」；
+
 - 跨函数传表不再需要「逗号分隔字符串序列」规避（自举编译器 AST 传递基础）；
+
 - 示例 `examples/table_param_demo.tie`；frontend 156 / interp 78 全绿。
 
 ### 优化：switch 整数 case 生成 LLVM 跳转表（C5）
+
 - 整数 subject + 全单值整数常量 case（无守卫）→ `switch i64 ... [ i64 v, label ]`
   （O(1) 分派）；字符串/区间/多值/守卫保留逐 case 比较链；
+
 - 示例 `examples/switch_table_demo.tie`；llvm 41 测试全绿。
 
 ### 新增：std/sort.tie 排序数组 + 二分查找（D3）
+
 - `insert_sorted_i64/string`（插入保持升序）、`contains_i64/string`（二分）、
   `index_of_i64`、`sort_i64/string`（迭代冒泡）；
+
 - 示例 `examples/sort_demo.tie` 全 PASS。
 
-### 修复：中文编码缺陷（len 字节数 vs str_char 码点索引）
+### 修复：中文编码缺陷（len 字节数 vs str\_char 码点索引）
+
 - std/string.tie 的 trim/slice 边界改用 `str_len`（码点数）——中文等多字节字符
   下尾随空白无法去除、子串错位；prep/core.tie 与 tie-prep 协议解析同步；
-- 新增 prep/test_*.tie 中文回归用例；tie-prep 12 测试全绿。
+
+- 新增 prep/test\_\*.tie 中文回归用例；tie-prep 12 测试全绿。
 
 ### 文档
+
 - **docs/plans/self-hosting.md**：自举现状盘点（已自举 4 组件 vs 未自举 15.4k 行
   Rust）+ 六个障碍决策记录 + B1 AST tag 编码规范 + C1 字符串分派模式 +
   四阶段路线图（阶段 0：E1/E5+F1 → 阶段 1：A1/A6+D3 → 阶段 2：核心重写 →
   阶段 3：enum+函数类型反哺）；
+
 - README 开发路线图更新（自举里程碑规划）。
 
-## [Harbor M6] 包管理器 E3/E4：git/registry 源 + tie.lock + 发布/搜索 — 2026-08-09
+## \[Harbor M6] 包管理器 E3/E4：git/registry 源 + tie.lock + 发布/搜索 — 2026-08-09
 
 ### 目标
+
 在 E1/E2 骨架（tie 自写 CLI + path 源）之上补齐包管理器的完整能力：
 **三种依赖源（path / git / HTTP 注册表）、tie.lock 锁文件幂等恢复、
 递归依赖解析（去重 + 冲突检测）、发布（打包 tar.gz + git tag/push）与
 注册表搜索/信息查询**。全部逻辑仍 100% 用 tie 语言编写（`pkg/` 目录）。
 
 ### 新增：pkg/ 模块（tie 语言自写）
+
 - **`pkg/fetch.tie`**（命名空间 `fetch`）——包源拉取：
+
   - git 源识别（`git+https://...` / `git+ssh://...` / `git@host:...` / 裸 https 含 `.git`）
-    + `fetch_git` 浅克隆（`git clone --depth 1 [--branch <tag>]`，克隆后清 `.git` 子目录）；
+
+    - `fetch_git` 浅克隆（`git clone --depth 1 [--branch <tag>]`，克隆后清 `.git` 子目录）；
+
   - registry 基址管理（`TIE_REGISTRY` 环境变量覆盖，默认 `https://pkg.tie-lang.org`）、
     包/索引 URL 约定（`<base>/packages/<name>/<version>.tar.gz` + `<base>/index.tie`）、
-    版本选择（精确版本直用；`^x.y`/`>=x.y`/`*` 约束经 http_get 拉 index 筛最高满足）、
+    版本选择（精确版本直用；`^x.y`/`>=x.y`/`*` 约束经 http\_get 拉 index 筛最高满足）、
     `fetch_registry` 下载解压、`resolve_from_constraints` 多约束重选；
+
 - **`pkg/lock.tie`**（命名空间 `lock`）——tie.lock 锁文件：
   生成（tie:data 文本：包名/解析版本/来源/原 spec）、解析（names/versions/sources/specs）、
   校验（`valid`：tie.pkg 每个直接依赖须能在锁中命中同名同 spec）、exists/read/write；
-- **`pkg/deps.tie`** 扩展——三源安装（install_one：path 复制 / git 克隆 / registry
+
+- **`pkg/deps.tie`** 扩展——三源安装（install\_one：path 复制 / git 克隆 / registry
   下载解压）+ `resolve`（BFS + 队头指针递归读依赖 tie.pkg → 去重 → 冲突检测，
   深度限制 3 防环；registry 冲突按全部约束集重选最高版本）+ `install_from_lock`
   （按锁条目落地 `.tie/deps/`，`.tie/cache/` 缓存命中不重复拉取）；
+
 - **`pkg/publish.tie`**（命名空间 `publish`）——`tie publish`：校验 tie.pkg 的
   name/version/main → 收集项目文件（排除 .tie/.git/target/pkg/dist 与产物）→
   系统 tar 打 `.tie/dist/<name>-<version>.tar.gz`（首层为项目文件，registry 解压直落）
   → `git tag v<version>` + `git push --tags`（best-effort；HTTP 上传接口留占位）；
+
 - **`pkg/search.tie`**（命名空间 `search`）——`tie search <query>`（index.tie 逐行
   匹配包名）/ `tie info <pkg>`（取最高版本），行格式 `包名|版本|描述`。
 
 ### 新增：CLI 子命令（pkg/main.tie + crates/tie 转发）
+
 - `tie update [包名]`——重新解析依赖并更新 tie.lock（可选包名参数当前版本
   重新解析全部依赖）；`tie publish` / `tie search <关键字>` / `tie info <包名>`；
+
 - `tie install` 改为「解析 + 生成/校验 tie.lock」流程：锁存在且未变 → 按锁幂等恢复；
   锁缺失/失效 → 递归解析三源生成锁并落地；
+
 - `tie add` 支持 git 源整体形式（`git+...`/`git@...`）与 `name@约束`
   （精确 `1.0.0` / 区间 `^1.2` / `*`）；帮助文本、依赖写法说明更新；
+
 - Rust 侧 `PKG_SUBCOMMANDS` 扩为 11 个（init/add/remove/install/update/build/run/
   publish/search/info/help）。
 
-### 修复：http_get_file 二进制下载损坏（crates/tie-interp）
+### 修复：http\_get\_file 二进制下载损坏（crates/tie-interp）
+
 - `http_get_impl` 原用 `String::from_utf8_lossy` 取正文，非法 UTF-8 字节被替换为
   U+FFFD，导致 registry 下载 tar.gz/zip 二进制包损坏（实测 15 字节变 27 字节）；
-  改为**字节级切分**（响应按字节找 `\r\n\r\n` 取正文），http_get 文本接口照旧
-  lossy 转字符串，http_get_file 原样写盘；新增回归测试
+  改为**字节级切分**（响应按字节找 `\r\n\r\n` 取正文），http\_get 文本接口照旧
+  lossy 转字符串，http\_get\_file 原样写盘；新增回归测试
   `builtin_http_get_file_binary_preserved`（73 测试全绿）。
 
 ### 端到端验收（实测记录）
+
 - registry 源：本地 `python -m http.server` 静态注册表（index.tie +
   packages/demo2lib/{1.0.0,1.1.0}.tar.gz）+ `TIE_REGISTRY` → `tie add demo2lib@1.0.0`
   → `tie install` → `.tie/deps/demo2lib/` 生成 + tie.lock 正确；`^1.0` 约束自动选
   1.1.0；import 依赖编译运行正常；再次 install 走锁文件幂等恢复（不重新拉取）；
+
 - git 源：本地裸仓库（`git init --bare` + tag v1.0.0）→ `tie add gitdemo@git+file:///...#v1.0.0`
   → install 克隆 1 次、锁恢复 0 次、无 `.git` 残留；
+
 - `tie search demo` / `tie info demo2lib` 查询本地 index 正确（info 取最高版本）；
+
 - `tie publish`：打 `.tie/dist/pubtest-2.0.0.tar.gz` + `git tag v2.0.0`（无 remote 时
   push best-effort 提示）；发布产物放入注册表后另一项目 add/install 成功（发布闭环）。
 
 ### 说明
+
 - 锁文件幂等：缓存（`.tie/cache/`）命中不重复拉取；git 克隆后清理 `.git`，
-  缓存存在性以 `tie.pkg` 文件探测（编译路径 file_exists 对目录恒 false，fopen 不可读目录）；
-- `http_get` 首版仅支持 http://，默认注册表基址 https://pkg.tie-lang.org 需经
-  TIE_REGISTRY 指向 http:// 服务才可实际下载（本地/内网静态注册表即满足）；
+  缓存存在性以 `tie.pkg` 文件探测（编译路径 file\_exists 对目录恒 false，fopen 不可读目录）；
+
+- `http_get` 首版仅支持 http\://，默认注册表基址 <https://pkg.tie-lang.org> 需经
+  TIE\_REGISTRY 指向 http\:// 服务才可实际下载（本地/内网静态注册表即满足）；
+
 - 包签名/鉴权、npm 式全局安装不在本次范围（见 docs/plans/package-manager.md §5）。
 
-## [Harbor M6] 包管理器骨架（E1/E2）：tie 语言自写 CLI — 2026-08-09
+## \[Harbor M6] 包管理器骨架（E1/E2）：tie 语言自写 CLI — 2026-08-09
 
 ### 目标
+
 包管理器是「用 tie 语言扩展 tie 工具链」自举路线的最高形态：**完整 CLI 逻辑
 （子命令解析、清单解析、依赖安装）全部用 tie 语言编写**（`pkg/` 目录），Rust
 侧只做两件事——子命令识别 + exec `pkg.exe` 转发（与 REPL 自举同一模式）。
 
 ### 新增：pkg/ 包管理器（tie 语言自写，100%）
+
 - **`pkg/main.tie`** —— CLI 入口：`arg_string(i)` 读取命令行参数，分派
   `init / add / remove / install / build / run / help` 七个子命令；帮助文本、
   init 模板生成、add 参数解析（`path:./lib_math` / `name@version`）、remove、
   install 编排、build/run（调用 tie 编译器并执行产物）；
+
 - **`pkg/manifest.tie`** —— tie.pkg 清单解析（tie:data 表字面量文本）：字段提取
   （`field`）、依赖项扫描（`dep_names`/`dep_specs` 逗号分隔序列传参，规避
   「表参数元素类型静态未知」约束）、依赖增删（`add_dep`/`remove_dep` 文本重写）；
+
 - **`pkg/deps.tie`** —— path 源安装：`copy_dir` 递归复制源目录到
   `.tie/deps/<包名>/`（幂等重装：先 `remove_dir_all` 清旧）；registry/git 源
   提示跳过（后续阶段）；
+
 - 复用 `std/version.tie` 的 semver 版本比较（add 时校验 `x.y.z` 格式）。
 
 ### 新增：Rust 侧子命令识别（crates/tie/src/main.rs）
+
 - 首个参数命中 `init/add/remove/install/build/run/help` 且非 `.tie` 文件 →
   查找并 exec `pkg.exe`（查找顺序：`TIE_PKG_EXE` → tie.exe 同目录 → 当前目录
   → `pkg/` 目录 → tie.exe 向上回溯 workspace，兼容任意项目目录运行）；
+
 - 参数原样透传、退出码透传；`.tie` 文件/`-` 选项走既有编译路径（回归安全）。
 
 ### 演示与文档
+
 - `examples/pkg_demo.md`：端到端用法说明（init → add → install → build/run）；
+
 - `examples/demo_pkg/`：`tie init` 生成的示例项目（依赖 `../lib_colors` 目录源）；
+
 - README：CLI 用法加包管理器子命令表、工程结构加 `pkg/`、路线图 M6 标记。
 
 ### 说明
+
 - 首版范围：仅 path 源平铺复制（不做依赖图解析）；git/registry 源、tie.lock
   锁文件、`tie update` 为后续阶段（见 docs/plans/package-manager.md）；
+
 - 构建 `pkg.exe`：`cargo build --release -p tie-interp` +
   `target/release/tie-llvm.exe pkg/main.tie -o pkg/pkg.exe`。
 
-## [M4 补齐] 语言能力扩展：trit 类型 + 多进制字面量 + exmath/radix 库 — 2026-08-09
+## \[M4 补齐] 语言能力扩展：trit 类型 + 多进制字面量 + exmath/radix 库 — 2026-08-09
 
 ### 语言特性：平衡三进制 trit 类型（三值逻辑，数论常用）
+
 - 新增基本类型 `trit`：值域 -1/0/+1（平衡三进制，类似 bool 的三值扩展），LLVM i8 存储；
+
 - 三值字面量：`true`（+1）/ `zero`（0）/ `false`（-1）；`true`/`false` 在 trit 标注
   上下文中适配为 trit 值，裸 `true` 仍为 bool；
+
 - **Kleene 三值逻辑**：`&&` = min、`||` = max、`!` = 取反（-1↔1，0 保持）；
-- **饱和算术**：`trit ± * trit` → trit（clamp 到 [-1,1]）；trit × i64 → i64（sext 提升）；
-  比较（==/!=/</>/<=/>=）与 trit 或 i64 → bool；div/mod 不允许；
+
+- **饱和算术**：`trit ± * trit` → trit（clamp 到 \[-1,1]）；trit × i64 → i64（sext 提升）；
+  比较（==/!=/\</>/<=/>=）与 trit 或 i64 → bool；div/mod 不允许；
+
 - 转换：`to_string(trit)` → "-1"/"0"/"1"；新增内置 `parse_trit(s)` → trit（非法报错，
-  C ABI 桥 tie_parse_trit，两路径一致）；
-- 五层同步：lexer（TyKw::Trit + TokenKind::Zero + scan_ident）、ast（Expr::TritLit）、
+  C ABI 桥 tie\_parse\_trit，两路径一致）；
+
+- 五层同步：lexer（TyKw::Trit + TokenKind::Zero + scan\_ident）、ast（Expr::TritLit）、
   parser（zero → TritLit(0)）、semantic（类型推导 + 字面量适配 + Kleene 规则 +
-  to_string 放宽 + parse_trit）、interp（Value::Trit + eval_binary trit 分支 +
-  VarDecl 字面量适配）、IR（i8 生成 + gen_binary_trit icmp/select clamp + sext 混合 +
-  BoolLit/Return 适配 + tie_parse_trit 声明）；
+  to\_string 放宽 + parse\_trit）、interp（Value::Trit + eval\_binary trit 分支 +
+  VarDecl 字面量适配）、IR（i8 生成 + gen\_binary\_trit icmp/select clamp + sext 混合 +
+  BoolLit/Return 适配 + tie\_parse\_trit 声明）；
+
 - 典型用途：三路比较（compare 返回 -1/0/+1）、三态逻辑（未知态）。
 
 ### 语言特性：多进制整数字面量
+
 - `0x`/`0X` 十六进制、`0b`/`0B` 二进制、`0o`/`0O` 八进制、`0t`/`0T` 三进制
   （t = ternary，数论常用）；
+
 - 非法输入（进制空/越进制数字/溢出）回退 0（与十进制 parse 防御一致）；
-- 新增 parse_radix 辅助（按进制解析 + 溢出防护）。
+
+- 新增 parse\_radix 辅助（按进制解析 + 溢出防护）。
 
 ### 标准库：exmath 高级数学算法库（std/exmath.tie，命名空间 exmath）
-- 霍夫曼编码/解码（无损压缩）：huffman_build/encode/decode（"字符|编码串" 编码表，
+
+- 霍夫曼编码/解码（无损压缩）：huffman\_build/encode/decode（"字符|编码串" 编码表，
   纯追加表模拟树 + BFS 生成编码）；
-- 数论/组合：is_prime（试除法）、sieve_to_string（素数筛）、pow_mod（快速幂）、
+
+- 数论/组合：is\_prime（试除法）、sieve\_to\_string（素数筛）、pow\_mod（快速幂）、
   fib（斐波那契）、factorial（阶乘）、binom（组合数）；
-- 修复既有 bug：table_arg_elem_ty 的 Call 分支缺 table_new_* 识别（return table_new_string()
+
+- 修复既有 bug：table\_arg\_elem\_ty 的 Call 分支缺 table\_new\_\* 识别（return table\_new\_string()
   等内联调用报"未定义或不是返回表的函数"）+ 回归测试。
 
 ### 标准库：radix 通用进制转换库（std/radix.tie，命名空间 radix）
+
 - `radix.to_str(v, base)`：整数 → 任意进制字符串（2..36，负数带 -）；
+
 - `radix.parse(s, base)`：任意进制字符串 → 整数（大小写均可，非法返回 0）；
+
 - `radix.digits(base)`：进制数字字符集。
 
 ### 说明
-- 本条目为 Harbor M4 后的语言能力补齐（M4 尚未完全收官，补齐归入 M4 阶段）；
-- 演示：examples/trit_demo.tie、examples/exmath_demo.tie、examples/radix_demo.tie。
 
-## [Harbor M4] 标准库重构：补全常用函数 + using 简化内部调用 — 2026-08-09
+- 本条目为 Harbor M4 后的语言能力补齐（M4 尚未完全收官，补齐归入 M4 阶段）；
+
+- 演示：examples/trit\_demo.tie、examples/exmath\_demo.tie、examples/radix\_demo.tie。
+
+## \[Harbor M4] 标准库重构：补全常用函数 + using 简化内部调用 — 2026-08-09
 
 ### 语言特性：顶层持久变量（var/const 全局，M4 新增）
+
 - 顶层允许 `var name: Ty = 字面量` / `const name: Ty = 字面量`（标量类型 i8..u64/f32/f64/
   bool/char/string；字面量初始化）——**跨函数共享的可变状态**，tie 语言自身表达
-  （此前无全局状态，消息系统的语言/字典只能下沉 Rust thread_local 原语）
+  （此前无全局状态，消息系统的语言/字典只能下沉 Rust thread\_local 原语）
+
 - 函数体内：读直接引用（作用域未命中查全局表）、写 `name = v`（const 全局拦截赋值）
+
 - 四层同步：parser（顶层 Var/Const）、semantic（globals 收集 + 校验 + Var/Assign 解析 +
-  ns_path_segments/ns_call_full_name 全局判定）、IR（`@name = global Ty 字面量` +
-  load/store）、interp（register_top_level → 会话 globals）
+  ns\_path\_segments/ns\_call\_full\_name 全局判定）、IR（`@name = global Ty 字面量` +
+  load/store）、interp（register\_top\_level → 会话 globals）
+
 - 命名空间裸调用补全升级：**逐级外层**（log::error 内裸调 log 的 lookup）；
-  check_visibility 子命名空间可访问父命名空间私有函数（与逐级补全配套）
+  check\_visibility 子命名空间可访问父命名空间私有函数（与逐级补全配套）
 
 ### log 增强（M4，移入 ext/ 扩展库）
+
 - **ext/ 扩展库（Extension）**：log 从 std/ 移入 ext/——有状态/应用级能力分层
   （std = 无状态纯函数工具；ext = 依赖 std 与语言底座的扩展，随发行版内置）
-- 状态纯 tie 化：消息级别（msg_level 全局变量）与回退语言链（msg_fallbacks 全局变量）
-- 带参消息：error_f/warn_f/info_f/debug_f（msg_t 模板 + format.sprintf 填充 {}）
-- 级别体系：debug(0) < info(1) < warn(2) < error(3)，set_level/level 控制只输出 >= 阈值
-- 输出通道：error/warn/debug 走 **stderr**（新原语 print_err），info 走 stdout
-- 字典管理：register_all 批量登记（"key|lang|text"）、lang() 查询、set_fallbacks 多级回退
-  （新原语 msg_t_lang 指定语言查询，回退链遍历由 log 纯 tie 实现）
+
+- 状态纯 tie 化：消息级别（msg\_level 全局变量）与回退语言链（msg\_fallbacks 全局变量）
+
+- 带参消息：error\_f/warn\_f/info\_f/debug\_f（msg\_t 模板 + format.sprintf 填充 {}）
+
+- 级别体系：debug(0) < info(1) < warn(2) < error(3)，set\_level/level 控制只输出 >= 阈值
+
+- 输出通道：error/warn/debug 走 **stderr**（新原语 print\_err），info 走 stdout
+
+- 字典管理：register\_all 批量登记（"key|lang|text"）、lang() 查询、set\_fallbacks 多级回退
+  （新原语 msg\_t\_lang 指定语言查询，回退链遍历由 log 纯 tie 实现）
+
 - 新增原语共 2 个：`print_err(s)`（stderr 输出）、`msg_t_lang(key, lang)`（指定语言
   查询，未命中空串）——四层同步（interp C ABI + eval、semantic 校验、IR declare/生成）
 
 ### 标准库补全
+
 - **string.tie**（str 命名空间）：新增 `to_upper`/`to_lower`（ASCII 查表大小写转换）、
   `join`（字符串表连接，与 split 互逆）、`repeat`（重复拼接）、`trim_start`/`trim_end`
   （单侧去空白；trim 复用二者）
+
 - **math.tie**（math 命名空间）：新增 `gcd`（欧几里得辗转相除，负数取绝对值）、
   `lcm`（先除后乘避免中间溢出，任一为 0 → 0）、`pow_i`（整数幂，负指数返回 0）
+
 - **format.tie**（format 命名空间）：新增 `sprintf(fmt, args: table)` 占位符格式化
   ——`{}` 依次替换为字符串表元素（tie 无变参，多值用表参数传入），未配对占位符补空串
+
 - **csv.tie**（csv 命名空间）：新增 `csv_write(path, lines)` 写行表（`join(lines, "\n")`
-  无尾换行，与 csv_read 的 split 对称——写读往返不产生空行元素）
+  无尾换行，与 csv\_read 的 split 对称——写读往返不产生空行元素）
+
 - **assert.tie**（assert 命名空间）：新增 `assert_eq_f64`/`assert_eq_str`（浮点/字符串断言）
 
 ### using 简化内部调用（M2.1.7 特性落地）
+
 - csv.tie / log.tie 改用 `using str;` 后**裸调用** str 命名空间函数
-  （csv_cells 裸调 split、strip_cr 裸调 slice、no_file 裸调 starts_with）
+  （csv\_cells 裸调 split、strip\_cr 裸调 slice、no\_file 裸调 starts\_with）
 
 ### 修复的编译器 bug（标准库重构暴露）
-1. **ns_call_full_name 未支持 using（M2.1.7 遗留）**：表元素类型查询（dynamic_table_elem_ty /
-   table_arg_elem_ty）解析裸调用只认裸名/ns_stack 前缀补全，漏了 using 引入的命名空间 →
+
+1. **ns\_call\_full\_name 未支持 using（M2.1.7 遗留）**：表元素类型查询（dynamic\_table\_elem\_ty /
+   table\_arg\_elem\_ty）解析裸调用只认裸名/ns\_stack 前缀补全，漏了 using 引入的命名空间 →
    `using str` 后裸调 split（返回表）误报「函数 'split' 未定义或不是返回表的函数」；
    补第三候选（唯一候选，多候选歧义返回 None）
-2. **IR gen_dyn_table_var 裸调用绕过 resolved_calls**：动态表变量初始化（`var raw = split(...)`）
+2. **IR gen\_dyn\_table\_var 裸调用绕过 resolved\_calls**：动态表变量初始化（`var raw = split(...)`）
    直接按函数名生成调用 → using 裸调命中全名（str::split）时查签名失败；改先查
-   resolved_calls（与 gen_expr 的 Call 分支一致）
+   resolved\_calls（与 gen\_expr 的 Call 分支一致）
 3. **下标访问不支持返回表的函数调用**：语义层 Index 分支只认表变量/表字面量，
-   IR gen_index 只认变量 → `csv.csv_cells(...)[0]` 报错；语义层加 Call/MethodCall 分支
-   （查 table_ret_elems 元素类型），IR 层加调用结果 base（求值拿动态表指针走 tie_table_at）
+   IR gen\_index 只认变量 → `csv.csv_cells(...)[0]` 报错；语义层加 Call/MethodCall 分支
+   （查 table\_ret\_elems 元素类型），IR 层加调用结果 base（求值拿动态表指针走 tie\_table\_at）
 
 ### 验证
+
 - workspace 全量 **321 全绿**（137 frontend + 59 interp + 34 llvm + 75 lsp + 6 prep + 10 tie）
-- 新增 examples/std_refactor_demo.tie 综合演示（str 大小写/trim 拆分/join/repeat、
-  math gcd/lcm/pow_i、sprintf、csv_write 往返、assert 泛化——21 项输出全对）
-- 新增 examples/log_enhance_demo.tie（register_all/error_f 带参/debug 级别与
-  set_level/set_fallbacks 回退 en/lang/level/stderr 通道——stdout 与 stderr 分离验证）
-- 全部 std demo 回归通过（std/csv/log/format/std_math/ns_import/oop）
+
+- 新增 examples/std\_refactor\_demo.tie 综合演示（str 大小写/trim 拆分/join/repeat、
+  math gcd/lcm/pow\_i、sprintf、csv\_write 往返、assert 泛化——21 项输出全对）
+
+- 新增 examples/log\_enhance\_demo.tie（register\_all/error\_f 带参/debug 级别与
+  set\_level/set\_fallbacks 回退 en/lang/level/stderr 通道——stdout 与 stderr 分离验证）
+
+- 全部 std demo 回归通过（std/csv/log/format/std\_math/ns\_import/oop）
+
 - `cargo build --workspace` 零错误
 
 ### 文档
+
 - README：M3 里程碑更正为 **✅ 完成**（预处理器自举阶段一/二已全部落地）；
   新增 Harbor M4 行；工程结构补 **ext/** 扩展库目录；std/ 结构描述同步
+
 - scripts/package.ps1：发行版打包补录 std/ 与 ext/（用户程序 import 依赖本地库目录）
-- 新增 examples/std_refactor_demo.tie、examples/log_enhance_demo.tie；
+
+- 新增 examples/std\_refactor\_demo.tie、examples/log\_enhance\_demo.tie；
   CHANGELOG 历史条目保留原样
 
-## [Harbor M2.1.8] 数据结构与逻辑分离：struct 取代 class，方法移出为命名空间函数 — 2026-08-09
+## \[Harbor M2.1.8] 数据结构与逻辑分离：struct 取代 class，方法移出为命名空间函数 — 2026-08-09
 
 ### 语言体系重构（class → struct 纯数据 + 命名空间函数方法）
+
 - `class` 改名 **`struct`** 并成为**纯数据**（类体只允许字段 `var name[: Ty] [= 默认值]`；
   方法语法出现在 struct 体内 → 报错并提示用命名空间函数定义）
+
 - **方法 = 绑定 struct 名的命名空间函数**：`namespace Point { pub func dist(p: Point) }`，
   `obj.method()` 由编译器**转发**为 `Point::dist(&obj)`；`Point.origin()`（struct 名调用）
   为静态风格（无接收者）
-- **接收者按引用传递**（首参 LLVM ptr，by_ptr 绑定）：函数内字段修改反映到调用方
+
+- **接收者按引用传递**（首参 LLVM ptr，by\_ptr 绑定）：函数内字段修改反映到调用方
   （与 class 时代 this 指针机制一致，只是显式首参）；继承沿链解析（子 → 父），
   子实例调父方法时接收者地址直接可用（字段布局前缀一致）
+
 - **this / static 关键字废弃**（变普通标识符，方法函数用显式首参）；`method` 早已废弃
+
 - 方法函数必须 `pub`（否则 `obj.method()` 转发被私有拦截）；无接收者函数经实例调用
   → 参数个数报错（含接收者对象）
 
 ### 四层同步
+
 - lexer：Struct token（删 Class/This/Static；关键字 22 → 20）
-- parser：parse_struct（只字段）、删 parse_method；顶层/命名空间体认 struct
-- semantic：collect_structs/flatten_struct（只拍平字段）、MethodCall 转发（沿继承链 +
-  struct_assignable 首参兼容 + 可寻址校验）、删 MethodSig/check_method/ClassInfo 方法表、
+
+- parser：parse\_struct（只字段）、删 parse\_method；顶层/命名空间体认 struct
+
+- semantic：collect\_structs/flatten\_struct（只拍平字段）、MethodCall 转发（沿继承链 +
+  struct\_assignable 首参兼容 + 可寻址校验）、删 MethodSig/check\_method/ClassInfo 方法表、
   this 特殊处理全删
-- IR：方法生成并入 gen_ns_fns（`@Point$dist`）；gen_fn 方法函数首参 by_ptr 引用；
-  gen_call_inner 实例转发传 receiver 地址；删除原 gen_method/gen_static_call/
-  gen_instance_call/emit_method_call/值降级 extractvalue
+
+- IR：方法生成并入 gen\_ns\_fns（`@Point$dist`）；gen\_fn 方法函数首参 by\_ptr 引用；
+  gen\_call\_inner 实例转发传 receiver 地址；删除原 gen\_method/gen\_static\_call/
+  gen\_instance\_call/emit\_method\_call/值降级 extractvalue
+
 - interp：Stmt::Struct/TypeSpec::Struct 适配（REPL 仍不支持 struct 值）
-- LSP：classify_ident（struct 定义名 → STRUCT；struct 名构造 → CLASS，命名空间链段
+
+- LSP：classify\_ident（struct 定义名 → STRUCT；struct 名构造 → CLASS，命名空间链段
   不误判）、关键词表/补全 detail/hover「**类**：struct」、定义收集方法函数裸名跳转、
   `Point.` 补全走命名空间函数
 
 ### 示例与负例
+
 - examples/oop.tie 重写为 struct + 命名空间函数（42/Hello, tie!/3/100/5/10/Rex/3/
   Golden/Rex barks/I am a Golden/Cat makes a sound 全对）
-- oop_neg_a~e 重写：字段访问不可寻址 / 方法函数未 pub 私有拦截 / 无接收者经实例调用 /
+
+- oop\_neg\_a\~e 重写：字段访问不可寻址 / 方法函数未 pub 私有拦截 / 无接收者经实例调用 /
   struct 继承环 / 字段跨链重名——5 个负例全部按新消息报错
 
 ### 测试与验证
+
 - frontend +1（struct 体内方法报错），重写 OOP 语义/IR/LSP 测试为 struct 风格 →
   workspace 全量 **321 全绿**（137 frontend + 59 interp + 34 llvm + 75 lsp + 6 prep + 10 tie）
-- 端到端：oop / std_demo / csv_demo / tcmsg_demo / ns_import_demo / import_nested 全过；
+
+- 端到端：oop / std\_demo / csv\_demo / tcmsg\_demo / ns\_import\_demo / import\_nested 全过；
   继承方法转发（子实例调父方法 "hi Rex"）验证通过
+
 - `cargo build --workspace` 零错误
 
 ### 文档与扩展同步
+
 - docs/language.md：§8 重写为「数据结构与逻辑分离」（struct/命名空间函数/继承/转发/
   限制）；§9.1 关键词表（struct 替换 class，删 static/this）
-- docs/ai-guide.md §2.8 + 架构描述（collect_structs/方法转发/gen_ns_fns/by_ptr）、
+
+- docs/ai-guide.md §2.8 + 架构描述（collect\_structs/方法转发/gen\_ns\_fns/by\_ptr）、
   prompt-pack struct 段与硬性规则
+
 - README：M3 行 class→struct；M2 行补 M2.1.8
+
 - VSCode 扩展：tmLanguage 关键词（struct 替换 class，删 this/static）、片段、智能缩进同步
 
-## [Harbor M2.1.7] 单文件命名空间：pub 可见性 + using 引入 + import 别名唯一入口 — 2026-08-09
+## \[Harbor M2.1.7] 单文件命名空间：pub 可见性 + using 引入 + import 别名唯一入口 — 2026-08-09
 
 落地规划 docs/plans/namespace-single-file.md，让命名空间成为真正的**模块边界**。
 
 ### 可见性控制（pub func）
+
 - 命名空间内函数默认**私有**（仅同命名空间可见），`pub func` 显式导出后跨命名空间/跨文件可调；顶层函数恒公有
-- 四层同步：lexer（Pub 关键字）、parser（parse_fn_def 支持 `[pub] func`，命名空间体/顶层均可）、
-  semantic（FuncSig.is_pub + check_visibility：私有函数跨命名空间调用编译期报错）、
-  IR/interp（无求值变化，is_pub 仅编译期可见性）
+
+- 四层同步：lexer（Pub 关键字）、parser（parse\_fn\_def 支持 `[pub] func`，命名空间体/顶层均可）、
+  semantic（FuncSig.is\_pub + check\_visibility：私有函数跨命名空间调用编译期报错）、
+  IR/interp（无求值变化，is\_pub 仅编译期可见性）
+
 - std 库 37 个公有 API 函数显式加 pub（assert 3 / string 8 / math 13 / csv 2 / format 4 / tcmsg 7；
-  is_whitespace、strip_cr 保持私有作为内部辅助）；examples 库文件同步加 pub
+  is\_whitespace、strip\_cr 保持私有作为内部辅助）；examples 库文件同步加 pub
 
 ### using 引入语句
+
 - 语法 `using fmt;` / `using fmt.inner;` / `using f2.inner;`（别名 + 子路径），仅顶层
+
 - 目标必须是已 import 引入的命名空间前缀或别名；引入后其公有函数可**裸名调用**
+
 - 裸调用解析升级为三候选：顶层裸名 → 当前命名空间前缀补全 → using 引入命名空间（唯一候选，多候选报歧义）
+
 - 未导入目标 / 重复 using → 编译期报错
 
 ### import 别名唯一入口
+
 - `import "./x.tie" as f2` 后原命名空间前缀在导入方**不可用**（必须用别名访问），
   避免同名命名空间跨文件冲突；违规用原前缀 → 报「已被别名取代」
+
 - 别名 + 嵌套命名空间：`f2.inner.deep()` → `fmt::inner::deep`（imports.rs 展开时收集
   被导入文件全部命名空间路径填回 import 语句，语义层据此构建导入视图）
 
 ### 测试与验证
+
 - frontend +11（pub 放行/私有拦截/同命名空间互调/using 裸调用/未导入/重复/歧义/别名唯一入口/
   别名原前缀违规/别名嵌套/using 嵌套路径）→ **136**；workspace 全量 **320 全绿**
   （136 frontend + 59 interp + 34 llvm + 75 lsp + 6 prep + 10 tie）
-- 端到端：namespace_demo / import_main / import_nested 回归通过；新增
-  examples/lib_ns_tools.tie + examples/ns_import_demo.tie（别名 + using + 私有互调全对）；
+
+- 端到端：namespace\_demo / import\_main / import\_nested 回归通过；新增
+  examples/lib\_ns\_tools.tie + examples/ns\_import\_demo.tie（别名 + using + 私有互调全对）；
   std 库 6 个 demo（std/csv/tcmsg/format/math/oop）回归通过；私有拦截/唯一入口违规负例报错正确
 
 ### 文档与扩展同步
+
 - docs/language.md：§7.1 单文件命名空间（pub/using/别名规则要点）；§9.1 关键词表补
   namespace/pub/using 三行
+
 - README：M2 行补 M2.1.7、docs/plans 列表；CHANGELOG 历史条目保留原样
+
 - docs/plans/namespace-single-file.md：状态改「已实现」，语法更新为 pub func + using
+
 - VSCode 语法文件：关键词补 pub/using/when（when 为 M2.1.5 遗漏，一并补齐）
 
-## [Harbor M2.1.6] 统一 func 写法：str 库去前缀 + method 关键字废弃 — 2026-08-09
+## \[Harbor M2.1.6] 统一 func 写法：str 库去前缀 + method 关键字废弃 — 2026-08-09
 
 按规划 docs/plans/unified-func-style.md 落地「统一函数写法」，标准库成为风格模板：
 
 ### 命名空间内函数去前缀（std/string.tie 8 个函数重命名）
+
 - `str_trim`→`trim`、`str_slice`→`slice`、`str_contains`→`contains`、`str_find`→`find`、
   `str_starts_with`→`starts_with`、`str_ends_with`→`ends_with`、`str_replace`→`replace`、
   `str_split`→`split`（v1 前无外部用户，旧名直接删除不保留别名）
-- 调用处全量同步：std/csv.tie（str.split / str.slice）、std/tcmsg.tie（str.starts_with）、
-  examples/std_demo.tie、examples/csv_demo.tie、prep/core.tie 注释、crates 注释与测试代码
+
+- 调用处全量同步：std/csv.tie（str.split / str.slice）、std/tcmsg.tie（str.starts\_with）、
+  examples/std\_demo.tie、examples/csv\_demo.tie、prep/core.tie 注释、crates 注释与测试代码
+
 - 外部形态：`str.trim(...)` / `str.split(...)`；命名空间内互调保持裸调用
 
 ### method 关键字废弃，类内方法统一 func 定义
+
 - 语法：`func dist() -> i64 { }`（实例方法，this 绑定）/ `static func origin()`（静态方法）；
   `method` 不再是关键字（普通标识符），调用语法 `obj.method(...)` / `类名.method(...)` 不变
-- 四层同步：lexer（删除 Method token 与关键字映射）、parser（parse_class/parse_method
+
+- 四层同步：lexer（删除 Method token 与关键字映射）、parser（parse\_class/parse\_method
   改认 Func）、semantic/IR/interp 无求值变化（MethodDefStmt 内部结构保留）
+
 - LSP 同步：语义高亮方法定义名归类 function（func 关键字后）、补全 detail 签名前缀
   `func name(...)`、关键字列表移除 method、跳转定义列号随 `func`（4 字符）校正
-- 示例 oop.tie / oop_neg_a/b/c.tie 全部改为 func 写法
+
+- 示例 oop.tie / oop\_neg\_a/b/c.tie 全部改为 func 写法
 
 ### 验证
+
 - workspace 全量 **309 测试全绿**（frontend 125 / interp 59 / llvm 34 / lsp 75 / prep 6 / tie 10）；
   lsp 3 个跳转定义测试列号随 func 校正
+
 - `cargo build --workspace` 零错误
 
 ### 文档同步
+
 - docs/language.md：§8 面向对象方法定义示例与说明、§9.1 关键字速查表（删 method 行）
+
 - docs/ai-guide.md、docs/prompt-pack.md：class/OOP 示例全部 func 写法
+
 - README.md：M2 行补充 M2.1.6 说明；std/ 结构行示例更新
+
 - docs/plans/unified-func-style.md：状态改为「已实现」
 
-## [docs] tie:script 模块协议文档 — 2026-08-08
+## \[docs] tie:script 模块协议文档 — 2026-08-08
 
 tie:script 是「宿主进程 ↔ tie 脚本」的执行协议（`eval` 注册 + `eval_call`
 字符串值直传调用），此前散见于零散章节，现整理为**独立完整文档**：
 
 ### 新增
-- **docs/tie-script.md**：tie:script 模块协议完整说明——核心机制（eval / eval_call
+
+- **docs/tie-script.md**：tie:script 模块协议完整说明——核心机制（eval / eval\_call
   / 字符串值直传）、模块约定（`func process(src: string) -> string` 入口 + 自包含
   约束）、协议文本格式（`ROLE:`/`HEADERS:`/`H:`/`BODY:` 字节计数正文）、三层调用
   入口（Rust 侧 `run_module` / CLI `--module` / tie 程序内 `eval`/`eval_call`）、
@@ -1897,13 +2430,17 @@ tie:script 是「宿主进程 ↔ tie 脚本」的执行协议（`eval` 注册 +
   设计约束与限制、相关文件与文档索引。
 
 ### 同步更新
-- README.md：文档目录表加 docs/tie-script.md 条目、工程结构补一行；
-- docs/language.md §2.4：预处理自举一节末尾加 tie:script 引用；
-- docs/ai-guide.md：§7 tie-interp 描述更新（解释执行 + eval/eval_call + C ABI 桥，
-  不再"占位"）；新增 §9.3 tie:script 模块协议小节；§11 任务索引补 tie:script 任务行；
-- docs/prompt-pack.md：新增【tie:script 动态执行】（eval / eval_call 内置函数）小节。
 
-## [Harbor M2.1.5] switch 模式匹配增强：多值 / 区间 / 守卫 / 类型匹配 — 2026-08-08
+- README.md：文档目录表加 docs/tie-script.md 条目、工程结构补一行；
+
+- docs/language.md §2.4：预处理自举一节末尾加 tie:script 引用；
+
+- docs/ai-guide.md：§7 tie-interp 描述更新（解释执行 + eval/eval\_call + C ABI 桥，
+  不再"占位"）；新增 §9.3 tie:script 模块协议小节；§11 任务索引补 tie:script 任务行；
+
+- docs/prompt-pack.md：新增【tie:script 动态执行】（eval / eval\_call 内置函数）小节。
+
+## \[Harbor M2.1.5] switch 模式匹配增强：多值 / 区间 / 守卫 / 类型匹配 — 2026-08-08
 
 switch 语句从「单值字面量比较」升级为**类 Rust match / C# switch 的模式匹配**
 （规划 docs/plans/switch-pattern-matching.md 落地）。
@@ -1926,85 +2463,116 @@ switch n {
 ```
 
 ### 四层实现
+
 - **AST**（ast.rs）：`SwitchCase.value` → `patterns: Vec<Expr>`（多值）+ 新增 `when: Option<Expr>`
   守卫；新增 `Expr::TypeLit`（类型字面量，仅 case pattern 位置）；
+
 - **词法**（lexer.rs）：新增关键字 `when`；
+
 - **语法**（parser.rs）：`case 模式[, 模式]... [when 条件]:`；类型关键字直接生成 TypeLit；
+
 - **语义**（semantic.rs）：每个 pattern 逐一校验——字面量（类型一致 + 编译期 + 不重复，
   沿用现状）、区间（两端整数/字符字面量且 `start < end`、与 subject 类型一致、区间去重）、
   类型匹配（当前 switch 对象为静态类型 → 报错「仅宽类型或动态容器」）、when 守卫
   （必须布尔表达式）；多值与区间与守卫可自由组合；
+
 - **IR**（ir.rs）：比较块改写为「多值 icmp eq OR 合并 → 区间 `sge && slt` AND 合并 →
   when 守卫 AND」的比较链；TypeLit 不应到达 IR（语义层已拦截，加内部错误兜底）；
+
 - **解释器**（tie-interp）：`Stmt::Switch` 求值对齐——Range 左闭右开数值比较、
   TypeLit 按 Value 动态变体匹配（`value_matches_ty`）、when 守卫 `is_truthy`，
   与编译路径语义一致。
 
 ### 测试与验证
+
 - 测试 +16 → **309 全绿**：parser 1（多值/区间/守卫/类型 AST 形态）、semantic 11
   （通过 5 + 报错 6：浮点区间 / start>end / 区间类型不匹配 / 静态类型上类型匹配 /
   守卫非布尔 / 多值非字面量 / 多值重复）、IR 3（多值 OR / 区间 AND / 守卫 AND）、
   interp 1（eval 层行为一致：多值/区间边界/守卫拦截与放行/字符区间/类型匹配/组合/省略 default）；
+
 - 端到端：`examples/switch_pattern.tie` 编译运行输出全部正确（多值/区间/守卫/字符区间/字符串/组合）；
+
 - 全工作区 `cargo build --workspace` 零错误。
 
 ### 文档与示例
+
 - docs/language.md：§5.1 新增 switch 模式匹配小节、§9.1 关键词表补 switch/case/default/when、
   §9.3 符号表补 `..` 区间用法；
+
 - docs/ai-guide.md §2.3、docs/prompt-pack.md 控制流段同步多值/区间/守卫/类型匹配；
-- 新增 examples/switch_pattern.tie 示例。
+
+- 新增 examples/switch\_pattern.tie 示例。
+
 - 顺带修正 CHANGELOG 里程碑命名说明重复一行。
 
-## [Harbor M3 阶段二] 协调统筹增强：配置文件 + 缓存池 + 并行分片编译 — 2026-08-08
+## \[Harbor M3 阶段二] 协调统筹增强：配置文件 + 缓存池 + 并行分片编译 — 2026-08-08
 
 多文件编译的协调统筹增强：`tie` 支持通过配置文件（`tie.config`，tie:data 格式）
 开启**多线程分片编译 + 阶段间缓存池**，把「编译一个项目」从单文件串行升级为
 「按文件分片 → 三阶段并行 + 阶段屏障」的流水线。
 
 ### 新增
+
 - **配置文件（`crates/tie/src/config.rs`）**：`tie.config` 使用 tie 语言自己的数据
   交换格式（tie:data），正文为一个表字面量。复用 `tie_frontend::lexer::tokenize`
   （词法完全一致、注释自动跳过），对 token 流做表字面量递归下降解析（绕过语义层——
   语义层目前拒绝字符串 id 表）。配置键：
+
   - `advanced.enabled`（bool）：多线程分片编译总开关（默认关闭，保证原有单文件行为不变）
+
   - `advanced.threads`（int）：并行线程数（0 = 按 CPU 核数自动）
+
   - `cache.size`（字节，默认 256MB）、`cache.storage`（`memory` 进程内 / `file` 磁盘目录）、
     `cache.path`（缓存目录；memory 存储也用作中间文件工作目录）
+
   - 查找顺序：`--config` 显式指定 > 当前目录 `tie.config` > 默认（全关闭，不报错）
+
   - 兼容负数（`threads: -1` 报「不能为负数」）、空输入/仅注释返回默认配置
+
 - **缓存池（`crates/tie/src/cache.rs`）**：`CachePool` 阶段间中转仓库（LRU，
   容量超限按最久未访问淘汰）。`prep:<名>` 存预处理正文、`ir:<名>` 存 IR 文本——
   阶段间流转即「所有切片都释放到缓存池后，进行下一步」（与设计图一致）。
   流水线结束时 `clear()` 清空缓存并删除工作目录。
+
 - **分片流水线（`crates/tie/src/pipeline.rs`）**：`Pipeline::new` 展开输入（目录输入
   收集其中全部 `.tie` 文件）→ 每个文件一个切片（去扩展名路径作为切片名）→ 三阶段：
+
   - 阶段 1 预处理（并行）→ 阶段 2 前端+IR（并行，logic 无 main 报错、data/ui/db 跳过）→
     阶段 3 后端（并行：从缓存池取 IR → 写独立工作目录 `.ll` → opt → 链接/归档成 `.exe`）
+
   - 每阶段用 `std::thread::scope` + 按线程数分片 spawn 实现**并行屏障**（join 后统一读取
     结果，任一失败即停止后续阶段）；`--emit-ir` 在阶段 2 后写回输入同名 `.ll` 结束
+
   - 单切片时 `-o` 透传、多切片各自默认命名；角色分派与单文件路径一致
 
 ### 变更
+
 - **main.rs**：`--config <file>` 选项 + `config::load` 接管；`advanced.enabled` 时
   全部输入进入 `Pipeline`（`--prep-only` 在分片模式下拒绝）；USAGE 同步更新
+
 - **tie-llvm driver**：重构出 `compile_from_ir`（取 IR 路径 + IR 元数据 + 头部信息 +
   选项 → opt/后端），`compile`（源码完整链路）改为复用其核心，pipeline 阶段 3 直接调用
+
 - tie/Cargo.toml 新增依赖 tie-frontend（config 复用其 lexer）；Cargo.lock 同步
 
 ### 测试
+
 - 全工作区测试通过（frontend 112 / interp 58 / llvm 31 / lsp 75 / prep 6 / **tie 10**）
+
 - 新增 config 6 个（空配置返回默认 / 完整配置解析 / 缺省键走默认 / 非法存储技术报错 /
   负线程数报错 / 注释被词法器跳过）、cache 4 个（put/get 往返、file 落盘与读回、
   访问刷新 LRU 顺序、超限按 LRU 淘汰）
+
 - 端到端：临时双文件项目 + `tie.config`（advanced 开启、threads=2）并行编译出 2 个
   可执行文件、运行输出正确、缓存目录编译后完全清理
 
-## [Harbor M3 阶段一] 预处理器自举：核心逻辑 tie 语言化 — 2026-08-08
+## \[Harbor M3 阶段一] 预处理器自举：核心逻辑 tie 语言化 — 2026-08-08
 
 编译器自举第一阶段：`tie-prep` 的预处理核心逻辑（头部提取 / 角色判定 / 正文重建）
 完全用 tie 语言重写，Rust 侧降为解释执行壳。
 
 ### 新增
+
 - **`prep/core.tie`（tie 语言自写预处理模块）**：`namespace prep` 内含 9 个函数
   （`is_whitespace` / `slice` / `trim` / `starts_with` / `split_lines` / `join_lines` /
   `header_kind` / `detect_role` / `process`），完全基于语言底座原语
@@ -2013,9 +2581,11 @@ switch n {
   （`ROLE:` / `HEADERS:n` / `H:raw`×n / `BODY:m` / 正文 m 字节），
   与原 Rust 版预处理行为逐条对齐（头部区扫描、角色判定顺序、正文重建）。
   编译期内嵌进 tie-prep 二进制（`include_str!`），发布无需额外文件。
-- **`tie-prep` 重构为解释执行壳**：字节规范化（去 BOM、CRLF→LF）留壳层
+
+- **`tie-prep`** **重构为解释执行壳**：字节规范化（去 BOM、CRLF→LF）留壳层
   → `eval_call("prep::process", src)` → `parse_protocol` 解析协议文本还原
   `PreprocessResult`。新增协议解析器等；`--prep-only` CLI 行为不变。
+
 - **`prep/indent.tie`（转换器模块示例，可扩展性证明）**：顶层
   `func process(src: string) -> string` 把制表符缩进替换为 4 空格，
   完全基于语言底座原语。tie-prep 新增 `run_module(module, entry, source)`
@@ -2023,159 +2593,206 @@ switch n {
   tie 模块，零 Rust 改动**（M3 目标"使其可扩展"的直接证据）。
 
 ### 变更
+
 - **打破循环依赖（M3 自举的关键）**：tie-prep 新增依赖 tie-interp（解释执行模块）；
   原 tie-frontend 依赖 tie-prep（import 展开复用其清理逻辑）会形成
   `frontend → prep → interp → frontend` 环——故 tie-frontend 移除 tie-prep 依赖，
   import 展开自带轻量 `clean_source`（去 BOM / CRLF 归一 / 剥头部行，语义与
   原 preprocess 一致）。
+
 - tie-frontend 语义层：`ns_call_full_name` 支持**裸调用按当前命名空间前缀补全**
   （命名空间内函数互调返回表时注册键是全名，如 `prep::split_lines`）。
+
 - tie-interp：**跨函数作用域隔离**（`Env.scope_base`）——函数 A 调用 B 时，
   B 的局部变量声明不再与 A 的同名局部变量冲突（查找/赋值/声明检查只作用于
   当前函数的 `scopes[scope_base..]` 段）。此前同名局部变量在嵌套调用下会被
   误报「变量 'n' 重复声明」。
 
 ### 测试
+
 - 全工作区测试通过（frontend 112 / interp 58 / llvm 31 / lsp 75 / prep 4 → **6**）；
   prep 4 个既有测试改用新自举实现跑通（无头默认逻辑 / 数据角色 / 双头分离 / 内容区注释），
   新增 2 个扩展性测试（`run_module` 挂载 indent.tie 转换器验证 tab→4 空格、
   缺失入口函数报错可读不 panic）
+
 - 端到端：`examples/hello.tie`（logic 编译运行）、`examples/lib_math.tie`
   （library 编译静态库）、`tie --prep-only`（角色/头部识别）全部通过
 
 ### 规划（后续 M）
-- **新增 `docs/plans/` 设计规划目录**，为阶段一收尾时排定的三个后续里程碑产出设计文档：
+
+- **新增** **`docs/plans/`** **设计规划目录**，为阶段一收尾时排定的三个后续里程碑产出设计文档：
+
   - `switch-pattern-matching.md`——switch 模式匹配增强（多值 `case 1, 2:` / 区间
     `case 3..7:` / 守卫 `case 8 when flag:` / 类型匹配 `case string:`），含 AST/语义/
     IR/解释器四层实现方案与验收标准；
+
   - `namespace-single-file.md`——单文件命名空间（命名空间内函数可见性 `func (ns) name`、
     `import "x.tie" as alias` 前缀重命名、跨文件冲突隔离），语义层解析顺序扩展；
+
   - `unified-func-style.md`——统一 func 写法（标准库去 `str_` 冗余前缀、返回类型书写
     规范、调用写法统一），不含语法破坏性变更。
 
-## [Harbor M2.2] 正则表达式 + tie:script 模块协议基础 — 2026-08-08
+## \[Harbor M2.2] 正则表达式 + tie:script 模块协议基础 — 2026-08-08
 
 ### 新增
+
 - **正则表达式内置函数（双路径）**：`regex_match`（部分匹配即真）/ `regex_find`（首个匹配片段）/
   `regex_find_all`（全部匹配片段，字符串动态表）/ `regex_replace`（全部替换，to 支持 `$1` 捕获引用）/
   `regex_group`（首个匹配的第 i 个捕获组，i=0 为整个匹配）。Rust `regex` 引擎（RE2 无回溯），
   解释路径与编译路径共用同一份 C ABI 桥实现，行为逐字节一致；模式非法 → 运行时错误（两路径文本一致）。
+
 - **`eval_call(name, arg)`（双路径）**：调用已注册用户函数（顶层裸名或 `命名空间::函数` 全名），
   字符串值直传（不经源码文本转义，换行/引号原样直传），返回结果字符串（void → 空串）。
   这是 **tie:script 模块协议的执行基础**——框架先 `eval` 模块文件注册入口
   `func process(src: string) -> string`，再 `eval_call` 以字符串值直传源码调用，拿回处理结果。
-  编译路径经 C ABI 桥共享同一 thread_local Session，跨 eval 持久。
+  编译路径经 C ABI 桥共享同一 thread\_local Session，跨 eval 持久。
+
 - **`file_delete(path)`（双路径）**：删除文件，返回 bool（不存在/不可删 → false）。
   解释路径 `std::fs::remove_file`，编译路径 libc `remove()`，行为一致。
+
 - **`str.str_find`（std 库，tie 实现）**：返回子串首次出现的字符索引（从 0 起），未找到返回 -1；
   空子串命中位置 0。与 `str_contains` 同扫描模式。
 
 ### 变更
+
 - tie-interp 新增 `regex` 依赖（Rust regex 引擎）；C ABI 桥新增 `tie_eval_call` /
   `tie_regex_match` / `tie_regex_find` / `tie_regex_find_all` / `tie_regex_replace` / `tie_regex_group`
-- tie-llvm IR 层：`regex_find_all` 返回字符串动态表（与 list_dir 同机制）；
+
+- tie-llvm IR 层：`regex_find_all` 返回字符串动态表（与 list\_dir 同机制）；
   返回堆串的正则调用与 `eval_call` 独立语句时立即释放（无泄漏）
+
 - `examples/std_demo.tie`：新增 `str.str_find` 断言与 `file_delete` 清理临时文件
   （原先"无内置删除文件函数，临时文件保留"）
 
 ### 测试
-- 全工作区测试通过（frontend 112 / interp **58** / llvm **31** / lsp 75 / prep 4 = **280**）
-- 新增：interp 正则 5 个 + eval_call 3 个 + file_delete 1 个；llvm 正则生成桥调用与声明、
-  eval_call 生成桥调用与声明、file_delete 生成 remove 调用
-- 端到端：`examples/regex_demo.tie`（P1 正则五原语编译运行全通过）、
-  `examples/script_demo.tie`（eval 注册模块 + eval_call 多行直传/命名空间/void 入口）、
-  `examples/std_demo.tie`（str_find + file_delete）编译运行全通过
 
-## [Harbor M2.1.4] tie-lsp 语义增强：嵌套命名空间 + 参数跳转 + 语义高亮 — 2026-08-08
+- 全工作区测试通过（frontend 112 / interp **58** / llvm **31** / lsp 75 / prep 4 = **280**）
+
+- 新增：interp 正则 5 个 + eval\_call 3 个 + file\_delete 1 个；llvm 正则生成桥调用与声明、
+  eval\_call 生成桥调用与声明、file\_delete 生成 remove 调用
+
+- 端到端：`examples/regex_demo.tie`（P1 正则五原语编译运行全通过）、
+  `examples/script_demo.tie`（eval 注册模块 + eval\_call 多行直传/命名空间/void 入口）、
+  `examples/std_demo.tie`（str\_find + file\_delete）编译运行全通过
+
+## \[Harbor M2.1.4] tie-lsp 语义增强：嵌套命名空间 + 参数跳转 + 语义高亮 — 2026-08-08
 
 ### 变更
+
 - **嵌套命名空间 hover / 跳转 / 补全修复**：`ns_query_name` 改为收集完整命名空间链
   （`ns_chain` 沿 `.` 反向收集），`tcmsg.error.no_file` 与语义层注册全名
   `tcmsg::error::no_file` 对齐——hover 命中签名、跳转命中定义、`tcmsg.error.` 补全
   该层函数、`tcmsg.` 补全子命名空间成员
+
 - **参数跳转**：`collect_defs` 把函数/方法形参也登记进变量定义表，
   函数体/方法体内引用形参名可跳转到参数声明处
+
 - **semanticTokens 语义高亮（新增）**：`textDocument/semanticTokens/full` 返回
   全量语义 token（14 类标准类型：namespace / class / function / method / property /
   variable / parameter 等）。分类规则：定义名（func/method/class/namespace 后）、
   命名空间链段（链首/中间段 → namespace，末段函数 → function）、实例成员访问
   （`p.dist(` → method、`p.x` → property）、形参声明 → parameter、类引用 → class、
   函数调用 → function、其余 → variable
+
 - **VSCode 扩展语法文件**：`namespace` 关键字与 `::` 运算符高亮；
   命名空间调用链前缀（`tcmsg.` 等）着色为 `support.namespace.tie`
 
 ### 测试
+
 - 全工作区测试通过（lsp 60 → **75**）：嵌套命名空间 hover/跳转/补全（4）、
   参数/方法参数跳转（2）、语义高亮链段/参数/方法字段分类（3）、
   semanticTokens legend 等
+
 - `cargo build --workspace` 零错误；release 构建 + 真实二进制 LSP 冒烟
   （semanticTokensProvider 声明 / 诊断无错误 / namespace·function 分类）通过
 
-## [Harbor M2.1.3] import 展开模块化 + tie-lsp 跨文件支持 — 2026-08-08
+## \[Harbor M2.1.3] import 展开模块化 + tie-lsp 跨文件支持 — 2026-08-08
 
 ### 变更
+
 - **import 展开抽离为 tie-frontend 共享模块**：新增 `crates/tie-frontend/src/imports.rs`，
   把原先内联在 tie-llvm driver 的 import 展开逻辑（递归加载被导入文件 + 循环导入检测）
   上移到 tie-frontend，供编译器（tie-llvm）与语言服务器（tie-lsp）复用同一实现。
   tie-llvm driver 删除本地重复实现（-74 行），新增 `CompileError::Import` 错误分支。
+
 - **tie-lsp 接入 import 展开（跨文件语义）**：诊断 / hover / 跳转定义 / 补全四项能力
   均按文档所在目录（`uri_base_dir`）展开 import 后再做语义分析——
   `str.str_split` / `csv.csv_read` / `math.abs` 等跨文件命名空间调用不再误报
   「未声明变量」，hover 与补全也能命中被导入文件中的函数。
+
 - tie-frontend 新增依赖 tie-prep（import 展开需要复用其清理逻辑）。
 
 ### 测试
+
 - 全工作区测试通过（frontend 112 / interp 49 / llvm 28 / lsp **60** / prep 4 = **253**）
+
 - 新增真实文件端到端测试：`examples/csv_demo.tie` didOpen 诊断为空；
   hover `str.str_split` 返回跨文件函数签名（首个调用位置自动定位）
 
-## [Harbor M2.1.2] std 库与示例统一命名空间语法 — 2026-08-08
+## \[Harbor M2.1.2] std 库与示例统一命名空间语法 — 2026-08-08
 
 ### 变更
+
 - **std 库全面命名空间化**（与 tcmsg 一致的命名空间形式，废弃裸函数调用）：
+
   - `std/string.tie` → `namespace str`（`str.str_trim` / `str.str_split` 等；`string` 是类型关键字，命名空间名用 `str`）
+
   - `std/math.tie` → `namespace math`（`math.abs` / `math.deg_to_rad` 等）
+
   - `std/assert.tie` → `namespace assert`（`assert.assert` / `assert.assert_eq` / `assert.assert_neq`）
+
   - `std/format.tie` → `namespace format`（`format.format_int` / `format.format_pad` 等）
+
   - `std/csv.tie` → `namespace csv`（`csv.csv_read` / `csv.csv_cells`），内部跨命名空间调用改为 `str.str_split` / `str.str_slice`（`str_char` 是底座原语，保持裸调用）
+
   - `std/tcmsg.tie` 内部 `str_starts_with` → `str.str_starts_with`（跨命名空间调用）
+
 - **examples 全部改用命名空间调用**：`csv_demo` / `format_demo` / `std_demo` / `std_math_demo` /
   `tcmsg_demo`（`assert.assert`）、`import_main`+`lib_math`（`mathlib.*`）、
   `import_nested`+`lib_math2`/`lib_util`（`math2.*` / `util.*`，嵌套跨命名空间调用）
 
 ### 修复
+
 - **命名空间函数返回动态表无法推断元素类型**（预存 bug）：语义层
   `dynamic_table_elem_ty` / `table_arg_elem_ty` 只支持裸调用（`Expr::Call`），
   `str.str_split` 等命名空间调用（`Expr::MethodCall`）返回表时调用点报
-  「标注 table，初始化必须是表字面量 / table_new_* / 返回表的函数调用」。
+  「标注 table，初始化必须是表字面量 / table\_new\_\* / 返回表的函数调用」。
   方案：新增辅助函数 `ns_call_full_name`（Call/MethodCall → 注册全名如 `str::str_split`），
   两处表元素类型推断统一走该解析；裸调用不做 funcs 校验（内建 `table_new_*` 不注册进 funcs，
   校验会误杀）
+
 - **IR 层动态表变量初始化只识别裸调用**：`gen_dyn_table_var` 仅匹配 `Expr::Call`，
   `var p = str.str_split(...)` 走了新建空表分支（运行返回空表，len=0）。
   方案：MethodCall 初始化复用 `gen_expr` 调用分发；`dyn_table_elem_ty` 经语义层
   `resolved_calls`（表达式地址 → 全名）查 `table_ret_elems`
+
 - tie-interp 测试 `std_format_helpers` 同步为命名空间调用（`format.format_int` 等）
 
 ### 测试
-- 全工作区测试通过（frontend 112 / interp 49 / llvm 28 / lsp 53 / prep 4 = **246**）
-- 命名空间返回表链路验证：`str.str_split` 编译 + 运行（len / table_at / 下标 / table_push 全通过）；
-  std 库 6 文件独立编译为 `.a` 全成功；csv/format/std/std_math/tcmsg/import 系列示例编译运行全通过
 
-## [Harbor M2.1.1] Windows 控制台 UTF-8 修复 — 2026-08-08
+- 全工作区测试通过（frontend 112 / interp 49 / llvm 28 / lsp 53 / prep 4 = **246**）
+
+- 命名空间返回表链路验证：`str.str_split` 编译 + 运行（len / table\_at / 下标 / table\_push 全通过）；
+  std 库 6 文件独立编译为 `.a` 全成功；csv/format/std/std\_math/tcmsg/import 系列示例编译运行全通过
+
+## \[Harbor M2.1.1] Windows 控制台 UTF-8 修复 — 2026-08-08
 
 ### 修复
+
 - **Windows 控制台中文乱码**：工具链全部输出 UTF-8 字节，而控制台默认代码页为 GBK（936），
   导致中文显示为乱码（如 `REPL�?` = `REPL)。`）。
   方案：各 CLI 入口（tie / tie-prep / tie-frontend / tie-llvm / tie-lsp）启动时调用
   `init_console_utf8()`（tie-prep 与 tie-frontend 库各提供一份），通过 Windows API
   `SetConsoleOutputCP(65001)` / `SetConsoleCP(65001)` 把控制台输入/输出代码页切换为 UTF-8。
   REPL 场景：tie.exe 先切代码页再启动 repl.exe（子进程继承控制台），同样生效。
+
 - **直接运行 tie.exe 一闪而过**：`find_repl_exe()` 只查 env / exe 同目录 / 当前目录三处，
   开发期 repl.exe 位于 `repl\` 子目录找不到，导致无参数运行时立即报错退出。
   方案：新增第 4 个查找路径（workspace 标准布局 `repl/repl.exe`）。
+
 - **报错窗口一闪而过**：REPL 外壳缺失等报错路径新增 `pause_before_exit()`，
   仅当 stdin 是交互式终端时暂停（按任意键退出）；管道/重定向/CI 场景不阻塞。
+
 - **REPL 输出顺序错乱与提示符不换行**：repl.exe（C 程序）编译路径的 print/println
   走 C `printf`（C stdio 缓冲），而 eval 解释路径的 print 走 Rust stdout（Rust 缓冲），
   两套缓冲写同一 fd 顺序错乱（`print("你好")` 的输出跑到欢迎语之前）。
@@ -2183,250 +2800,364 @@ switch n {
   REPL 外壳对无返回值（print 副作用）的输入补一个换行，提示符不再挤在同一行。
 
 ### 变更
+
 - tie-prep 与 tie-frontend 的 Cargo.toml 展开 workspace lints，
   `unsafe_code` 从 forbid 放宽为 allow（仅用于 `init_console_utf8` 的 Windows API 调用）。
 
 ### 测试
+
 - `cargo build --workspace` 零错误；直接运行 tie/tie-prep/tie-frontend/tie-llvm/tie-lsp
   中文输出正常；REPL 输出 `你好，世界` UTF-8 字节完整（E4 BD A0 ... E7 95 8C）；
   管道场景不暂停，交互终端才暂停。
 
-## [Harbor M2.1] 默认值参数与 tcmsg 控制台信息库 — 2026-08-08
+## \[Harbor M2.1] 默认值参数与 tcmsg 控制台信息库 — 2026-08-08
 
 ### 新增
+
 - **命名空间（namespace）**：`namespace tcmsg { }` 块式声明（C# 风格），`::` 路径访问 +
   `.` 成员调用（`tcmsg.error.no_file(...)` / `tcmsg::error.no_file(...)`）；
   命名空间内裸调用自动前缀补全（`inner()` → `tcmsg::error::inner`）
+
 - **动态表运行时**：`table_new_i64/f64/string/bool`（建空表）+ `table_push`（追加）+
   `table_at`（下标读取，越界报错）+ `len(table)`，编译（IR 走 C ABI 桥）与解释两路径一致；
   支持表字面量作函数实参（IR 按动态表构造）
+
 - **新底座原语**：`list_dir`（目录列表 → 字符串动态表）、`table_*` 系列
-- **std/string.tie 新增 `str_split`**：按分隔符切分为字符串动态表（连续分隔符产生空元素，
+
+- **std/string.tie 新增** **`str_split`**：按分隔符切分为字符串动态表（连续分隔符产生空元素，
   与主流语言 split 语义一致）
-- **std/csv.tie**：CSV 解析/生成（基于 str_split + 表操作）
-- **std/format.tie**：格式化工具（format_int / format_pad 等）
+
+- **std/csv.tie**：CSV 解析/生成（基于 str\_split + 表操作）
+
+- **std/format.tie**：格式化工具（format\_int / format\_pad 等）
+
 - **默认值参数（语言特性）**：函数参数可带默认值，调用时可省略可选参数：
+
   - 语法：`func greet(name: string, prefix: string = "Hello")`（`参数名: 类型 = 字面量`）
+
   - 规则：可选参数**必须连续排在必选参数之后**；默认值限字面量（数/布尔/字符/字符串/空表 `[]`，
     非空表字面量/变量引用报「默认值必须是字面量」）；默认值类型须与形参类型匹配
+
   - 语义：函数调用点按实参数**区间检查**（`期望 N 个参数` / `期望 N-M 个参数`，N = 必选参数个数）；
     方法参数默认值暂不支持（报「方法默认值参数留待 M3」）
+
   - 双路径实现：LLVM 函数签名不变（含全部形参），缺省实参在**调用点**补齐（IR 层）；
     解释器 `call_fn` 区间检查 + 求值默认值补齐
-- **语言底座原语 `msg_get_lang`**：读取消息系统当前语言（与 `msg_set_lang` 配套，返回 string），
+
+- **语言底座原语** **`msg_get_lang`**：读取消息系统当前语言（与 `msg_set_lang` 配套，返回 string），
   语义/IR/interp/C ABI 桥（`tie_msg_get_lang`）四层贯通，供标准库按当前语言匹配文本
-- **`std/tcmsg.tie` 控制台信息库（命名空间形式，旧扁平 `tcmsg_*` API 废弃）**：
+
+- **`std/tcmsg.tie`** **控制台信息库（命名空间形式，旧扁平** **`tcmsg_*`** **API 废弃）**：
+
   - `tcmsg.register(key, lang, content)` / `tcmsg.t(key)` / `tcmsg.set_lang(lang)`
     （透传底座原语 `msg_register` / `msg_t` / `msg_set_lang`，回退规则：当前语言 → zh → 键本身）
+
   - `tcmsg.error/warn/info(key)` 分级打印（前缀「错误: / 警告: / 信息: 」+ 当前语言翻译）
+
   - **综合方案形态** `tcmsg::error.no_file(langs: table, texts: table = [])`（默认值参数落地实例）：
+
     - 方案 A（调用方传 `texts`）：`len(texts) > 0` → 按当前语言**前缀匹配** `langs`（地区码 `zh-cn`
       匹配基础码 `zh`）取对应文本，未命中回退第一个文本——文本随调用自包含
+
     - 方案 B（省略 `texts`，空表默认值）：`msg_t("error.no_file")` 查字典——单一事实来源
+
   - 依赖 `std/string.tie`（`str_starts_with` 前缀匹配；import 展开不去重，调用方只导入 tcmsg.tie 即可）
+
 - **示例**：`examples/namespace_demo.tie`（命名空间）、`examples/table_dynamic.tie`（动态表）、
   `examples/csv_demo.tie`、`examples/format_demo.tie`、`examples/list_dir_demo.tie`、
   `examples/args_demo.tie`、`examples/tcmsg_demo.tie`（多语言登记/切换/查询、方案 A/B、回退规则断言）
 
 ### 修复
+
 - 命名空间函数 `table` 形参布局元数据注册键用裸名 `f.name` 而非全名 `cur_fn` →
   命名空间函数内 table 下标访问报「缺少布局元数据」；改为以完整命名注册（预存 bug）
+
 - 参数个数错误消息出现重复「个」字（`期望 1 个 个参数`）→ `param_count_desc` 返回区间描述
   （`"N"` / `"N-M"`），与模板「期望 {} 个参数」解耦
+
 - `text` 是类型关键字不可作参数名 → `tcmsg.register` 参数名 `text` 改为 `content`
 
 ### 测试
+
 - 全工作区测试通过（frontend 112 / interp 49 / llvm 28 / lsp 53 / prep 4 = **246**）
+
 - 新增 frontend +2：默认值参数省略实参合法且类型校验、默认值参数限制规则
+
 - 新增 interp +2：`eval_default_arg_省略与传参`（省略/显式传参/超参区间报错）、
   `eval_default_arg_tcmsg综合方案`（方案 B 查字典 / 方案 A 调用方文本）
 
 ### 文档
+
 - docs/language.md：§6 函数新增「默认值参数」语法说明
+
 - README.md：路线图 M2 条目补充 tcmsg 控制台信息库与默认值参数
 
-## [Harbor M2] 标准库（std / math） — 2026-08-07
+## \[Harbor M2] 标准库（std / math） — 2026-08-07
 
 ### 新增
-- **语言底座原语（仅语言自身无法表达的部分，Rust 实现，三层 semantic/IR/interp 贯通）**共 21 个：
+
+- \*\*语言底座原语（仅语言自身无法表达的部分，Rust 实现，三层 semantic/IR/interp 贯通）\*\*共 21 个：
+
   - 文件：`file_read` / `file_write` / `file_append` / `file_exists`
+
   - 字符串与转换：`str_char`（Unicode 字符访问）、`to_string`、`parse_int`、`parse_float`
+
   - 进程与系统：`exit`、`time_now`（Unix 秒）、`rand_range`（`[min,max)` 区间随机）
+
   - 数学（libc，编译/解释两路径行为一致）：`sqrt` / `sin` / `cos` / `tan` / `exp` / `log` / `pow` / `floor` / `ceil` / `round`
+
   - `len` 扩展：支持 `table`（返回元素个数）
-- **tie 语言自写标准库 `std/`（贯彻"能 tie 就 tie"）：**
+
+- **tie 语言自写标准库** **`std/`（贯彻"能 tie 就 tie"）：**
+
   - `std/assert.tie` — `assert` / `assert_eq` / `assert_neq`（失败打印错误并退出）
+
   - `std/string.tie` — `str_trim` / `str_slice` / `str_contains` / `str_starts_with` / `str_ends_with` / `str_replace`（基于 `str_char`+循环拼接）
+
   - `std/math.tie` — `abs` / `max_i` / `min_i` / `clamp` / `is_odd` / `is_even` / `sign_i` / `deg_to_rad` / `rad_to_deg` 等（纯算术实现）
+
 - **示例**：`examples/std_primitives.tie`、`examples/std_math_primitives.tie`（底座原语演示）、`examples/std_demo.tie`（文件+字符串+断言）、`examples/std_math_demo.tie`（数学库+原语）
 
 ### 变更
+
 - 字符串/数字原语返回堆串统一走 tie-interp C ABI（`tie_free_result` 回收，无泄漏）；数学纯标量走 libc
+
 - `to_string`/`parse_*` 共用同一 Rust 实现，保证编译与解释两路径**逐字节一致**（如 `to_string(1.0)→"1"`）
+
 - `.gitignore` 增加 `/std/*.a`（标准库编译产物）
 
 ### 测试
+
 - 全工作区测试通过（frontend 88 / interp 32 / llvm 28 / tie 53 / lsp 4）
+
 - 新增 interp 单测覆盖 21 原语 + `len(table)` 边界（多字节 UTF-8、越界、文件读写往返、追加、parse 非法输入、rand 越界）
 
-## [Harbor M1] VSCode 插件（编辑器集成） — 2026-08-07
+## \[Harbor M1] VSCode 插件（编辑器集成） — 2026-08-07
 
 ### 新增
+
 - `editor/vscode-tie` 重构为 TypeScript 标准工程（vscode-languageclient + esbuild 打包）：
   语法高亮（含 M4 运算符、宽类型、头指令着色）、智能缩进（onEnterRules）、代码片段、
   VSIX 打包安装（README 含开发调试 / 打包 / 配置说明）
+
 - tie-lsp 新增跳转定义 `textDocument/definition`（函数 / 方法 / 字段 / 类 / 变量）与
   自动补全 `textDocument/completion`（关键词 / 类型 / 内置函数 / 顶层函数 / 类名 +
   `类名.` 成员补全），capabilities 声明 definitionProvider / completionProvider
   （triggerCharacters `["."]`）
+
 - LSP 测试 +20（共 53 通过）：definition 函数 / 方法 / 变量命中与未命中、文档未打开、
   completion 全集 / 类成员 / 未打开文档
 
 ### 文档
+
 - README.md：路线图重组为「架构 → M 里程碑」两级（Harbor 架构新增 M1 VSCode 插件条目）；
   tie-lsp 描述更新为
   诊断 / hover / 跳转定义 / 补全
+
 - editor/vscode-tie/README.md：扩展安装（F5 开发调试 / vsix 打包）、配置（tie.lsp.command）、
   功能清单、协议兼容说明
 
-## [Harbor M0] 正式发行版基础 — 2026-08-07
+## \[Harbor M0] 正式发行版基础 — 2026-08-07
 
 ### 新增
+
 - 版本规则确立：正式发行版号 `年份.修订号`（如 2026.1）；内部代号 `2026.1 "Harbor 港湾"`（首个正式版 = 工具链首次靠岸）
+
 - 组件版本号独立化：6 个 crate 各自维护 3 段 semver（初始 `0.1.0`，写入各自 Cargo.toml），
   与发行版号（发布产物/tag 用）分离
+
 - `tie --version` / `tie -V`：输出组件版本 + 发行版号 + 代号（`tie 0.1.0 (发行版 2026.1 "Harbor")`）；
   同步支持于 tie-prep / tie-frontend / tie-llvm / tie-lsp
+
 - 打包脚本 `scripts/package.ps1`：release 构建 → repl.exe 自举 → 组装发行目录
   （bin/doc/examples/editor）→ 生成 `dist/tie-2026.1-win-x64.zip`（win-x64）
+
 - 设计文档 `docs/release.md`：版本规则、内部代号、工具链合集组成、工程改造点、发布流程
 
 ### 文档
+
 - README.md：路线图新增 M5（正式发行版）条目
+
 - docs/release.md：正式发行版设计规划
 
-## [M4] 运算符扩展 — 2026-08-07
+## \[M4] 运算符扩展 — 2026-08-07
 
 ### 新增
+
 - 复合赋值：`+=` `-=` `*=` `/=` `%=`（算术）与 `&=` `|=` `^=` `<<=` `>>=`（位运算），
   支持变量与对象字段目标（`x += 1`、`obj.s += "x"`）；字符串仅支持 `+=`（拼接）
+
 - 位运算：`&` `|` `^` `<<` `>>`，仅限整数操作数（语义层报"位运算只支持整数"）；
   右移区分有符号算术移位（`ashr`）/ 无符号逻辑移位（`lshr`）
+
 - 三目运算符 `c ? a : b`：右结合、条件必须为 `bool`、两分支类型一致、短路求值
   （LLVM 三块 phi 汇合；解释器短路）
+
 - 自增自减 `++` `--`：前缀返回新值、后缀返回旧值，操作数须为可写数字变量
   （语义层报"自增/自减的操作数必须是可写数字变量"；字段自增在 IR 层返回明确错误，M4 简化）
+
 - 词法：新增 token（`PlusEq`…`ShrEq`、`Amp`/`Pipe`/`Caret`/`Shl`/`Shr`、`Inc`/`Dec`、`Question`），
   支持三字符 `<<=`/`>>=`；`is_bin_op` 不含 `Inc`/`Dec`（ASI 续行语义保持）
+
 - 语法：优先级链扩展为 范围 → 逻辑或 → 逻辑与 → 按位或 → 异或 → 按位与 → 相等 → 关系 → 移位 → 加减 → 乘除模 → 一元
+
 - IR 生成：`gen_binary_on_regs` 抽取复合赋值与二元运算共用核心；三目 phi 汇合
 
 ### 修复
+
 - `gen_binary_str` 比较 match 的 `_` 臂从 `unreachable!` 改为返回明确 IrError（避免 panic）
 
 ### 测试
+
 - 前端 +14：位运算优先级嵌套、移位、三目与嵌套右结合、复合赋值 op 断言、自增自减前后缀、
   位运算/复合赋值/三目/自增自减类型检查、行尾 M4 运算符不补分号
+
 - LLVM IR +5：位运算与移位指令、复合赋值 load/运算/store、字符串复合拼接 malloc/memcpy、
   三目 phi 汇合、自增自减指令序列
+
 - 解释器 +4：`eval_bitwise`、`eval_compound_assign`、`eval_ternary`、`eval_inc_dec`
 
 ### 文档
-- README.md：路线图 M4 标记完成
-- docs/language.md：§9.3 符号表新增复合赋值、位运算、三目、自增自减及约束说明
-- examples/m4_ops.tie：M4 运算符综合示例
 
-## [REPL] 解释执行自举 — 2026-08-07
+- README.md：路线图 M4 标记完成
+
+- docs/language.md：§9.3 符号表新增复合赋值、位运算、三目、自增自减及约束说明
+
+- examples/m4\_ops.tie：M4 运算符综合示例
+
+## \[REPL] 解释执行自举 — 2026-08-07
 
 ### 新增
+
 - `tie-interp` 解释器（完整求值器）：树遍历执行 AST，动态类型（int/float/bool/char/string/range/void）
+
 - 两趟解析：顶层 `func` 定义注册进持久 Session；其余代码包装为 `func main() { ... }` 执行，
   顶层 `var` 声明落入 globals、跨行持久（REPL 连续输入 `var x=1` 后 `x+1` 的基础）
+
 - 控制流：if/else、while、for 范围遍历、return 传播（Flow 枚举，非错误通道）
+
 - 内置函数：`println`/`print`/`len`/`read_line`（读 stdin 一行，EOF 退出）/
-  `eval`（动态求值代码，递归重入安全，Session 用 thread_local RefCell 避免 Mutex 死锁）
+  `eval`（动态求值代码，递归重入安全，Session 用 thread\_local RefCell 避免 Mutex 死锁）
+
 - C ABI 桥（`tie_eval_expr`/`tie_read_line`/`tie_free_result`）：staticlib 产物，
-  catch_unwind 包裹（panic 跨 extern "C" 是 UB）
-- **自举外壳 `repl/repl.tie`**：REPL 外壳本身用 tie 语言编写（`print("> ")` + `read_line` +
+  catch\_unwind 包裹（panic 跨 extern "C" 是 UB）
+
+- **自举外壳** **`repl/repl.tie`**：REPL 外壳本身用 tie 语言编写（`print("> ")` + `read_line` +
   `eval` + 无限循环），经 tie-llvm 编译并链接 tie-interp 静态库生成 `repl.exe`；
   `tie` 无参数时启动 repl.exe（查找：`TIE_REPL_EXE` 环境变量 → tie.exe 同目录 → 当前目录）
+
 - 编译路径扩展：语义层 `read_line`(→string)/`eval`(string→string)/`print` 内置签名；
   IR 层按需声明并调用 interp 库符号，`IrOutput.used_externs` 记录用到的符号，
   driver 据此**按需链接** tie-interp 静态库（`TIE_INTERP_LIB` 环境变量 / target 目录 / exe 同目录）；
   跨 target 守卫：带 interp 依赖的程序交叉编译时明确报错（interp 库仅本机构建）
+
 - 链接补 Windows 系统库（`ws2_32`/`userenv`/`ntdll`/`bcrypt` 等，Rust staticlib 的 std 依赖）
 
 ### 文档
+
 - README.md：REPL 自举说明与工程结构更新（tie-interp 从占位改为完整解释器）
 
-## [LSP] 语言服务器 — 2026-08-07
+## \[LSP] 语言服务器 — 2026-08-07
 
 ### 新增
+
 - `tie-lsp` 语言服务器：基于 JSON-RPC 2.0 over stdio，与编辑器（VSCode 等）通信
+
 - 三阶段诊断：复用 tie-frontend 词法/语法/语义分析，错误 → LSP 诊断推送（fail-fast）
+
 - 文档同步：`didOpen` / `didChange`（全量）/ `didClose`，变更即推送诊断
+
 - `hover`：函数签名（`func name(params) -> Ret`）与类信息（含 `extends` 父类）
-- 协议自研：仅依赖 serde/serde_json，不引入 lsp-server 等现成框架
+
+- 协议自研：仅依赖 serde/serde\_json，不引入 lsp-server 等现成框架
+
 - 接入主入口：`tie --lsp` 启动语言服务器（与 `tie-lsp` 等价）；核心主循环提炼为库入口
   `tie_lsp::run_server()`，独立二进制与主命令复用同一实现
 
-## [M3] class/OOP — 2026-08-07
+## \[M3] class/OOP — 2026-08-07
 
 ### 新增
+
 - `class` 类定义：值类型对象（LLVM 字面结构体 `{字段…}`），字段 `var name[: Ty] [= 默认值]`
+
 - 构造表达式 `类名(实参…)`：按字段声明顺序传参，缺省字段用默认值（无默认值则类型零值）
+
 - 实例方法 `method m(params) -> Ty`：方法体内 `this` 绑定当前对象；静态方法 `static method`：无 `this`
+
 - 字段访问：`obj.field` 读（GEP+load）、`obj.field = 值` 写（GEP+store 直写）
+
 - 继承 `class C extends P`：字段拍平（父类字段在前）+ 方法同名遮蔽（复用式，无 vtable）
+
 - 语义校验：类仅顶层定义；字段名跨继承链唯一；继承环检测；寄存器类值不可寻址报错；
   静态方法须类名调用、实例方法须实例调用；类名与函数名/类名冲突检测
+
 - `--target <三元组>` 交叉编译：CLI 参数与头部 `// tie:target=` 双通道，支持平台别名
   （`win-x64`、`linux-x64`、`macos-arm64` 等 → LLVM 三元组）与直接三元组透传
+
 - `library` 角色静态库编译：IR → 目标文件（`clang -c`）→ 静态库（`llvm-ar rcs`，`.a`），不要求 main
+
 - 编译流程按角色分派产物：`logic` → 可执行文件；`library` → `.a` 静态库
+
 - `tie-frontend` 独立 CLI：词法/语法/语义三阶段可单独运行，`--tokens`/`--ast`/`--check` 调试视图
 
 ### 修复
+
 - 语义分析 collect 阶段借用冲突（E0502）
 
 ### 文档
+
 - docs/language.md：新增 §8 面向对象完整章节；关键词/类型/符号速查表同步
+
 - README.md：CLI 表新增 `--target` 与库编译说明；路线图 M3 标记完成
 
-## [M2] 复合类型 / 元组 / import — 2026-08-06
+## \[M2] 复合类型 / 元组 / import — 2026-08-06
 
 ### 新增
+
 - 元组类型：字面量/命名与位置访问（`t.x` / `t.Item1` / `t.0`）、多值返回、解构 desugar
+
 - `import` 多文件导入：递归加载内联函数
+
 - 字符串操作：拼接、比较、长度、下标取字符
+
 - `switch` 多分支选择语句（支持字符串）
+
 - 表运行时：下标访问与表遍历
+
 - 赋值语句与字符字面量
+
 - var/const/func 关键词、宽类型 num/text/misc、表类型 table
 
 ### 修复
+
 - 分支 return 死代码
 
 ### 文档
+
 - docs/language.md：类型系统改为 Rust 风格，修正 code 类型语义
 
-## [M1] 控制流 / 函数 / string — 2026-07
+## \[M1] 控制流 / 函数 / string — 2026-07
 
 ### 新增
+
 - 控制流：if/else、while、for 遍历
+
 - 函数调用与定义
+
 - 字符串处理
 
-## [M0] 基础打通 — 2026-07
+## \[M0] 基础打通 — 2026-07
 
 ### 新增
+
 - 词法分析（含 ASI 自动分号补全）
+
 - 语法分析（含文件头解析）
+
 - 语义分析（符号表/类型检查）
+
 - LLVM IR 文本生成 + opt/clang/lld 后端链路
+
 - 跑通 `println` / 算术 / 变量
 
-
-
-
-
+<br />
