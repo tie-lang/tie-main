@@ -25,24 +25,35 @@ EN: Naming convention: one library per sub-item number (p.6.6.N); the third segm
 
 ## 2. p.6.6 子项总盘子 / Sub-item Plan
 
-| 子项 / Item | 库 / Library | 内容 / Content                                                                  |
-| --------- | ----------- | ----------------------------------------------------------------------------- |
-| p.6.6.1   | ext/tls     | TLS 1.3 + 1.2 客户端（纯 tie）、X.509 解析与完整链校验、字节级网络 IO（p.6.4.5 承接）                  |
-| p.6.6.2   | std/http 升级 | 完整 HTTP 客户端：https / POST / headers / cookies / 重定向；命名空间 httpc，旧 http.get 保留兼容 |
-| p.6.6.3   | std/sse     | SSE 流式读取（`text/event-stream` 解码；LLM / WebSocket 前置件）                               |
-| p.6.6.4   | ext/html    | HTML + XML 分词 + DOM 树 + 选择器抽取 + 链接提取 + HTML→纯文本                                   |
-| p.6.6.5   | ext/spidey  | 爬虫治理：robots.txt 解析 + 限速 + URL 去重 + 编排                                         |
-| p.6.6.6   | 网络协议系     | WebSocket 客户端（依赖 httpc/SSE）、SMTP 发信、DNS 解析                                      |
-| p.6.6.7   | 数据格式系     | YAML 解析、TOML（并入 config）、markdown 解析                                              |
-| p.6.6.8   | 图像三件套     | PNG 编解码、QR 码生成、SVG 解析                                                        |
-| p.6.6.9   | 工具应用系     | 模板引擎、文本 diff、cron 调度、JWT/token（并入 p.6.6.11 前置）                                  |
-| p.6.6.10  | 数据库       | SQLite 驱动（C ABI 桥或纯 tie）                                                        |
-| p.6.6.11  | Web 服务框架  | std/http\_server 升级：路由 / keep-alive / 静态文件 / SSE 推送 / JWT 会话                     |
-| p.6.6.12  | LLM 调用库   | OpenAI 兼容客户端（复用 httpc + JSON + SSE 流式）                                          |
-| p.6.6.13  | sys/ 层级    | 各操作系统专用库：win32 基础（注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息）+ 高级（进程枚举/服务控制/网络接口/硬件信息）；linux/mac 后续同名层级 |
+| 子项 / Item | 库 / Library | 内容 / Content                                                                             |
+| --------- | ----------- | ---------------------------------------------------------------------------------------- |
+| p.6.6.1   | ext/tls     | TLS 1.3 + 1.2 客户端（纯 tie）、X.509 解析与完整链校验、字节级网络 IO（p.6.4.5 承接）                             |
+| p.6.6.2   | std/http 升级 | 完整 HTTP 客户端：https / POST / headers / cookies / 重定向；命名空间 httpc，旧 http.get 保留兼容            |
+| p.6.6.3   | std/sse     | SSE 流式解码（`text/event-stream`：event / data / id / retry；LLM / WebSocket / Web 框架前置件）            |
+| p.6.6.4   | ext/html    | HTML 分词 + DOM 树 + 选择器抽取 + 链接提取 + HTML→纯文本                                              |
+| p.6.6.5   | ext/xml     | XML 分词 + 解析（与 html 共用标记语言分词底座；供 svg / 配置消费）                                          |
+| p.6.6.6   | ext/spidey  | 爬虫治理：robots.txt 解析 + 限速 + URL 去重 + 编排（依赖 p.6.6.4 html）                                 |
+| p.6.6.7   | std/ws      | WebSocket 客户端：握手 + 帧编解码 + 掩码（依赖 p.6.6.2 httpc）                                        |
+| p.6.6.8   | std/smtp    | SMTP 发信：EHLO / AUTH / MAIL / RCPT / DATA，可配 STARTTLS（依赖 p.6.6.1 tls）                   |
+| p.6.6.9   | std/dns     | DNS 解析：A / AAAA / TXT / MX 查询（依赖 std/net UDP）                                             |
+| p.6.6.10  | std/yaml    | YAML 解析：块缩进 / 流式 / 标量类型（key-value / 列表 / 嵌套）                                        |
+| p.6.6.11  | ext/config  | TOML 支持提升（并入 config：表 / 数组表 / 内联表，与 INI/KV 统一入口）                                      |
+| p.6.6.12  | std/markdown | markdown 解析：块级元素 / 行内标记 → 结构表                                                      |
+| p.6.6.13  | ext/png     | PNG 编解码：chunk 解析 + 滤波 + 位深/色彩类型（zlib 已有 → 复用 codec）                                  |
+| p.6.6.14  | ext/qr      | QR 码生成：RS 纠错 + 矩阵布局 + 版本/掩码                                                      |
+| p.6.6.15  | ext/svg     | SVG 解析：元素树 + 路径/形状结构（依赖 p.6.6.5 xml 底座）                                            |
+| p.6.6.16  | std/tpl     | 模板引擎：`{{expr}}` 求值 + 渲染字符串/文件                                                     |
+| p.6.6.17  | std/diff    | 文本 diff：LCS → 行级增删改（+ 统一格式输出）                                                       |
+| p.6.6.18  | std/cron    | cron 调度：5 字段表达式 → 下次触发时间 / 到期判断（依赖 std/time）                                        |
+| p.6.6.19  | std/jwt     | JWT：HS256 / RS256 签发与验证（依赖 std 哈希 + tls 的 RSA/ECDSA，供 p.6.6.21 会话）                      |
+| p.6.6.20  | 数据库         | SQLite 驱动：C ABI 桥（参考 ext/ecdsa extern 范式）或纯 tie                                         |
+| p.6.6.21  | Web 服务框架    | std/http\_server 升级：路由表 / keep-alive / 静态文件 / SSE 推送 / JWT 会话                           |
+| p.6.6.22  | LLM 调用库     | OpenAI 兼容客户端：POST + JSON + SSE 流式（依赖 p.6.6.2 / p.6.6.3）                                 |
+| p.6.6.23  | sys/win32   | 平台专用层首期：基础（注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息）+ 高级（进程枚举/服务控制/网络接口/硬件信息）             |
 
-* 依赖方向（单向）/ Dependency direction (one-way): tls → httpc → sse → html / spidey / llm。
-  p.6.6.10（db）与 p.6.6.11（web）相对独立。
+* 依赖方向（单向）/ Dependency direction (one-way): tls → httpc → sse；html → xml → svg；
+  httpc → ws；tls → smtp / jwt；httpc+sse → llm；db 相对独立。
+* 平台层 / Platform layer: sys/win32 之后 linux/mac 同名层，命名空间 sys\_win32 / sys\_linux / sys\_mac。
 
 * 公共底座 / Shared foundation: ext/tls 与 std/http 升级版是 LLM / 爬虫 / Web 框架的公共底座，
   因此优先完成（p.6.6.1、p.6.6.2）。
@@ -177,37 +188,68 @@ p.6.6.1 TLS 客户端
   旧 http.get 保留兼容返回 Result。
 
 * p.6.6.3 std/sse：`text/event-stream` 流式解码（event/data/id/retry 字段，行式增量读取）；
-  LLM（p.6.6.12）与 WebSocket（p.6.6.6）与 Web 框架 SSE 推送（p.6.6.11）的前置件。
+  LLM（p.6.6.22）与 WebSocket（p.6.6.7）与 Web 框架 SSE 推送（p.6.6.21）的前置件。
 
-* p.6.6.4 ext/html：HTML + XML 分词器 + DOM 树（平行表）+ 选择器（tag/class/id/属性）+
-  链接提取 + HTML→纯文本（可读性提取）。
+* p.6.6.4 ext/html：HTML 分词器 + DOM 树（平行表）+ 选择器（tag/class/id/属性）+ 链接提取
+  + HTML→纯文本（可读性提取）。
 
-* p.6.6.5 ext/spidey：robots.txt 解析 + 限速 + URL 去重 + 编排（子命名空间 html/robots/crawl）。
+* p.6.6.5 ext/xml：XML 分词器与解析（与 html 共用标记语言分词底座，block 结构树 +
+  属性/命名空间），供 svg（p.6.6.15）与配置场景消费。
 
-* p.6.6.6 网络协议系：WebSocket 客户端（握手 + 帧编解码 + 掩码，依赖 httpc/SSE）、
-  SMTP 发信（EHLO/AUTH/MAIL/RCPT/DATA，可配 STARTTLS）、DNS 解析（A/AAAA/TXT/MX 查询）。
+* p.6.6.6 ext/spidey：robots.txt 解析 + 限速 + URL 去重 + 编排（子命名空间 html/robots/crawl）。
 
-* p.6.6.7 数据格式系：YAML 解析（块缩进/流式/标量类型）、TOML（并入 ext/config 提升）、
-  markdown 解析（块级元素/行内标记 → 结构表）。
+* p.6.6.7 std/ws：WebSocket 客户端——HTTP Upgrade 握手（依赖 p.6.6.2）+ 帧编解码
+  （FIN/opcode/mask/长度）+ 掩码与 payload 校验；供实时推送/聊天。
 
-* p.6.6.8 图像三件套：PNG 编解码（zlib 已有 → chunk 解析 + 滤波 + 位深）、QR 码生成
-  （RS 纠错 + 矩阵布局）、SVG 解析（XML 底座复用 p.6.6.4 → 元素/路径结构）。
+* p.6.6.8 std/smtp：SMTP 发信——EHLO / AUTH（LOGIN/PLAIN）/ MAIL / RCPT / DATA / QUIT，
+  可配 STARTTLS 升级（依赖 p.6.6.1 tls）；附 MIME 文本/附件基础。
 
-* p.6.6.9 工具应用系：模板引擎（`{{expr}}` 求值，渲染字符串/文件）、文本 diff
-  （LCS → 行级增删改）、cron 调度（5 字段表达式 → 下次触发时间/到期判断）、
-  JWT（HS256/RS256 签发验证，供 p.6.6.11 会话）。
+* p.6.6.9 std/dns：DNS 解析——UDP 查询 A / AAAA / TXT / MX / NS（依赖 std/net UDP），
+  报文编解码 + 服务器可配。
 
-* p.6.6.10 数据库：SQLite 驱动（C ABI 桥，参考 ext/ecdsa 的 extern 范式）。
+* p.6.6.10 std/yaml：YAML 解析——块缩进/流式/标量类型（key-value / 列表 / 嵌套映射），
+  输出平行表（对齐 std/json 节点风格）。
 
-* p.6.6.11 Web 服务框架：std/http\_server 升级（路由表 / keep-alive / 静态文件 /
-  SSE 推送 / JWT 会话）。
+* p.6.6.11 ext/config：TOML 支持提升——[table] / [[array-of-table]] / 内联表 / 基础
+  数据类型，与既有 INI/KV 统一入口出来。
 
-* p.6.6.12 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式）。
+* p.6.6.12 std/markdown：markdown 解析——块级元素（标题/列表/引用/代码/表格）与行内
+  标记（粗体/斜体/链接/行内代码）→ 结构表。
 
-* p.6.6.13 sys/ 层级：第四内置库层级，各操作系统专用库。win32 首期基础六件
-  （注册表读写、系统信息版本/内存/CPU、剪贴板文本、环境变量强化、用户目录/桌面路径、
-  窗口消息基础）+ 高级（进程枚举、服务控制、网络接口、硬件信息）；linux/mac 后续
-  同名层级。定位独立于 std/ext（平台绑定），延续 rdu 的「层级独立、自包含」纪律。
+* p.6.6.13 ext/png：PNG 编解码——chunk 遍历（IHDR/IDAT/IEND/PLTE）+ 滤波（5 型）+
+  位深/色彩类型适配（zlib 已有则复用 codec）。
+
+* p.6.6.14 ext/qr：QR 码生成——RS 纠错码 + 版本/掩码 + 模块矩阵输出（可转 ASCII/PNG）。
+
+* p.6.6.15 ext/svg：SVG 解析——元素树 + 路径/形状/变换结构（依赖 p.6.6.5 xml 底座）。
+
+* p.6.6.16 std/tpl：模板引擎——`{{expr}}` 求值 + 控制结构（if/for），渲染字符串/文件；
+  供页面/代码生成/文档复用。
+
+* p.6.6.17 std/diff：文本 diff——LCS → 行级增删改 + 统一格式输出（供 config 对比/文档）。
+
+* p.6.6.18 std/cron：cron 调度——5 字段表达式（分/时/日/月/周）→ 下次触发时间 /
+  到期判断（依赖 std/time）。
+
+* p.6.6.19 std/jwt：JWT——HS256 / RS256 签发与验证（base64url + 签名，依赖 std 哈希 +
+  p.6.6.1 tls 的 RSA/ECDSA），供 p.6.6.21 会话。
+
+* p.6.6.20 数据库：SQLite 驱动——C ABI 桥（参考 ext/ecdsa 的 extern 范式）：
+  open / exec / query / 行迭代 / 预处理。
+
+* p.6.6.21 Web 服务框架：std/http\_server 升级——路由表 / keep-alive / 静态文件 /
+  SSE 推送（p.6.6.3）/ JWT 会话（p.6.6.19）。
+
+* p.6.6.22 LLM 调用库：OpenAI 兼容客户端——POST + JSON 请求体 + SSE 流式响应解析
+  （依赖 p.6.6.2 httpc + p.6.6.3 sse），对话/补全/流式回调。
+
+* p.6.6.23 sys/win32：平台专用层首期（命名空间 sys\_win32）——基础六件：注册表读写
+  （RegQuery/Set/Enum）、系统信息（版本/内存/CPU）、剪贴板文本（Get/SetClipboardData）、
+  环境变量强化、用户目录/桌面路径（SHGetKnownFolderPath）、窗口消息基础（FindWindow/
+  PostMessage）；高级四项：进程枚举（Toolhelp）、服务控制（OpenSCManager/Enum）、
+  网络接口（GetAdaptersInfo）、硬件信息（WMI 子集或 GetSystemInfo 扩展）。linux/mac
+  后续 sys\_linux / sys\_mac 同名层。定位独立于 std/ext（平台绑定），延续 rdu 的
+  「层级独立、自包含」纪律。
 
 ***
 
