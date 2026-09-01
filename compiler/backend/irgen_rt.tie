@@ -86,6 +86,21 @@ func tig_try(id: i64) -> i64 {
         ir.add_operand(ip, pv1, 0)
         return ir.get_value(ip)
     }
+    // f64 payload（p.6.2.1）：槽存 double（8B type-punned）→ load double 直用
+    if uty == types.named(TK_F64) {
+        var ldf = ir.new_inst(g_cur_block, 21, types.named(TK_F64))
+        ir.add_operand(ldf, g1p, 0)
+        return ir.get_value(ldf)
+    }
+    // table/map payload（p.6.2.1）：槽存 ptrtoint → load i64 → inttoptr 还原 ptr
+    if types.is_table(uty) || types.is_map(uty) {
+        var ld4 = ir.new_inst(g_cur_block, 21, types.named(TK_I64))
+        ir.add_operand(ld4, g1p, 0)
+        var pv4 = ir.get_value(ld4)
+        var ip4 = ir.new_inst(g_cur_block, 25, uty)  // inttoptr → ptr
+        ir.add_operand(ip4, pv4, 0)
+        return ir.get_value(ip4)
+    }
     // 窄整数 payload：槽存 sext 后 i64 → load i64 → trunc 还原（tig_coerce）
     if types.is_int(uty) && uty != types.named(TK_I64) && uty != types.named(TK_U64) {
         var ld2 = ir.new_inst(g_cur_block, 21, types.named(TK_I64))

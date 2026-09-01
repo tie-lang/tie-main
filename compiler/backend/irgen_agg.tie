@@ -528,12 +528,23 @@ func tig_case_bind_body(subject: i64, subj_ty: i64, pat: i64) -> i64 {
     var ld = ir.new_inst(g_cur_block, 21, T64)  // load i64 payload
     ir.add_operand(ld, g1p, 0)
     var pv = ir.get_value(ld)
-    // 还原 payload 类型（对齐 tig_try：string → inttoptr；窄整数 → trunc）
+    // 还原 payload 类型（对齐 tig_try：string → inttoptr；f64 → load double；
+    // table/map → inttoptr；窄整数 → trunc）
     var bv: i64 = pv
     if pty == types.named(TK_STR) {
         var ip = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr
         ir.add_operand(ip, pv, 0)
         bv = ir.get_value(ip)
+    } else if pty == types.named(TK_F64) {
+        // f64 payload（p.6.2.1）：槽存 double（8B type-punned）→ load double 直用
+        var ldf = ir.new_inst(g_cur_block, 21, pty)
+        ir.add_operand(ldf, g1p, 0)
+        bv = ir.get_value(ldf)
+    } else if types.is_table(pty) || types.is_map(pty) {
+        // table/map payload（p.6.2.1）：槽存 ptrtoint → inttoptr 还原 ptr
+        var ip2 = ir.new_inst(g_cur_block, 25, pty)  // inttoptr → ptr
+        ir.add_operand(ip2, pv, 0)
+        bv = ir.get_value(ip2)
     } else if pty != T64 && pty != types.named(TK_U64) && types.is_int(pty) {
         var cv = tig_coerce(bv, T64, pty)
         if cv < 0 {
@@ -633,6 +644,7 @@ func tig_enum_construct(eidx: i64, vname: string, id: i64, arg_start: i64) -> i6
     var i: i64 = 0
     while i < nslot {
         var fty: i64 = types.named(TK_I64)
+        var st_ty: i64 = types.named(TK_I64)  // 槽存储类型（f64 payload → double，8B type-punned）
         var v: i64 = -1
         if i < nfld {
             fty = en_ftys[foff + i]
@@ -657,6 +669,24 @@ func tig_enum_construct(eidx: i64, vname: string, id: i64, arg_start: i64) -> i6
                     ir.add_operand(pi, v, 0)
                     v = ir.get_value(pi)
                 }
+            } else if fty == types.named(TK_F64) {
+                // f64 payload（p.6.2.1）：double 与 i64 槽同宽 8B，type-punned 直存
+                //（对齐 any 装箱 P2b tag=1 的 f64 处理；读侧以 double 还原）
+                v = tig_expr(arg)
+                if v < 0 {
+                    return -1
+                }
+                st_ty = fty
+            } else if types.is_table(fty) || types.is_map(fty) {
+                // table/map payload（p.6.2.1）：值是 ptr → ptrtoint 存 i64 槽
+                //（与 string 桥同构；读侧按消费方 inttoptr 还原 ptr）
+                v = tig_expr(arg)
+                if v < 0 {
+                    return -1
+                }
+                var pi = ir.new_inst(g_cur_block, 24, types.named(TK_I64))  // ptrtoint
+                ir.add_operand(pi, v, 0)
+                v = ir.get_value(pi)
             } else {
                 // 窄整数字段 + 整数字面量：按字段类型生成常量（i32 槽 i32 值）——
                 // 否则字面量走 tig_expr 恒 i64，sext i32 %i64 类型不匹配。
@@ -689,7 +719,7 @@ func tig_enum_construct(eidx: i64, vname: string, id: i64, arg_start: i64) -> i6
         ir.add_operand(gp, 1 + i, 2)
         var gpp = ir.get_value(gp)
         var st = ir.new_inst(g_cur_block, 22, -1)  // store i64
-        ir.add_operand(st, types.named(TK_I64), 2)
+        ir.add_operand(st, st_ty, 2)
         ir.add_operand(st, v, 0)
         ir.add_operand(st, gpp, 0)
         i = i + 1

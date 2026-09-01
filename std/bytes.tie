@@ -16,14 +16,12 @@ type tie<class>
 // 还原字节，非可打印字节无法构造字符（跳过）；from_ascii 只接受 ASCII 码点
 // （0..127），遇非 ASCII 码点返回空表。
 //
-// == 关于 read 的返回类型（IMPORTANT 编译器限制说明）==
+// == 关于 read 的返回类型（历史限制说明，已放开）==
 // 设计文档 library-v2 §4.1 原定 `read(path) -> Result<table<i64>, string>`（失败
-// 返回 Result.Err）。但当前 tiec 的枚举 payload 白名单仅允许 整数族/bool/char/
-// trit/string（见 compiler/frontend/scollect_port.tie collect_enum_variants：
-// f32/f64/struct/table/map/嵌套 enum → "payload 暂不支持类型"），**不支持把
-// table 作为 enum payload**。实测 `Result<table<i64>,string>` 触发此错误，故
-// 在"库必须编译零错误"的硬约束下，read 保留返回类型化 table<i64>（真表语义），
-// 并把错误信号退化为 byte_read 的编译器报错退出 + 文档约定（<> 原语前言）。
+// 返回 Result.Err）。曾因 tiec 枚举 payload 白名单不支持 table 而退化为字节表
+// 哨兵；p.6.2.1 已放开 table 作 payload（见 tests/_p6_probe/enum_payload_lift.tie）。
+// 本函数保持返回类型化 table<i64>（真表语义）的既有签名（API 稳定，不破坏
+// 调用方），错误信号退化为 byte_read 的编译器报错退出 + 文档约定。
 namespace bytes {
 // 读取文件全部字节为 i64 表（每元素 0..255。失败由 byte_read 底座报错退出，
 // 见文件头底座行为说明与 read 返回类型注释）。

@@ -676,9 +676,12 @@ pub func collect_enum_variants(ei: i64) -> i64 {
             if fty < 0 {
                 return -1
             }
-            // 白名单：整数族 / bool / char / trit / string（一期）
+            // 白名单：整数族 / bool / char / trit / string / f64 / table<T> / map<V>
+            //（f64 槽 i64 与 double 同宽，type-punned 直存；table/map 值是 ptr →
+            // 槽存 ptrtoint，读侧 inttoptr 还原——与 string 桥同构；struct/嵌套
+            // enum 需堆拷贝/多槽布局，仍拒绝）
             var ok: bool = false
-            if types.is_int(fty) || fty == TK_BOOL || fty == TK_CHAR || fty == TK_TRIT || fty == TK_STR {
+            if types.is_int(fty) || fty == TK_BOOL || fty == TK_CHAR || fty == TK_TRIT || fty == TK_STR || fty == TK_F64 || types.is_table(fty) || types.is_map(fty) {
                 ok = true
             }
             if !ok {
@@ -700,6 +703,10 @@ pub func collect_enum_variants(ei: i64) -> i64 {
     }
     // 落盘：变体段起点 = 当前 en_vnames 末尾（无继承，直接追加）
     var vbase = len(en_vnames)
+    // payload 类型绝对段起点（en_ftys 全局拍平；en_vfldoff 必须存**绝对**偏移——
+    // 消费方按 en_ftys[foff + jj] 全局索引。单枚举时相对==绝对==0，掩盖了此问题；
+    // 出现第二个枚举时，其相对偏移 0 会读到首个枚举的 payload 字段）
+    var fbase = len(en_ftys)
     en_varoff[ei] = vbase
     en_nvar[ei] = len(v_names)
     en_nslot[ei] = max_slot
@@ -707,7 +714,7 @@ pub func collect_enum_variants(ei: i64) -> i64 {
     while kk < len(v_names) {
         table_push(en_vnames, v_names[kk])
         table_push(en_vtags, kk)
-        table_push(en_vfldoff, v_fldoff[kk])
+        table_push(en_vfldoff, v_fldoff[kk] + fbase)
         table_push(en_vnfld, v_nfld[kk])
         kk = kk + 1
     }

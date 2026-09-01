@@ -7,9 +7,9 @@ type tie<class>
 // cells 直接委托 str.split，保证与 string.tie 的语义逐字符一致。
 // 调用：import 后 csv.read(...) / csv.cells(...) / csv.write(...)
 // library-v2：csv_read/csv_cells/csv_write 去前缀（read/cells/write），
-// 表参数类型化。注：read 本应返回 Result<table<string>, string>，但编译器
-// enum payload 白名单仅支持标量，table<string> 作 payload 编译不过，
-// 故保持原始空表哨兵（文件不存在/读取失败返回空表）。
+// 表参数类型化。注：read 本可返回 Result<table<string>, string>；enum payload
+// 白名单已放开 table（p.6.2.1），但保持空表哨兵既有签名（API 稳定），
+// 文件不存在/读取失败返回空表。
 
 import "./string.tie"
 using str;

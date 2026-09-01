@@ -1,0 +1,31 @@
+type tie<logic>
+import "../../std/result.tie"
+func a() -> Result<i64, string> {
+    return Result.Ok(7)
+}
+func b() -> Result<string, string> {
+    return Result.Ok("hi")
+}
+func main() -> i64 {
+    var r = a()
+    var ok = false
+    switch r {
+        case Result.Ok(v):
+            ok = v == 7
+        case Result.Err(e):
+            println("err: " + e)
+    }
+    var r2 = b()
+    switch r2 {
+        case Result.Ok(v):
+            ok = ok && v == "hi"
+        case Result.Err(e):
+            println("err2: " + e)
+    }
+    if !ok {
+        println("FAIL scalar multi-instance")
+        return 1
+    }
+    println("PASS scalar multi-instance")
+    return 0
+}

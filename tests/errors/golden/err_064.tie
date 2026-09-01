@@ -1,4 +1,7 @@
+struct Point {
+    var x: i64 = 0
+}
 enum Foo {
-    A(f64)
+    A(Point)
 }
 func main() {}

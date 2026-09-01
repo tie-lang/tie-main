@@ -48,7 +48,7 @@ pub func read_bytes(path: string) -> table<i64> {
 }
 
 // 按行读取文本文件（\n 拆分，去掉 Windows 行尾 \r）；空文件返回空表。
-// 注：同理因 enum payload 白名单不支持 table<string>，未包 Result。
+// 注：同理（payload 白名单已放开，见 read_bytes 注）保持空表哨兵签名。
 pub func read_lines(path: string) -> table<string> {
     var rows = table_new_string()
     var content = file_read(path)

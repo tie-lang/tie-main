@@ -16,17 +16,15 @@ type tie<logic>
 //      "枚举名 'Color' 与函数名冲突"（登记阶段查函数表）
 //   3. 重复变体：enum Palette { Red Red } →
 //      "变体 'Red' 重复定义"（collect_enum_variants）
-//   4. payload 白名单违规：enum Foo { A(f64) } →
-//      "变体 'A' 的 payload 暂不支持类型 'f64'"（白名单校验）
+//   4. payload 白名单违规：enum Foo { A(Point) }（struct 不在白名单）→
+//      "变体 'A' 的 payload 暂不支持类型 'Point'"（白名单校验；f64/table/map
+//      已放开见 p.6.2.1，正例见 tests/_p6_probe/enum_payload_lift.tie）
 //   5. 未定义枚举类型：var x: Nonexistent →
 //      "类型 'Nonexistent' 未定义"（函数体类型解析）
 //   6. 枚举 == 比较：if c == Color.Red →
 //      "枚举暂不支持 == 比较"（函数体二元运算）
 //   7. 带 payload 变体裸引用：var s = Shape.Circle（无参数）→
 //      "变体 'Shape.Circle' 需要 payload 参数（不能裸引用，请用 Shape.Circle(...) 构造）"
-//   8. string payload（仅构造调用时触发，IR 生成阶段）：
-//      enum Foo { A(string) } + Foo.A("hi") →
-//      "IR 生成失败: 枚举变体 string payload 暂不支持（一期仅支持整数系 payload）"
 // ============================================================
 
 // ----- 负例 1：枚举重复定义（登记阶段，本文件首个实际错误）-----
@@ -49,10 +47,12 @@ enum Palette {
     Red
 }
 
-// ----- 负例 4/8 共用模板：Foo（payload 白名单 + string）-----
+// ----- 负例 4 模板：Foo（struct payload 不在白名单）-----
+struct Point {
+    var x: i64 = 0
+}
 enum Foo {
-    A(f64)        // 负例 4：f64 不在 payload 白名单
-    B(string)     // 负例 8：string payload 一期不支持（构造时触发）
+    A(Point)      // 负例 4：struct 不在 payload 白名单（f64/table/map 已放开）
 }
 
 // ----- 负例 6/7 共用模板：Shape（带 payload 变体）-----
@@ -70,6 +70,4 @@ func main() {
     }
     // 负例 7：带 payload 变体裸引用（无参数构造）
     var s = Shape.Circle
-    // 负例 8：string payload 构造调用（IR 生成阶段报错）
-    var f = Foo.B("hi")
 }

@@ -50,7 +50,7 @@
   31 断言全绿，config_smoke 48/48）
 
 **功能限制（p.6.2，评估是否在正式版放开）**
-- [ ] p.6.2.1 枚举 payload 白名单（暂不支持 table/f64 → Result<table> 不可用）
+- [x] p.6.2.1 枚举 payload 白名单（放开 f64/table/map；struct/嵌套 enum 仍限制——2026-09-01 落地，见已落地修复）
 - [ ] p.6.2.2 import result.tie 对 import assert.tie 的扫描顺序依赖
 - [ ] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持
 - [ ] p.6.2.4 闭包参数 ref / 变参
@@ -89,6 +89,24 @@
 - [ ] p.6.5.11 收尾：trm-lite preview.2、README/CHANGELOG、已知限制清单
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+## [修复] 枚举 payload 白名单放开 f64/table/map + 多枚举 payload 字段错位（2026-09-01）（p.6.2.1）
+
+枚举 payload 白名单从「整数族/bool/char/trit/string」扩展 + f64/table<T>/map<V>（p.6.2.1 评估结论：正式版放开）：
+f64 槽 i64 与 double 同宽，type-punned 直存、读侧 load double 还原；table/map 值是 ptr，
+槽存 ptrtoint、消费侧 inttoptr 还原（与 string 桥同构）；struct/嵌套 enum 仍需堆拷贝/
+多槽布局，保持拒绝。改动：scollect_port 白名单、irgen_agg 构造侧 + switch case 绑定读侧、
+irgen_rt `?` 解包读侧。
+
+顺带修复同批暴露的潜伏缺陷（多枚举实例共存错位）：collect_enum_variants 把 en_vfldoff
+存**相对**偏移，消费方按 en_ftys[foff+jj] **绝对**索引——单枚举时相对==绝对==0 掩盖；
+同文件第二个枚举实例（如 Result<table<i64>,string> 与 Result<table<string>,string> 共存）
+的 Ok 相对偏移 0 会读到首个枚举的 payload（报"期望 i64，实际 string"）。落盘时加
+fbase（len(en_ftys)）转绝对偏移修复。验证：tests/_p6_probe/enum_payload_lift.tie
+（table<i64>/table<string>/f64/map payload 构造 + switch 解构 + `?` 解包五场景 ALL PASS）、
+result_multi_scalar.tie（多实例共存）、自举 tiec2→tiec3 不动点 IR 逐字节一致、
+tests/language 正例 56/56 + 负例 18/18 拒 + config_smoke 48/48、err_064 golden 由 f64
+负例改为 struct 负例（f64 已放开）；std fs/bytes/csv 注释同步说明（签名保持哨兵不破坏 API）。
+
 
 ## [修复] ir.add_operand 交错检测断言 + 4 处潜伏操作数段交错（2026-08-31）
 
