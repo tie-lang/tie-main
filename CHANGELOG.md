@@ -22,7 +22,7 @@
 > **定位**：trm 开发周期长于预期，2026.1 正式版提前发布。对比 preview.5，
 > 正式版以**修复缺陷与性能问题**为主，不再新增功能面。
 
-### 修复计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能）
+### 修复计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善）
 
 **正确性（p.6.1，必查）**
 - [x] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出（已修复 4095ee1，回归 err_066–068）
@@ -31,7 +31,6 @@
 - [x] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push / 循环内字符串累加内存无界增长）：
   根治完成（2026-09-01）——根因定位为 str_cat 每次 `+` 全新分配、旧中间串永不释放（tie 无 GC），
   `out = out + seg` 循环累加 = 时间/内存双 O(n²)；跨模块 struct 扩字段后 encode 型大函数 4 s 内 3–26 GB
-  （复现与排查见 docs/bugreports/2026-09-01-dpcodec-encode-memory-blowup.md）。
   落地三件套：① ir.add_operand 交错检测断言 + 修复 4 处潜伏交错点（操作数段错位）；② 循环内字符串自加
   自动 StringBuilder 提升（s21_sb_*：循环入口预扫 AST 装载+注入循环前值、体内原地 append、出口 build 回写，
   安全核对=局部 string/引用纯净/无 goto；不满足保持原语义）——报告同源用例 n=20000 由 95 s 崩溃降至 656 ms、
@@ -47,8 +46,7 @@
 - [ ] p.6.2.2 import result.tie 对 import assert.tie 的扫描顺序依赖
 - [ ] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持
 - [ ] p.6.2.4 闭包参数 ref / 变参
-- [ ] p.6.2.5 runtime.a 与 repl.exe 种子通道：C ABI 桥符号 tie 化（TIE_INTERP_LIB 回退）
-- [ ] p.6.2.6 driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用）
+- [ ] p.6.2.5 driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用）
 
 **性能（p.6.3，O(n²) 根治）**
 - [ ] p.6.3.1 config.parse_string 循环逐字符 `out = out + c` → 改 StringBuilder（每日路径）
@@ -57,11 +55,32 @@
 - [ ] p.6.3.4 std/args 逐字符 + str_char 双重平方
 - [ ] p.6.3.5 driver:1257/1299 残余逐字符拼接点
 
+**原语tie化（p.6.4，消除 Rust 桥原语）**
+- [ ] p.6.4.1 UTF-16 宽字符共享桥 + 基础原语（args/cwd/set_env/print_err/rand_range/path_*）
+- [ ] p.6.4.2 文件系统基础（file_read/write/append/exists/delete/size/is_dir/is_file、mkdir_all）
+- [ ] p.6.4.3 文件系统扩展（copy_dir/file_copy/file_move/remove_dir_all/list_dir/walk_dir）
+- [ ] p.6.4.4 数值/字符串（parse_float、to_string_f64）
+- [ ] p.6.4.5 网络（net_*：Winsock2 extern 或 std/net 重写）
+- [ ] p.6.4.6 进程捕获（exec_output：CreatePipe+CreateProcessW+ReadFile）
+- [ ] p.6.4.7 消息系统（msg_*：std 纯 tie）
+- [ ] p.6.4.8 正则（regex_*：纯 tie 引擎，先最小子集）
+- [ ] p.6.4.9 归档/HTTP（untar_gz/unzip、http_get/http_get_file）
+- [ ] p.6.4.10 脚本通道+收尾（read_line/eval/eval_call；全量零 tie_interp.lib 链接验证，TIE_INTERP_LIB 回退保留）
+
+**trm-lite 完善（p.6.5，复杂形态完整实现）**
+- [ ] p.6.5.1 复杂形态静态链接外壳：import trm-lite → tiec 静态链接复杂 runtime
+- [ ] p.6.5.2 work-stealing 调度器：多 OS 线程池 + 双端队列 + 任务窃取 + 抢占 + M:N 承托
+- [ ] p.6.5.3 并发三色 GC：标记栈/写屏障 + 后台回收器 + 精确根扫描（无栈图降级保守根）
+- [ ] p.6.5.4 分代 + 整理：新生代/老年代 + mark-compact（老年代）
+- [ ] p.6.5.5 可迁移栈：分段/拷贝栈切换 + 与调度抢占/GC 根扫描咬合
+- [ ] p.6.5.6 精确栈图：语言栈图供精确根扫描（设计 §9 待决拍板）
+- [ ] p.6.5.7 channel 语言原语：ch_send/ch_recv/ch_close（tiec codegen + trm-lite mailbox）
+- [ ] p.6.5.8 actor × 复杂形态咬合：actor 消息经 trm-lite mailbox；#[unsafe.trm] 接入门
+- [ ] p.6.5.9 多执行体分配/回收 + 消息传收 demo（两形态验收载体：exit 0 + 内存平衡）
+- [ ] p.6.5.10 回归与对比验收：m6_actor 零回归、路线 A/B 不受影响、简单 vs 复杂行为一致
+- [ ] p.6.5.11 收尾：trm-lite preview.2、README/CHANGELOG、已知限制清单
+
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
-
-## [修复] 循环内字符串自加自动 StringBuilder 提升（2026-09-01，根治 dpcodec encode 内存无界增长）
-
-跨模块 struct 扩展 + encode 型大函数（`out = out + seg` 循环累加）内存每 0.5s +2GB、26GB 峰值崩溃（外部仓库 tie-jcc-core 报告，docs/bugreports/2026-09-01-dpcodec-encode-memory-blowup.md）。根因：`str_cat` 每次 `+` 全新分配、旧中间串永不释放（tie 无 GC），循环累加 = 时间/内存双 O(n²)；字段/文本越长越早爆。修复为编译器自动优化：tiec 的 irgen 在 while 循环入口预扫 AST，对「string 局部变量自加拼接」（引用纯净：除自加 RHS 左叶外无其它读写、无 goto、非全局）装载 StringBuilder（s21_sb_*），循环出口 build 回写（break 路径经 exit 块覆盖）；其余形态保持原 str_cat 语义。验证：报告同源编码用例 n=4000 输出逐字节一致（sha 相同）、n=20000 由 95s 崩溃降为 656ms、n=100000 784ms（线性）；新老编译器产物运行对比 11 项全一致；hoist 边界探针（break/continue/if 分支/多变量/段函数调用/非纯净形态）全过；tests/language 正例 55/58（3 个基线已知失败不变）；二阶自举通过。
 
 ## [修复] ir.add_operand 交错检测断言 + 4 处潜伏操作数段交错（2026-08-31）
 
