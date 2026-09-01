@@ -2048,11 +2048,12 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_builtin_res = tig_ext_call2("pow", pf1, types.named(TK_F64), pf2, types.named(TK_F64), types.named(TK_F64))
         return 0
     }
-    // read_line：零参数 → ptr 返回（cwd 已内联 UTF-16 桥）
+    // read_line：零参数 → string（p.6.4.10 内联 GetStdHandle(STD_INPUT_HANDLE) +
+    // ReadFile 逐字节读到 \n/EOF，去 Rust 桥 tie_read_line，**不置 g_used_interp**。
+    // 支持无缓冲管道（脚本交互）：`echo hello | probe` 读到 "hello"；\r\n 规整、
+    // \n 去除；EOF（管道关闭 / Ctrl-Z）返回已收集串或空串。
     if nm == "read_line" {
-        g_used_interp = true
-        var zero_v = tig_int_lit_ty(0, types.named(TK_I64))
-        g_builtin_res = tig_ext_call1("tie_" + nm, zero_v, types.named(TK_I64), types.named(TK_STR))
+        g_builtin_res = tig_read_line()
         return 0
     }
     if nm == "cwd" {
@@ -2096,17 +2097,25 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return 0
     }
     if nm == "eval" {
-        // eval：桥名 tie_eval_expr（非 tie_eval——C ABI 桥签名 (ptr) -> ptr）
-        g_used_interp = true
-        var sv = tig_expr(call_arg(id, 0))
-        if sv < 0 {
-            return -1
-        }
-        g_builtin_res = tig_ext_call1("tie_eval_expr", sv, types.named(TK_STR), types.named(TK_STR))
+        // p.6.4.10：eval 降级——tie:script 解释器未内嵌（完整实现=内嵌解释器，
+        // 工作量巨大，留待 p.6.6 后补）。保留签名但语义降级：返回空串，**不置
+        // g_used_interp**（不再经 tie_eval_expr Rust 桥，不链 tie_interp.lib）。
+        // 原语义（docs/tie-script.md：eval 注册模块顶层定义）在纯 tie 解释器
+        // compiler/interp（interp.eval）中已实现；builtin eval/eval_call 仅被
+        // examples/script_demo.tie / repl/repl.tie（demo）使用。
+        g_builtin_res = tig_str_lit(interner.intern("\"\""))
         return 0
     }
-    // 双字符串参数 → ptr 返回（path_join/eval_call）
-    if nm == "path_join" || nm == "eval_call" {
+    // 双字符串参数 → ptr 返回（path_join：p.6.4.10 仍留 tie_path_join Rust 桥，
+    // path_* 系列待后续去桥；eval_call：p.6.4.10 降级不置 g_used_interp）
+    if nm == "eval_call" {
+        // p.6.4.10：eval_call 降级——同 eval（tie:script 解释器未内嵌，留待
+        // p.6.6 后补）。保留签名但返回空串，**不置 g_used_interp**（去 tie_eval_call
+        // Rust 桥，不链 tie_interp.lib）。原语义见 docs/tie-script.md。
+        g_builtin_res = tig_str_lit(interner.intern("\"\""))
+        return 0
+    }
+    if nm == "path_join" {
         g_used_interp = true
         var a1 = tig_expr(call_arg(id, 0))
         if a1 < 0 {
@@ -3709,6 +3718,91 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         tig_ext_call_typed("_write", ats, avs, -1)  // void（返回写入字节数，忽略）
     }
 
+    // ==================== p.6.4.10 read_line 内联（stdin 行读取，去 Rust 桥） ====================
+    // read_line() -> string：GetStdHandle(STD_INPUT_HANDLE=-10) + ReadFile 逐字节读到
+    // \n（单独）或 EOF（返回已收集串，无输入时空串）。Windows 控制台 ReadFile 也会把
+    // 回车 \r\n 带进缓冲，此处规整：\r（13）跳过、\n（10）终结；支持管道（无缓冲）输入
+    // 脚本交互（`echo hello | probe` → "hello"）。全 kernel32 符号（is_libc_sym 免
+    // interp 链接），零 Rust 桥、零 g_used_interp。
+    func tig_read_line() -> i64 {
+        var T64 = types.named(TK_I64)
+        var I32 = types.named(TK_I32)
+        var I8 = types.named(TK_I8)
+        var P8 = types.ptr_of(types.named(TK_I8))
+        var nulp = tig_null_ptr()
+        // 结果槽：默认空串（EOF/无输入）
+        var rs = ir.new_inst(g_cur_block, 20, types.named(TK_STR))
+        ir.add_operand(rs, types.named(TK_STR), 2)
+        var rp = ir.get_value(rs)
+        s21_store(rp, tig_str_lit(interner.intern("\"\"")), types.named(TK_STR))
+        // stdin 句柄 + 单字节缓冲 + 读计数槽 + 行构建器
+        var h = tig_ext_call1("GetStdHandle", tig_int_lit_ty(-10, I32), I32, P8)
+        var ba = ir.new_inst(g_cur_block, 20, I8)
+        ir.add_operand(ba, I8, 2)
+        var bp = ir.get_value(ba)
+        var ra = ir.new_inst(g_cur_block, 20, I32)
+        ir.add_operand(ra, I32, 2)
+        var rcp = ir.get_value(ra)
+        var sb = s21_sb_new()
+        // 读循环：ReadFile(h, &c, 1, &nread, NULL)
+        var b_lp = ir.new_block(g_cur_func, interner.intern("rl.lp"))
+        var b_rd = ir.new_block(g_cur_func, interner.intern("rl.rd"))
+        var b_ch = ir.new_block(g_cur_func, interner.intern("rl.ch"))
+        var b_cr = ir.new_block(g_cur_func, interner.intern("rl.cr"))
+        var b_ap = ir.new_block(g_cur_func, interner.intern("rl.ap"))
+        var b_ex = ir.new_block(g_cur_func, interner.intern("rl.ex"))
+        var b_mg = ir.new_block(g_cur_func, interner.intern("rl.m"))
+        var b0 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(b0, b_lp, 1)
+        g_cur_block = b_lp
+        s21_store(rcp, tig_int_lit_ty(0, I32), I32)
+        var ats: table<i64> = table_new_i64()
+        var avs: table<i64> = table_new_i64()
+        table_push(ats, P8);  table_push(avs, h)
+        table_push(ats, P8);  table_push(avs, bp)
+        table_push(ats, I32); table_push(avs, tig_int_lit_ty(1, I32))
+        table_push(ats, P8);  table_push(avs, rcp)
+        table_push(ats, P8);  table_push(avs, nulp)
+        var rf = tig_ext_call_typed("ReadFile", ats, avs, I32)
+        var okr = tig_win_ok(rf)
+        var cb0 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb0, okr, 0)
+        ir.add_operand(cb0, b_rd, 1)
+        ir.add_operand(cb0, b_ex, 1)   // ReadFile 失败 → EOF 收尾
+        // 成功：判读计数（0=EOF → 收尾；否则检查字节）
+        g_cur_block = b_rd
+        var c0 = tig_cmp_zero(s21_zext(s21_load(rcp, I32), I32), 0)
+        var cb1 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb1, c0, 0)
+        ir.add_operand(cb1, b_ex, 1)
+        ir.add_operand(cb1, b_ch, 1)
+        // 判字节：\n(10) → 收尾；\r(13) → 跳过回边；其余追加
+        g_cur_block = b_ch
+        var c = s21_zext(s21_load(bp, I8), I8)
+        var isnl = tig_icmp_c(c, tig_int_lit(10), 0)
+        var cb2 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb2, isnl, 0)
+        ir.add_operand(cb2, b_ex, 1)
+        ir.add_operand(cb2, b_cr, 1)
+        g_cur_block = b_cr
+        var iscr = tig_icmp_c(c, tig_int_lit(13), 0)
+        var cb3 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb3, iscr, 0)
+        ir.add_operand(cb3, b_lp, 1)
+        ir.add_operand(cb3, b_ap, 1)
+        g_cur_block = b_ap
+        s21_sb_append_byte(sb, c)
+        var brl = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brl, b_lp, 1)
+        // 收尾：行构建器 → 结果槽
+        g_cur_block = b_ex
+        s21_store(rp, s21_sb_build(sb), types.named(TK_STR))
+        var brx = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brx, b_mg, 1)
+        g_cur_block = b_mg
+        return s21_load(rp, types.named(TK_STR))
+    }
+
     // ==================== p.6.4.7 消息系统原语（纯 tie，运行期全局表） ====================
     // 原 tie_msg_* Rust 桥（g_used_interp=true）改为编译器内联：状态 = 运行期程序
     // 全局槽（惰性登记，仅含 msg_* 的程序才生成；对齐「编译器给用户程序建全局变量」）：
@@ -3920,14 +4014,26 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return s21_load(r_p, TS)
     }
 
+    // rand_range：i64 半开区间 [min,max)。p.6.4.10 修复——原内联经 CRT rand()
+    //（RAND_MAX=32767），span>32768 时上端不可达；改用 **64 位 LCG**（MMIX 常量
+    // state*6364136223846793005 + 1442695040888963407，mul/add 天然模 2^64 环绕，
+    // 无需移位、无逻辑右移偏差），状态存运行期程序全局槽 @__rng_state（惰性登记，
+    // 送 std/random.tie 的 rnd 语义——原 Rust 桥 tie_rand_range 即系统时间播种，两次
+    // 运行不同序列）。首调 @__rng_state==0 时用 time(NULL)|1 播种。span 用 64 位
+    // urem（无符号取模），任意 span 全区间均匀覆盖。非密码学安全。
+    func tig_rng_reg() {
+        if g_rng_reg_done == 1 {
+            return
+        }
+        g_rng_reg_done = 1
+        llvmgen.global_scalar_reg("__rng_state", types.named(TK_I64))
+    }
+
     func tig_rand_range(min: i64, max: i64) -> i64 {
-        // 注（p.6.4.4）：rand_range 当前经 CRT rand()（RAND_MAX=32767）→（r % span）
-        //——当 span>32768 时上端不可达（rand 增量仅 0..RAND_MAX，取模后 min+RAND_MAX
-        // 附近区段永不出现），且 rand 未被播种（恒同序列）。修复（用 xorshift 手写
-        // 32 位随机 + 全局状态槽，span 用 64 位取模）会显著扩大 p.6.4.4 范围，故
-        // **留待 p.6.4.10** 在此处实施；本任务仅记录该已知限制。
         var T64 = types.named(TK_I64)
         var I32 = types.named(TK_I32)
+        var P8 = types.ptr_of(types.named(TK_I8))
+        tig_rng_reg()
         var span = s21_bin(1, max, min)           // max - min
         var bad = tig_icmp_c(span, tig_int_lit(1), 2)   // span < 1（≤0 → 退化）
         var slot = ir.new_inst(g_cur_block, 20, T64)
@@ -3945,12 +4051,39 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         var br1 = ir.new_inst(g_cur_block, 30, -1)
         ir.add_operand(br1, mg, 1)
         g_cur_block = be
-        var ats0: table<i64> = table_new_i64()
-        var avs0: table<i64> = table_new_i64()
-        var r = tig_ext_call_typed("rand", ats0, avs0, I32)  // int rand()（零参）
-        var r64 = s21_zext(r, I32)
-        var rmod = s21_urem(r64, span)
-        var rres = s21_bin(0, min, rmod)           // min + (r % span)
+        var nulp = tig_null_ptr()
+        // 种子槽：@__rng_state==0 → time(NULL)|1 播种；否则沿用既有状态
+        var st_a = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(st_a, T64, 2)
+        var st_p = ir.get_value(st_a)
+        var cur = tig_msg_gload("__rng_state", T64)
+        var isz = tig_icmp_c(cur, tig_int_lit(0), 0)   // eq 0（未播种）
+        var b_sd = ir.new_block(g_cur_func, interner.intern("rr.sd"))
+        var b_cu = ir.new_block(g_cur_func, interner.intern("rr.cu"))
+        var b_mg = ir.new_block(g_cur_func, interner.intern("rr.mu"))
+        var cb2 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb2, isz, 0)
+        ir.add_operand(cb2, b_sd, 1)
+        ir.add_operand(cb2, b_cu, 1)
+        g_cur_block = b_sd
+        var tt = tig_ext_call1("time", nulp, P8, T64)  // time(NULL) 厘秒（time_t）
+        var seed = s21_bin(7, tt, tig_int_lit(1))       // time | 1（保证非零/奇）
+        s21_store(st_p, seed, T64)
+        var brs = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brs, b_mg, 1)
+        g_cur_block = b_cu
+        s21_store(st_p, cur, T64)
+        var brc = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brc, b_mg, 1)
+        // 推进 64 位 LCG 并取 [0, span)
+        g_cur_block = b_mg
+        var state = s21_load(st_p, T64)
+        var MUL = tig_int_lit(6364136223846793005)
+        var INC = tig_int_lit(1442695040888963407)
+        var st2 = s21_bin(0, s21_bin(2, state, MUL), INC)   // state*MUL + INC（回绕）
+        tig_msg_gstore("__rng_state", T64, st2)
+        var rmod = s21_urem(st2, span)                        // 无符号取模 → [0, span)
+        var rres = s21_bin(0, min, rmod)                      // min + rmod
         s21_store(sv, rres, T64)
         var br2 = ir.new_inst(g_cur_block, 30, -1)
         ir.add_operand(br2, mg, 1)
