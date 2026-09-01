@@ -48,6 +48,15 @@
   parse_array_body/build_defaults/merge_maps/concat_arrays 均先局部收集后统一登记或自我 append 全局末尾，
   map_set 原地覆盖；新增 tests/s31/config_merge_stress.tie 四层链式深合并+嵌套/数组 concat/重置/交错访问
   31 断言全绿，config_smoke 48/48）
+- [x] p.6.1.6 str_char 越界读（多字节 UTF-8 串 + len(s) 字节数上界 → 0xC0000005，jcc-pack extract 崩溃根因）：
+  根治完成（2026-09-01）——根因定位 irgen 内联 str_char(s,i) 的码点定位循环仅以 `k < i` 终止、无 pos 边界
+  检查：调用方以 `i < len(s)`（len 读头 O(1) 返回**字节数**）为上界遍历含中文等多字节 UTF-8 的串时，
+  i 会超过实际码点数，pos 越过串尾继续 s21_utf8_seq_len/s21_str_byte 越界 GEP+load（拆分/不拆分 extract 均
+  触发，此前"拆小函数规避"对含中文束方数据无效）。修复：cond 增补 `pos < blen` 终止 + 越界返回空串
+  （res 槽 + after/ok/bad/merge CFG，与 s21_codepoint_to_str 非法码点空串语义一致）。验证：
+  极简探针（循环内 qs_clean(skill_desc) 中文 148 字节）修复前 AV → 修复后 A6 total=7414 全过；
+  main_unsplit 未拆分 extract official-s19 518 文件完整通过（65 棋子/35 羁绊/157 装备/258 符文）；
+  自举 tiec_s1→s2→s3 --emit-ir 逐字节一致（不动点）；tests/language 全量 PASS=96 与基线零差。
 
 **功能限制（p.6.2，评估是否在正式版放开）**
 - [x] p.6.2.1 枚举 payload 白名单（放开 f64/table/map；struct/嵌套 enum 仍限制——2026-09-01 落地，见已落地修复）
