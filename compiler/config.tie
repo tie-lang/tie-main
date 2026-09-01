@@ -285,46 +285,83 @@ func parse_string(s: string) -> i64 {
     var n: i64 = str_len(s)
     // 跳过开引号
     g_cpos = g_cpos + 1
-    var out: string = ""
-    while g_cpos < n {
-        var c = str_char(s, g_cpos)
-        if c == "\"" {
-            // 闭引号：返回字符串节点
-            g_cpos = g_cpos + 1
-            return new_str_node(out)
+    // 计算当前码点 g_cpos 对应的字节偏移 bpos（str_byte 按字节索引；str_char 为 O(i)，
+    // 循环内逐码点调用会退化为 O(n²)，故改用 O(1) 的 str_byte 推进）。
+    var bpos: i64 = 0
+    var idx: i64 = 0
+    while idx < g_cpos && idx < n {
+        var lb = str_byte(s, bpos)
+        var bl: i64 = 1
+        if lb >= 240 {
+            bl = 4
+        } else if lb >= 224 {
+            bl = 3
+        } else if lb >= 192 {
+            bl = 2
         }
-        if c == "\\" {
-            // 转义序列
+        bpos = bpos + bl
+        idx = idx + 1
+    }
+    var out_h = string_builder()
+    while g_cpos < n {
+        var b = str_byte(s, bpos)
+        if b == 34 {
+            // 闭引号（"）：返回字符串节点
+            g_cpos = g_cpos + 1
+            return new_str_node(sb_build(out_h))
+        }
+        if b == 92 {
+            // 转义序列（\）
             if g_cpos + 1 >= n {
                 c_err_msg = "config 字符串转义不完整（位置 " + to_string(g_cpos) + "）"
                 return -1
             }
-            var e = str_char(s, g_cpos + 1)
-            if e == "\"" {
-                out = out + "\""
+            var eb = str_byte(s, bpos + 1)
+            if eb == 34 {
+                sb_append_byte(out_h, 34)
                 g_cpos = g_cpos + 2
-            } else if e == "\\" {
-                out = out + "\\"
+                bpos = bpos + 2
+            } else if eb == 92 {
+                sb_append_byte(out_h, 92)
                 g_cpos = g_cpos + 2
-            } else if e == "/" {
-                out = out + "/"
+                bpos = bpos + 2
+            } else if eb == 47 {
+                sb_append_byte(out_h, 47)
                 g_cpos = g_cpos + 2
-            } else if e == "n" {
-                out = out + "\n"
+                bpos = bpos + 2
+            } else if eb == 110 {
+                sb_append_byte(out_h, 10)
                 g_cpos = g_cpos + 2
-            } else if e == "r" {
-                out = out + "\r"
+                bpos = bpos + 2
+            } else if eb == 114 {
+                sb_append_byte(out_h, 13)
                 g_cpos = g_cpos + 2
-            } else if e == "t" {
-                out = out + "\t"
+                bpos = bpos + 2
+            } else if eb == 116 {
+                sb_append_byte(out_h, 9)
                 g_cpos = g_cpos + 2
+                bpos = bpos + 2
             } else {
-                c_err_msg = "config 未知转义 \\" + e + "（位置 " + to_string(g_cpos) + "）"
+                c_err_msg = "config 未知转义 \\" + str_char(s, g_cpos + 1) + "（位置 " + to_string(g_cpos) + "）"
                 return -1
             }
         } else {
-            out = out + c
+            // 普通字符（可能多字节码点）：整字符按字节长度复制
+            var bl: i64 = 1
+            if b >= 240 {
+                bl = 4
+            } else if b >= 224 {
+                bl = 3
+            } else if b >= 192 {
+                bl = 2
+            }
+            var k: i64 = 0
+            while k < bl {
+                sb_append_byte(out_h, str_byte(s, bpos + k))
+                k = k + 1
+            }
             g_cpos = g_cpos + 1
+            bpos = bpos + bl
         }
     }
     c_err_msg = "config 字符串未闭合"
