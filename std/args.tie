@@ -115,12 +115,12 @@ func slice_from(s: string, start: i64) -> string {
     if start < 0 || start >= n {
         return ""
     }
-    var out: string = ""
+    var sb = string_builder()
     var i: i64 = start
     while i < n {
-        out = out + str_char(s, i)
+        sb_append(sb, str_char(s, i))
         i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 }
