@@ -1,9 +1,10 @@
 # p.6.6 库补全总规划 + p.6.6.1 TLS 客户端设计
 
 * 日期 / Date：2026-09-01
+
 * 状态 / Status：设计待审（Design pending review）
 
----
+***
 
 ## 1. 定位 / Positioning
 
@@ -20,37 +21,47 @@ data, and access-side capabilities so tie can independently cover the whole
 **编号约定**：一个库一个子项号（p.6.6.N）。第三段自动递增。
 EN: Naming convention: one library per sub-item number (p.6.6.N); the third segment auto-increments.
 
----
+***
 
 ## 2. p.6.6 子项总盘子 / Sub-item Plan
 
-| 子项 / Item | 库 / Library | 内容 / Content |
-| --- | --- | --- |
-| p.6.6.1 | ext/tls | TLS 1.3 + 1.2 客户端（纯 tie）、X.509 解析与完整链校验、字节级网络 IO（编译器新原语） |
-| p.6.6.2 | std/http 升级 | 完整 HTTP 客户端：https / POST / headers / cookies / 重定向；命名空间 httpc，旧 http.get 保留兼容 |
-| p.6.6.3 | ext/html | HTML 分词 + DOM 树 + 选择器抽取 + 链接提取 |
-| p.6.6.4 | ext/spidey | 爬虫治理：robots.txt 解析 + 限速 + URL 去重 + 编排 |
-| p.6.6.5 | 数据库 | SQLite 驱动（C ABI 桥或纯 tie） |
-| p.6.6.6 | Web 服务框架 | std/http_server 升级：路由 / keep-alive / 静态文件 |
-| p.6.6.7 | LLM 调用库 | OpenAI 兼容客户端（复用 httpc + SSE 流式） |
+| 子项 / Item | 库 / Library | 内容 / Content                                                                  |
+| --------- | ----------- | ----------------------------------------------------------------------------- |
+| p.6.6.1   | ext/tls     | TLS 1.3 + 1.2 客户端（纯 tie）、X.509 解析与完整链校验、字节级网络 IO（p.6.4.5 承接）                  |
+| p.6.6.2   | std/http 升级 | 完整 HTTP 客户端：https / POST / headers / cookies / 重定向；命名空间 httpc，旧 http.get 保留兼容 |
+| p.6.6.3   | std/sse     | SSE 流式读取（`text/event-stream` 解码；LLM / WebSocket 前置件）                               |
+| p.6.6.4   | ext/html    | HTML + XML 分词 + DOM 树 + 选择器抽取 + 链接提取 + HTML→纯文本                                   |
+| p.6.6.5   | ext/spidey  | 爬虫治理：robots.txt 解析 + 限速 + URL 去重 + 编排                                         |
+| p.6.6.6   | 网络协议系     | WebSocket 客户端（依赖 httpc/SSE）、SMTP 发信、DNS 解析                                      |
+| p.6.6.7   | 数据格式系     | YAML 解析、TOML（并入 config）、markdown 解析                                              |
+| p.6.6.8   | 图像三件套     | PNG 编解码、QR 码生成、SVG 解析                                                        |
+| p.6.6.9   | 工具应用系     | 模板引擎、文本 diff、cron 调度、JWT/token（并入 p.6.6.11 前置）                                  |
+| p.6.6.10  | 数据库       | SQLite 驱动（C ABI 桥或纯 tie）                                                        |
+| p.6.6.11  | Web 服务框架  | std/http\_server 升级：路由 / keep-alive / 静态文件 / SSE 推送 / JWT 会话                     |
+| p.6.6.12  | LLM 调用库   | OpenAI 兼容客户端（复用 httpc + JSON + SSE 流式）                                          |
+| p.6.6.13  | sys/ 层级    | 各操作系统专用库：win32 基础（注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息）+ 高级（进程枚举/服务控制/网络接口/硬件信息）；linux/mac 后续同名层级 |
 
-* 依赖方向（单向）/ Dependency direction (one-way): tls → httpc → html / spidey / llm。
-  p.6.6.5（db）与 p.6.6.6（web）相对独立。
+* 依赖方向（单向）/ Dependency direction (one-way): tls → httpc → sse → html / spidey / llm。
+  p.6.6.10（db）与 p.6.6.11（web）相对独立。
+
 * 公共底座 / Shared foundation: ext/tls 与 std/http 升级版是 LLM / 爬虫 / Web 框架的公共底座，
   因此优先完成（p.6.6.1、p.6.6.2）。
   EN: ext/tls and the upgraded std/http are the shared foundation for the LLM / crawler / web
   framework; hence they come first (p.6.6.1, p.6.6.2).
 
----
+***
 
 ## 3. p.6.6.1 设计 / Design (ext/tls)
 
 ### 3.1 目标 / Goals
 
 * 纯 tie 实现 TLS 1.3 客户端（RFC 8446），并兼容 TLS 1.2（RFC 5246）以覆盖老服务器。
+
 * 多加密套件一次到位：AES-128/256-GCM、ChaCha20-Poly1305；密钥协商 x25519 优先，
   secp256r1 可选。
+
 * 完整证书链校验 + 主机名匹配（SAN/CN）+ 内置 CA 信任锚。
+
 * 为 p.6.6.2 的 https 客户端与后续 LLM / Web 框架提供字节级安全信道底座。
 
 EN: A pure-tie TLS 1.3 client (RFC 8446) with TLS 1.2 (RFC 5246) fallback. Multiple cipher
@@ -91,18 +102,19 @@ pub func close(s: Session)                                           // 关闭�
 
 ### 3.4 套件与机制 / Cipher Suites and Mechanics
 
-| 版本 / Version | 套件 / Suite |
-| --- | --- |
-| TLS 1.3 | TLS_AES_128_GCM_SHA256、TLS_AES_256_GCM_SHA384、TLS_CHACHA20_POLY1305_SHA256 |
-| TLS 1.2 | TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 / AES_256_GCM / CHACHA20_POLY1305 |
+| 版本 / Version | 套件 / Suite                                                                            |
+| ------------ | ------------------------------------------------------------------------------------- |
+| TLS 1.3      | TLS\_AES\_128\_GCM\_SHA256、TLS\_AES\_256\_GCM\_SHA384、TLS\_CHACHA20\_POLY1305\_SHA256 |
+| TLS 1.2      | TLS\_ECDHE\_RSA\_WITH\_AES\_128\_GCM\_SHA256 / AES\_256\_GCM / CHACHA20\_POLY1305     |
 
 * 密钥协商 / Key agreement: x25519（std/x25519 已有）；secp256r1 列为可选（依赖 ext/ecdsa 底座）。
+
 * 证书验签 / Certificate verification: RSA PKCS#1 v1.5/PSS（std/bigint.powmod 已有）、
   ECDSA P-256（ext/ecdsa.verify 已有）。
 
 ### 3.5 编译前置 / Compiler Prerequisite
 
-tie 无字节级网络接收原语（net_tcp_recv 返回 string，无法承载 >=0x80 原始字节）。因此
+tie 无字节级网络接收原语（net\_tcp\_recv 返回 string，无法承载 >=0x80 原始字节）。因此
 p.6.6.1 首先扩展编译器，注册两个新原语：
 
 ```tie
@@ -111,26 +123,28 @@ net_tcp_send_bytes(handle: i64, data: table<i64>) -> i64 // 发送原始字节
 ```
 
 * 注册位置 / Registration points: sbuiltin（语义内置表）、middle/data（原语名表）、
-  irgen_expr（调用生成，两处）、llvmgen_str（LLVM declare）。
+  irgen\_expr（调用生成，两处）、llvmgen\_str（LLVM declare）。
+
 * interp 路径同步支持。
+
 * 验证 / Gate: 单文件探针 TCP 回环字节收发往返全 PASS + 自举 tiec2==tiec3（不动点）。
 
----
+***
 
 ## 4. 密码件盘点（缺什么补什么）/ Crypto Inventory (fill the gaps)
 
-| 缺失件 / Gap | 补法 / Fill | 位置 / Where |
-| --- | --- | --- |
-| AES-GCM | ext/aes 加密轮 + GHASH + GCTR（GF(2^128)） | tls/gcm.tie |
-| ChaCha20-Poly1305 AEAD | 组合现有 ext/chacha20 + std/poly1305 | tls/aead.tie |
-| ASN.1 DER 解析 | 从零实现 DER TLV 解析器 | tls/der.tie |
-| X.509 结构 | tbsCertificate / 签名 / 公钥提取 | tls/x509.tie |
-| RSA 验签 | bigint.powmod（已有）+ PKCS#1 v1.5/PSS 解包 | tls/x509 内 |
-| ECDSA P-256 验签 | 复用 ext/ecdsa.verify | 引用 |
-| secp256r1 协商 | 可选；x25519 为主（std/x25519 已有） | tls1_2 内 |
-| 信任锚 | 内置常见根 CA 公钥表（SPKI）+ 可配置追加 | chain.tie |
+| 缺失件 / Gap              | 补法 / Fill                             | 位置 / Where   |
+| ---------------------- | ------------------------------------- | ------------ |
+| AES-GCM                | ext/aes 加密轮 + GHASH + GCTR（GF(2^128)） | tls/gcm.tie  |
+| ChaCha20-Poly1305 AEAD | 组合现有 ext/chacha20 + std/poly1305      | tls/aead.tie |
+| ASN.1 DER 解析           | 从零实现 DER TLV 解析器                      | tls/der.tie  |
+| X.509 结构               | tbsCertificate / 签名 / 公钥提取            | tls/x509.tie |
+| RSA 验签                 | bigint.powmod（已有）+ PKCS#1 v1.5/PSS 解包 | tls/x509 内   |
+| ECDSA P-256 验签         | 复用 ext/ecdsa.verify                   | 引用           |
+| secp256r1 协商           | 可选；x25519 为主（std/x25519 已有）           | tls1\_2 内    |
+| 信任锚                    | 内置常见根 CA 公钥表（SPKI）+ 可配置追加             | chain.tie    |
 
----
+***
 
 ## 5. 任务流水线与验收 / Task Pipeline and Acceptance
 
@@ -149,31 +163,62 @@ p.6.6.1 TLS 客户端
   6.  ext/tls/tls.tie 统一入口 + 文档 / CHANGELOG
 ```
 
-* 测试策略 / Test strategy: 每步独立探针（对齐 tests/kdf_probe、tests/asym_probe 风格）；
-  密码组件用 RFC 权威向量硬编码断言；握手与链校验用本机 openssl s_server（OpenSSL 3.6.1，
+* 测试策略 / Test strategy: 每步独立探针（对齐 tests/kdf\_probe、tests/asym\_probe 风格）；
+  密码组件用 RFC 权威向量硬编码断言；握手与链校验用本机 openssl s\_server（OpenSSL 3.6.1，
   已确认可用），不依赖外网。
+
 * 文档 / Docs: 双语（中文 + 英文），无内部阶段编号，README/CHANGELOG 按仓库规范。
 
----
+***
 
 ## 6. 后续子项简述 / Following Sub-items (brief)
 
 * p.6.6.2 std/http 升级：在 std/net 字节 IO + ext/tls 之上提供 httpc 命名空间完整客户端；
   旧 http.get 保留兼容返回 Result。
-* p.6.6.3 ext/html：HTML 分词器 + DOM 树（平行表）+ 选择器（tag/class/id/属性）+ 链接提取。
-* p.6.6.4 ext/spidey：robots.txt 解析 + 限速 + URL 去重 + 编排（子命名空间 html/robots/crawl）。
-* p.6.6.5 数据库：SQLite 驱动（C ABI 桥或纯 tie）。
-* p.6.6.6 Web 服务框架：std/http_server 升级（路由 / keep-alive / 静态文件）。
-* p.6.6.7 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式）。
 
----
+* p.6.6.3 std/sse：`text/event-stream` 流式解码（event/data/id/retry 字段，行式增量读取）；
+  LLM（p.6.6.12）与 WebSocket（p.6.6.6）与 Web 框架 SSE 推送（p.6.6.11）的前置件。
+
+* p.6.6.4 ext/html：HTML + XML 分词器 + DOM 树（平行表）+ 选择器（tag/class/id/属性）+
+  链接提取 + HTML→纯文本（可读性提取）。
+
+* p.6.6.5 ext/spidey：robots.txt 解析 + 限速 + URL 去重 + 编排（子命名空间 html/robots/crawl）。
+
+* p.6.6.6 网络协议系：WebSocket 客户端（握手 + 帧编解码 + 掩码，依赖 httpc/SSE）、
+  SMTP 发信（EHLO/AUTH/MAIL/RCPT/DATA，可配 STARTTLS）、DNS 解析（A/AAAA/TXT/MX 查询）。
+
+* p.6.6.7 数据格式系：YAML 解析（块缩进/流式/标量类型）、TOML（并入 ext/config 提升）、
+  markdown 解析（块级元素/行内标记 → 结构表）。
+
+* p.6.6.8 图像三件套：PNG 编解码（zlib 已有 → chunk 解析 + 滤波 + 位深）、QR 码生成
+  （RS 纠错 + 矩阵布局）、SVG 解析（XML 底座复用 p.6.6.4 → 元素/路径结构）。
+
+* p.6.6.9 工具应用系：模板引擎（`{{expr}}` 求值，渲染字符串/文件）、文本 diff
+  （LCS → 行级增删改）、cron 调度（5 字段表达式 → 下次触发时间/到期判断）、
+  JWT（HS256/RS256 签发验证，供 p.6.6.11 会话）。
+
+* p.6.6.10 数据库：SQLite 驱动（C ABI 桥，参考 ext/ecdsa 的 extern 范式）。
+
+* p.6.6.11 Web 服务框架：std/http\_server 升级（路由表 / keep-alive / 静态文件 /
+  SSE 推送 / JWT 会话）。
+
+* p.6.6.12 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式）。
+
+* p.6.6.13 sys/ 层级：第四内置库层级，各操作系统专用库。win32 首期基础六件
+  （注册表读写、系统信息版本/内存/CPU、剪贴板文本、环境变量强化、用户目录/桌面路径、
+  窗口消息基础）+ 高级（进程枚举、服务控制、网络接口、硬件信息）；linux/mac 后续
+  同名层级。定位独立于 std/ext（平台绑定），延续 rdu 的「层级独立、自包含」纪律。
+
+***
 
 ## 7. 待决项 / Open Items
 
 * secp256r1 密钥协商是否在 p.6.6.1 内一并实现（缺省：x25519 为主，P-256 可选延期）。
   EN: whether secp256r1 key agreement is implemented inside p.6.6.1 (default: x25519 primary,
   P-256 optional / deferred).
-* 编译器原语改动归属：归入 p.6.6.1（本设计），与 p.6.4.5 net_* 原语 tie 化各自独立、
+
+* 编译器原语改动归属：归入 p.6.6.1（本设计），与 p.6.4.5 net\_\* 原语 tie 化各自独立、
   互不阻塞。
   EN: the compiler primitive change belongs to p.6.6.1 (this design), independent of and
-  unblocked by p.6.4.5 (net_* primitive tie-ification).
+  unblocked by p.6.4.5 (net\_\* primitive tie-ification).
+
