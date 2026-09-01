@@ -1351,6 +1351,22 @@ func tig_stmt(id: i64) -> i64 {
         var cond = sstate.child(id, 0)
         var body = sstate.child(id, 1)
         var label = s_names[id]
+        // p.6.1.4：预扫循环体找可提升的字符串自加变量（静态核对后挂 sb）。
+        // sb 以「out 循环前值」为起始段——提升从空 sb 开始，若循环前 out
+        // 已有值（前一循环结果/初始精），必须保留（否则多循环链丢结果）。
+        var cands = sb_scan(body, cond)
+        var cix: i64 = 0
+        while cix < len(cands) {
+            table_push(g_sb_keys, cands[cix])
+            var h_sb2 = s21_sb_new()
+            if scope_get(cands[cix]) >= 0 {
+                var pre_ld = ir.new_inst(g_cur_block, 21, types.named(TK_STR))  // load 旧值
+                ir.add_operand(pre_ld, g_lookup_alloca, 0)
+                s21_sb_append(h_sb2, ir.get_value(pre_ld))
+            }
+            table_push(g_sb_hv, h_sb2)
+            cix = cix + 1
+        }
         var cond_blk = ir.new_block(g_cur_func, interner.intern("while.cond"))
         var body_blk = ir.new_block(g_cur_func, interner.intern("while.body"))
         var exit_blk = ir.new_block(g_cur_func, interner.intern("while.exit"))
@@ -1379,6 +1395,21 @@ func tig_stmt(id: i64) -> i64 {
         }
         // exit 块
         g_cur_block = exit_blk
+        // p.6.1.4：提升候选在循环出口 build 回写 out 槽（break/条件 false 全部汇入
+        // exit_blk → 任一出口都拿到最终拼接串；sb 登记同步移除）
+        var bix: i64 = 0
+        while bix < len(cands) {
+            var cnid = cands[bix]
+            var hix = sb_find(cnid)
+            if hix >= 0 {
+                var bs = s21_sb_build(g_sb_hv[hix])
+                if scope_get(cnid) >= 0 {
+                    s21_store(g_lookup_alloca, bs, types.named(TK_STR))
+                }
+                sb_remove(cnid)
+            }
+            bix = bix + 1
+        }
         loop_pop()
         return 0
     }
@@ -1448,6 +1479,23 @@ func tig_stmt(id: i64) -> i64 {
         var val = sstate.child(id, 0)
         var op = s_vals[id]
         var nid = interner.intern(nm)
+        // p.6.1.4：循环内字符串自加提升——sb 挂起中且为 `out = out + seg...` 形态
+        // → 段表达式逐个 sb_append（跳过 str_cat 全拷贝与 store；循环出口统一 build）。
+        // 前提由 sb_scan 静态核对（局部 string、引用纯净、无其它写/goto）。
+        if op < 0 && sb_find(nid) >= 0 && sb_is_self_add(val, nid) {
+            var hv_sb = g_sb_hv[sb_find(nid)]
+            var segs2 = sb_split_segs(val, nid)
+            var si2: i64 = 0
+            while si2 < len(segs2) {
+                var sv2 = tig_expr(segs2[si2])
+                if sv2 < 0 {
+                    return -1
+                }
+                s21_sb_append(hv_sb, sv2)
+                si2 = si2 + 1
+            }
+            return 0
+        }
         if scope_get_global(nid) < 0 {
             sm_err_msg = "赋值目标 '" + nm + "' 未入作用域（函数 " + g_cur_fn_name + "）"
             return -1
@@ -1875,6 +1923,285 @@ func collect_var_refs(st: i64, target: i64, out: table<i64>) {
         collect_var_refs(sstate.child(st, i), target, out)
         i = i + 1
     }
+}
+
+// ==================== 循环内字符串自加 StringBuilder 提升（p.6.1.4） ====================
+// 识别 `out = out + seg...`（string 局部变量自加拼接）→ 循环内自动改为
+// StringBuilder 追加（s21_sb_*），循环出口 sb_build 回写 out。根治 str_cat
+// O(n²) 无名分配带来的内存无界增长（每次 + 新分配、旧中间串永不释放）。
+// 提升前提（逐项静态核对，任何不满足即退回原 str_cat 路径）：
+//   1) out 是函数内局部 string 变量（非全局）
+//   2) 循环体（含条件）内 out 的全部引用仅是自加 RHS 的最左叶子——
+//      无其它读、无取址/传参、无非自加赋值（其它写）
+//   3) 循环体内无 goto 逃出（break/continue 均汇入 exit/cond 块，安全）
+// 语义与原逐段拼接完全等价：最终 out = 全部段的顺序拼接。
+
+func sb_contains(t: table<i64>, v: i64) -> bool {
+    var i: i64 = 0
+    while i < len(t) {
+        if t[i] == v {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// 定位 sb 状态索引（-1 未提升）
+func sb_find(nid: i64) -> i64 {
+    var i: i64 = 0
+    while i < len(g_sb_keys) {
+        if g_sb_keys[i] == nid {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 取消提升登记（循环出口 build 回写后）。表重建去除目标条目。
+func sb_remove(nid: i64) {
+    var i = sb_find(nid)
+    if i < 0 {
+        return
+    }
+    var outk = table_new_i64()
+    var outh = table_new_i64()
+    var j: i64 = 0
+    while j < len(g_sb_keys) {
+        if j != i {
+            table_push(outk, g_sb_keys[j])
+            table_push(outh, g_sb_hv[j])
+        }
+        j = j + 1
+    }
+    g_sb_keys = outk
+    g_sb_hv = outh
+}
+
+// val 是否为 `out + ...` 自加形态：B_ADD(0) 左链，最左叶子 = Var(out)，
+// node_types[val] == TK_STR（字符串拼接）。
+func sb_is_self_add(val: i64, nid: i64) -> bool {
+    if val < 0 {
+        return false
+    }
+    if node_types[val] != types.named(TK_STR) {
+        return false
+    }
+    var cur = val
+    while s_tags[cur] == 9 && s_vals[cur] == 0 {  // N_BINARY + B_ADD
+        var lhs = sstate.child(cur, 0)
+        cur = lhs
+    }
+    return s_tags[cur] == 6 && s_names[cur] == nid
+}
+
+// 提取自加 RHS 的段节点（`out + a + b + c` → [a, b, c]，顺序正序；
+// 非自加形态返回空表）。
+func sb_split_segs(val: i64, nid: i64) -> table<i64> {
+    var rev = table_new_i64()
+    var cur = val
+    var depth: i64 = 0
+    while s_tags[cur] == 9 && s_vals[cur] == 0 && depth < 64 {
+        var lhs = sstate.child(cur, 0)
+        var rhs = sstate.child(cur, 1)
+        table_push(rev, rhs)
+        depth = depth + 1
+        cur = lhs
+    }
+    if s_tags[cur] != 6 || s_names[cur] != nid {
+        var empty = table_new_i64()
+        return empty
+    }
+    var segs = table_new_i64()
+    var i: i64 = len(rev) - 1
+    while i >= 0 {
+        table_push(segs, rev[i])
+        i = i - 1
+    }
+    return segs
+}
+
+// 递归收集语句树中的自加候选（合法叶 + 候选名 + 其它写标记 + goto 探测）
+func sb_collect(st: i64, legal: table<i64>, nids: table<i64>) {
+    if st < 0 {
+        return
+    }
+    if s_tags[st] == 144 {  // goto：逃出循环 → 全局禁提升（调用方查 goflag）
+        return
+    }
+    if s_tags[st] == 103 {  // N_ASSIGN
+        var nm = sstate.name_str(st)
+        if str_len(nm) > 0 {
+            var nid = interner.intern(nm)
+            var val = sstate.child(st, 0)
+            if sb_is_self_add(val, nid) {
+                var leaf = sb_left_leaf(val)
+                if leaf >= 0 {
+                    table_push(legal, leaf)
+                }
+                if !sb_contains(nids, nid) {
+                    table_push(nids, nid)
+                }
+            }
+        }
+        return  // Assign 的 val 子树不作为语句继续扫（引用检查由 find_var_refs 全量覆盖）
+    }
+    var n = sstate.nchild(st)
+    var i: i64 = 0
+    while i < n {
+        sb_collect(sstate.child(st, i), legal, nids)
+        i = i + 1
+    }
+}
+
+// 自加 RHS 左链最左叶子节点（= 该 out 的 Var 引用节点；-1 非自加形态）
+func sb_left_leaf(val: i64) -> i64 {
+    if val < 0 {
+        return -1
+    }
+    var cur = val
+    while s_tags[cur] == 9 && s_vals[cur] == 0 {
+        cur = sstate.child(cur, 0)
+    }
+    if s_tags[cur] == 6 {
+        return cur
+    }
+    return -1
+}
+
+// 扫描循环体：返回可安全提升的自加 string 变量名 id 表（空 = 不提升）。
+// 核对 1) 局部 string 未 pending；2) 无其它写；3) 无 goto；4) 引用纯净。
+func sb_scan(body: i64, cond: i64) -> table<i64> {
+    var jobs = table_new_i64()
+    var legal = table_new_i64()
+    sb_collect(body, legal, jobs)
+    var w_nid = table_new_i64()
+    var w_has = table_new_i64()
+    collect_other_writes(body, w_nid, w_has)
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < len(jobs) {
+        var nid = jobs[i]
+        var ok: bool = true
+        if scope_get(nid) < 0 {
+            ok = false
+        }
+        if ok && g_lookup_is_global != 0 {
+            ok = false
+        }
+        if ok && g_lookup_ty != types.named(TK_STR) {
+            ok = false
+        }
+        if ok && sb_find(nid) >= 0 {
+            ok = false
+        }
+        if ok && scan_goto(body) {
+            ok = false
+        }
+        var wi = linear_find(w_nid, nid)
+        if ok && wi >= 0 && w_has[wi] == 1 {
+            ok = false
+        }
+        // 引用纯净：全部引用（body + cond）∈ 合法自加叶
+        if ok {
+            var refs = find_var_refs(body, nid)
+            var rc = find_var_refs(cond, nid)
+            var rk: i64 = 0
+            while rk < len(rc) {
+                table_push(refs, rc[rk])
+                rk = rk + 1
+            }
+            var j: i64 = 0
+            while j < len(refs) {
+                if !sb_contains(legal, refs[j]) {
+                    ok = false
+                    break
+                }
+                j = j + 1
+            }
+        }
+        if ok {
+            table_push(out, nid)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// 收集所有「out 作为赋值目标但非自加」的写（其它写 → 提升不安全）
+func collect_other_writes(st: i64, w_nid: table<i64>, w_has: table<i64>) {
+    if st < 0 {
+        return
+    }
+    if s_tags[st] == 144 {
+        return
+    }
+    if s_tags[st] == 103 {
+        var nm = sstate.name_str(st)
+        if str_len(nm) > 0 {
+            var nid = interner.intern(nm)
+            var val = sstate.child(st, 0)
+            if !sb_is_self_add(val, nid) {
+                var wi = linear_find(w_nid, nid)
+                if wi < 0 {
+                    table_push(w_nid, nid)
+                    table_push(w_has, 1)
+                }
+            }
+        }
+        return
+    }
+    // 其它写目标：下标赋值 N_INDEX_ASSIGN / 字段赋值 N_FIELD_ASSIGN 也归为写
+    if s_tags[st] == 104 || s_tags[st] == 115 {  // N_INDEX_ASSIGN / N_FIELD_ASSIGN
+        var wbase = sstate.child(st, 0)
+        if s_tags[wbase] == 6 {
+            var nid2 = s_names[wbase]
+            var wi2 = linear_find(w_nid, nid2)
+            if wi2 < 0 {
+                table_push(w_nid, nid2)
+                table_push(w_has, 1)
+            }
+        }
+        return
+    }
+    var n = sstate.nchild(st)
+    var i: i64 = 0
+    while i < n {
+        collect_other_writes(sstate.child(st, i), w_nid, w_has)
+        i = i + 1
+    }
+}
+
+// 线性查找（表值 → 下标；-1 无）
+func linear_find(t: table<i64>, v: i64) -> i64 {
+    var i: i64 = 0
+    while i < len(t) {
+        if t[i] == v {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 探测语句树是否含 goto（144）——含则循环可能逃出 → 禁提升
+func scan_goto(st: i64) -> bool {
+    if st < 0 {
+        return false
+    }
+    if s_tags[st] == 144 {
+        return true
+    }
+    var n = sstate.nchild(st)
+    var i: i64 = 0
+    while i < n {
+        if scan_goto(sstate.child(st, i)) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
 }
 
 // 语句块遍历（StmtList children）。每个块独立作用域（push/pop）。

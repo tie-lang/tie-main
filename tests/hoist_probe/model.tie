@@ -1,0 +1,29 @@
+type tie<class>
+// model 模块：跨模块 struct + 全局文本表（encode 读取的"资料"）
+struct ChampRec {
+    var id: i64 = 0
+    var cost: i64 = 0
+    var cn: string = ""
+    var traits: table<i64> = []
+    var skill_name: string = ""
+    var skill_desc: string = ""
+    var stats: table<i64> = []
+}
+
+// 全局懒构建表：技能文本表（跨模块读取，encode 形态）
+var g_skill_names: table<string> = []
+var g_skill_descs: table<string> = []
+var g_trait_names: table<string> = []
+
+func ensure_model_data() {
+    if len(g_skill_names) > 0 {
+        return
+    }
+    var i: i64 = 0
+    while i < 300 {
+        table_push(g_skill_names, "技能名字" + to_string(i))
+        table_push(g_skill_descs, "这是一个用于描述技能什么作用的长文本，包含中文描述内容，用于触发 encode 大函数形态" + to_string(i))
+        table_push(g_trait_names, "特性" + to_string(i))
+        i = i + 1
+    }
+}

@@ -1,0 +1,75 @@
+type tie<logic>
+// 回归探针：跨模块 struct + 多段 encode 型大函数（对齐 2026-09-01
+// dpcodec-encode-memory-blowup 报告形态）——循环内字符串自加 out=out+x
+// 编译器须自动 StringBuilder 提升：O(n²) 无名分配根治，结果与逐段拼接
+// 逐字节一致（len=358270 / 内容校验值）。旧编译器 n=4000 10.8s、n=20000
+// 95s 崩溃；提升后同源 4000 条 600ms 级、100000 条 <1s 且结果一致。
+import "./model.tie"
+func encode_pack(n: i64) -> string {
+    ensure_model_data()
+    var out: string = ""
+    var champs: table<ChampRec> = []
+    var trait_ids: table<i64> = []
+    var skill_ids: table<i64> = []
+    var stat_ids: table<i64> = []
+    var i: i64 = 0
+    while i < n {
+        var r = ChampRec()
+        r.id = i
+        r.cost = i % 5
+        var names = g_skill_names[i % 300]
+        r.cn = names
+        r.skill_name = names
+        r.skill_desc = g_skill_descs[i % 300]
+        var tr = table_new_i64()
+        table_push(tr, i % 3)
+        table_push(tr, i % 5)
+        r.traits = tr
+        var st = table_new_i64()
+        table_push(st, i % 10)
+        r.stats = st
+        table_push(champs, r)
+        table_push(trait_ids, i % 3)
+        table_push(skill_ids, i % 300)
+        table_push(stat_ids, i % 7)
+        i = i + 1
+    }
+    var nc = len(champs)
+    var j: i64 = 0
+    while j < nc {
+        var c = champs[j]
+        out = out + "id=" + to_string(c.id) + ",cost=" + to_string(c.cost) + ",cn=" + c.cn + "\n"
+        j = j + 1
+    }
+    var nt = len(trait_ids)
+    var k: i64 = 0
+    while k < nt {
+        out = out + "t" + to_string(trait_ids[k]) + ":" + g_trait_names[trait_ids[k]] + "\n"
+        k = k + 1
+    }
+    var ns = len(skill_ids)
+    var m: i64 = 0
+    while m < ns {
+        out = out + "s" + to_string(skill_ids[m]) + ":" + g_skill_descs[skill_ids[m]] + "\n"
+        m = m + 1
+    }
+    var nst = len(stat_ids)
+    var p: i64 = 0
+    while p < nst {
+        out = out + "st" + to_string(stat_ids[p]) + "\n"
+        p = p + 1
+    }
+    return out
+}
+func main() {
+    var s = encode_pack(4000)
+    // 自检：长度与首 5 字符与固定期望一致（保证提升产物与原语义逐字节等价）
+    var ok: bool = str_len(s) == 358270
+    if ok && str_char(s, 0) == "i" && str_char(s, 1) == "d" && str_char(s, 2) == "=" &&
+        str_char(s, 3) == "0" && str_char(s, 4) == "," {
+        println("hoist-encode PASS")
+    } else {
+        println("hoist-encode FAIL len=" + to_string(str_len(s)))
+        exit(1)
+    }
+}

@@ -97,6 +97,13 @@ var g_builtin_res: i64 = 0;
 // op36（llvmgen 推导 declare + 字符串返回自动扫描 char* → {ptr,len}）。
 var g_extern_ids: table<i64>;
 var g_extern_ready: i64 = 0;
+// 循环内字符串自加提升（p.6.1.4 增强）：捕捉 `out = out + x`（循环体内 string
+// 变量自加拼接）→ 自动 StringBuilder 提升（s21_sb_*），根治 O(n²) 无名分配
+// 引起的内存无界增长（str_cat 每次新分配、旧中间串从不释放，tie 无 GC）。
+// 提升期间 out 存储槽不更新（循环内保证无其它引用），循环结束 sb_build 回写。
+// per-函数状态：变量名池 id → sb 句柄值。
+var g_sb_keys: table<i64>;
+var g_sb_hv: table<i64>;
 
 namespace irgen {
 // 变量引用：load 指令（从 alloca 读取）。含全局变量（标量 load @g /
@@ -960,6 +967,8 @@ func tig_fn_def(fn_node: i64, prefix: string) -> i64 {
     g_gt_blks = table_new_i64()
     g_tv_keys = table_new_i64()
     g_tv_elems = table_new_i64()
+    g_sb_keys = table_new_i64()
+    g_sb_hv = table_new_i64()
     var nparams = s_aux[fn_node]
     // 返回类型：children[slot_off]（新布局 children[0]=泛型槽→偏移 1；
     // 旧布局无槽→children[0]=返回类型。slot_off 统一判定保证自举双兼容）

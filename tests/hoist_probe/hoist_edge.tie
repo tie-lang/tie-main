@@ -1,0 +1,82 @@
+type tie<logic>
+// 提升语义边界探针（自动 StringBuilder 提升）：break/continue/if 分支/
+// 多变量并行/段表达式函数调用。全部断言 PASS 否则退出码 1。
+import "../../std/string.tie"
+using str;
+
+func tail(s: string) -> string {
+    var i: i64 = 0
+    var out: string = ""
+    while i < str_len(s) {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+func main() {
+    // 1) break：循环出口（break 路径汇入 exit 块）build 回写
+    var b1: string = ""
+    var i: i64 = 0
+    while i < 100 {
+        b1 = b1 + "x"
+        if i == 4 {
+            break
+        }
+        i = i + 1
+    }
+    // 2) continue：跳过迭代，continue 汇入 cond 块继续 append
+    var b2: string = ""
+    var j: i64 = 0
+    while j < 6 {
+        j = j + 1
+        if j % 2 == 0 {
+            continue
+        }
+        b2 = b2 + to_string(j)
+    }
+    // 3) if/else 分支内自加
+    var b3: string = ""
+    var k: i64 = 0
+    while k < 5 {
+        if k == 2 {
+            b3 = b3 + "two"
+        } else {
+            b3 = b3 + to_string(k)
+        }
+        k = k + 1
+    }
+    // 4) 多变量并行独立提升
+    var va: string = ""
+    var vb: string = ""
+    var m: i64 = 0
+    while m < 3 {
+        va = va + "A"
+        vb = vb + "B"
+        m = m + 1
+    }
+    // 5) 段表达式含函数调用与链式拼接（out = out + f() + "-" + 变量）
+    var b5: string = ""
+    var p: i64 = 0
+    while p < 3 {
+        b5 = b5 + tail("ab") + "-" + to_string(p)
+        p = p + 1
+    }
+    // 6) 非提升形态（out 还以其它方式被读）：应保持原 str_cat 语义
+    var b6: string = ""
+    var q: i64 = 0
+    while q < 3 {
+        b6 = b6 + to_string(q)
+        if str_len(b6) > 2 {
+            b6 = b6 + "!"
+        }
+        q = q + 1
+    }
+    var ok: bool = b1 == "xxxxx" && b2 == "135" && b3 == "01two34" && va == "AAA" && vb == "BBB" && b5 == "ab-0ab-1ab-2" && b6 == "012!"
+    if ok {
+        println("sb-hoist PASS")
+    } else {
+        println("sb-hoist FAIL b1=" + b1 + " b2=" + b2 + " b3=" + b3 + " va=" + va + " vb=" + vb + " b5=" + b5 + " b6=" + b6)
+        exit(1)
+    }
+}

@@ -53,6 +53,10 @@
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
 
+## [修复] 循环内字符串自加自动 StringBuilder 提升（2026-09-01，根治 dpcodec encode 内存无界增长）
+
+跨模块 struct 扩展 + encode 型大函数（`out = out + seg` 循环累加）内存每 0.5s +2GB、26GB 峰值崩溃（外部仓库 tie-jcc-core 报告，docs/bugreports/2026-09-01-dpcodec-encode-memory-blowup.md）。根因：`str_cat` 每次 `+` 全新分配、旧中间串永不释放（tie 无 GC），循环累加 = 时间/内存双 O(n²)；字段/文本越长越早爆。修复为编译器自动优化：tiec 的 irgen 在 while 循环入口预扫 AST，对「string 局部变量自加拼接」（引用纯净：除自加 RHS 左叶外无其它读写、无 goto、非全局）装载 StringBuilder（s21_sb_*），循环出口 build 回写（break 路径经 exit 块覆盖）；其余形态保持原 str_cat 语义。验证：报告同源编码用例 n=4000 输出逐字节一致（sha 相同）、n=20000 由 95s 崩溃降为 656ms、n=100000 784ms（线性）；新老编译器产物运行对比 11 项全一致；hoist 边界探针（break/continue/if 分支/多变量/段函数调用/非纯净形态）全过；tests/language 正例 55/58（3 个基线已知失败不变）；二阶自举通过。
+
 ## [修复] ir.add_operand 交错检测断言 + 4 处潜伏操作数段交错（2026-08-31）
 
 给 `ir.add_operand` 加操作数段连续性断言（off+cnt 必须等于段尾，否则 panic 报编译器内部错误，把未知交错点转编译期错误）。断言立即暴露 4 处潜伏交错：`tig_not_i1`（位越界判定 xor 两操作数之间内联 `tig_bool_lit`）、`tig_print_any` 复合 tag 阈值比较三处（`tig_int_lit_ty(BASE_STRUCT/ENUM/FN)` 内联在 icmp 两操作数之间）——这些点旧编译器静默生成错乱操作数（值引用/立即数错位），是"跨模块大函数 + 多表 push 交错"机器码不稳定的根因之一。修复按"常量先存变量再逐项 add_operand"约定。验证：tests/language 正例 55/58（3 个基线已知失败不变）、examples 全量与旧编译器一致、tiec 自举产物逐字节一致、移动语义正负例照常。
