@@ -512,6 +512,16 @@ func is_libc_sym(sym: string) -> bool {
     if sym == "system" || sym == "getenv" || sym == "time" {
         return true
     }
+    // p.6.4.1 内联基础原语：rand（rand_range）/ _write（print_err → stderr）
+    // 均为 CRT 符号（非 interp 桥）。
+    if sym == "rand" || sym == "_write" {
+        return true
+    }
+    // p.6.4.1 UTF-16 宽字符桥：Windows 系统调用面（kernel32/shell32，非 interp 桥）
+    if sym == "GetCommandLineW" || sym == "CommandLineToArgvW" || sym == "LocalFree" ||
+        sym == "SetEnvironmentVariableW" || sym == "GetCurrentDirectoryW" {
+        return true
+    }
     // 一期并发 A4 执行层：kernel32 线程 + 同步原语（系统库默认自动链入，非 interp 桥）
     if sym == "CreateThread" || sym == "WaitForSingleObject" || sym == "CloseHandle" ||
         sym == "GetCurrentThreadId" ||

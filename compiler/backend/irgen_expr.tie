@@ -1878,18 +1878,16 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return 0
     }
     if nm == "arg_count" {
-        g_used_interp = true
-        var zero_v = tig_int_lit_ty(0, types.named(TK_I64))
-        g_builtin_res = tig_ext_call1("tie_arg_count", zero_v, types.named(TK_I64), types.named(TK_I64))
+        // p.6.4.1：内联 CommandLineToArgvW（shell32，非 interp 桥）
+        g_builtin_res = tig_arg_count()
         return 0
     }
     if nm == "arg_string" {
-        g_used_interp = true
         var i = tig_expr(call_arg(id, 0))
         if i < 0 {
             return -1
         }
-        g_builtin_res = tig_ext_call1("tie_arg_string", i, types.named(TK_I64), types.named(TK_STR))
+        g_builtin_res = tig_arg_string(i)
         return 0
     }
     if nm == "file_read" {
@@ -1955,12 +1953,11 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return 0
     }
     if nm == "print_err" {
-        g_used_interp = true
         var v = tig_expr(call_arg(id, 0))
         if v < 0 {
             return -1
         }
-        tig_ext_call1("tie_print_err", v, types.named(TK_STR), -1)
+        tig_print_err(v)  // CRT _write fd=2（p.6.4.1，零 Rust 桥）
         g_builtin_res = tig_int_lit(0)  // void：哑值
         return 0
     }
@@ -2041,11 +2038,16 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_builtin_res = tig_ext_call2("pow", pf1, types.named(TK_F64), pf2, types.named(TK_F64), types.named(TK_F64))
         return 0
     }
-    // read_line / cwd / msg_get_lang：零参数 → ptr 返回
-    if nm == "read_line" || nm == "cwd" || nm == "msg_get_lang" {
+    // read_line / msg_get_lang：零参数 → ptr 返回（cwd 已内联 UTF-16 桥）
+    if nm == "read_line" || nm == "msg_get_lang" {
         g_used_interp = true
         var zero_v = tig_int_lit_ty(0, types.named(TK_I64))
         g_builtin_res = tig_ext_call1("tie_" + nm, zero_v, types.named(TK_I64), types.named(TK_STR))
+        return 0
+    }
+    if nm == "cwd" {
+        // p.6.4.1：内联 GetCurrentDirectoryW + UTF-16→UTF-8（非 interp 桥）
+        g_builtin_res = tig_cwd()
         return 0
     }
     // 单字符串参数 → ptr 返回（list_dir/walk_dir/byte_read 动态表；path_* 堆串；
@@ -2260,22 +2262,27 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_builtin_res = tig_byte_concat(c1, c2)
         return 0
     }
-    // set_env：双字符串参数 void；msg_set_lang：单字符串参数 void；msg_register：三字符串 void
-    if nm == "set_env" || nm == "msg_set_lang" {
+    // set_env：内联 SetEnvironmentVariableW（UTF-16 桥）；msg_set_lang：单参 void
+    if nm == "set_env" {
+        var e1 = tig_expr(call_arg(id, 0))
+        if e1 < 0 {
+            return -1
+        }
+        var e2 = tig_expr(call_arg(id, 1))
+        if e2 < 0 {
+            return -1
+        }
+        tig_set_env(e1, e2)
+        g_builtin_res = tig_int_lit(0)  // void：哑值
+        return 0
+    }
+    if nm == "msg_set_lang" {
         g_used_interp = true
         var e1 = tig_expr(call_arg(id, 0))
         if e1 < 0 {
             return -1
         }
-        if nm == "set_env" {
-            var e2 = tig_expr(call_arg(id, 1))
-            if e2 < 0 {
-                return -1
-            }
-            tig_ext_call2v("tie_set_env", e1, types.named(TK_STR), e2, types.named(TK_STR))
-        } else {
-            tig_ext_call1("tie_msg_set_lang", e1, types.named(TK_STR), -1)
-        }
+        tig_ext_call1("tie_msg_set_lang", e1, types.named(TK_STR), -1)
         g_builtin_res = tig_int_lit(0)  // void：哑值
         return 0
     }
@@ -2305,9 +2312,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_builtin_res = tig_int_lit(0)  // void：哑值
         return 0
     }
-    // rand_range：i64 + i64 + ok 出参 → i64（对齐 Rust 桥签名）
+    // rand_range：i64 半开区间 [min,max)；内联 libc rand()（非密码学安全）
     if nm == "rand_range" {
-        g_used_interp = true
         var d1 = tig_expr(call_arg(id, 0))
         if d1 < 0 {
             return -1
@@ -2316,17 +2322,7 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         if d2 < 0 {
             return -1
         }
-        var ro = ir.new_inst(g_cur_block, 20, types.named(TK_I8))  // alloca i8 ok
-        ir.add_operand(ro, types.named(TK_I8), 2)
-        var ats: table<i64> = table_new_i64()
-        var avs: table<i64> = table_new_i64()
-        table_push(ats, types.named(TK_I64))
-        table_push(avs, d1)
-        table_push(ats, types.named(TK_I64))
-        table_push(avs, d2)
-        table_push(ats, types.named(TK_STR))
-        table_push(avs, ir.get_value(ro))
-        g_builtin_res = tig_ext_call_typed("tie_rand_range", ats, avs, types.named(TK_I64))
+        g_builtin_res = tig_rand_range(d1, d2)
         return 0
     }
     // table_at：表 + 下标 → 元素（与 t[i] 同语义；元素类型 fallback 判定）
@@ -2823,5 +2819,332 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         s21_store(s21_gep(h, 16, true), buf, types.named(TK_STR))  // data
         s21_store(s21_gep(h, 24, true), esz, T64)  // esz
         return h
+    }
+    // ============ p.6.4.1 内联基础原语 + UTF-16 宽字符桥 ============
+    // 新基础设施：UTF-16 宽字符转换（Windows 系统调用面）。tie 字符串为 UTF-8
+    //（{8 字节长度头}{数据}{\0}）；SetEnvironmentVariableW / CommandLineToArgvW /
+    // GetCurrentDirectoryW 等需要 UTF-16LE（wchar_t*）。编译器后端不能 import
+    // std/utf.tie，故在 IR 层手排「码点解码 + 代理对编码」（本组辅助全部生成普通
+    // tie-IR 指令；零 Rust 桥、零 tie_interp.lib；UTF-8 逐字节序列判定复用
+    // s21_utf8_seq_len / s21_utf8_char_at，代理对编码按 Unicode 规范）。
+
+    func tig_w16_append(hv: i64, u: i64) {
+        var lo = s21_bin(6, u, tig_int_lit(0xFF))  // u & 0xFF
+        s21_sb_append_byte(hv, lo)
+        var hi = s21_bin(6, s21_bin(11, u, tig_int_lit(8)), tig_int_lit(0xFF))  // (u>>8)&0xFF
+        s21_sb_append_byte(hv, hi)
+    }
+
+    func tig_w16_append_cp(hv: i64, cp: i64) {
+        var T64 = types.named(TK_I64)
+        var is_sup = tig_cmp_const(cp, 3, 0xFFFF, T64)   // cp > 0xFFFF
+        var b_s = ir.new_block(g_cur_func, interner.intern("w16.cp.s"))
+        var b_b = ir.new_block(g_cur_func, interner.intern("w16.cp.b"))
+        var b_m = ir.new_block(g_cur_func, interner.intern("w16.cp.m"))
+        var cb = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb, is_sup, 0)
+        ir.add_operand(cb, b_s, 1)
+        ir.add_operand(cb, b_b, 1)
+        g_cur_block = b_s
+        var cp2 = s21_bin(1, cp, tig_int_lit(0x10000))  // sub
+        var hi_s = s21_bin(7, tig_int_lit(0xD800), s21_bin(6, s21_bin(11, cp2, tig_int_lit(10)), tig_int_lit(0x3FF)))
+        var lo_s = s21_bin(7, tig_int_lit(0xDC00), s21_bin(6, cp2, tig_int_lit(0x3FF)))
+        tig_w16_append(hv, hi_s)
+        tig_w16_append(hv, lo_s)
+        var br1 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br1, b_m, 1)
+        g_cur_block = b_b
+        tig_w16_append(hv, cp)
+        var br2 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br2, b_m, 1)
+        g_cur_block = b_m
+    }
+
+    func tig_wide16(s: i64) -> i64 {
+        var T64 = types.named(TK_I64)
+        var blen = s21_str_head_len(s)
+        var hv = s21_sb_new()
+        var pa = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(pa, T64, 2)
+        var pp = ir.get_value(pa)
+        s21_store(pp, tig_int_lit(0), T64)   // pos（UTF-8 字节偏移）
+        var hd = ir.new_block(g_cur_func, interner.intern("w16.h"))
+        var bd = ir.new_block(g_cur_func, interner.intern("w16.b"))
+        var ex = ir.new_block(g_cur_func, interner.intern("w16.x"))
+        var br0 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br0, hd, 1)
+        g_cur_block = hd
+        var pv = s21_load(pp, T64)
+        var pc = tig_icmp_c(pv, blen, 2)     // pos < blen
+        var cb = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb, pc, 0)
+        ir.add_operand(cb, bd, 1)
+        ir.add_operand(cb, ex, 1)
+        g_cur_block = bd
+        var p2 = s21_load(pp, T64)
+        var seql = s21_utf8_seq_len(s, p2)
+        var cp = s21_utf8_char_at(s, p2)
+        tig_w16_append_cp(hv, cp)
+        s21_store(pp, s21_bin(0, p2, seql), T64)   // pos += 序列长度
+        var brb = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brb, hd, 1)
+        g_cur_block = ex
+        tig_w16_append(hv, tig_int_lit(0))   // u16 NUL 终止符
+        return s21_sb_build(hv)
+    }
+    func tig_cp_utf8_append(hv: i64, cp: i64) {
+        var T64 = types.named(TK_I64)
+        var l1 = ir.new_block(g_cur_func, interner.intern("u8.l1"))
+        var l2c = ir.new_block(g_cur_func, interner.intern("u8.2c"))
+        var l2 = ir.new_block(g_cur_func, interner.intern("u8.l2"))
+        var l3c = ir.new_block(g_cur_func, interner.intern("u8.3c"))
+        var l3 = ir.new_block(g_cur_func, interner.intern("u8.l3"))
+        var l4 = ir.new_block(g_cur_func, interner.intern("u8.l4"))
+        var mg = ir.new_block(g_cur_func, interner.intern("u8.m"))
+        var c1 = tig_cmp_const(cp, 4, 0x7F, T64)   // cp <= 0x7F
+        var cb1 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb1, c1, 0)
+        ir.add_operand(cb1, l1, 1)
+        ir.add_operand(cb1, l2c, 1)
+        g_cur_block = l1
+        s21_sb_append_byte(hv, cp)
+        var br1 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br1, mg, 1)
+        g_cur_block = l2c
+        var c2 = tig_cmp_const(cp, 4, 0x7FF, T64)
+        var cb2 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb2, c2, 0)
+        ir.add_operand(cb2, l2, 1)
+        ir.add_operand(cb2, l3c, 1)
+        g_cur_block = l2
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0xC0), s21_bin(6, s21_bin(11, cp, tig_int_lit(6)), tig_int_lit(0x1F))))
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0x80), s21_bin(6, cp, tig_int_lit(0x3F))))
+        var br2 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br2, mg, 1)
+        g_cur_block = l3c
+        var c3 = tig_cmp_const(cp, 4, 0xFFFF, T64)
+        var cb3 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb3, c3, 0)
+        ir.add_operand(cb3, l3, 1)
+        ir.add_operand(cb3, l4, 1)
+        g_cur_block = l3
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0xE0), s21_bin(6, s21_bin(11, cp, tig_int_lit(12)), tig_int_lit(0x0F))))
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0x80), s21_bin(6, s21_bin(11, cp, tig_int_lit(6)), tig_int_lit(0x3F))))
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0x80), s21_bin(6, cp, tig_int_lit(0x3F))))
+        var br3 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br3, mg, 1)
+        g_cur_block = l4
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0xF0), s21_bin(6, s21_bin(11, cp, tig_int_lit(18)), tig_int_lit(0x07))))
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0x80), s21_bin(6, s21_bin(11, cp, tig_int_lit(12)), tig_int_lit(0x3F))))
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0x80), s21_bin(6, s21_bin(11, cp, tig_int_lit(6)), tig_int_lit(0x3F))))
+        s21_sb_append_byte(hv, s21_bin(7, tig_int_lit(0x80), s21_bin(6, cp, tig_int_lit(0x3F))))
+        var br4 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br4, mg, 1)
+        g_cur_block = mg
+    }
+
+    func tig_from_wide16(w: i64) -> i64 {
+        var T64 = types.named(TK_I64)
+        var I8 = types.named(TK_I8)
+        var hv = s21_sb_new()
+        var ia = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(ia, T64, 2)
+        var ip = ir.get_value(ia)
+        s21_store(ip, tig_int_lit(0), T64)   // u16 码元索引 i（字节偏移 = 2*i）
+        var hd = ir.new_block(g_cur_func, interner.intern("w2o.h"))
+        var chk = ir.new_block(g_cur_func, interner.intern("w2o.hi"))
+        var pl = ir.new_block(g_cur_func, interner.intern("w2o.pl"))
+        var ex = ir.new_block(g_cur_func, interner.intern("w2o.x"))
+        var b_cb = ir.new_block(g_cur_func, interner.intern("w2o.cb"))
+        var b_ff = ir.new_block(g_cur_func, interner.intern("w2o.ff"))
+        var b_mh = ir.new_block(g_cur_func, interner.intern("w2o.mh"))
+        var br0 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br0, hd, 1)
+        g_cur_block = hd
+        var iv = s21_load(ip, T64)
+        var off = s21_bin(2, iv, tig_int_lit(2))
+        var lo = s21_zext(s21_load(s21_gep(w, off, false), I8), I8)
+        var hi_b = s21_zext(s21_load(s21_gep(w, s21_bin(0, off, tig_int_lit(1)), false), I8), I8)
+        var u = s21_bin(7, lo, s21_bin(10, hi_b, tig_int_lit(8)))   // u16 码元
+        var nul = tig_cmp_zero(u, 0)              // u == 0 → 串结束
+        var cb_n = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb_n, nul, 0)
+        ir.add_operand(cb_n, ex, 1)
+        ir.add_operand(cb_n, chk, 1)
+        g_cur_block = chk   // 非 NUL：判定高代理（u>=0xD800 && u<=0xDBFF）
+        var ge_h = tig_icmp_c(u, tig_int_lit(0xD800), 5)
+        var le_h = tig_icmp_c(u, tig_int_lit(0xDBFF), 4)
+        var is_high = tig_and_i1(ge_h, le_h)
+        var hi2 = ir.new_block(g_cur_func, interner.intern("w2o.hi2"))
+        var cb_high = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb_high, is_high, 0)
+        ir.add_operand(cb_high, hi2, 1)   // 高代理 → hi2（读次码元 u2）
+        ir.add_operand(cb_high, pl, 1)
+        g_cur_block = pl   // 普通 BMP 码元
+        tig_cp_utf8_append(hv, u)
+        s21_store(ip, s21_bin(0, iv, tig_int_lit(1)), T64)
+        var br1 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br1, b_mh, 1)
+        g_cur_block = hi2   // 高代理：读次 u2；低代理 → 组合；否则 U+FFFD
+        var iv2 = s21_load(ip, T64)
+        var off2 = s21_bin(2, iv2, tig_int_lit(2))
+        var lo2 = s21_zext(s21_load(s21_gep(w, off2, false), I8), I8)
+        var hi2b = s21_zext(s21_load(s21_gep(w, s21_bin(0, off2, tig_int_lit(1)), false), I8), I8)
+        var u2 = s21_bin(7, lo2, s21_bin(10, hi2b, tig_int_lit(8)))
+        var ge_l = tig_icmp_c(u2, tig_int_lit(0xDC00), 5)
+        var le_l = tig_icmp_c(u2, tig_int_lit(0xDFFF), 4)
+        var is_low = tig_and_i1(ge_l, le_l)
+        var cb_l = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb_l, is_low, 0)
+        ir.add_operand(cb_l, b_cb, 1)
+        ir.add_operand(cb_l, b_ff, 1)
+        g_cur_block = b_cb   // 组合：cp = 0x10000 + ((u-0xD800)<<10 | (u2-0xDC00))
+        var cu = s21_bin(1, u, tig_int_lit(0xD800))
+        var cu2 = s21_bin(1, u2, tig_int_lit(0xDC00))
+        var comb = s21_bin(0, tig_int_lit(0x10000), s21_bin(7, s21_bin(10, cu, tig_int_lit(10)), cu2))
+        tig_cp_utf8_append(hv, comb)
+        s21_store(ip, s21_bin(0, iv2, tig_int_lit(2)), T64)   // i += 2
+        var br2 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br2, b_mh, 1)
+        g_cur_block = b_ff   // 孤立代理 → 替换符；i += 1
+        tig_cp_utf8_append(hv, tig_int_lit(0xFFFD))
+        s21_store(ip, s21_bin(0, iv2, tig_int_lit(1)), T64)
+        var br3 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br3, b_mh, 1)
+        g_cur_block = b_mh
+        var br4 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br4, hd, 1)
+        g_cur_block = ex
+        return s21_sb_build(hv)
+    }
+    func tig_arg_count() -> i64 {
+        var T64 = types.named(TK_I64)
+        var I32 = types.named(TK_I32)
+        var P8 = types.ptr_of(types.named(TK_I8))
+        var ats0: table<i64> = table_new_i64()
+        var avs0: table<i64> = table_new_i64()
+        var cmd = tig_ext_call_typed("GetCommandLineW", ats0, avs0, P8)  // LPCWSTR（零参）
+        var na = ir.new_inst(g_cur_block, 20, I32)
+        ir.add_operand(na, I32, 2)
+        var n_addr = ir.get_value(na)                                    // int* pNumArgs
+        var argv = tig_ext_call2("CommandLineToArgvW", cmd, P8, n_addr, P8, P8)  // LPWSTR*
+        var n = s21_zext(s21_load(n_addr, I32), I32)                     // argc（含程序名）
+        var uc = s21_bin(1, n, tig_int_lit(1))                           // 用户参数 = argc-1
+        var uc_neg = tig_cmp_zero(uc, 2)                                 // uc < 0（极端）
+        var res = tig_select_i(uc_neg, tig_int_lit(0), uc, T64)
+        tig_ext_call1("LocalFree", argv, P8, P8)                         // 释放 LPWSTR*
+        return res
+    }
+
+    func tig_arg_string(i: i64) -> i64 {
+        var T64 = types.named(TK_I64)
+        var I32 = types.named(TK_I32)
+        var P8 = types.ptr_of(types.named(TK_I8))
+        var ats0: table<i64> = table_new_i64()
+        var avs0: table<i64> = table_new_i64()
+        var cmd = tig_ext_call_typed("GetCommandLineW", ats0, avs0, P8)
+        var na = ir.new_inst(g_cur_block, 20, I32)
+        ir.add_operand(na, I32, 2)
+        var n_addr = ir.get_value(na)
+        var argv = tig_ext_call2("CommandLineToArgvW", cmd, P8, n_addr, P8, P8)
+        var n = s21_zext(s21_load(n_addr, I32), I32)                     // 总 argc
+        var uc = s21_bin(1, n, tig_int_lit(1))                           // 用户参数个数
+        var slot = ir.new_inst(g_cur_block, 20, types.named(TK_STR))
+        ir.add_operand(slot, types.named(TK_STR), 2)
+        var sv = ir.get_value(slot)
+        var empty = tig_str_lit(interner.intern("\"\""))
+        s21_store(sv, empty, types.named(TK_STR))                        // 默认空串
+        var i_neg = tig_cmp_zero(i, 2)                                   // i < 0
+        var i_oob = tig_icmp_c(i, uc, 5)                                 // i >= uc（sge）
+        var bad = tig_or_i1(i_neg, i_oob)
+        var bt = ir.new_block(g_cur_func, interner.intern("ags.bad"))
+        var be = ir.new_block(g_cur_func, interner.intern("ags.ok"))
+        var mg = ir.new_block(g_cur_func, interner.intern("ags.m"))
+        var cb = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb, bad, 0)
+        ir.add_operand(cb, bt, 1)
+        ir.add_operand(cb, be, 1)
+        g_cur_block = bt
+        var br1 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br1, mg, 1)
+        g_cur_block = be   // 越界已排除，idx = i+1 ∈ [1, n) 安全
+        var idx = s21_bin(0, i, tig_int_lit(1))
+        var waddr = s21_gep(argv, s21_bin(2, idx, tig_int_lit(8)), false)  // LPWSTR*[idx]
+        var w = s21_load(waddr, types.named(TK_STR))                     // UTF-16LE 串
+        var rs = tig_from_wide16(w)
+        s21_store(sv, rs, types.named(TK_STR))
+        var br2 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br2, mg, 1)
+        g_cur_block = mg
+        tig_ext_call1("LocalFree", argv, P8, P8)
+        return s21_load(sv, types.named(TK_STR))
+    }
+
+    func tig_cwd() -> i64 {
+        var T64 = types.named(TK_I64)
+        var I32 = types.named(TK_I32)
+        var P8 = types.ptr_of(types.named(TK_I8))
+        var cap = tig_int_lit(16384)
+        var cap32 = tig_int_lit_ty(16384, I32)
+        var buf = s21_raw_alloc_str(s21_bin(2, cap, tig_int_lit(2)))     // 2*cap 字节
+        tig_ext_call2("GetCurrentDirectoryW", cap32, I32, buf, P8, I32)
+        var res = tig_from_wide16(buf)
+        tig_ext_call1("free", buf, types.named(TK_STR), -1)
+        return res
+    }
+
+    func tig_set_env(k: i64, v: i64) {
+        var I32 = types.named(TK_I32)
+        var P8 = types.ptr_of(types.named(TK_I8))
+        var kw = tig_wide16(k)
+        var vw = tig_wide16(v)
+        tig_ext_call2("SetEnvironmentVariableW", kw, P8, vw, P8, I32)  // BOOL；忽略
+    }
+
+    func tig_print_err(v: i64) {
+        var I32 = types.named(TK_I32)
+        var len = s21_str_head_len(v)
+        var ats: table<i64> = table_new_i64()
+        var avs: table<i64> = table_new_i64()
+        table_push(ats, I32)
+        table_push(avs, tig_int_lit_ty(2, I32))   // fd = stderr
+        table_push(ats, types.named(TK_STR))
+        table_push(avs, v)
+        table_push(ats, types.named(TK_I64))
+        table_push(avs, len)                      // 字节数（低 32 位被 _write 读取）
+        tig_ext_call_typed("_write", ats, avs, -1)  // void（返回写入字节数，忽略）
+    }
+
+    func tig_rand_range(min: i64, max: i64) -> i64 {
+        var T64 = types.named(TK_I64)
+        var I32 = types.named(TK_I32)
+        var span = s21_bin(1, max, min)           // max - min
+        var bad = tig_icmp_c(span, tig_int_lit(1), 2)   // span < 1（≤0 → 退化）
+        var slot = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(slot, T64, 2)
+        var sv = ir.get_value(slot)
+        var bt = ir.new_block(g_cur_func, interner.intern("rr.b"))
+        var be = ir.new_block(g_cur_func, interner.intern("rr.ok"))
+        var mg = ir.new_block(g_cur_func, interner.intern("rr.m"))
+        var cb = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb, bad, 0)
+        ir.add_operand(cb, bt, 1)
+        ir.add_operand(cb, be, 1)
+        g_cur_block = bt
+        s21_store(sv, min, T64)
+        var br1 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br1, mg, 1)
+        g_cur_block = be
+        var ats0: table<i64> = table_new_i64()
+        var avs0: table<i64> = table_new_i64()
+        var r = tig_ext_call_typed("rand", ats0, avs0, I32)  // int rand()（零参）
+        var r64 = s21_zext(r, I32)
+        var rmod = s21_urem(r64, span)
+        var rres = s21_bin(0, min, rmod)           // min + (r % span)
+        s21_store(sv, rres, T64)
+        var br2 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br2, mg, 1)
+        g_cur_block = mg
+        return s21_load(sv, T64)
     }
 }

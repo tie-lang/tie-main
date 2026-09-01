@@ -182,7 +182,9 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
     // Windows 目标：链接 GDI/用户库（平台适配器 cap_win 等 extern user32/gdi32；
     // 对非 Windows 交叉目标不追加，避免 libuser32 缺失）
     if str_len(target) == 0 || has_sub(target, "windows") {
-        cmd = cmd + " -luser32 -lgdi32"
+        // p.6.4.1：arg_count/arg_string 内联 CommandLineToArgvW（shell32）；即使
+        // 程序不链 interp（无 tie_* 桥）也须解析该符号，故恒链 -lshell32。
+        cmd = cmd + " -luser32 -lgdi32 -lshell32"
     }
     if need_interp {
         var lib = find_interp_lib()
@@ -253,7 +255,9 @@ pub func link_shared(input_opt: string, output_so: string, target: string, need_
     }
     // Windows 目标：链接 GDI/用户库（平台适配器 extern user32/gdi32）
     if str_len(target) == 0 || has_sub(target, "windows") {
-        cmd = cmd + " -luser32 -lgdi32"
+        // p.6.4.1：arg_count/arg_string 内联 CommandLineToArgvW（shell32）；即使
+        // 程序不链 interp（无 tie_* 桥）也须解析该符号，故恒链 -lshell32。
+        cmd = cmd + " -luser32 -lgdi32 -lshell32"
     }
     if need_interp {
         var lib = find_interp_lib()

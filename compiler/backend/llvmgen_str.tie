@@ -420,9 +420,6 @@ func extern_decl(sym: string) -> string {
     if sym == "tie_msg_t_lang" {
         return "declare ptr @tie_msg_t_lang(ptr, ptr)"
     }
-    if sym == "tie_set_env" {
-        return "declare void @tie_set_env(ptr, ptr)"
-    }
     if sym == "tie_msg_register" {
         return "declare void @tie_msg_register(ptr, ptr, ptr)"
     }
@@ -431,12 +428,6 @@ func extern_decl(sym: string) -> string {
     }
     if sym == "tie_exec_output" {
         return "declare ptr @tie_exec_output(ptr)"
-    }
-    if sym == "tie_arg_count" {
-        return "declare i64 @tie_arg_count()"
-    }
-    if sym == "tie_arg_string" {
-        return "declare ptr @tie_arg_string(i64)"
     }
     if sym == "tie_file_read" {
         return "declare ptr @tie_file_read(ptr)"
@@ -469,12 +460,6 @@ func extern_decl(sym: string) -> string {
     }
     if sym == "tie_eval_expr" {
         return "declare ptr @tie_eval_expr(ptr)"
-    }
-    if sym == "tie_cwd" {
-        return "declare ptr @tie_cwd()"
-    }
-    if sym == "tie_print_err" {
-        return "declare void @tie_print_err(ptr)"
     }
     if sym == "tie_table_push_i64" {
         return "declare void @tie_table_push_i64(ptr, i64)"
@@ -600,9 +585,6 @@ func extern_decl(sym: string) -> string {
     }
     if sym == "tie_path_join" {
         return "declare ptr @tie_path_join(ptr, ptr)"
-    }
-    if sym == "tie_rand_range" {
-        return "declare i64 @tie_rand_range(i64, i64, ptr)"
     }
     return ""
 }
