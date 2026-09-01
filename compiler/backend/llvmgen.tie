@@ -82,6 +82,9 @@ var g_vt_syms: table<i64>;    // 方法函数全名池 id（扁平段）
 // emit 主流程据此刻意输出 @s21_sso_pool / @s21_sso_off / @s21_sso_malloc_cnt。
 // 仅用到短串池的程序才带 256KB .bss，纯字面量程序不引入。
 var g_sso_enabled: i64 = 0;
+// p.6.4.5 可捕获网络：Winsock2 一次性初始化标志全局（@g_wsock_init）启用标记。
+// irgen 首次内联 net_*（tig_wsa_init）置位，emit 据此输出该 i64 全局。
+var g_wsock_enabled: i64 = 0;
 // 可捕获 panic（dev33 批次 7）：启用标记。irgen 首次生成 catch_panic/受捕
 // panic 置位，emit 据此输出 @tie_panic_jb / @tie_panic_msg / @tie_panic_active。
 var g_catch_enabled: i64 = 0;
@@ -343,6 +346,11 @@ pub func sso_enable() {
     g_sso_enabled = 1
 }
 
+// p.6.4.5 Winsock2 标志全局启用（irgen 内联 net_* 时置位；幂等）。
+pub func wsock_enable() {
+    g_wsock_enabled = 1
+}
+
 // 可捕获 panic 启用标记（irgen 首次生成 catch_panic / 受捕 panic 置位；幂等）。
 pub func catch_enable() {
     g_catch_enabled = 1
@@ -394,6 +402,13 @@ func emit_sso_globals() {
     if g_catch_enabled == 1 {
         line("@tie_panic_jb = private global [256 x i8] zeroinitializer, align 16")
         line("@tie_panic_active = private global i1 false")
+        line("")
+    }
+    // p.6.4.5：Winsock2 一次性初始化标志（WSAStartup 幂等守卫）——net_* 内联
+    // IR 经 @g_wsock_init 全局引用；仅内联过 net_*（tig_wsa_init 置位）的程序输出，
+    // 纯程序不引入（保持自举 fixpoint）。
+    if g_wsock_enabled == 1 {
+        line("@g_wsock_init = private global i64 0")
         line("")
     }
 }

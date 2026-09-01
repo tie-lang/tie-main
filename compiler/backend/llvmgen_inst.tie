@@ -103,7 +103,7 @@ func global_ref(v: i64) -> string {
     // g_global_names（避免影响普通全局），仅 s21_sso_alloc / catch_panic 内联
     // 生成时按名直引。
     if nm == "s21_sso_pool" || nm == "s21_sso_off" || nm == "s21_sso_malloc_cnt" ||
-        nm == "tie_panic_jb" || nm == "tie_panic_active" {
+        nm == "g_wsock_init" || nm == "tie_panic_jb" || nm == "tie_panic_active" {
         return "@" + nm
     }
     var nid = interner.intern(nm)

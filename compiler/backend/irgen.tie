@@ -57,6 +57,9 @@ var g_used_interp: bool = false;
 // trm-lite 阶段1块2：程序是否使用了轻量执行体内置（spawn/yield/collect）。
 // 置位后 driver 链接 trm_lite.a（Go 式静态内置运行时；TIE_TRM_LITE_LIB 定位）。
 var g_used_trmlite: bool = false;
+// p.6.4.5：程序是否使用了网络原语（net_* 内联 Winsock2 直调）。置位后
+// driver 链接 ws2_32（-lws2_32）；脱离 tie_interp 后独立链，净程序无需桥。
+var g_used_wsock: bool = false;
 // M5 动态库模式（dev33 批次 12）：driver 在 tig_ast 前经 set_dynlib 注入。
 // 置位后 irgen 登记导出面（ir.func_exported）供 llvmgen 输出 dllexport，
 // 并对导出函数做边界检查（表/struct 不跨动态库边界）。
@@ -546,6 +549,15 @@ func is_libc_sym(sym: string) -> bool {
         sym == "SHFileOperationW" {
         return true
     }
+    // p.6.4.5 网络原语内联：Winsock2 符号（ws2_32，非 interp 桥）。仅 Windows
+    // 目标下程序实际引用（net_* 调内联 IR 会 emit 这些符号），Linux 交叉目标
+    // 若用 net_* 自然缺 ws2_32——与本文件其余 Win32 系统库符号处理一致。
+    if sym == "socket" || sym == "bind" || sym == "connect" || sym == "listen" ||
+        sym == "accept" || sym == "send" || sym == "recv" || sym == "sendto" ||
+        sym == "recvfrom" || sym == "closesocket" || sym == "htons" ||
+        sym == "inet_addr" || sym == "gethostbyname" || sym == "WSAStartup" {
+        return true
+    }
     return false
 }
 
@@ -766,6 +778,7 @@ pub func tig_ast() -> i64 {
     g_str_keys = table_new_i64()
     g_str_count = 0
     g_used_interp = false
+    g_used_wsock = false
     ir.new_module()
     // 一期并发 A4：actor 工作循环 thunk 急切生成（任何用户函数之前，避免指令
     // 编号交错——llvmgen 逐函数重编号要求函数指令连续）
@@ -839,6 +852,7 @@ pub func tig_src(src: string, base_dir: string) -> i64 {
     g_str_keys = table_new_i64()
     g_str_count = 0
     g_used_interp = false
+    g_used_wsock = false
     ir.new_module()
     // 一期并发 A4：actor 工作循环 thunk 急切生成（任何用户函数之前，避免指令
     // 编号交错——llvmgen 逐函数重编号要求函数指令连续）
