@@ -41,6 +41,21 @@ func mk_index(base: i64, index: i64) -> i64 {
     return n
 }
 
+// 路径段拼接：segs（intern id 表）→ "a::b::c" 全名 id。路径调用
+// `ns::add(...)` 的 N_CALL name 必须用全名（裸调用名解析依赖完整前缀）。
+func join_path_segs(segs: table<i64>) -> i64 {
+    var full: string = ""
+    var i: i64 = 0
+    while i < len(segs) {
+        if i > 0 {
+            full = full + "::"
+        }
+        full = full + interner.lookup(segs[i])
+        i = i + 1
+    }
+    return interner.intern(full)
+}
+
 // ---------- 表达式优先级链（从低到高）----------
 
 // 表达式：三目 → 可选范围 `..`
@@ -772,8 +787,9 @@ func parse_primary() -> i64 {
             }
             // 路径尾段后跟调用：`ns::max(...)` / `ns::max<i64>(...)`
             // （2026-08-14 泛型语法）。段收集完毕，最后一段即函数名；产出
-            // N_CALL（name=最后段，children=[类型实参槽, 实参...]）。若后跟
-            // '.' 等则维持 N_PATH 原样（由 parse_unary 后缀链继续处理）。
+            // N_CALL（name=**拼接全名** `ns::max`——裸调用名解析需要完整前缀，
+            // 否则 `calc::add(5)` 丢失 `calc::` 前缀报「未定义的函数 'add'」）。
+            // 若后跟 '.' 等则维持 N_PATH 原样（由 parse_unary 后缀链继续处理）。
             var last = segs[len(segs) - 1]
             var targs = -1
             if putil.peek_tag() == lex_lt {
@@ -791,7 +807,7 @@ func parse_primary() -> i64 {
                 if !parse_args_after_lparen(args) {
                     return -1
                 }
-                var call = ast.new_node(N_CALL, last, -1, -1, line, col)
+                var call = ast.new_node(N_CALL, join_path_segs(segs), -1, -1, line, col)
                 var ckids: table<i64> = table_new_i64()
                 table_push(ckids, targs)
                 var k: i64 = 0

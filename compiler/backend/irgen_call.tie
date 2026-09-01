@@ -116,6 +116,45 @@ func tig_user_call_from(full: string, id: i64, arg_start: i64) -> i64 {
         table_push(argkinds, arg_kind)
         k = k + 1
     }
+    // 默认值参数补齐（p.6.2.3）：实参数 < 形参数时，缺失的可选形参用函数
+    // 定义参数节点的默认值字面量表达式生成（限字面量/空表，无作用域依赖、
+    // 无副作用——scollect 已校验）。补齐到固定形参数（变参位置由下方打包）。
+    var to_fill: i64 = fixed_n
+    if len(argvals) < to_fill {
+        var fnode = sstate.fn_def_node(full)
+        if fnode < 0 {
+            sm_err_msg = "函数 '" + full + "' 无定义节点，无法补齐默认值参数（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        while len(argvals) < to_fill {
+            var pad = len(argvals)
+            if sp_defs[sg_off[sig] + pad] == 0 {
+                sm_err_msg = "函数 '" + full + "' 缺少第 " + to_string(pad + 1) + " 个参数且无默认值（函数 " + g_cur_fn_name + "）"
+                return -1
+            }
+            var pnode = sstate.child(fnode, sstate.slot_off(fnode) + 1 + pad)
+            var defn = sstate.child(pnode, 1)
+            var dv = tig_expr(defn)
+            if dv < 0 {
+                return -1
+            }
+            // 数字族缩窄/拓宽转换（对齐实参路径；默认值字面量 i64 而形参
+            // u8 等时须显式转换，否则 call 操作数类型错位）
+            var pty_d = ptys[pad]
+            var at_d = node_types[defn]
+            if pty_d >= 0 && at_d >= 0 && (types.is_int(pty_d) || types.is_float(pty_d)) &&
+                (types.is_int(at_d) || types.is_float(at_d)) && pty_d != at_d {
+                var cv_d = tig_coerce(dv, at_d, pty_d)
+                if cv_d < 0 {
+                    return -1
+                }
+                dv = cv_d
+            }
+            table_push(argvals, dv)
+            table_push(argisref, 0)
+            table_push(argkinds, 0)
+        }
+    }
     // 变参打包：多余实参 → 动态表（无多余实参也要传空表）
     if has_var {
         var tbl = tig_variadic_table(extra_nodes, var_elem)
@@ -509,6 +548,46 @@ func tig_struct_method_call(full: string, id: i64, recv: i64, rty: i64) -> i64 {
         }
         table_push(argvals, tbl2)
         table_push(argtys, ptys[nparams - 1])   // table<T> → ptr
+    }
+    // 默认值参数补齐（p.6.2.3）：argvals 已含接收者（形参 0），缺失的其余
+    // 可选形参用函数定义参数节点的默认值字面量生成。补齐到固定形参数
+    //（变参位置已由上面打包填充）。与 tig_user_call_from 同pattern。
+    var to_fill_m: i64 = nparams
+    if has_var {
+        to_fill_m = nparams - 1
+    }
+    if len(argvals) < to_fill_m {
+        var fnode = sstate.fn_def_node(full)
+        if fnode < 0 {
+            sm_err_msg = "函数 '" + full + "' 无定义节点，无法补齐默认值参数（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        while len(argvals) < to_fill_m {
+            var pad = len(argvals)
+            if sp_defs[sg_off[sig] + pad] == 0 {
+                sm_err_msg = "函数 '" + full + "' 缺少第 " + to_string(pad + 1) + " 个参数且无默认值（函数 " + g_cur_fn_name + "）"
+                return -1
+            }
+            var pnode = sstate.child(fnode, sstate.slot_off(fnode) + 1 + pad)
+            var defn = sstate.child(pnode, 1)
+            var dv = tig_expr(defn)
+            if dv < 0 {
+                return -1
+            }
+            // 数字族缩窄/拓宽转换（对齐实参路径）
+            var pty_d2 = ptys[pad]
+            var at_d2 = node_types[defn]
+            if pty_d2 >= 0 && at_d2 >= 0 && (types.is_int(pty_d2) || types.is_float(pty_d2)) &&
+                (types.is_int(at_d2) || types.is_float(at_d2)) && pty_d2 != at_d2 {
+                var cv_d2 = tig_coerce(dv, at_d2, pty_d2)
+                if cv_d2 < 0 {
+                    return -1
+                }
+                dv = cv_d2
+            }
+            table_push(argvals, dv)
+            table_push(argtys, ptys[pad])
+        }
     }
     // 生成 call（同 tig_user_call_from 尾部；实参类型用 argtys 并行表）
     var ty35: i64 = -1

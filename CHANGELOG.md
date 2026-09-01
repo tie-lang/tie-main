@@ -57,11 +57,26 @@
   极简探针（循环内 qs_clean(skill_desc) 中文 148 字节）修复前 AV → 修复后 A6 total=7414 全过；
   main_unsplit 未拆分 extract official-s19 518 文件完整通过（65 棋子/35 羁绊/157 装备/258 符文）；
   自举 tiec_s1→s2→s3 --emit-ir 逐字节一致（不动点）；tests/language 全量 PASS=96 与基线零差。
+- [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持（落地 2026-09-01）：
+  ① **语句级宏**（块式准引用 `/` 展开为多条语句）探针全绿（tests/s33_probe/b10_stmt_macro、
+  _probe62/s_stmt_macro*：多语句展开 + 插值 + 宏内循环控制结构）；② **命名空间路径调用
+  前缀丢失**：`ns::add(5)` 被 lexer/parser 拆成 N_CALL(name=最后段) 丢弃 `ns::` 前缀 →
+  报「未定义的函数 'add'」（自举编译链失效、显式路径调用不可用）。修复：
+  pexpr 路径调用拼接全名（join_path_segs：`a::b::c` → N_CALL name=完整路径，含泛型
+  `ns::max<i64>()` 路径）；③ **默认值参数 LLVM 路径补齐缺失**：语义层已校验可选参数
+  （sg_required），但 irgen 调用点不生成缺省实参——`add(5)`（b 默认 10）运行时 b 取
+  0/垃圾返回 5；struct 方法转发（tig_struct_method_call）同样缺。修复：irgen_call
+  实参求值后按 sp_defs 补齐函数定义参数节点的默认值字面量（含 u8/f64 等窄/宽类型
+  tig_coerce 转换，变参位保持打包逻辑）。验证：_probe62/s_default2/s_method_default/
+  s_default3 探针（普通函数/:: 路径调用/struct 方法/泛型多可选/u8 窄默认值）输出全符
+  预期；自举 tiec2→tiec3 --emit-ir 逐字节一致（不动点）；tests/language PASS=56 与
+  基线零差（3 项失败均为既有基线：db-vector-unsafe 工具链未实现 / filetype_ir.ir 纯
+  IR 不产 exe / extern_decl 语义漂移）。
 
 **功能限制（p.6.2，评估是否在正式版放开）**
 - [x] p.6.2.1 枚举 payload 白名单（放开 f64/table/map；struct/嵌套 enum 仍限制——2026-09-01 落地，见已落地修复）
 - [x] p.6.2.2 import result.tie 对 import assert.tie 的扫描顺序依赖（已修复——2026-09-01 落地，见已落地修复）
-- [ ] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持
+- [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持（落地 2026-09-01，见已落地修复）
 - [ ] p.6.2.4 闭包参数 ref / 变参
 - [ ] p.6.2.5 driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用）
 
