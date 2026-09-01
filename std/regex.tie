@@ -1,45 +1,658 @@
 type tie<class>
-// regex.tie：标准库——正则表达式工具（命名空间 regex），全部为底座原语
-// regex_match / regex_find / regex_find_all / regex_group / regex_replace 的直接包装。
-// 正则语法：由 Rust 侧 regex crate 提供（Rust 正则语法）——支持捕获组 (x)、
-// 字符类 [...]、量词 *+?{n,m}、锚点 ^$、预查 (?=...) (?!...) 等；不支持回引用
-// （Rust regex 默认无回溯）。详见 Rust regex crate 文档。
+// regex.tie：标准库——正则表达式工具（命名空间 regex），纯 tie 自研最小正则引擎。
+// ============================================================
+// 背景（p.6.4 残留清零）：此前 regex_* 五原语（regex_match/find/find_all/group/
+// replace）由编译器映射到 tie_regex_* Rust 桥（tie_interp.lib 的 Rust regex crate）。
+// p.6.4.8 已把「字面量 pattern」内联为纯 tie 回溯匹配 VM（compiler/backend/
+// irgen_regex.tie，g_used_interp=false）；但「运行期 pattern」（std/regex 包装把
+// pattern 当参数传入）仍回退 rex_bridge_* → Rust 桥。本文件在 std 层自研纯 tie
+// 正则引擎：运行期解析 pattern → 构建指令程序 → 回溯匹配，彻底不再调用 regex_*
+// 原语，编译含 regex 的程序不再依赖 tie_interp.lib。
+//
+// 引擎结构（参考 irgen_regex 的「指令 + 回溯」编译产物逻辑，译成 std 层纯函数）：
+//   1. 编译期（本文件运行期）：rx_parse_* 递归下降把 pattern 解析成一条指令程序
+//      （rx_prog：平行 i64 表）+ 字符类位集（rx_cls：每类 4×i64 = 256 位）。交替
+//      | 用 SPLIT/JMP 组织，量词 * + ? 也用 SPLIT/JMP 组织（贪婪），捕获组 () 用
+//      SAVE(槽：0/1 保留整体，组 k≥1 用 2k/2k+1)。frag 按「拷贝+重定位」拼接。
+//   2. 匹配：rg_eval 递归回溯求值（leftmost-first，贪婪，显式 SPLIT 回退）。
+//   3. 拼接：find_all/replace/替换展开一律用 StringBuilder（sb_*），p.6.3 教训，
+//      严禁 out += x 逐字符。
+//
+// 支持语法子集：字面量、. 、字符类 [] [^]、\d \w \s（+ 大写取反）、量词 * + ?、
+// 锚点 ^ $、分组 ()、交替 |、转义字面量 \. \\ \* 等；替换 $N/$0 捕获引用。
+// 逐字节匹配。
+// 局限：{n,m}、反向引用、前瞻/后顾、\b、Unicode 类不支持；匹配为字节级。
 // 调用：import 后 regex.is_match(s, pattern) / regex.find(...)；命名空间内互调为裸调用。
-// 命名规范：命名空间内函数不加 regex_ 前缀（统一 func 写法，Harbor M2.1.6）。
-// 底座 ok 参数说明：regex_match 的 C 桥签名 (s, pattern, ok) 带隐藏 out 参数，
-// tie 侧注册为 2 参数（ok 由编译器内部自动分配，调用方不传）——模式合法时 ok=1
-// 返回 0/1（是否匹配）；模式非法时 ok=0 返回 0。tie 语言暂无法读取 ok，故
-// is_match 对非法模式也返回 false（调用方无法区分「不匹配」与「非法模式」）。
-// 其余原语（find/find_all/group/replace）C 桥无 ok 参数，模式非法时返回 NULL，
-// 由编译器输出运行时错误并退出。
+// 命名规范：命名空间内私有辅助函数用 rx_/rg_ 前缀（区别于 pub 五函数）。
+
+// ---- 指令 opcode（与 irgen_regex 一致）----
+const RX_CHAR: i64 = 1;
+const RX_CLS: i64 = 2;
+const RX_CLSNEG: i64 = 3;
+const RX_ANY: i64 = 4;
+const RX_ASTART: i64 = 5;
+const RX_AEND: i64 = 6;
+const RX_SAVE: i64 = 7;
+const RX_SPLIT: i64 = 8;
+const RX_JMP: i64 = 9;
+const RX_MATCH: i64 = 10;
+
+// ---- 解析器运行期状态（每次 rg_compile 重置；regex 非重入，单线程可用）----
+var rx_ppos: i64 = 0;      // pattern 扫描字节偏移
+var rx_plen: i64 = 0;      // pattern 字节长度
+var rx_pstr: string = "";  // pattern 字符串
+var rx_ng: i64 = 0;        // 已登记捕获组数
+var rx_ingrp: i64 = 0;     // 当前是否在某组内（控制 ')' 终止序列）
+var rx_ok: bool = true;    // 解析合法性
+var rx_prog: table<i64>;   // 指令程序
+var rx_cls: table<i64>;    // 字符类位集
 
 namespace regex {
-// 判断 s 中是否存在 pattern 的匹配（部分匹配即可，非全串匹配）。
-// 模式非法返回 false（底座 ok=0 时返回值 0），见文件头 ok 参数说明。
+// =====================================================================
+// 编译期：pattern → 指令程序
+// =====================================================================
+func rx_cur() -> i64 {
+    if rx_ppos < rx_plen {
+        return str_byte(rx_pstr, rx_ppos)
+    }
+    return -1
+}
+func rx_peek(s: i64) -> i64 {
+    if rx_ppos + s < rx_plen {
+        return str_byte(rx_pstr, rx_ppos + s)
+    }
+    return -1
+}
+func rx_adv() {
+    rx_ppos = rx_ppos + 1
+}
+func rg_a(t: ref table<i64>, v: i64) {
+    table_push(t, v)
+}
+func rx_bs_new() -> table<i64> {
+    var bs = table_new_i64()
+    table_push(bs, 0)
+    table_push(bs, 0)
+    table_push(bs, 0)
+    table_push(bs, 0)
+    return bs
+}
+func rx_bs_add(bs: ref table<i64>, b: i64) {
+    bs[b / 64] = bs[b / 64] | (1 << (b % 64))
+}
+func rx_bs_addrange(bs: ref table<i64>, lo: i64, hi: i64) {
+    var b: i64 = lo
+    while b <= hi {
+        rx_bs_add(bs , b)
+        b = b + 1
+    }
+}
+// 位集追加进 rx_cls，返回类索引
+func rx_cls_emit(bs: table<i64>) -> i64 {
+    var idx = len(rx_cls) / 4
+    var i: i64 = 0
+    while i < 4 {
+        table_push(rx_cls, bs[i])
+        i = i + 1
+    }
+    return idx
+}
+func rx_cls_word() -> i64 {
+    var bs = rx_bs_new()
+    rx_bs_addrange(bs , 48, 57)
+    rx_bs_addrange(bs , 65, 90)
+    rx_bs_addrange(bs , 97, 122)
+    rx_bs_add(bs , 95)
+    return rx_cls_emit(bs)
+}
+func rx_cls_space() -> i64 {
+    var bs = rx_bs_new()
+    rx_bs_add(bs , 32)
+    rx_bs_add(bs , 9)
+    rx_bs_add(bs , 10)
+    rx_bs_add(bs , 13)
+    rx_bs_add(bs , 11)
+    rx_bs_add(bs , 12)
+    return rx_cls_emit(bs)
+}
+
+// 拷贝 frag 到 target，带分支目标重定位（SPLIT/JMP 紧跟的操作数 +base）。
+func rx_emit_frag(t: ref table<i64>, src: table<i64>, so: i64, sl: i64) {
+    var base = len(t)
+    var i: i64 = 0
+    var pend: bool = false
+    while i < sl {
+        var v = src[so + i]
+        if pend {
+            v = v + base
+            pend = false
+        } else if v == RX_SPLIT || v == RX_JMP {
+            pend = true
+        }
+        table_push(t, v)
+        i = i + 1
+    }
+}
+
+// 量词 * + ?（贪）：包裹 bfr
+func rx_wrap_quant(bfr: ref table<i64>) {
+    var c = rx_cur()
+    if c != 42 && c != 43 && c != 63 {
+        return
+    }
+    rx_adv()
+    var w = table_new_i64()
+    if c == 42 {
+        rg_a(w , RX_SPLIT)
+        rg_a(w , 0)
+        rx_emit_frag(w , bfr, 0, len(bfr))
+        var jp = len(w)
+        rg_a(w , RX_JMP)
+        rg_a(w , 0)
+        var end = len(w)
+        w[1] = end
+        w[jp + 1] = 0
+    } else if c == 43 {
+        rx_emit_frag(w , bfr, 0, len(bfr))
+        var sp = len(w)
+        rg_a(w , RX_SPLIT)
+        rg_a(w , 0)
+        var jp2 = len(w)
+        rg_a(w , RX_JMP)
+        rg_a(w , 0)
+        var end2 = len(w)
+        w[sp + 1] = end2
+        w[jp2 + 1] = 0
+    } else {
+        rg_a(w , RX_SPLIT)
+        rg_a(w , 0)
+        rx_emit_frag(w , bfr, 0, len(bfr))
+        var end3 = len(w)
+        w[1] = end3
+    }
+    bfr = table_new_i64()
+    var i: i64 = 0
+    while i < len(w) {
+        table_push(bfr, w[i])
+        i = i + 1
+    }
+}
+
+// 解析一个 term（原子 + 可选量词）→ 产出指令到 target
+func rx_parse_term(t: ref table<i64>) {
+    var c = rx_cur()
+    if c < 0 {
+        return
+    }
+    var bfr = table_new_i64()
+    if c == 40 {
+        // '(' 捕获组（组 k≥1 槽 2k/2k+1；槽 0/1 保留给整体匹配）
+        rx_adv()
+        var ng = rx_ng
+        rx_ng = rx_ng + 1
+        rg_a(bfr , RX_SAVE)
+        rg_a(bfr , 2 * ng + 2)
+        rx_ingrp = rx_ingrp + 1
+        rx_parse_level(bfr )
+        rx_ingrp = rx_ingrp - 1
+        if rx_cur() == 41 {
+            rx_adv()
+        } else {
+            rx_ok = false
+        }
+        rg_a(bfr , RX_SAVE)
+        rg_a(bfr , 2 * ng + 3)
+    } else if c == 91 {
+        // '[' 字符类
+        rx_adv()
+        var neg = false
+        if rx_cur() == 94 {
+            neg = true
+            rx_adv()
+        }
+        var bs = rx_bs_new()
+        while rx_ok && rx_cur() >= 0 && rx_cur() != 93 {
+            if rx_cur() == 92 {
+                rx_adv()
+                var e = rx_cur()
+                rx_adv()
+                if e == 100 {
+                    rx_bs_addrange(bs , 48, 57)
+                } else if e == 119 {
+                    rx_bs_addrange(bs , 48, 57)
+                    rx_bs_addrange(bs , 65, 90)
+                    rx_bs_addrange(bs , 97, 122)
+                    rx_bs_add(bs , 95)
+                } else if e == 115 {
+                    rx_bs_add(bs , 32)
+                    rx_bs_add(bs , 9)
+                    rx_bs_add(bs , 10)
+                    rx_bs_add(bs , 13)
+                    rx_bs_add(bs , 11)
+                    rx_bs_add(bs , 12)
+                } else {
+                    rx_bs_add(bs , e)
+                }
+            } else {
+                var lc = rx_cur()
+                rx_adv()
+                if rx_cur() == 45 && rx_peek(1) >= 0 && rx_peek(1) != 93 {
+                    rx_adv()
+                    var hc = rx_cur()
+                    rx_adv()
+                    rx_bs_addrange(bs , lc, hc)
+                } else {
+                    rx_bs_add(bs , lc)
+                }
+            }
+        }
+        if rx_cur() == 93 {
+            rx_adv()
+        } else {
+            rx_ok = false
+        }
+        var ci = rx_cls_emit(bs)
+        if neg {
+            rg_a(bfr , RX_CLSNEG)
+        } else {
+            rg_a(bfr , RX_CLS)
+        }
+        rg_a(bfr , ci)
+    } else if c == 46 {
+        rx_adv()
+        rg_a(bfr , RX_ANY)
+    } else if c == 94 {
+        rx_adv()
+        rg_a(bfr , RX_ASTART)
+    } else if c == 36 {
+        rx_adv()
+        rg_a(bfr , RX_AEND)
+    } else if c == 92 {
+        rx_adv()
+        var e = rx_cur()
+        rx_adv()
+        if e == 100 {
+            rg_a(bfr , RX_CHAR)
+            rg_a(bfr , 48)
+            rg_a(bfr , 57)
+        } else if e == 68 {
+            var bs = rx_bs_new()
+            rx_bs_addrange(bs , 48, 57)
+            rg_a(bfr , RX_CLSNEG)
+            rg_a(bfr , rx_cls_emit(bs))
+        } else if e == 119 {
+            rg_a(bfr , RX_CLS)
+            rg_a(bfr , rx_cls_word())
+        } else if e == 87 {
+            rg_a(bfr , RX_CLSNEG)
+            rg_a(bfr , rx_cls_word())
+        } else if e == 115 {
+            rg_a(bfr , RX_CLS)
+            rg_a(bfr , rx_cls_space())
+        } else if e == 83 {
+            rg_a(bfr , RX_CLSNEG)
+            rg_a(bfr , rx_cls_space())
+        } else if e == 110 {
+            rx_emit_cchar(bfr , 10)
+        } else if e == 116 {
+            rx_emit_cchar(bfr , 9)
+        } else if e == 114 {
+            rx_emit_cchar(bfr , 13)
+        } else {
+            rx_emit_cchar(bfr , e)
+        }
+    } else {
+        // 普通字面字符（可能多字节）
+        if c < 128 {
+            rx_adv()
+            rx_emit_cchar(bfr , c)
+        } else {
+            var n = utf8_seq_len(rx_pstr, rx_ppos)
+            var k: i64 = 0
+            while k < n {
+                rx_emit_cchar(bfr , str_byte(rx_pstr, rx_ppos + k))
+                k = k + 1
+            }
+            rx_ppos = rx_ppos + n
+        }
+    }
+    rx_wrap_quant(bfr )
+    rx_emit_frag(t, bfr, 0, len(bfr))
+}
+func rx_emit_cchar(bfr: ref table<i64>, b: i64) {
+    rg_a(bfr , RX_CHAR)
+    rg_a(bfr , b)
+    rg_a(bfr , b)
+}
+
+// 解析序列（到 ')' | '|' 或串尾止）
+func rx_parse_seq(t: ref table<i64>) {
+    while rx_ok {
+        var c = rx_cur()
+        if c < 0 {
+            return
+        }
+        if c == 41 && rx_ingrp > 0 {
+            return
+        }
+        if c == 124 {
+            return
+        }
+        rx_parse_term(t)
+    }
+}
+
+// 解析一级（交替 A|B|C…）→ 产出到 target
+func rx_parse_level(t: ref table<i64>) {
+    var flat = table_new_i64()
+    var offs = table_new_i64()
+    var lens = table_new_i64()
+    var o0 = len(flat)
+    rx_parse_seq(flat )
+    table_push(offs, o0)
+    table_push(lens, len(flat) - o0)
+    while rx_ok && rx_cur() == 124 {
+        rx_adv()
+        var o = len(flat)
+        rx_parse_seq(flat )
+        table_push(offs, o)
+        table_push(lens, len(flat) - o)
+    }
+    var nb = len(offs)
+    if nb == 1 {
+        rx_emit_frag(t, flat, offs[0], lens[0])
+        return
+    }
+    var w = table_new_i64()
+    var bstart = table_new_i64()
+    var spill = table_new_i64()
+    var jmpl = table_new_i64()
+    var k: i64 = 0
+    while k < nb {
+        if k < nb - 1 {
+            var spk = len(w)
+            table_push(w, RX_SPLIT)
+            table_push(w, 0)
+            table_push(spill, spk)
+        } else {
+            table_push(spill, -1)
+        }
+        var base = len(w)
+        table_push(bstart, base)
+        rx_emit_frag(w , flat, offs[k], lens[k])
+        if k < nb - 1 {
+            var jp = len(w)
+            table_push(w, RX_JMP)
+            table_push(w, 0)
+            table_push(jmpl, jp)
+        } else {
+            table_push(jmpl, -1)
+        }
+        k = k + 1
+    }
+    var end = len(w)
+    k = 0
+    while k < nb {
+        if k < nb - 1 {
+            w[spill[k] + 1] = bstart[k + 1]
+            w[jmpl[k] + 1] = end
+        }
+        k = k + 1
+    }
+    rx_emit_frag(t, w, 0, len(w))
+}
+
+// 编译 pattern → rx_prog/rx_cls/rx_ng；返回成功
+func rg_compile(pat: string) -> bool {
+    rx_pstr = pat
+    rx_plen = len(pat)
+    rx_ppos = 0
+    rx_prog = table_new_i64()
+    rx_cls = table_new_i64()
+    rx_ng = 0
+    rx_ingrp = 0
+    rx_ok = true
+    rg_a(rx_prog , RX_SAVE)
+    rg_a(rx_prog , 0)
+    rx_parse_level(rx_prog )
+    rg_a(rx_prog , RX_SAVE)
+    rg_a(rx_prog , 1)
+    rg_a(rx_prog , RX_MATCH)
+    return rx_ok
+}
+
+// =====================================================================
+// 匹配期：递归回溯求值
+// =====================================================================
+func rg_newslots(nsl: i64) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < nsl {
+        table_push(t, 0)
+        i = i + 1
+    }
+    return t
+}
+func rx_cls_hit(cls: table<i64>, ci: i64, b: i64) -> bool {
+    var word = cls[ci * 4 + b / 64]
+    var bit = (word >> (b % 64)) & 1
+    return bit == 1
+}
+
+// 从 (pc,pos) 匹配：命中返回 true 并留 slots（含整体 [0,1] 与各组 [2k,2k+1]）
+func rg_eval(prog: table<i64>, cls: table<i64>, pc: i64, pos: i64, s: string, blen: i64, slots: ref table<i64>) -> bool {
+    var op = prog[pc]
+    if op == RX_CHAR {
+        if pos < blen {
+            var b = str_byte(s, pos)
+            if b >= prog[pc + 1] && b <= prog[pc + 2] {
+                return rg_eval(prog, cls, pc + 3, pos + 1, s, blen, slots)
+            }
+        }
+        return false
+    } else if op == RX_CLS {
+        if pos < blen {
+            var b = str_byte(s, pos)
+            if rx_cls_hit(cls, prog[pc + 1], b) {
+                return rg_eval(prog, cls, pc + 2, pos + 1, s, blen, slots)
+            }
+        }
+        return false
+    } else if op == RX_CLSNEG {
+        if pos < blen {
+            var b = str_byte(s, pos)
+            if !rx_cls_hit(cls, prog[pc + 1], b) {
+                return rg_eval(prog, cls, pc + 2, pos + 1, s, blen, slots)
+            }
+        }
+        return false
+    } else if op == RX_ANY {
+        if pos < blen {
+            return rg_eval(prog, cls, pc + 1, pos + 1, s, blen, slots)
+        }
+        return false
+    } else if op == RX_ASTART {
+        if pos == 0 {
+            return rg_eval(prog, cls, pc + 1, pos, s, blen, slots)
+        }
+        return false
+    } else if op == RX_AEND {
+        if pos == blen {
+            return rg_eval(prog, cls, pc + 1, pos, s, blen, slots)
+        }
+        return false
+    } else if op == RX_SAVE {
+        slots[prog[pc + 1]] = pos
+        return rg_eval(prog, cls, pc + 2, pos, s, blen, slots)
+    } else if op == RX_SPLIT {
+        // 默认续 pc+2（贪）；alt = prog[pc+1] 作回退
+        if rg_eval(prog, cls, pc + 2, pos, s, blen, slots) {
+            return true
+        }
+        return rg_eval(prog, cls, prog[pc + 1], pos, s, blen, slots)
+    } else if op == RX_JMP {
+        return rg_eval(prog, cls, prog[pc + 1], pos, s, blen, slots)
+    } else if op == RX_MATCH {
+        return true
+    }
+    return false
+}
+
+// =====================================================================
+// 公共 API（5 函数）
+// =====================================================================
+
 pub func is_match(s: string, pattern: string) -> bool {
-    return regex_match(s, pattern)
+    if !rg_compile(pattern) {
+        return false
+    }
+    var blen = len(s)
+    var nsl = 2 * (rx_ng + 1)
+    var prog = rx_prog
+    var cls = rx_cls
+    var start: i64 = 0
+    while start < blen {
+        var slots = rg_newslots(nsl)
+        if rg_eval(prog, cls, 0, start, s, blen, slots ) {
+            return true
+        }
+        start = start + 1
+    }
+    return false
 }
 
-// 返回 s 中第一个匹配片段；无匹配返回空串；模式非法由编译器报错退出。
 pub func find(s: string, pattern: string) -> string {
-    return regex_find(s, pattern)
+    if !rg_compile(pattern) {
+        return ""
+    }
+    var blen = len(s)
+    var nsl = 2 * (rx_ng + 1)
+    var prog = rx_prog
+    var cls = rx_cls
+    var start: i64 = 0
+    while start < blen {
+        var slots = rg_newslots(nsl)
+        if rg_eval(prog, cls, 0, start, s, blen, slots ) {
+            return str_sub_bytes(s, slots[0], slots[1])
+        }
+        start = start + 1
+    }
+    return ""
 }
 
-// 返回 s 中全部匹配片段组成的字符串表（按出现顺序）；无匹配返回空表；
-// 模式非法由编译器报错退出。
 pub func find_all(s: string, pattern: string) -> table<string> {
-    return regex_find_all(s, pattern)
+    var t = table_new_string()
+    if !rg_compile(pattern) {
+        return t
+    }
+    var blen = len(s)
+    var nsl = 2 * (rx_ng + 1)
+    var prog = rx_prog
+    var cls = rx_cls
+    var start: i64 = 0
+    while start < blen {
+        var slots = rg_newslots(nsl)
+        if rg_eval(prog, cls, 0, start, s, blen, slots ) {
+            var b0 = slots[0]
+            var b1 = slots[1]
+            table_push(t, str_sub_bytes(s, b0, b1))
+            if b1 > b0 {
+                start = b1
+            } else {
+                start = b1 + 1
+            }
+        } else {
+            start = start + 1
+        }
+    }
+    return t
 }
 
-// 返回 s 中第一个匹配的第 i 个捕获组（i=0 为整个匹配）；无匹配或组号越界返回
-// 空串；模式非法由编译器报错退出。注意：i 需 ≤ 模式中捕获组数量，越界返回空串。
 pub func group(s: string, pattern: string, i: i64) -> string {
-    return regex_group(s, pattern, i)
+    if i < 0 {
+        return ""
+    }
+    if !rg_compile(pattern) {
+        return ""
+    }
+    var blen = len(s)
+    var nsl = 2 * (rx_ng + 1)
+    var prog = rx_prog
+    var cls = rx_cls
+    var start: i64 = 0
+    while start < blen {
+        var slots = rg_newslots(nsl)
+        if rg_eval(prog, cls, 0, start, s, blen, slots ) {
+            if i == 0 {
+                return str_sub_bytes(s, slots[0], slots[1])
+            }
+            if i <= rx_ng {
+                return str_sub_bytes(s, slots[2 * i], slots[2 * i + 1])
+            }
+            return ""
+        }
+        start = start + 1
+    }
+    return ""
 }
 
-// 把 s 中所有 pattern 匹配替换为 repl；repl 支持捕获引用（$1、$name），
-// 与 Rust regex replace_all 语义一致；模式非法由编译器报错退出。
 pub func replace(s: string, pattern: string, repl: string) -> string {
-    return regex_replace(s, pattern, repl)
+    if !rg_compile(pattern) {
+        return s
+    }
+    var blen = len(s)
+    var nsl = 2 * (rx_ng + 1)
+    var prog = rx_prog
+    var cls = rx_cls
+    var sb = string_builder()
+    var last = 0
+    var start: i64 = 0
+    while start < blen {
+        var slots = rg_newslots(nsl)
+        if rg_eval(prog, cls, 0, start, s, blen, slots ) {
+            var b0 = slots[0]
+            var b1 = slots[1]
+            sb_append(sb, str_sub_bytes(s, last, b0))
+            rx_append_repl(sb, repl, s, slots )
+            last = b1
+            if b1 > b0 {
+                start = b1
+            } else {
+                start = b1 + 1
+            }
+        } else {
+            start = start + 1
+        }
+    }
+    sb_append(sb, str_sub_bytes(s, last, blen))
+    return sb_build(sb)
+}
+
+func rx_append_repl(sb: i64, repl: string, s: string, slots: ref table<i64>) {
+    var rl = len(repl)
+    var i: i64 = 0
+    while i < rl {
+        var b = str_byte(repl, i)
+        var isd: bool = false
+        var gi: i64 = 0
+        if b == 36 && i + 1 < rl {
+            var d = str_byte(repl, i + 1)
+            if d >= 48 && d <= 57 {
+                isd = true
+                gi = d - 48
+            }
+        }
+        if isd {
+            if gi == 0 {
+                sb_append(sb, str_sub_bytes(s, slots[0], slots[1]))
+            } else {
+                sb_append(sb, str_sub_bytes(s, slots[2 * gi], slots[2 * gi + 1]))
+            }
+            i = i + 2
+        } else {
+            sb_append_byte(sb, b)
+            i = i + 1
+        }
+    }
 }
 }
