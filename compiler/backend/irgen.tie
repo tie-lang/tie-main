@@ -531,6 +531,16 @@ func is_libc_sym(sym: string) -> bool {
         sym == "SleepConditionVariableCS" {
         return true
     }
+    // p.6.4.2/p.6.4.3 文件系统原语内联：kernel32/shell32 *W API（UTF-16 安全路径）
+    // + CRT memset（SHFILEOPSTRUCTW 零化）。全为系统库符号，非 interp 桥。
+    if sym == "memset" || sym == "CreateFileW" || sym == "ReadFile" ||
+        sym == "WriteFile" || sym == "FlushFileBuffers" || sym == "GetFileSizeEx" ||
+        sym == "CreateDirectoryW" || sym == "GetFileAttributesW" ||
+        sym == "DeleteFileW" || sym == "FindFirstFileW" || sym == "FindNextFileW" ||
+        sym == "FindClose" || sym == "CopyFileW" || sym == "MoveFileW" ||
+        sym == "SHFileOperationW" {
+        return true
+    }
     return false
 }
 
