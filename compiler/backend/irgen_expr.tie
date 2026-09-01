@@ -6876,6 +6876,14 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         ir.add_operand(cbcs, bFail, 1)
         ir.add_operand(cbcs, bCsOk, 1)
         g_cur_block = bCsOk
+        // 16/17/18 共享槽：fillv/repv 在 l16/l17/l18 三支分派前分配，
+        // 供合并块 lrep 使用（若只放 l16 会破坏支配关系 → alloca 不支配其用）。
+        var fvs = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(fvs, T64, 2)
+        var fvp = ir.get_value(fvs)
+        var rvs = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(rvs, T64, 2)
+        var rvp = ir.get_value(rvs)
         var lt16 = tig_icmp_c(csym, tig_int_lit(16), 2)  // csym < 16
         var bCs2 = ir.new_block(g_cur_func, interner.intern("inf.cs2"))
         var bCs3 = ir.new_block(g_cur_func, interner.intern("inf.cs3"))
@@ -6905,12 +6913,6 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         ir.add_operand(brls, lh, 1)
         // 16/17/18：读重复次数（fillv/repv 用共享槽——l16/l17/l18 运行时互斥可达 lrep）
         g_cur_block = l16
-        var fvs = ir.new_inst(g_cur_block, 20, T64)
-        ir.add_operand(fvs, T64, 2)
-        var fvp = ir.get_value(fvs)
-        var rvs = ir.new_inst(g_cur_block, 20, T64)
-        ir.add_operand(rvs, T64, 2)
-        var rvp = ir.get_value(rvs)
         var rs2 = ir.new_inst(g_cur_block, 20, T64)
         ir.add_operand(rs2, T64, 2)
         var rs2p = ir.get_value(rs2)
