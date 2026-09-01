@@ -124,31 +124,30 @@ func tig_closure_lit(id: i64) -> i64 {
         return -1
     }
     var ptys: table<i64> = table_new_i64()
+    var p_refs: table<i64> = table_new_i64()
+    var has_var: i64 = 0
     // 参数类型收集（N_PARAM：children=[类型]；s_vals = by_ref，s_aux = 变参）
+    // p.6.2.4：变参（`...T`）签名类型 = table<T>（与 sinfer N_FN_LIT 同转换，
+    // 保证 fn_of2 查重命中同一签名）；ref 参数仅表（语义层已校验）。
     var k: i64 = 0
     while k < nparams {
         var p = sstate.child(id, slot + 1 + k)
-        if s_vals[p] == 1 {
-            sm_err_line = s_lines[id]
-            sm_err_col = s_cols[id]
-            sm_err_msg = "闭包参数暂不支持 ref 修饰（第一版仅普通按值参数）"
-            return -1
-        }
         if s_aux[p] == 1 {
-            sm_err_line = s_lines[id]
-            sm_err_col = s_cols[id]
-            sm_err_msg = "闭包参数暂不支持变参（第一版仅普通按值参数）"
-            return -1
+            has_var = 1
         }
         var pty = sgen.parse_generic_type_node(sstate.child(p, 0))
         if pty < 0 {
             return -1
         }
+        if s_aux[p] == 1 {
+            pty = types.table_of(pty)   // 变参 → table<T>
+        }
         table_push(ptys, pty)
+        table_push(p_refs, s_vals[p])
         k = k + 1
     }
-    // fn 类型（types.fn_of 查重：与 sinfer 登记的签名 id 一致）
-    var fnty = types.fn_of(ret_ty, ptys)
+    // fn 类型（types.fn_of2 查重：与 sinfer 登记的签名 id 一致，含 ref/变参）
+    var fnty = types.fn_of2(ret_ty, ptys, p_refs, has_var)
     // 捕获集：cl_capkeys/cl_capvals 的当前闭包段 [cl_capoff[ci], 段末)
     // （段末 = 下一个闭包的 capoff 或表长；check_closure_body 已校准 capoff）
     var ci = closure_index(id)
@@ -178,7 +177,7 @@ func tig_closure_lit(id: i64) -> i64 {
     var saved_func = g_cur_func
     var saved_block = g_cur_block
     // 生成入口函数
-    var cfid = tig_closure_entry_fn(ci, id, ret_ty, ptys, cap_ty, ncap)
+    var cfid = tig_closure_entry_fn(ci, id, ret_ty, ptys, p_refs, cap_ty, ncap)
     if cfid < 0 {
         return -1
     }
@@ -217,9 +216,10 @@ func tig_closure_lit(id: i64) -> i64 {
 
 // 闭包入口函数生成：clos_<节点id>，签名 fn(ptr env, A...) -> R。
 // 布局：env 参数（param 0）→ 捕获变量绑定 env 字段地址（闭包体引用捕获
-// 变量 = load 字段）；闭包参数 → alloca + store（与 tig_fn_def 一致）；
+// 变量 = load 字段）；闭包参数 → alloca + store（与 tig_fn_def 一致；
+// p.6.2.4 ref 参数不 alloca，直接绑定参数寄存器——实参已是槽地址）；
 // 闭包体 → tig_block_stmts；尾部补 ret。返回函数 id。
-func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, cap_ty: i64, ncap: i64) -> i64 {
+func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, p_refs: table<i64>, cap_ty: i64, ncap: i64) -> i64 {
     // 保存外层作用域（入口函数用独立作用域：捕获变量 + 参数登记；生成完
     // 恢复——否则闭包构造点的 tig_var_ref 会查到入口函数的 env 字段地址，
     // 跨函数引用产生 undefined value）。tie 表变量赋值 = 引用，须开新表。
@@ -243,7 +243,12 @@ func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, cap_t
     table_push(params, types.named(TK_STR))  // env ptr（隐藏第一参数）
     var k: i64 = 0
     while k < len(ptys) {
-        table_push(params, ptys[k])
+        // p.6.2.4 ref 参数：LLVM 形参声明为 ptr（对齐普通函数 tig_fn_def）
+        if p_refs[k] == 1 {
+            table_push(params, types.named(TK_STR))
+        } else {
+            table_push(params, ptys[k])
+        }
         k = k + 1
     }
     var fid = ir.new_func(interner.intern("clos_" + to_string(id)), ret_ty, params)
@@ -265,18 +270,24 @@ func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, cap_t
         }
     }
     // 闭包参数：alloca + store + scope_put（env 占参数 0，闭包参数从 1 起）
+    // p.6.2.4 ref 参数：绑定参数寄存器（实参槽地址），读取 → load ptr, ptr %N
     var i: i64 = 0
     while i < len(ptys) {
         var p = sstate.child(id, sstate.slot_off(id) + 1 + i)
         var pname = sstate.name_str(p)
         var pty = ptys[i]
-        var alloca = ir.new_inst(g_cur_block, 20, pty)  // alloca
-        ir.add_operand(alloca, pty, 2)
-        var av = ir.get_value(alloca)
-        var st = ir.new_inst(g_cur_block, 22, -1)  // store 参数
-        ir.add_operand(st, pty, 2)
-        ir.add_operand(st, ir.param_val(fid, 1 + i), 0)
-        ir.add_operand(st, av, 0)
+        var av: i64 = -1
+        if p_refs[i] == 1 {
+            av = ir.param_val(fid, 1 + i)
+        } else {
+            var alloca = ir.new_inst(g_cur_block, 20, pty)  // alloca
+            ir.add_operand(alloca, pty, 2)
+            av = ir.get_value(alloca)
+            var st = ir.new_inst(g_cur_block, 22, -1)  // store 参数
+            ir.add_operand(st, pty, 2)
+            ir.add_operand(st, ir.param_val(fid, 1 + i), 0)
+            ir.add_operand(st, av, 0)
+        }
         scope_put(interner.intern(pname), av, pty)
         i = i + 1
     }
@@ -326,19 +337,70 @@ func tig_call_indirect(id: i64, nm: string) -> i64 {
     }
     var ret_ty = types.fn_ret_ty(fv_ty)
     var nparams = types.fn_nparams_of(fv_ty)
-    // 实参求值（闭包参数无 by_ref/变参，普通按值；语义层已校验个数/类型）
+    var has_var = types.fn_has_var_of(fv_ty)
+    var fixed_n = nparams
+    var var_elem: i64 = -1
+    if has_var == 1 {
+        fixed_n = nparams - 1
+        var_elem = types.table_elem(types.fn_param_of(fv_ty, nparams - 1))
+    }
+    // 实参求值（p.6.2.4：ref 实参 → 传槽地址（Var → g_lookup_alloca 的 alloca
+    // 槽，重绑定赋值写回调用方）；变参多余实参 → 收集打包为动态表实参）
     var aoff = sstate.slot_off(id)
     var nc = sstate.nchild(id)
     var argvals: table<i64> = table_new_i64()
+    var argkinds: table<i64> = table_new_i64()   // 实参操作数 kind（ref 表全局 → 3）
+    var extra_nodes: table<i64> = table_new_i64()  // 变参多余实参（稍后打包）
     var k: i64 = aoff
     while k < nc {
         var arg_node = sstate.child(id, k)
-        var av = tig_expr(arg_node)
+        var arg_idx = k - aoff
+        if has_var == 1 && arg_idx >= fixed_n {
+            table_push(extra_nodes, arg_node)
+            k = k + 1
+            continue
+        }
+        var av: i64 = -1
+        var arg_kind: i64 = 0
+        // ref 实参：Var → 传实参槽地址（对齐 tig_user_call_from T0.3 by_ref）
+        if arg_idx < nparams && types.fn_param_ref(fv_ty, arg_idx) == 1 {
+            if s_tags[arg_node] == 6 {
+                var anm = interner.intern(sstate.name_str(arg_node))
+                if scope_get_global(anm) >= 0 {
+                    av = g_lookup_alloca
+                    if g_lookup_is_global >= 1 {
+                        arg_kind = 3
+                    }
+                }
+            }
+        }
         if av < 0 {
-            return -1
+            av = tig_expr(arg_node)
+        }
+        // P2c any 形参装箱（对齐 tig_user_call_from）
+        if arg_idx < nparams && types.fn_param_of(fv_ty, arg_idx) == types.named(TK_ANY) {
+            var ant = node_types[arg_node]
+            if ant >= 0 && ant != types.named(TK_ANY) {
+                var abx2 = tig_box_any(av, ant)
+                if abx2 < 0 {
+                    return -1
+                }
+                av = abx2
+            }
         }
         table_push(argvals, av)
+        table_push(argkinds, arg_kind)
         k = k + 1
+    }
+    // 变参打包：多余实参 → 动态表（无多余实参也要传空表）
+    if has_var == 1 {
+        var tbl = tig_variadic_table(extra_nodes, var_elem)
+        if tbl < 0 {
+            return -1
+        }
+        table_push(argvals, tbl)
+        table_push(argkinds, 0)
+        // 末位变参形参类型 = table<T>（签名参数，LLVM = ptr）
     }
     // fn 值地址：局部变量 → 槽地址直接 GEP；全局 → load 后落临时 alloca。
     // 注意：实参求值（tig_expr）可能再次调用 scope_get_global（实参也是
@@ -391,10 +453,17 @@ func tig_call_indirect(id: i64, nm: string) -> i64 {
     while k < len(argvals) {
         var pty = types.named(TK_I64)
         if k < nparams {
-            pty = types.fn_param_of(fv_ty, k)
+            if types.fn_param_ref(fv_ty, k) == 1 {
+                pty = types.named(TK_STR)  // ref 实参：槽地址 → ptr
+            } else {
+                pty = types.fn_param_of(fv_ty, k)
+            }
+        } else {
+            // 变参打包表（末位 table<T>；nparams-1 位置）
+            pty = types.fn_param_of(fv_ty, nparams - 1)
         }
         ir.add_operand(inst, pty, 2)
-        ir.add_operand(inst, argvals[k], 0)
+        ir.add_operand(inst, argvals[k], argkinds[k])
         k = k + 1
     }
     if ret_ty == types.named(TK_VOID) {
@@ -406,9 +475,11 @@ func tig_call_indirect(id: i64, nm: string) -> i64 {
 // P2a 调用表达式 `t[0](5)`：被调者为 fn 值表达式（children[0]）。
 // 求被调者 fn 值 → 落 alloca → 提取 env/entry → call_indirect(70)（对齐
 // tig_call_indirect；仅 fn 值来源为表达式而非作用域名字查找）。
-// 对函数值 fv（fty）执行 call_indirect（实参 argvals）。tig_call_expr 与
-// P1 箭头传参（tig_arrow）共用。返回结果值 id（void → 哑值）。
-func tig_call_fn_value(fv: i64, fty: i64, argvals: table<i64>) -> i64 {
+// 对函数值 fv（fty）执行 call_indirect（实参 argvals + 操作数 kind 并行表）。
+// tig_call_expr 与 P1 箭头传参（tig_arrow）共用。返回结果值 id（void → 哑值）。
+// p.6.2.4：变参末位（nparams-1 = table<T>）与 ref 实参（槽地址 → ptr）类型
+// 由调用方打包/寻址后在 argvals/argkinds 中反映，此处仅按签名做类型映射。
+func tig_call_fn_value(fv: i64, fty: i64, argvals: table<i64>, argkinds: table<i64>) -> i64 {
     var ret_ty = types.fn_ret_ty(fty)
     var nparams = types.fn_nparams_of(fty)
     var fa = ir.new_inst(g_cur_block, 20, fty)  // alloca
@@ -444,10 +515,21 @@ func tig_call_fn_value(fv: i64, fty: i64, argvals: table<i64>) -> i64 {
     while k < len(argvals) {
         var pty = types.named(TK_I64)
         if k < nparams {
-            pty = types.fn_param_of(fty, k)
+            if types.fn_param_ref(fty, k) == 1 {
+                pty = types.named(TK_STR)  // ref 实参：槽地址 → ptr
+            } else {
+                pty = types.fn_param_of(fty, k)
+            }
+        } else {
+            // 变参打包表（末位 table<T>；nparams-1 位置）
+            pty = types.fn_param_of(fty, nparams - 1)
         }
         ir.add_operand(inst, pty, 2)
-        ir.add_operand(inst, argvals[k], 0)
+        var aks: i64 = 0
+        if k < len(argkinds) {
+            aks = argkinds[k]
+        }
+        ir.add_operand(inst, argvals[k], aks)
         k = k + 1
     }
     if ret_ty == types.named(TK_VOID) {
@@ -468,19 +550,59 @@ func tig_call_expr(id: i64) -> i64 {
     if fv < 0 {
         return -1
     }
-    // 实参求值（children[1..]；fn 参数无 by_ref/变参，普通按值）
+    // 实参求值（children[1..]；p.6.2.4：ref 实参 → 传槽地址；变参多余实参
+    // → 收集打包为动态表——与 tig_call_indirect 同策略）
     var nc = sstate.nchild(id)
+    var nparams = types.fn_nparams_of(fty)
+    var has_var = types.fn_has_var_of(fty)
+    var fixed_n = nparams
+    var var_elem: i64 = -1
+    if has_var == 1 {
+        fixed_n = nparams - 1
+        var_elem = types.table_elem(types.fn_param_of(fty, nparams - 1))
+    }
     var argvals: table<i64> = table_new_i64()
+    var argkinds: table<i64> = table_new_i64()
+    var extra_nodes: table<i64> = table_new_i64()
     var k: i64 = 1
     while k < nc {
-        var av = tig_expr(sstate.child(id, k))
+        var arg_node = sstate.child(id, k)
+        var arg_idx = k - 1
+        if has_var == 1 && arg_idx >= fixed_n {
+            table_push(extra_nodes, arg_node)
+            k = k + 1
+            continue
+        }
+        var av: i64 = -1
+        var arg_kind: i64 = 0
+        if arg_idx < nparams && types.fn_param_ref(fty, arg_idx) == 1 {
+            if s_tags[arg_node] == 6 {
+                var anm = interner.intern(sstate.name_str(arg_node))
+                if scope_get_global(anm) >= 0 {
+                    av = g_lookup_alloca
+                    if g_lookup_is_global >= 1 {
+                        arg_kind = 3
+                    }
+                }
+            }
+        }
         if av < 0 {
-            return -1
+            av = tig_expr(arg_node)
         }
         table_push(argvals, av)
+        table_push(argkinds, arg_kind)
         k = k + 1
     }
-    return tig_call_fn_value(fv, fty, argvals)
+    // 变参打包：多余实参 → 动态表（无多余实参也要传空表）
+    if has_var == 1 {
+        var tbl = tig_variadic_table(extra_nodes, var_elem)
+        if tbl < 0 {
+            return -1
+        }
+        table_push(argvals, tbl)
+        table_push(argkinds, 0)
+    }
+    return tig_call_fn_value(fv, fty, argvals, argkinds)
 }
 
 // 命名函数提升：`var f: fn(A) -> R = my_func` → 生成适配器函数

@@ -638,18 +638,57 @@ pub func infer_call(id: i64) -> i64 {
         }
         if fv_ty >= 0 && types.is_fn(fv_ty) {
             var fn_np = types.fn_nparams_of(fv_ty)
-            if nc != fn_np {
+            var fn_var = types.fn_has_var_of(fv_ty)
+            var req_fn = fn_np
+            if fn_var == 1 {
+                req_fn = fn_np - 1   // 变参：末位 table 可省略 + 任意多个元素实参
+            }
+            if nc < req_fn || (fn_var == 0 && nc > fn_np) {
                 sm_err_line = s_lines[id]
                 sm_err_col = s_cols[id]
-                sm_err_msg = "函数值调用 '" + fnm + "' 期望 " + to_string(fn_np) + " 个参数，实际 " + to_string(nc) + " 个"
+                var cnt_fn = ""
+                if fn_var == 1 {
+                    cnt_fn = to_string(req_fn) + "+"
+                } else if req_fn == fn_np {
+                    cnt_fn = to_string(fn_np)
+                } else {
+                    cnt_fn = to_string(req_fn) + "-" + to_string(fn_np)
+                }
+                sm_err_msg = "函数值调用 '" + fnm + "' 期望 " + cnt_fn + " 个参数，实际 " + to_string(nc) + " 个"
                 return -1
             }
             var kf: i64 = 0
             while kf < nc {
                 var want = types.fn_param_of(fv_ty, kf)
+                var var_elem: i64 = -1
+                if fn_var == 1 && kf >= fn_np - 1 {
+                    // 变参多余实参：与变参元素类型 T 匹配（签名末位 table<T>）
+                    var_elem = types.table_elem(types.fn_param_of(fv_ty, fn_np - 1))
+                    want = var_elem
+                }
                 var at = infer_expr(args[kf])
                 if at < 0 {
                     return -1
+                }
+                // p.6.2.4 ref 参数实参校验：必须是可寻址的表变量，且类型匹配
+                if kf < fn_np && types.fn_param_ref(fv_ty, kf) == 1 {
+                    if s_tags[args[kf]] != 6 {
+                        sm_err_line = s_lines[id]
+                        sm_err_col = s_cols[id]
+                        sm_err_msg = "函数值调用 '" + fnm + "' 的 ref 参数需要可寻址的表变量实参（字面量/下标/调用结果不可取地址）"
+                        return -1
+                    }
+                    var rf_nid = intern.intern(sstate.name_str(args[kf]))
+                    var rf_ty = lv_find(rf_nid)
+                    if rf_ty < 0 {
+                        rf_ty = gb_find(rf_nid)
+                    }
+                    if rf_ty < 0 || !types.is_table(rf_ty) {
+                        sm_err_line = s_lines[id]
+                        sm_err_col = s_cols[id]
+                        sm_err_msg = "函数值调用 '" + fnm + "' 的 ref 参数需要表变量实参（实际 " + (rf_ty >= 0 ? types.type_name(rf_ty) : "未声明") + "）"
+                        return -1
+                    }
                 }
                 if !stype.types_compatible(want, at) && !stype.types_match(want, at, args[kf]) &&
                     !stype.types_narrow_int(want, at, args[kf]) {

@@ -72,12 +72,28 @@
   预期；自举 tiec2→tiec3 --emit-ir 逐字节一致（不动点）；tests/language PASS=56 与
   基线零差（3 项失败均为既有基线：db-vector-unsafe 工具链未实现 / filetype_ir.ir 纯
   IR 不产 exe / extern_decl 语义漂移）。
+- [x] p.6.2.4 闭包参数 ref / 变参（落地 2026-09-01）：
+  ① **闭包 ref 参数**（`ref table<T>`）：参数节点按 `s_vals` 记录引用标志；类型登记
+  携带 ref 元数据（fn_param_refs + fn_of2 查重，避免同签名多次登记拆开元数据段）；
+  语义校验值调用时 ref 形参的实参必须是可寻址的表变量（字面量/下标/调用结果报错，
+  类型须为表）；IR 生成直接绑定实参槽地址（不 alloca、不 store），体内读写即作用于
+  调用方表；② **闭包变参**（`...T`，仅末位；parser 已拦非末尾，语义层兜底校验）：
+  签名登记为 `table<T>`（与普通函数变参登记一致，保证 fn_of2 查重命中同一签名）；
+  调用点实参求值后按 `fixed_n = nparams-1` 切分，多余实参 `tig_variadic_table`
+  打包为动态表（无多余实参也传空表），ref 实参传全局槽地址（kind 3 对齐普通函数
+  by_ref）；③ **函数值调用语义检查**按 `fn_has_var` 放行个数区间（必选 n-1 起，
+  非变参仍严格等数），并校验 ref 实参可寻址。验证：_probe62/s_closure_check /
+  s_closure2 探针（基础闭包 / 变参求和 / ref 写表 / 固定+变参混合 / ref+变参组合 /
+  表元素间接调用 `funcs[0](...)` / 捕获+变参）输出全符预期；负例探针 s_closure_neg*
+  （非末尾变参 / ref 字面量实参 / 固定闭包缺参）均按预期报错；回归 tests/language
+  variadic / byref_table / table_fn_elem 与 p2b 函数值 p2d_hof / p2d_map / p1_arrow
+  全绿；自举 tiec2→tiec3 --emit-ir 逐字节一致（不动点）。
 
 **功能限制（p.6.2，评估是否在正式版放开）**
 - [x] p.6.2.1 枚举 payload 白名单（放开 f64/table/map；struct/嵌套 enum 仍限制——2026-09-01 落地，见已落地修复）
 - [x] p.6.2.2 import result.tie 对 import assert.tie 的扫描顺序依赖（已修复——2026-09-01 落地，见已落地修复）
 - [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持（落地 2026-09-01，见已落地修复）
-- [ ] p.6.2.4 闭包参数 ref / 变参
+- [x] p.6.2.4 闭包参数 ref / 变参（落地 2026-09-01，见已落地修复）
 - [ ] p.6.2.5 driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用）
 
 **性能（p.6.3，O(n²) 根治）**

@@ -1098,7 +1098,12 @@ pub func infer_expr(id: i64) -> i64 {
             return -1
         }
         // 参数类型收集：children[slot+1 .. slot+1+nparams)，N_PARAM child(0)=pty
+        // p.6.2.4：参数节点 s_vals = ref 标志（1=按引用）、s_aux = 变参标志。
+        // 变参（`...T`）签名类型 = table<T>（对齐普通函数 scollect 变参登记）；
+        // ref 仅支持表参数（对齐普通函数校验）。
         var ptys: table<i64> = table_new_i64()
+        var p_refs: table<i64> = table_new_i64()
+        var has_var: i64 = 0
         var k: i64 = 0
         while k < nparams {
             var pnode = sstate.child(id, slot + 1 + k)
@@ -1107,10 +1112,34 @@ pub func infer_expr(id: i64) -> i64 {
             if pty < 0 {
                 return -1
             }
+            var p_ref = s_vals[pnode]
+            var p_var = s_aux[pnode]
+            if p_var == 1 {
+                has_var = 1
+                pty = types.table_of(pty)   // 变参 → table<T>
+            }
+            if p_ref == 1 && !types.is_table(pty) {
+                sm_err_line = s_lines[pnode]
+                sm_err_col = s_cols[pnode]
+                sm_err_msg = "闭包参数 '" + sstate.name_str(pnode) + "' 的 ref 修饰仅支持表参数（table/table<T>），实际是 " + types.type_name(pty)
+                return -1
+            }
             table_push(ptys, pty)
+            table_push(p_refs, p_ref)
             k = k + 1
         }
-        var fnty = types.fn_of(ret_ty, ptys)
+        // 变参必须是最后一个参数（对齐普通函数；parser 已拦非末尾，防御兜底）
+        var kv: i64 = 0
+        while kv < nparams - 1 {
+            if s_aux[sstate.child(id, slot + 1 + kv)] == 1 {
+                sm_err_line = s_lines[id]
+                sm_err_col = s_cols[id]
+                sm_err_msg = "闭包变参参数必须是最后一个参数"
+                return -1
+            }
+            kv = kv + 1
+        }
+        var fnty = types.fn_of2(ret_ty, ptys, p_refs, has_var)
         node_types[id] = fnty
         g_typed = g_typed + 1
         // 登记闭包：入队 + 签名段 + 登记时 lv 快照 + 父闭包链

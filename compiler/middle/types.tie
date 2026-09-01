@@ -142,10 +142,14 @@ var nest_atomic_elems: table<i64>; // 嵌套 atomic 元素段
 // fn_ret    签名索引 -> 返回类型 id
 // fn_nparams 签名索引 -> 参数个数
 // fn_params 参数类型扁平段（前缀和由 fn_paroff 记录偏移）
+// fn_param_refs 参数 ref 标志扁平段（与 fn_params 平行；1 = 按引用传递）
+// fn_has_var 签名索引 -> 变参标志（0/1；参数列表末位为 table<T>）
 var fn_ret: table<i64>;      // fn 签名索引 -> 返回类型 id
 var fn_nparams: table<i64>;  // fn 签名索引 -> 参数个数
 var fn_paroff: table<i64>;   // fn 签名索引 -> fn_params 段起始偏移
 var fn_params: table<i64>;   // 参数类型扁平段（前缀和式）
+var fn_param_refs: table<i64>; // 参数 ref 标志扁平段（p.6.2.4）
+var fn_has_var: table<i64>;  // 签名变参标志（p.6.2.4）
 // S2.4 port 名表（索引 -> 名字；type_name 还原用，由语义层 set_port_name 登记）
 var pt_names: table<string>;
 
@@ -304,12 +308,78 @@ pub func fn_of(ret: i64, params: table<i64>) -> i64 {
     table_push(fn_ret, ret)
     table_push(fn_nparams, len(params))
     table_push(fn_paroff, len(fn_params))
+    table_push(fn_has_var, 0)
     var k: i64 = 0
     while k < len(params) {
         table_push(fn_params, params[k])
+        table_push(fn_param_refs, 0)
         k = k + 1
     }
     return BASE_FN + n
+}
+
+// p.6.2.4 闭包参数 ref / 变参：fn_of 扩展版，登记 ref 标志 + 变参标志。
+// p_refs：并行表（0/1，按引用传递；仅表参数合法）；has_var：末位变参
+// （参数列表末位 = table<T>，LLVM 表现同 table）。查重严格匹配全元数据。
+// 旧 fn_of 调用仍可用（等价于全 0 refs + 非变参），新建的签名在扩容版
+// 表中额外登记元数据——两版共享 fn_ret/fn_nparams/fn_paroff/fn_params
+// 主段，仅 refs/var 归零差异不影响旧调用方读取。
+pub func fn_of2(ret: i64, params: table<i64>, p_refs: table<i64>, has_var: i64) -> i64 {
+    var n = len(fn_ret)
+    var i: i64 = 0
+    while i < n {
+        if fn_ret[i] == ret && fn_nparams[i] == len(params) && fn_has_var[i] == has_var {
+            var off = fn_paroff[i]
+            var ok: bool = true
+            var j: i64 = 0
+            while j < len(params) {
+                if fn_params[off + j] != params[j] {
+                    ok = false
+                    break
+                }
+                if fn_param_refs[off + j] != p_refs[j] {
+                    ok = false
+                    break
+                }
+                j = j + 1
+            }
+            if ok {
+                return BASE_FN + i
+            }
+        }
+        i = i + 1
+    }
+    table_push(fn_ret, ret)
+    table_push(fn_nparams, len(params))
+    table_push(fn_paroff, len(fn_params))
+    table_push(fn_has_var, has_var)
+    var k: i64 = 0
+    while k < len(params) {
+        table_push(fn_params, params[k])
+        table_push(fn_param_refs, p_refs[k])
+        k = k + 1
+    }
+    return BASE_FN + n
+}
+
+// fn 第 k 个参数是否按引用传递（p.6.2.4）：fn 类型 -> 0/1；越界/非 fn 返回 0。
+pub func fn_param_ref(t: i64, k: i64) -> i64 {
+    var idx = low(t)
+    if idx >= 0 && idx < len(fn_nparams) {
+        if k >= 0 && k < fn_nparams[idx] {
+            return fn_param_refs[fn_paroff[idx] + k]
+        }
+    }
+    return 0
+}
+
+// fn 变参标志（p.6.2.4）：fn 类型 -> 0/1；非 fn 返回 0。
+pub func fn_has_var_of(t: i64) -> i64 {
+    var idx = low(t)
+    if idx >= 0 && idx < len(fn_has_var) {
+        return fn_has_var[idx]
+    }
+    return 0
 }
 
 // fn 返回类型：fn 类型 -> 返回类型 id；非 fn 类型返回 -1。

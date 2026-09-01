@@ -42,8 +42,10 @@ func tig_arrow(op: i64, lhs: i64, rhs: i64) -> i64 {
             return -1
         }
         var argvals: table<i64> = table_new_i64()
+        var argkinds: table<i64> = table_new_i64()
         table_push(argvals, dv)
-        return tig_call_fn_value(fv, tgt_ty, argvals)
+        table_push(argkinds, 0)
+        return tig_call_fn_value(fv, tgt_ty, argvals, argkinds)
     }
     // 赋值：store 数据值到变量槽 + 返回该值（目标槽须先保存——tig_expr(data)
     // 会覆盖 g_lookup_* 全局槽）
