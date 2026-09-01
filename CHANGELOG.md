@@ -28,13 +28,19 @@
 - [x] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出（已修复 4095ee1，回归 err_066–068）
 - [x] p.6.1.2 smove.check_fn_walk 对 extern 越界隐患（TIE_MOVE_CHECK=1 门控，评估结论：越界读为真实缺陷，已修复）
 - [x] p.6.1.3 lld 解析 tie_interp.lib CRT printf 缺陷（评估结论：当前 clang 22.1.8 + lld-link 未复现，规避保留）
-* [ ] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push / 循环内地址逃逸 alloca 累积）：
-  高严重度硬阻塞——跨模块 struct 扩字段后 encode 型大函数内存无界增长（4 s 内 3–26 GB），复现与
-  排查方向见 docs/bugreports/2026-09-01-dpcodec-encode-memory-blowup.md；
-  已落地（过渡规避）：ir.add_operand 交错检测断言 + 修复 4 处潜伏交错点；
-  待根因修复：①逃逸分析/SROA（循环体 alloca 逐次逃逸为堆分配且未登记）②GC/内存登记（table_push 扩容
-  大 struct 表漏登记新分配）③struct 布局/跨模块常量偏移（字段 stride 错位写放大）④寄存器分配/别名漂移
-- [ ] p.6.1.5 config 深合并边合并边 push 全局扁平表：复核规避注释仍安全
+- [x] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push / 循环内字符串累加内存无界增长）：
+  根治完成（2026-09-01）——根因定位为 str_cat 每次 `+` 全新分配、旧中间串永不释放（tie 无 GC），
+  `out = out + seg` 循环累加 = 时间/内存双 O(n²)；跨模块 struct 扩字段后 encode 型大函数 4 s 内 3–26 GB
+  （复现与排查见 docs/bugreports/2026-09-01-dpcodec-encode-memory-blowup.md）。
+  落地三件套：① ir.add_operand 交错检测断言 + 修复 4 处潜伏交错点（操作数段错位）；② 循环内字符串自加
+  自动 StringBuilder 提升（s21_sb_*：循环入口预扫 AST 装载+注入循环前值、体内原地 append、出口 build 回写，
+  安全核对=局部 string/引用纯净/无 goto；不满足保持原语义）——报告同源用例 n=20000 由 95 s 崩溃降至 656 ms、
+  n=100000 784 ms 线性、输出逐字节一致；③ 回归探针 tests/hoist_probe/（encode 复现 + 边界 31 断言）。
+  此前"过渡规避（断言+4 处交错）"并入。
+- [x] p.6.1.5 config 深合并边合并边 push 全局扁平表：复核结论——规避纪律安全（parse_map_body/
+  parse_array_body/build_defaults/merge_maps/concat_arrays 均先局部收集后统一登记或自我 append 全局末尾，
+  map_set 原地覆盖；新增 tests/s31/config_merge_stress.tie 四层链式深合并+嵌套/数组 concat/重置/交错访问
+  31 断言全绿，config_smoke 48/48）
 
 **功能限制（p.6.2，评估是否在正式版放开）**
 - [ ] p.6.2.1 枚举 payload 白名单（暂不支持 table/f64 → Result<table> 不可用）

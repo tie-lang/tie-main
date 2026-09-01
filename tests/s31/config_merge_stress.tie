@@ -1,0 +1,135 @@
+type tie<logic>
+// tests/s31/config_merge_stress.tie —— p.6.1.5 复核：config 深合并"边合并边 push
+// 全局扁平表"区间完整性压力探针。
+// ============================================================
+// 背景：config 全局扁平表（c_key_flat/c_val_flat/c_elem_flat）要求每个表/数组
+// 的子元素区间在全局表中**连续**（map_get/arr 按 [c_kids, c_kids+c_ovals) 扫描）。
+// 规避纪律：所有构造路径（parse_map_body / build_defaults / merge_maps /
+// concat_arrays）先收集到局部表、完成后统一登记/自我 append 到全局末尾，
+// 禁止"边合并边 push"导致子表条目插入父区间中间。本探针压力验证该纪律
+// 在 4 层链式深合并 + 嵌套表/数组 + 交错访问下仍成立（任一区间断裂 →
+// map_get 读到错键/错值 → 断言失败）。
+// 运行：compiler/tiec.exe tests/s31/config_merge_stress.tie -o ... && ...
+import "./../../compiler/config.tie"
+
+var g_fail: i64 = 0
+var g_pass: i64 = 0
+
+func check_eq_str(actual: string, expected: string, msg: string) {
+    if actual == expected {
+        g_pass = g_pass + 1
+        println("OK: " + msg)
+    } else {
+        g_fail = g_fail + 1
+        println("FAIL: " + msg + " (期望 '" + expected + "' 实际 '" + actual + "')")
+    }
+}
+func check_eq_int(actual: i64, expected: i64, msg: string) {
+    if actual == expected {
+        g_pass = g_pass + 1
+        println("OK: " + msg)
+    } else {
+        g_fail = g_fail + 1
+        println("FAIL: " + msg + " (期望 " + to_string(expected) + " 实际 " + to_string(actual) + ")")
+    }
+}
+func check(cond: bool, msg: string) {
+    if cond {
+        g_pass = g_pass + 1
+        println("OK: " + msg)
+    } else {
+        g_fail = g_fail + 1
+        println("FAIL: " + msg)
+    }
+}
+
+// 构造深层嵌套层次（每层一个独立 parse_append 节点流，模拟分层加载：
+// defaults → user → project → profile 四层链式 merge）
+func main() -> i64 {
+    var root = config.parse("[" +
+        "\"app\": [ \"name\": \"tie\", \"ver\": 1, \"svc\": [ \"a\": 1, \"tags\": [\"x\"] ] ]," +
+        "\"libs\": [\"core\"]," +
+        "\"net\": [ \"host\": \"h0\", \"port\": 1 ]" +
+        "]")
+    check(root >= 0, "layer1 解析")
+    if root < 0 {
+        return 1
+    }
+    // 层2：覆盖 svc.a、追加 app 数组、独有键、net 整体替换
+    var l2 = config.parse_append("[" +
+        "\"app\": [ \"ver\": 2, \"svc\": [ \"a\": 9, \"b\": 2 ], \"aliases\": [\"app2\"] ]," +
+        "\"libs\": [\"ui\"]," +
+        "\"net\": [ \"host\": \"h1\", \"timeout\": 30 ]" +
+        "]")
+    check(l2 >= 0, "layer2 解析")
+    var m2 = config.merge(root, l2)
+    check(m2 >= 0, "merge(l1,l2) 成功")
+    if m2 < 0 {
+        return 1
+    }
+    // 层3：深一层（svc 内嵌 map）、数组再 concat
+    var l3 = config.parse_append("[" +
+        "\"app\": [ \"svc\": [ \"tags\": [\"y\", \"z\"], \"cfgs\": [ \"k\": \"v\" ] ] ]," +
+        "\"libs\": [\"clib\"]," +
+        "\"extra\": [ \"enabled\": true, \"deep\": [ \"level\": 3 ] ]" +
+        "]")
+    check(l3 >= 0, "layer3 解析")
+    var m3 = config.merge(m2, l3)
+    check(m3 >= 0, "merge(l1+l2, l3) 成功")
+    if m3 < 0 {
+        return 1
+    }
+    // 层4：profile 覆盖（对标 load_merge 的 profile 段叠加）
+    var l4 = config.parse_append("[" +
+        "\"app\": [ \"ver\": 4, \"svc\": [ \"b\": 0 ] ]," +
+        "\"net\": [ \"port\": 8080 ]," +
+        "\"debug\": false" +
+        "]")
+    check(l4 >= 0, "layer4 解析")
+    var root4 = config.merge(m3, l4)
+    check(root4 >= 0, "四层链式 merge 成功")
+    if root4 < 0 {
+        return 1
+    }
+
+    // ---------- 断言：合并链各层覆盖/保留/独有/数组追加之值 ----------
+    check_eq_str(config.get_str(root4, "app.name"), "tie", "链合: base 独有标量保留 app.name=tie")
+    check_eq_int(config.get_int(root4, "app.ver"), 4, "链合: 末层覆盖 app.ver=4")
+    check_eq_int(config.get_int(root4, "app.svc.a"), 9, "链合: 嵌套标量覆盖 svc.a=9")
+    check_eq_int(config.get_int(root4, "app.svc.b"), 0, "链合: 四级覆盖 svc.b=0")
+    check_eq_str(config.get_list(root4, "app.svc.tags"), "x,y,z", "链合: 三层数组 concat tags=x,y,z")
+    check_eq_str(config.get_str(root4, "app.svc.cfgs.k"), "v", "链合: 深层独有嵌套表 svc.cfgs.k=v")
+    check_eq_str(config.get_list(root4, "libs"), "core,ui,clib", "链合: 根层数组三次 concat libs")
+    check_eq_str(config.get_str(root4, "net.host"), "h1", "链合: net.host=层2 覆盖")
+    check_eq_int(config.get_int(root4, "net.port"), 8080, "链合: net.port=层4 覆盖")
+    check_eq_int(config.get_int(root4, "net.timeout"), 30, "链合: net.timeout=层2 独有")
+    check_eq_int(config.get_int(root4, "extra.deep.level"), 3, "链合: extra.deep.level=层3")
+    check(!config.get_bool(root4, "debug"), "链合: debug=false")
+
+    // ---------- 交错访问：合并后旧节点区间仍完好（未被后续层 push 破坏） ----------
+    check_eq_str(config.get_list(m2, "app.aliases"), "app2", "旧节点 m2: app.aliases 区间完好")
+    check_eq_int(config.get_int(m2, "app.ver"), 2, "旧节点 m2: app.ver=2")
+    check_eq_int(config.get_int(m3, "app.svc.b"), 2, "中间节点 m3: svc.b=2")
+    check_eq_str(config.get_list(m3, "app.svc.tags"), "x,y,z", "中间节点 m3: tags=x,y,z")
+    check_eq_str(config.get_list(m2, "libs"), "core,ui", "中间节点 m2: libs=core,ui")
+    // 原节点区间（merge 不改源）
+    check_eq_str(config.get_str(root, "net.host"), "h0", "源节点 root: net.host=h0")
+    check_eq_int(config.get_int(l2, "app.svc.a"), 9, "源节点 l2: svc.a=9")
+    check_eq_str(config.get_list(l3, "libs"), "clib", "源节点 l3: libs=clib")
+
+    // ---------- 重置标记 + 数组再次 concat 后 ----------
+    var lm = config.parse_append("[\"app\": [ \"svc\": [ \"tags\": \"=\" ] ]]")
+    var m_r = config.merge(root4, lm)
+    check(m_r >= 0, "重置标记 merge 成功")
+    if m_r >= 0 {
+        check_eq_str(config.get_list(m_r, "app.svc.tags"), "", "重置后 svc.tags 清空")
+        check_eq_int(config.get_int(m_r, "app.svc.a"), 9, "重置后其它值不受影响 svc.a=9")
+        check_eq_int(config.get_int(m_r, "net.port"), 8080, "重置后 net.port=8080")
+    }
+
+    println("-- 结果: " + to_string(g_pass) + " 通过, " + to_string(g_fail) + " 失败 --")
+    if g_fail > 0 {
+        return 1
+    }
+    return 0
+}
