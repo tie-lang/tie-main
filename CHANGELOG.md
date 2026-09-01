@@ -114,37 +114,24 @@
 
 **性能（p.6.3，O(n²) 根治）**
 
-- [ ] p.6.3.1 config.parse\_string 循环逐字符 `out = out + c` → 改 StringBuilder（每日路径）
-
-- [ ] p.6.3.2 std/encoding base64 逐块拼接 → 大 payload 内存爆炸，改 StringBuilder
-
-- [ ] p.6.3.3 std 哈希 hex 输出逐字节拼接（热度低，随 p.6.3.2 一并改）
-
-- [ ] p.6.3.4 std/args 逐字符 + str\_char 双重平方
-
-- [ ] p.6.3.5 driver:1257/1299 残余逐字符拼接点
+- [x] p.6.3.1 config.parse_string 循环逐字符 `out = out + c` → 改 StringBuilder（每日路径；实测 O(n²) 大输入 OOM → 线性，探针 800000 规模 sub-ms）
+- [x] p.6.3.2 std/encoding base64 逐块拼接 → 大 payload 内存爆炸，改 StringBuilder（base64 编解码 + hex/url 编解码全覆盖）
+- [x] p.6.3.3 std 哈希 hex 输出逐字节拼接（热度低，随 p.6.3.2 一并改；md5/sha1/sha256/sha512/sha3/blake2/blake3/siphash/shake/ascon_mac/poly1305/hmac/hkdf/pbkdf2 全部 StringBuilder 化）
+- [x] p.6.3.4 std/args 逐字符 + str_char 双重平方（slice_from 改 StringBuilder）
+- [x] p.6.3.5 driver 残余逐字符拼接点（slice/trim/dir_of 改 StringBuilder）
 
 **原语tie化（p.6.4，消除 Rust 桥原语）**
 
-- [ ] p.6.4.1 UTF-16 宽字符共享桥 + 基础原语（args/cwd/set\_env/print\_err/rand\_range/path\_\*）
-
-- [ ] p.6.4.2 文件系统基础（file\_read/write/append/exists/delete/size/is\_dir/is\_file、mkdir\_all）
-
-- [ ] p.6.4.3 文件系统扩展（copy\_dir/file\_copy/file\_move/remove\_dir\_all/list\_dir/walk\_dir）
-
-- [ ] p.6.4.4 数值/字符串（parse\_float、to\_string\_f64）
-
-- [ ] p.6.4.5 网络（net\_\*：Winsock2 extern 或 std/net 重写）
-
-- [ ] p.6.4.6 进程捕获（exec\_output：CreatePipe+CreateProcessW+ReadFile）
-
-- [ ] p.6.4.7 消息系统（msg\_\*：std 纯 tie）
-
-- [ ] p.6.4.8 正则（regex\_\*：纯 tie 引擎，先最小子集）
-
-- [ ] p.6.4.9 归档/HTTP（untar\_gz/unzip、http\_get/http\_get\_file）
-
-- [ ] p.6.4.10 脚本通道+收尾（read\_line/eval/eval\_call；全量零 tie\_interp.lib 链接验证，TIE\_INTERP\_LIB 回退保留）
+- [x] p.6.4.1 UTF-16 宽字符共享桥 + 基础原语（args/cwd/set_env/print_err/rand_range 内联 Win32/CRT + tig_wide16/tig_from_wide16；path_* 留 p.6.4.10 后批次）
+- [x] p.6.4.2 文件系统基础（file_read/write/append/exists/delete/size/is_dir/is_file、mkdir_all 内联 UTF-16 安全 *W API）
+- [x] p.6.4.3 文件系统扩展（copy_dir/file_copy/file_move/remove_dir_all/list_dir/walk_dir 内联）
+- [x] p.6.4.4 数值/字符串（parse_float 内联十进制解析 + to_string_f64 内联 _gcvt，去 tie_* 桥）
+- [x] p.6.4.5 网络（net_*：Winsock2 内联直调 + 新增字节版 net_tcp_recv_bytes/send_bytes 供 TLS；g_used_wsock 链接）
+- [x] p.6.4.6 进程捕获（exec_output：CreatePipe+CreateProcessW+ReadFile 内联）
+- [x] p.6.4.7 消息系统（msg_* 内联运行期全局消息表；msg_t_lang 未命中空串语义对齐 log 回退链）
+- [x] p.6.4.8 正则（regex_* 纯 tie 最小引擎：字面量 pattern 内联回溯 VM；运行期 pattern 回退桥）
+- [x] p.6.4.9 归档/HTTP（untar_gz/unzip 内联 DEFLATE inflate 底座 + tar/zip 容器；http_get/http_get_file Winsock 内联）
+- [x] p.6.4.10 脚本通道+收尾（read_line 内联；rand_range 修 RAND_MAX 上限改 64 位 LCG；eval/eval_call 降级去桥；全量零 tie_interp.lib 链接验证——path_*、regex 运行期 pattern、alloc/free 三组残留桥记录）
 
 **trm-lite 完善（p.6.5，复杂形态完整实现）**
 
