@@ -61,6 +61,10 @@ var g_used_trmlite: bool = false;
 // p.6.4.5：程序是否使用了网络原语（net_* 内联 Winsock2 直调）。置位后
 // driver 链接 ws2_32（-lws2_32）；脱离 tie_interp 后独立链，净程序无需桥。
 var g_used_wsock: bool = false;
+// p.6.4.7 消息系统（msg_* 纯 tie 内联）：模块级惰性登记标记——运行期程序全局槽
+// （@__msg_lang / @__msg_keys / @__msg_langs / @__msg_texts）首次 msg_* 调用时登记
+// 一次（tig_ast/tig_src 每模块重置；实现见 irgen_expr.tie tig_msg_* 系列）。
+var g_msg_reg_done: i64 = 0;
 // M5 动态库模式（dev33 批次 12）：driver 在 tig_ast 前经 set_dynlib 注入。
 // 置位后 irgen 登记导出面（ir.func_exported）供 llvmgen 输出 dllexport，
 // 并对导出函数做边界检查（表/struct 不跨动态库边界）。
@@ -778,6 +782,7 @@ pub func tig_ast() -> i64 {
     g_str_count = 0
     g_used_interp = false
     g_used_wsock = false
+    g_msg_reg_done = 0
     ir.new_module()
     // 一期并发 A4：actor 工作循环 thunk 急切生成（任何用户函数之前，避免指令
     // 编号交错——llvmgen 逐函数重编号要求函数指令连续）
@@ -852,6 +857,7 @@ pub func tig_src(src: string, base_dir: string) -> i64 {
     g_str_count = 0
     g_used_interp = false
     g_used_wsock = false
+    g_msg_reg_done = 0
     ir.new_module()
     // 一期并发 A4：actor 工作循环 thunk 急切生成（任何用户函数之前，避免指令
     // 编号交错——llvmgen 逐函数重编号要求函数指令连续）

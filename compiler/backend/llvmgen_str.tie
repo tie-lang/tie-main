@@ -296,7 +296,7 @@ func collect_externs() {
 //   返回 void：tie_table_push_i64(ptr, i64) / tie_table_push_string(ptr, ptr) /
 //            tie_table_push_bool(ptr, i8) / tie_table_set_i64(ptr, i64, i64, ptr) /
 //            tie_table_set_string(ptr, i64, ptr, ptr) / tie_byte_write(ptr, ptr) /
-//            tie_set_env(ptr, ptr) / tie_msg_register(ptr, ptr, ptr)
+//            tie_set_env(ptr, ptr)
 //   返回 i8：tie_mkdir_all(ptr) / tie_file_copy(ptr, ptr) / tie_file_move(ptr, ptr) /
 //            tie_http_get_file(ptr, ptr) / tie_untar_gz(ptr, ptr) / tie_unzip(ptr, ptr) /
 //            tie_copy_dir(ptr, ptr) / tie_byte_write(ptr, ptr)
@@ -412,12 +412,6 @@ func extern_decl(sym: string) -> string {
     }
     if sym == "tie_http_get" {
         return "declare ptr @tie_http_get(ptr)"
-    }
-    if sym == "tie_msg_t_lang" {
-        return "declare ptr @tie_msg_t_lang(ptr, ptr)"
-    }
-    if sym == "tie_msg_register" {
-        return "declare void @tie_msg_register(ptr, ptr, ptr)"
     }
     if sym == "tie_byte_write" {
         return "declare i8 @tie_byte_write(ptr, ptr)"
@@ -536,15 +530,6 @@ func extern_decl(sym: string) -> string {
     }
     if sym == "tie_regex_replace" {
         return "declare ptr @tie_regex_replace(ptr, ptr, ptr)"
-    }
-    if sym == "tie_msg_t" {
-        return "declare ptr @tie_msg_t(ptr)"
-    }
-    if sym == "tie_msg_get_lang" {
-        return "declare ptr @tie_msg_get_lang()"
-    }
-    if sym == "tie_msg_set_lang" {
-        return "declare void @tie_msg_set_lang(ptr)"
     }
     if sym == "tie_eval_call" {
         return "declare ptr @tie_eval_call(ptr, ptr)"
