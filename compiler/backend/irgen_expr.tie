@@ -2419,9 +2419,10 @@ func builtin_expr(nm: string, id: i64) -> i64 {
 
     // i1 取反（xor i1 v, true；位越界判定组合用）
     func tig_not_i1(v: i64) -> i64 {
+        var one = tig_bool_lit(1)
         var x = ir.new_inst(g_cur_block, 8, types.named(TK_BOOL))  // xor
         ir.add_operand(x, v, 0)
-        ir.add_operand(x, tig_bool_lit(1), 0)
+        ir.add_operand(x, one, 0)
         return ir.get_value(x)
     }
 

@@ -28,8 +28,12 @@
 - [x] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出（已修复 4095ee1，回归 err_066–068）
 - [x] p.6.1.2 smove.check_fn_walk 对 extern 越界隐患（TIE_MOVE_CHECK=1 门控，评估结论：越界读为真实缺陷，已修复）
 - [x] p.6.1.3 lld 解析 tie_interp.lib CRT printf 缺陷（评估结论：当前 clang 22.1.8 + lld-link 未复现，规避保留）
-- [ ] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push）：保持拆小函数纪律，
-      考虑在 ir.add_operand 加交错检测断言，把未知暴露点转编译期错误
+* [ ] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push / 循环内地址逃逸 alloca 累积）：
+  高严重度硬阻塞——跨模块 struct 扩字段后 encode 型大函数内存无界增长（4 s 内 3–26 GB），复现与
+  排查方向见 docs/bugreports/2026-09-01-dpcodec-encode-memory-blowup.md；
+  已落地（过渡规避）：ir.add_operand 交错检测断言 + 修复 4 处潜伏交错点；
+  待根因修复：①逃逸分析/SROA（循环体 alloca 逐次逃逸为堆分配且未登记）②GC/内存登记（table_push 扩容
+  大 struct 表漏登记新分配）③struct 布局/跨模块常量偏移（字段 stride 错位写放大）④寄存器分配/别名漂移
 - [ ] p.6.1.5 config 深合并边合并边 push 全局扁平表：复核规避注释仍安全
 
 **功能限制（p.6.2，评估是否在正式版放开）**
@@ -48,6 +52,10 @@
 - [ ] p.6.3.5 driver:1257/1299 残余逐字符拼接点
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+
+## [修复] ir.add_operand 交错检测断言 + 4 处潜伏操作数段交错（2026-08-31）
+
+给 `ir.add_operand` 加操作数段连续性断言（off+cnt 必须等于段尾，否则 panic 报编译器内部错误，把未知交错点转编译期错误）。断言立即暴露 4 处潜伏交错：`tig_not_i1`（位越界判定 xor 两操作数之间内联 `tig_bool_lit`）、`tig_print_any` 复合 tag 阈值比较三处（`tig_int_lit_ty(BASE_STRUCT/ENUM/FN)` 内联在 icmp 两操作数之间）——这些点旧编译器静默生成错乱操作数（值引用/立即数错位），是"跨模块大函数 + 多表 push 交错"机器码不稳定的根因之一。修复按"常量先存变量再逐项 add_operand"约定。验证：tests/language 正例 55/58（3 个基线已知失败不变）、examples 全量与旧编译器一致、tiec 自举产物逐字节一致、移动语义正负例照常。
 
 ## [修复] smove.check_fn 对 extern 声明越界读取防护（2026-08-31）
 

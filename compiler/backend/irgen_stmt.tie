@@ -859,9 +859,10 @@ func tig_print_any(v: i64, nl: string) -> i64 {
         tag_id = tag_id + 1
     }
     // 复合：tag ≥ BASE_STRUCT → <struct>/<enum>/<fn>（按段阈值）
+    var cs_b = tig_int_lit_ty(BASE_STRUCT, T64)
     var cs = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp sge
     ir.add_operand(cs, tag_v, 0)
-    ir.add_operand(cs, tig_int_lit_ty(BASE_STRUCT, T64), 0)
+    ir.add_operand(cs, cs_b, 0)
     ir.add_operand(cs, 5, 2)  // sge
     var cblk = ir.new_block(g_cur_func, interner.intern("pa.c"))
     var unk = ir.new_block(g_cur_func, interner.intern("pa.u"))
@@ -871,9 +872,10 @@ func tig_print_any(v: i64, nl: string) -> i64 {
     ir.add_operand(cb2, unk, 1)
     // cblk：按段判 kind
     g_cur_block = cblk
+    var ce_b = tig_int_lit_ty(BASE_ENUM, T64)
     var ce = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp sge BASE_ENUM
     ir.add_operand(ce, tag_v, 0)
-    ir.add_operand(ce, tig_int_lit_ty(BASE_ENUM, T64), 0)
+    ir.add_operand(ce, ce_b, 0)
     ir.add_operand(ce, 5, 2)  // sge
     var enblk = ir.new_block(g_cur_func, interner.intern("pa.e"))
     var stblk = ir.new_block(g_cur_func, interner.intern("pa.s"))
@@ -887,9 +889,10 @@ func tig_print_any(v: i64, nl: string) -> i64 {
     var bse = ir.new_inst(g_cur_block, 30, -1)
     ir.add_operand(bse, exit, 1)
     g_cur_block = enblk
+    var cf_b = tig_int_lit_ty(BASE_FN, T64)
     var cf = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp sge BASE_FN
     ir.add_operand(cf, tag_v, 0)
-    ir.add_operand(cf, tig_int_lit_ty(BASE_FN, T64), 0)
+    ir.add_operand(cf, cf_b, 0)
     ir.add_operand(cf, 5, 2)  // sge
     var fnblk = ir.new_block(g_cur_func, interner.intern("pa.f"))
     var en2 = ir.new_block(g_cur_func, interner.intern("pa.e2"))

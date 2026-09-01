@@ -76,6 +76,7 @@ var ir_insts_ops_cnt: table<i64>;      // 指令表：操作数个数
 var ir_ops: table<i64>;                // 操作数段：扁平 i64
 var ir_ops_kind: table<i64>;           // 操作数段：类别（OK_*）
 var ir_val_cnt: i64 = 0;               // 值计数器（new_value 后置自增）
+var ir_cur_fn: string = "";            // 当前生成函数名（irgen 每函数登记；p.6.1.4 诊断用）
 var op_keys: table<i64>;               // opcode 表：码（升序）
 var op_names: table<string>;           // opcode 表：名
 var op_groups: table<i64>;             // opcode 表：组号（OP_GRP_*）
@@ -320,7 +321,32 @@ pub func new_inst(block_id: i64, opcode: i64, ty: i64) -> i64 {
     return iid
 }
 
+// 登记当前生成函数名（irgen.tig_fn_def 调用；p.6.1.4 交错诊断定位用）
+pub func set_cur_fn(full: string) {
+    ir_cur_fn = full
+}
+
 pub func add_operand(inst_id: i64, operand: i64, kind: i64) {
+    // p.6.1.4 交错检测断言：操作数段必须紧接指令段尾（off+cnt == len(ir_ops)）。
+    // 调用方若在 add_operand 序列中间内联其它向 ir_ops push 的调用（如常量
+    // 生成 tig_int_lit_ty 内联 push），段会交错错位——后端按 ops_off+len 读
+    // 切片会拿错操作数（forward reference / store 错位）。此处 panic 把未知
+    // 暴露点转编译期错误（正确写法：常量先存变量，再逐项 add_operand）。
+    if len(ir_ops) != ir_insts_ops_off[inst_id] + ir_insts_ops_cnt[inst_id] {
+        var oc = ir_insts_op[inst_id]
+        var offx = ir_insts_ops_off[inst_id]
+        var cntx = ir_insts_ops_cnt[inst_id]
+        var nxt = len(ir_insts_op) - 1
+        var diag = ""
+        var d: i64 = 0
+        while d < 12 && nxt - d >= 0 {
+            var ii = nxt - d
+            var on = op_name(ir_insts_op[ii])
+            diag = diag + "[" + on + "(i" + to_string(ii) + " off=" + to_string(ir_insts_ops_off[ii]) + " cnt=" + to_string(ir_insts_ops_cnt[ii]) + ")]"
+            d = d + 1
+        }
+        panic("编译器内部错误: ir.add_operand 操作数段交错 (fn=" + ir_cur_fn + " inst=" + to_string(inst_id) + " op=" + to_string(oc) + " off=" + to_string(offx) + " cnt=" + to_string(cntx) + " len_ops=" + to_string(len(ir_ops)) + " 最近指令:" + diag + ")——调用方不得在 add_operand 序列中间向全局操作数段 push（常量生成请先存变量）")
+    }
     table_push(ir_ops, operand)
     table_push(ir_ops_kind, kind)
     ir_insts_ops_cnt[inst_id] = ir_insts_ops_cnt[inst_id] + 1

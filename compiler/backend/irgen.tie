@@ -944,6 +944,8 @@ func tig_fn_def(fn_node: i64, prefix: string) -> i64 {
         full_name = prefix + "::" + bare
     }
     g_cur_fn_name = str.clone(full_name)
+    // p.6.1.4：登记当前函数名（ir.add_operand 交错诊断定位用）
+    ir.set_cur_fn(full_name)
     // 每函数重置变量作用域（跨函数不串用；同层函数同名参数/局部正常遮蔽）
     g_sc_keys = table_new_i64()
     g_sc_allocas = table_new_i64()
