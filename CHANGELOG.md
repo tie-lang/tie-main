@@ -27,7 +27,7 @@
 **正确性（p.6.1，必查）**
 - [x] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出（已修复 4095ee1，回归 err_066–068）
 - [x] p.6.1.2 smove.check_fn_walk 对 extern 越界隐患（TIE_MOVE_CHECK=1 门控，评估结论：越界读为真实缺陷，已修复）
-- [ ] p.6.1.3 lld 解析 tie_interp.lib CRT printf 缺陷（无 MSVC 环境 interp 桥受影响）
+- [x] p.6.1.3 lld 解析 tie_interp.lib CRT printf 缺陷（评估结论：当前 clang 22.1.8 + lld-link 未复现，规避保留）
 - [ ] p.6.1.4 大函数寄存器分配缺陷（跨模块全局访问器 + 交错多表 push）：保持拆小函数纪律，
       考虑在 ir.add_operand 加交错检测断言，把未知暴露点转编译期错误
 - [ ] p.6.1.5 config 深合并边合并边 push 全局扁平表：复核规避注释仍安全
