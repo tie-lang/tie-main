@@ -129,13 +129,13 @@ func hex2(v: i64) -> string {
 
 // 字节表 → 连续小写 hex 字符串。
 func hex_bytes(t: table<i64>) -> string {
-    var out: string = ""
+    var sb = string_builder()
     var i: i64 = 0
     while i < len(t) {
-        out = out + hex2(t[i])
+        sb_append(sb, hex2(t[i]))
         i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // 32 位循环右移 n 位。v 恒 < 2^32 正数 → v>>n 即逻辑右移（见头部数值安全论证）。

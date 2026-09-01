@@ -118,15 +118,15 @@ func sip_do(s: ref table<i64>, rounds: i64) {
 
 func hex8(v: i64) -> string {
     var hex = "0123456789abcdef"
-    var out: string = ""
+    var sb = string_builder()
     var p: i64 = 0
     while p < 8 {
         var shift = 28 - p * 4
         var nib = (v >> shift) & 0xF
-        out = out + str_char(hex, nib)
+        sb_append(sb, str_char(hex, nib))
         p = p + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // SipHash-2-4：key0/key1 128 位密钥（默认 0），返回 16 位小写 hex。

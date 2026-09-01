@@ -100,7 +100,7 @@ pub func base64_encode(s: string) -> string {
         }
         i = i + 1
     }
-    var out: string = ""
+    var sb = string_builder()
     i = 0
     // 完整 3 字节组：24 位整数 → 4 个 6 位索引
     while i + 2 < n {
@@ -108,29 +108,29 @@ pub func base64_encode(s: string) -> string {
         var b1: i64 = char_code(str_char(s, i + 1))
         var b2: i64 = char_code(str_char(s, i + 2))
         var v: i64 = (b0 << 16) | (b1 << 8) | b2
-        out = out + str_char(chars, (v >> 18) & 0x3F)
-        out = out + str_char(chars, (v >> 12) & 0x3F)
-        out = out + str_char(chars, (v >> 6) & 0x3F)
-        out = out + str_char(chars, v & 0x3F)
+        sb_append(sb, str_char(chars, (v >> 18) & 0x3F))
+        sb_append(sb, str_char(chars, (v >> 12) & 0x3F))
+        sb_append(sb, str_char(chars, (v >> 6) & 0x3F))
+        sb_append(sb, str_char(chars, v & 0x3F))
         i = i + 3
     }
     // 余 1 字节：b0 拆两段（高 6 位 + 低 2 位补 4 个 0），补 2 个 '='
     if n - i == 1 {
         var b0: i64 = char_code(str_char(s, i))
-        out = out + str_char(chars, b0 >> 2)
-        out = out + str_char(chars, (b0 & 0x03) << 4)
-        out = out + "=="
+        sb_append(sb, str_char(chars, b0 >> 2))
+        sb_append(sb, str_char(chars, (b0 & 0x03) << 4))
+        sb_append(sb, "==")
     }
     // 余 2 字节：b0 高 6 位、b0 低 2 位|b1 高 4 位、b1 低 4 位补 2 个 0，补 1 个 '='
     if n - i == 2 {
         var b0: i64 = char_code(str_char(s, i))
         var b1: i64 = char_code(str_char(s, i + 1))
-        out = out + str_char(chars, b0 >> 2)
-        out = out + str_char(chars, ((b0 & 0x03) << 4) | (b1 >> 4))
-        out = out + str_char(chars, (b1 & 0x0F) << 2)
-        out = out + "="
+        sb_append(sb, str_char(chars, b0 >> 2))
+        sb_append(sb, str_char(chars, ((b0 & 0x03) << 4) | (b1 >> 4)))
+        sb_append(sb, str_char(chars, (b1 & 0x0F) << 2))
+        sb_append(sb, "=")
     }
-    return out
+    return sb_build(sb)
 }
 
 // base64 解码：4 字符 → 3 字节的逆过程（24 位整数 v = i0<<18|i1<<12|i2<<6|i3，
@@ -150,7 +150,7 @@ pub func base64_decode(s: string) -> string {
     if n % 4 != 0 {
         return ""
     }
-    var out: string = ""
+    var sb = string_builder()
     var i: i64 = 0
     var saw_pad: bool = false
     while i < n {
@@ -196,7 +196,7 @@ pub func base64_decode(s: string) -> string {
                 if str_len(ch) == 0 {
                     return ""
                 }
-                out = out + ch
+                sb_append(sb, ch)
             } else {
                 // 3 字符 + "=" → 2 字节：取 i0,i1,i2 共 18 位的前 16 位
                 var i2: i64 = b64_idx(c2)
@@ -211,7 +211,8 @@ pub func base64_decode(s: string) -> string {
                 if str_len(ch0) == 0 || str_len(ch1) == 0 {
                     return ""
                 }
-                out = out + ch0 + ch1
+                sb_append(sb, ch0)
+                sb_append(sb, ch1)
             }
         } else {
             // 无填充完整组：4 字符 → 3 字节
@@ -230,7 +231,9 @@ pub func base64_decode(s: string) -> string {
             if str_len(ch0) == 0 || str_len(ch1) == 0 || str_len(ch2) == 0 {
                 return ""
             }
-            out = out + ch0 + ch1 + ch2
+            sb_append(sb, ch0)
+            sb_append(sb, ch1)
+            sb_append(sb, ch2)
         }
         i = i + 4
     }
@@ -238,7 +241,7 @@ pub func base64_decode(s: string) -> string {
     if !saw_pad {
         return ""
     }
-    return out
+    return sb_build(sb)
 }
 
 // 十六进制编码：每码点输出两位小写十六进制（查表 "0123456789abcdef"）。
@@ -247,7 +250,7 @@ pub func hex_encode(s: string) -> string {
     var digits = "0123456789abcdef"
     var n: i64 = str_len(s)
     var i: i64 = 0
-    var out: string = ""
+    var sb = string_builder()
     while i < n {
         var c: i64 = char_code(str_char(s, i))
         // 非 ASCII：拒绝
@@ -255,10 +258,11 @@ pub func hex_encode(s: string) -> string {
             return ""
         }
         // 高 4 位 + 低 4 位各取一个十六进制字符
-        out = out + str_char(digits, c >> 4) + str_char(digits, c & 0xF)
+        sb_append(sb, str_char(digits, c >> 4))
+        sb_append(sb, str_char(digits, c & 0xF))
         i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // 十六进制解码：每两位 hex → 1 字节码点（16 位组合 (hi<<4)|lo，再查可打印表）。
@@ -270,7 +274,7 @@ pub func hex_decode(s: string) -> string {
         return ""
     }
     var i: i64 = 0
-    var out: string = ""
+    var sb = string_builder()
     while i < n {
         var hi: i64 = hex_val(str_char(s, i))
         var lo: i64 = hex_val(str_char(s, i + 1))
@@ -284,10 +288,10 @@ pub func hex_decode(s: string) -> string {
         if str_len(ch) == 0 {
             return ""
         }
-        out = out + ch
+        sb_append(sb, ch)
         i = i + 2
     }
-    return out
+    return sb_build(sb)
 }
 
 // URL percent 编码（宽松 RFC 3986）：非保留字符（字母数字 - _ . ~）原样输出，
@@ -298,7 +302,7 @@ pub func url_encode(s: string) -> string {
     var hex_upper = "0123456789ABCDEF"
     var n: i64 = str_len(s)
     var i: i64 = 0
-    var out: string = ""
+    var sb = string_builder()
     while i < n {
         var c: i64 = char_code(str_char(s, i))
         // 非 ASCII：拒绝
@@ -307,14 +311,16 @@ pub func url_encode(s: string) -> string {
         }
         if is_unreserved(c) {
             // 非保留字符原样
-            out = out + str_char(s, i)
+            sb_append(sb, str_char(s, i))
         } else {
             // 其余大写 %XX
-            out = out + "%" + str_char(hex_upper, c >> 4) + str_char(hex_upper, c & 0xF)
+            sb_append(sb, "%")
+            sb_append(sb, str_char(hex_upper, c >> 4))
+            sb_append(sb, str_char(hex_upper, c & 0xF))
         }
         i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // URL percent 解码：%XX → 字节码点、+ → 空格；其余字符原样。
@@ -322,12 +328,12 @@ pub func url_encode(s: string) -> string {
 pub func url_decode(s: string) -> string {
     var n: i64 = str_len(s)
     var i: i64 = 0
-    var out: string = ""
+    var sb = string_builder()
     while i < n {
         var c = str_char(s, i)
         if c == "+" {
             // '+' 解码为空格（表单惯例）
-            out = out + " "
+            sb_append(sb, " ")
             i = i + 1
         } else if c == "%" {
             // 需要紧随的两位 hex 数字；不足两位则非法
@@ -346,14 +352,14 @@ pub func url_decode(s: string) -> string {
             if str_len(ch) == 0 {
                 return ""
             }
-            out = out + ch
+            sb_append(sb, ch)
             i = i + 3
         } else {
             // 普通字符原样
-            out = out + c
+            sb_append(sb, c)
             i = i + 1
         }
     }
-    return out
+    return sb_build(sb)
 }
 }

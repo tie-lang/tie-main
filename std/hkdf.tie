@@ -63,13 +63,13 @@ func byte_hex(v: i64) -> string {
 
 // 生成 n 字节全 0 的 hex 串（2n 个 '0' 字符）。
 func zeros(n: i64) -> string {
-    var out: string = ""
+    var sb = string_builder()
     var i: i64 = 0
     while i < n {
-        out = out + "00"
+        sb_append(sb, "00")
         i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // 【阶段一·提取】PRK = HMAC(SHA-256, salt, IKM)。返回 32 字节 hex（恒 64 位）。
@@ -84,16 +84,16 @@ pub func extract(salt_hex: string, ikm_hex: string) -> string {
 // 【阶段二·扩展】OKM = T(1)||T(2)||...||T(ceil(L/32))，截断到前 L 字节。
 //   T(i) = HMAC(PRK, T(i-1) || info || byte(i))，byte(i) 为单字节大端计数器。
 pub func expand(prk_hex: string, info_hex: string, len_bytes: i64) -> string {
-    var out: string = ""
+    var sb = string_builder()
     var prev: string = ""
     var i: i64 = 1
-    while len(out) < len_bytes * 2 {
+    while len(sb_build(sb)) < len_bytes * 2 {
         var m = prev + info_hex + byte_hex(i)
         prev = hmac.hmac_sha256(prk_hex, m)
-        out = out + prev
+        sb_append(sb, prev)
         i = i + 1
     }
-    return substr(out, 0, len_bytes * 2)
+    return substr(sb_build(sb), 0, len_bytes * 2)
 }
 
 // 【一步完成】derive = expand(PRK, info) 其中 PRK = extract(salt, IKM)。

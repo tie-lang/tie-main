@@ -44,15 +44,15 @@ func pad_byte(s: string, n: i64, pad_len: i64, bits_hi: i64, bits_lo: i64, pos: 
 }
 func hex8(v: i64) -> string {
     var hex = "0123456789abcdef"
-    var out: string = ""
+    var sb = string_builder()
     var p: i64 = 0
     while p < 8 {
         var shift = 28 - p * 4
         var nib = (v >> shift) & 0xF
-        out = out + str_char(hex, nib)
+        sb_append(sb, str_char(hex, nib))
         p = p + 1
     }
-    return out
+    return sb_build(sb)
 }
 // 读填充后消息第 w 个大端 32 位字。
 func W0(s: string, n: i64, pad_len: i64, bits_hi: i64, bits_lo: i64, off: i64, w: i64) -> i64 {

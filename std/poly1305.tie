@@ -265,13 +265,13 @@ pub func poly1305(key: string, msg: string) -> string {
         b = b + 1
     }
     finish(h, s)
-    var out: string = ""
+    var sb = string_builder()
     var j: i64 = 0
     while j < 16 {
-        out = out + hex2(tag_byte(h, j))
+        sb_append(sb, hex2(tag_byte(h, j)))
         j = j + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 }   // namespace poly

@@ -304,7 +304,7 @@ func sponge(rate: i64, outlen: i64, msg_hex: string) -> string {
     }
     keccakf(state)
     // 挤压：每轮取 rate 字节（lane 小端展开），不足一轮补置换继续挤。
-    var out: string = ""
+    var sb = string_builder()
     var produced: i64 = 0
     while produced < outlen {
         var take = rate
@@ -313,7 +313,7 @@ func sponge(rate: i64, outlen: i64, msg_hex: string) -> string {
         }
         var k: i64 = 0
         while k < take {
-            out = out + hex2(lane_byte(state, k / 8, k % 8))
+            sb_append(sb, hex2(lane_byte(state, k / 8, k % 8)))
             k = k + 1
         }
         produced = produced + take
@@ -321,7 +321,7 @@ func sponge(rate: i64, outlen: i64, msg_hex: string) -> string {
             keccakf(state)
         }
     }
-    return out
+    return sb_build(sb)
 }
 
 // SHAKE128：rate=168，输出 outlen 字节。

@@ -207,14 +207,14 @@ func perm(s: ref table<i64>, rounds: i64) {
 // 32 位值 → 8 位小写 hex（大端 4 字节）。
 func hex32(v: i64) -> string {
     var hex = "0123456789abcdef"
-    var out: string = ""
+    var sb = string_builder()
     var p: i64 = 0
     while p < 8 {
         var shift = 28 - p * 4
-        out = out + str_char(hex, (v >> shift) & 0xF)
+        sb_append(sb, str_char(hex, (v >> shift) & 0xF))
         p = p + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // Ascon-MAC-128 主入口：key=16 字节（32 位 hex），msg=原始字符串，返回 32 位 hex。

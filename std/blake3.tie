@@ -231,15 +231,16 @@ func parent_cv(level: ref table<i64>, a0: i64, b0: i64, flags: i64) -> table<i64
 // 32 位值 → 8 位小写 hex（按字节小端：字节低地址在前，字节内高半字节在前）。
 func hex8_le(v: i64) -> string {
     var hex = "0123456789abcdef"
-    var out: string = ""
+    var sb = string_builder()
     var b: i64 = 0
     while b < 4 {
         var hi2 = (v >> (8 * b + 4)) & 0xF
         var lo = (v >> (8 * b)) & 0xF
-        out = out + str_char(hex, hi2) + str_char(hex, lo)
+        sb_append(sb, str_char(hex, hi2))
+        sb_append(sb, str_char(hex, lo))
         b = b + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // BLAKE3-256 主入口：输入 ≤1024 → 单 chunk；否则树形合并，输出 32 字节 = 64 hex。

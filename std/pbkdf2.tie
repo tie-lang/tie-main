@@ -64,7 +64,7 @@ func nib_char(v: i64) -> string {
 
 // 两条等长 hex 字符串逐字节异或（返回等长）。
 func xor_hex(a: string, b: string) -> string {
-    var out: string = ""
+    var sb = string_builder()
     var i: i64 = 0
     while i < len(a) / 2 {
         var x = hex_nibble(str_char(a, i * 2))
@@ -72,10 +72,11 @@ func xor_hex(a: string, b: string) -> string {
         var u = hex_nibble(str_char(b, i * 2))
         var v = hex_nibble(str_char(b, i * 2 + 1))
         var byte = ((x << 4) | y) ^ ((u << 4) | v)
-        out = out + nib_char(byte >> 4) + nib_char(byte & 0xF)
+        sb_append(sb, nib_char(byte >> 4))
+        sb_append(sb, nib_char(byte & 0xF))
         i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // 块索引 n → 4 字节大端 hex（INT_32_BE(n)，8 位 hex 字符）。
@@ -87,7 +88,7 @@ func int_be(n: i64) -> string {
 // PBKDF2-HMAC-SHA256 主入口。
 pub func pbkdf2_hmac_sha256(p_hex: string, s_hex: string, iter: i64, dklen: i64) -> string {
     var num_blocks = (dklen + 31) / 32          // ceil(dklen / 32)
-    var out: string = ""
+    var sb = string_builder()
     var block: i64 = 1
     while block <= num_blocks {
         var u = hmac.hmac_sha256(p_hex, s_hex + int_be(block))   // U1
@@ -98,10 +99,10 @@ pub func pbkdf2_hmac_sha256(p_hex: string, s_hex: string, iter: i64, dklen: i64)
             t = xor_hex(t, u)
             c = c + 1
         }
-        out = out + t
+        sb_append(sb, t)
         block = block + 1
     }
-    return substr(out, 0, dklen * 2)
+    return substr(sb_build(sb), 0, dklen * 2)
 }
 
 }   // namespace pbkdf2

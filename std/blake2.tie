@@ -142,13 +142,13 @@ func hex2(v: i64) -> string {
 
 // 32 位值 → 8 位小写 hex（**小端字节序**：低位字节在前；BLAKE2 摘要按小端输出）。
 func hex8_le(v: i64) -> string {
-    var out: string = ""
+    var sb = string_builder()
     var b: i64 = 0
     while b < 4 {
-        out = out + hex2((v >> (8 * b)) & 0xFF)
+        sb_append(sb, hex2((v >> (8 * b)) & 0xFF))
         b = b + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // 64 位（hi,lo 两个 32 位半分）→ 16 位小端 hex：先 lo（低 4 字节）再 hi（高 4 字节）。
