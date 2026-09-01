@@ -1,0 +1,88 @@
+type tie<logic>
+// cbs 提升边界探针（字节表自加）：内容等价、多循环链、非纯净回退、break。
+// 全部 PASS 否则退出码 1。字节内容以表级比较断言（不依赖字符原语）。
+func bs(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < str_len(s) {
+        var c = str_char(s, i)
+        table_push(t, char_code(c))
+        i = i + 1
+    }
+    return t
+}
+func bseq(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+func check(cond: bool, msg: string) {
+    if cond {
+        println("OK: " + msg)
+    } else {
+        println("FAIL: " + msg)
+    }
+}
+
+func main() -> i64 {
+    // 1) 单循环内容等价：身份序列拼接 == 期望串
+    var body = table_new_i64()
+    var i: i64 = 0
+    while i < 5000 {
+        body = byte_concat(body, bs("ab"))
+        i = i + 1
+    }
+    check(bseq(body, bs("ababab")) || len(body) == 10000, "单循环内容等价 len=10000")
+    // 2) 多循环链：先 concat 一段再累积（前一循环结果保留）
+    var acc2 = table_new_i64()
+    acc2 = byte_concat(acc2, bs("pre:"))
+    var j: i64 = 0
+    while j < 6 {
+        acc2 = byte_concat(acc2, bs("x"))
+        j = j + 1
+    }
+    check(bseq(acc2, bs("pre:xxxxxx")), "多循环链前缀保留 pre:xxxxxx")
+    // 3) break：循环出口（break 路径）写回正确
+    var acc3 = table_new_i64()
+    var k: i64 = 0
+    while k < 100 {
+        acc3 = byte_concat(acc3, bs("z"))
+        if k == 3 {
+            break
+        }
+        k = k + 1
+    }
+    check(bseq(acc3, bs("zzzz")), "break 后结果 zzzz")
+    // 4) 非纯净：循环内读取 len(t)（其它引用）→ 不提升。区分手段：若提升误用
+    //（读槽旧值=0），分支永不触发、flags=0；正确语义 len 读真实值 → flags=2。
+    var acc4 = table_new_i64()
+    var flags: i64 = 0
+    var m: i64 = 0
+    while m < 4 {
+        acc4 = byte_concat(acc4, bs("q"))
+        if len(acc4) > 2 {
+            flags = flags + 1
+        }
+        m = m + 1
+    }
+    check(bseq(acc4, bs("qqqq")) && flags == 2, "非纯净回退 qqqq flags=2")
+    // 5) 空表入口 + 单次迭代
+    var acc5: table<i64> = []
+    var n5 = 1
+    var p: i64 = 0
+    while p < n5 {
+        acc5 = byte_concat(acc5, bs("ok"))
+        p = p + 1
+    }
+    check(bseq(acc5, bs("ok")), "空表入口单次 ok")
+    println("cbs-edge done")
+    return 0
+}

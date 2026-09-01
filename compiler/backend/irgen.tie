@@ -104,6 +104,14 @@ var g_extern_ready: i64 = 0;
 // per-函数状态：变量名池 id → sb 句柄值。
 var g_sb_keys: table<i64>;
 var g_sb_hv: table<i64>;
+// 字节表自加提升（p.6.1.4 增强）：`t = byte_concat(t, seg)` 循环累积 = 每迭代
+// 新建整表 + 旧表永不释放（tie 无 GC）→ O(n²) 无名分配（dpcodec/jcc-pack 内存
+// 无界增长根因，与字符串 str_cat 同族）。提升：循环前拷贝 t 到私有累积表 acc
+// （唯一引用），循环内 byte_concat 自加 → acc 就地追加（ensure+memcpy+set_len，
+// tbl_ensure 内部 free 旧块 → 摊销 O(1)），循环出口把 acc 写回 t 槽。
+// 与原语义（t 最终=全部段顺序拼接）完全等价；旧 t 表只读不写 → 无别名污染。
+var g_cbs_keys: table<i64>;   // 提升中变量名池 id（字节表变量）
+var g_cbs_acc: table<i64>;    // 平行：私有累积表句柄
 
 namespace irgen {
 // 变量引用：load 指令（从 alloca 读取）。含全局变量（标量 load @g /
@@ -969,6 +977,8 @@ func tig_fn_def(fn_node: i64, prefix: string) -> i64 {
     g_tv_elems = table_new_i64()
     g_sb_keys = table_new_i64()
     g_sb_hv = table_new_i64()
+    g_cbs_keys = table_new_i64()
+    g_cbs_acc = table_new_i64()
     var nparams = s_aux[fn_node]
     // 返回类型：children[slot_off]（新布局 children[0]=泛型槽→偏移 1；
     // 旧布局无槽→children[0]=返回类型。slot_off 统一判定保证自举双兼容）

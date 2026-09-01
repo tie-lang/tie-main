@@ -1367,6 +1367,21 @@ func tig_stmt(id: i64) -> i64 {
             table_push(g_sb_hv, h_sb2)
             cix = cix + 1
         }
+        // p.6.1.4：字节表自加提升——循环前拷贝 t → 私有累积表 acc（唯一引用）
+        var cbs_cands = cbs_scan(body, cond)
+        var ccix: i64 = 0
+        while ccix < len(cbs_cands) {
+            table_push(g_cbs_keys, cbs_cands[ccix])
+            if scope_get(cbs_cands[ccix]) >= 0 {
+                var t_ld = ir.new_inst(g_cur_block, 21, types.named(TK_STR))  // load 表句柄值
+                ir.add_operand(t_ld, g_lookup_alloca, 0)
+                var acc_t = cbs_copy(ir.get_value(t_ld))
+                table_push(g_cbs_acc, acc_t)
+            } else {
+                table_push(g_cbs_acc, 0)
+            }
+            ccix = ccix + 1
+        }
         var cond_blk = ir.new_block(g_cur_func, interner.intern("while.cond"))
         var body_blk = ir.new_block(g_cur_func, interner.intern("while.body"))
         var exit_blk = ir.new_block(g_cur_func, interner.intern("while.exit"))
@@ -1409,6 +1424,19 @@ func tig_stmt(id: i64) -> i64 {
                 sb_remove(cnid)
             }
             bix = bix + 1
+        }
+        // p.6.1.4：字节表候选 → acc 写回 t 槽（表句柄 ptr)，移除登记
+        var cbx: i64 = 0
+        while cbx < len(cbs_cands) {
+            var cid2 = cbs_cands[cbx]
+            var aiy = cbs_find(cid2)
+            if aiy >= 0 {
+                if scope_get(cid2) >= 0 {
+                    s21_store(g_lookup_alloca, g_cbs_acc[aiy], types.named(TK_STR))
+                }
+                cbs_remove(cid2)
+            }
+            cbx = cbx + 1
         }
         loop_pop()
         return 0
@@ -1494,6 +1522,20 @@ func tig_stmt(id: i64) -> i64 {
                 s21_sb_append(hv_sb, sv2)
                 si2 = si2 + 1
             }
+            return 0
+        }
+        // p.6.1.4：循环内字节表自加提升——cbs 挂起中且为 `t = byte_concat(t, seg)`
+        // → 段就地追加到私有累积表（跳过整表拷贝+旧表泄漏；t 槽循环后写回）。
+        if op < 0 && cbs_find(nid) >= 0 && cbs_is_self_concat(val, nid) {
+            var cix2 = cbs_find(nid)
+            var acc_h = g_cbs_acc[cix2]
+            var coff = sstate.slot_off(val)
+            var seg_n = sstate.child(val, coff + 1)
+            var cseg = tig_expr(seg_n)
+            if cseg < 0 {
+                return -1
+            }
+            cbs_append(acc_h, cseg)
             return 0
         }
         if scope_get_global(nid) < 0 {
@@ -2142,7 +2184,9 @@ func collect_other_writes(st: i64, w_nid: table<i64>, w_has: table<i64>) {
         if str_len(nm) > 0 {
             var nid = interner.intern(nm)
             var val = sstate.child(st, 0)
-            if !sb_is_self_add(val, nid) {
+            // 自加不视为"其它写"：字符串 `t = t + x`（sb）与字节表
+            // `t = byte_concat(t, x)`（cbs）都属提升目标，非破坏性写
+            if !sb_is_self_add(val, nid) && !cbs_is_self_concat(val, nid) {
                 var wi = linear_find(w_nid, nid)
                 if wi < 0 {
                     table_push(w_nid, nid)
@@ -2202,6 +2246,192 @@ func scan_goto(st: i64) -> bool {
         i = i + 1
     }
     return false
+}
+
+// ==================== 字节表自加 StringBuilder 提升（cbs，p.6.1.4） ====================
+// 识别 `t = byte_concat(t, seg...)`（局部字节表变量自加累积）→ 循环内改为
+// 私有累积表 acc 就地追加，循环出口写回 t。根治 byte_concat O(n²) 无名分配
+//（每迭代新建整表 + 旧表永不释放，dpcodec/jcc-pack encode 内存无界增长根因）。
+// 安全前提（与字符串 sb 提升同构，逐项核对）：
+//   1) t 是函数内局部 table<i64> 变量（非全局）
+//   2) 循环体（含条件）内 t 的全部引用仅是自加 RHS 第一实参（Var(t)）——
+//      无其它读、无取址/传参、无非自加赋值（其它写）
+//   3) 循环体内无 goto 逃出
+// 装配：循环前 acc = 拷贝(t)（唯一引用，旧表只读不写 → 无别名污染）；
+// 体内自加 → acc 就地追加（tl_tbl$tbl_ensure 扩容免旧块 + memcpy）；
+// 循环出口（break 经 exit 块覆盖）store acc 到 t 槽。语义与原逐段拼接完全等价。
+
+// byte_concat 形态判定：val 为 builtin 调用 `byte_concat(Var(t), 任意)` 或
+// 字节拼接包装 `concat(Var(t), 任意)`（如 zd.concat → byte_concat 转发）。
+// 内置调用节点：s_names 存名字、实参 children[slot_off(+k)]（call_arg 布局）。
+// 注：concat 需"返回值赋给首参表变量 + 引用纯净"双门（cbs_scan）兜底，
+// 语义非拼接的自定义 concat 因引用纯净不满足自然被排除。
+func cbs_is_self_concat(val: i64, nid: i64) -> bool {
+    if val < 0 {
+        return false
+    }
+    var nm = sstate.name_str(val)
+    if nm != "byte_concat" && nm != "concat" {
+        return false
+    }
+    var off = sstate.slot_off(val)
+    var a0 = sstate.child(val, off)
+    if a0 < 0 {
+        return false
+    }
+    return s_tags[a0] == 6 && s_names[a0] == nid
+}
+
+// 定位 cbs 状态索引（-1 未提升）
+func cbs_find(nid: i64) -> i64 {
+    var i: i64 = 0
+    while i < len(g_cbs_keys) {
+        if g_cbs_keys[i] == nid {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 取消提升登记（循环出口写回后）
+func cbs_remove(nid: i64) {
+    var i = cbs_find(nid)
+    if i < 0 {
+        return
+    }
+    var outk = table_new_i64()
+    var outa = table_new_i64()
+    var j: i64 = 0
+    while j < len(g_cbs_keys) {
+        if j != i {
+            table_push(outk, g_cbs_keys[j])
+            table_push(outa, g_cbs_acc[j])
+        }
+        j = j + 1
+    }
+    g_cbs_keys = outk
+    g_cbs_acc = outa
+}
+
+// 私有累积表新建 + 拷贝 t 现有内容（表基座 32B {cap,len,data,esz}）。
+func cbs_copy(t: i64) -> i64 {
+    var T64 = types.named(TK_I64)
+    var lv = s21_load(s21_gep(t, 8, true), T64)
+    var eszv = s21_load(s21_gep(t, 24, true), T64)
+    var h = s21_raw_alloc_str(tig_int_lit(32))
+    s21_store(s21_gep(h, 0, true), lv, T64)
+    s21_store(s21_gep(h, 8, true), lv, T64)
+    var buf = s21_raw_alloc_str(s21_bin(2, lv, eszv))
+    s21_memcpy_if(buf, t21_data(t), s21_bin(2, lv, eszv))
+    s21_store(s21_gep(h, 16, true), buf, types.named(TK_STR))
+    s21_store(s21_gep(h, 24, true), eszv, T64)
+    return h
+}
+
+// 就地追加段 x 到累积表 acc：ensure 扩容（免费旧块）→ memcpy → set_len。
+func cbs_append(acc: i64, x: i64) {
+    var T64 = types.named(TK_I64)
+    var la = s21_load(s21_gep(acc, 8, true), T64)
+    var lx = s21_load(s21_gep(x, 8, true), T64)
+    var eszv = s21_load(s21_gep(acc, 24, true), T64)
+    var need = s21_bin(0, la, lx)
+    var data_i = tl_i64_2("tl_tbl$tbl_ensure", t21_ptri(acc), need)
+    var data_p = t21_intp(data_i)
+    var dst = s21_gep(data_p, s21_bin(2, la, eszv), false)
+    s21_memcpy_if(dst, t21_data(x), s21_bin(2, lx, eszv))
+    s21_store(s21_gep(acc, 8, true), need, T64)
+}
+
+// 递归收集循环内 `t = byte_concat(t, x)` 自加候选（合法叶 = RHS 第一实参 Var）。
+func cbs_collect(st: i64, legal: table<i64>, nids: table<i64>) {
+    if st < 0 {
+        return
+    }
+    if s_tags[st] == 144 {
+        return
+    }
+    if s_tags[st] == 103 {
+        var nm = sstate.name_str(st)
+        if str_len(nm) > 0 {
+            var nid = interner.intern(nm)
+            var val = sstate.child(st, 0)
+            if cbs_is_self_concat(val, nid) {
+                var off = sstate.slot_off(val)
+                var a0 = sstate.child(val, off)
+                if a0 >= 0 {
+                    table_push(legal, a0)
+                }
+                if !sb_contains(nids, nid) {
+                    table_push(nids, nid)
+                }
+            }
+        }
+        return
+    }
+    var n = sstate.nchild(st)
+    var i: i64 = 0
+    while i < n {
+        cbs_collect(sstate.child(st, i), legal, nids)
+        i = i + 1
+    }
+}
+
+// 扫描循环体：返回可安全提升的字节表自加变量名 id 表（空 = 不提升）。
+func cbs_scan(body: i64, cond: i64) -> table<i64> {
+    var jobs = table_new_i64()
+    var legal = table_new_i64()
+    cbs_collect(body, legal, jobs)
+    var w_nid = table_new_i64()
+    var w_has = table_new_i64()
+    collect_other_writes(body, w_nid, w_has)
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < len(jobs) {
+        var nid = jobs[i]
+        var ok: bool = true
+        if scope_get(nid) < 0 {
+            ok = false
+        }
+        if ok && g_lookup_is_global != 0 {
+            ok = false
+        }
+        if ok && g_lookup_ty != types.named(TK_STR) && !types.is_table(g_lookup_ty) {
+            ok = false
+        }
+        if ok && cbs_find(nid) >= 0 {
+            ok = false
+        }
+        if ok && scan_goto(body) {
+            ok = false
+        }
+        var wi = linear_find(w_nid, nid)
+        if ok && wi >= 0 && w_has[wi] == 1 {
+            ok = false
+        }
+        if ok {
+            var refs = find_var_refs(body, nid)
+            var rc = find_var_refs(cond, nid)
+            var rk: i64 = 0
+            while rk < len(rc) {
+                table_push(refs, rc[rk])
+                rk = rk + 1
+            }
+            var j: i64 = 0
+            while j < len(refs) {
+                if !sb_contains(legal, refs[j]) {
+                    ok = false
+                    break
+                }
+                j = j + 1
+            }
+        }
+        if ok {
+            table_push(out, nid)
+        }
+        i = i + 1
+    }
+    return out
 }
 
 // 语句块遍历（StmtList children）。每个块独立作用域（push/pop）。

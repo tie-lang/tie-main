@@ -36,6 +36,14 @@
   安全核对=局部 string/引用纯净/无 goto；不满足保持原语义）——报告同源用例 n=20000 由 95 s 崩溃降至 656 ms、
   n=100000 784 ms 线性、输出逐字节一致；③ 回归探针 tests/hoist_probe/（encode 复现 + 边界 31 断言）。
   此前"过渡规避（断言+4 处交错）"并入。
+  字节表同族根治（跟进 dpcodec/jcc-pack 实机闭环）：`t = byte_concat(t, seg)` 循环累积每迭代新建整表且
+  旧表永不释放 → 同构 O(n²) 无名分配（jcc-pack encode_pack→build_champ_seg 实测修复前 3.7s 冲 4.5GB+）。
+  irgen 循环入口 cbs_scan 预扫 AST，对安全形态（首参=局部表槽名/引用纯净/无 goto）自动提升：循环前拷贝到
+  私有累积表 acc（唯一引用），体内 tbl_ensure+memcpy+set_len 就地追加（摊销 O(1)），循环出口写回 t 槽；
+  `zd.concat`（byte_concat 薄包装）也纳入识别。实机验证：同一 jcc-pack + official-s19，修复前 4579MB 护栏
+  终止 → 修复后 232MB 完整通过（65 棋子/35 羁绊/157 装备）；最小复现探针 tests/hoist_probe/cbs_encode_repro.tie
+  （跨模块 7 字段 struct + 数百字符中文文本合成 4000 条，修复前 2.5GB+ 终止→修复后 PASS）+
+  cbs_edge.tie 边界探针（单循环/多循环链/break/非纯净引用/空表入口）全绿；自举不动点 tiec2==tiec3 通过。
 - [x] p.6.1.5 config 深合并边合并边 push 全局扁平表：复核结论——规避纪律安全（parse_map_body/
   parse_array_body/build_defaults/merge_maps/concat_arrays 均先局部收集后统一登记或自我 append 全局末尾，
   map_set 原地覆盖；新增 tests/s31/config_merge_stress.tie 四层链式深合并+嵌套/数组 concat/重置/交错访问

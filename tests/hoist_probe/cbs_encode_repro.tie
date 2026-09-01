@@ -1,0 +1,142 @@
+type tie<logic>
+// 回归探针：encode 型大函数「跨模块 struct + 循环内字节表累积拼接」最小复现
+// ============================================================================
+// 对齐 2026-09-01 dpcodec-encode-memory-blowup 报告（jcc-pack encode_pack →
+// build_champ_seg）的根因形态：循环体
+//     body = byte_concat(body, blob(rec_bytes(...)))
+// 每迭代新分配 |body| 级整表且旧表永不释放（tie 无 GC）→ O(n²) 无名分配，
+// 内存无界增长（jcc-pack 实测旧编译器 3.7s 冲 4.5GB+ 被护栏终止）。
+// 修复：cbs 字节表自加提升——循环入口拷贝到私有累积表 acc，循环内就地追加，
+// 循环出口写回 body 槽。提升后线性（jcc-pack 实测峰值 232MB 完整通过）。
+//
+// 用法：
+//   tiec -O2 tests/hoist_probe/cbs_encode_repro.tie   （n=4000，修复前即爆）
+// 语义自检：段长 == 期望（n 条 ×（blob 前缀 4+ints 4+文本+表长）+ 尾部计数 4），
+// 尾部 4 字节 == 记录数 n 的大端编码。新编译器通过即视为逐字节等价。
+
+import "./model.tie"
+
+// string → 字节表（模拟 skill_name/skill_desc 等文本字段的 UTF-8 字节承载）
+func sbytes(s: string) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < str_len(s) {
+        table_push(out, str_byte(s, i))
+        i = i + 1
+    }
+    return out
+}
+
+// ChampRec → record 字节（模拟 champ_to_rec：逐字段 concat 累积）
+func rec_bytes(c: ChampRec) -> table<i64> {
+    var out = table_new_i64()
+    out = byte_concat(out, ints_bytes(c.id, c.cost))
+    out = byte_concat(out, sbytes(c.cn))
+    out = byte_concat(out, sbytes(c.skill_name))
+    out = byte_concat(out, sbytes(c.skill_desc))
+    out = byte_concat(out, c.traits)
+    out = byte_concat(out, c.stats)
+    return out
+}
+
+// i64 对 → 字节（字段 1/2 编码，模拟 zd.encode_field 标量路径）
+func ints_bytes(a: i64, b: i64) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, (a >> 8) & 255)
+    table_push(out, a & 255)
+    table_push(out, (b >> 8) & 255)
+    table_push(out, b & 255)
+    return out
+}
+
+// 长度前缀 + 内容（模拟 zd.encode_i64_array / blob：每段外包）
+func blob(b: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, (len(b) >> 24) & 255)
+    table_push(out, (len(b) >> 16) & 255)
+    table_push(out, (len(b) >> 8) & 255)
+    table_push(out, len(b) & 255)
+    var i: i64 = 0
+    while i < len(b) {
+        table_push(out, b[i])
+        i = i + 1
+    }
+    return out
+}
+
+// 段构造（模拟 build_champ_seg：核心被提升循环）
+func build_seg(champs: table<ChampRec>) -> table<i64> {
+    var body = table_new_i64()
+    var n: i64 = 0
+    var i: i64 = 0
+    while i < len(champs) {
+        body = byte_concat(body, blob(rec_bytes(champs[i])))
+        i = i + 1
+        n = n + 1
+    }
+    // 尾部计数（模拟 zd.encode_array(n, body)）
+    var tail = table_new_i64()
+    table_push(tail, (n >> 24) & 255)
+    table_push(tail, (n >> 16) & 255)
+    table_push(tail, (n >> 8) & 255)
+    table_push(tail, n & 255)
+    return byte_concat(body, tail)
+}
+
+// 期望段长：n 条 ×（blob 前缀 4 + ints 4 + 文本 + 表长）+ 尾部计数 4
+func expect_len(n: i64, champs: table<ChampRec>) -> i64 {
+    var total: i64 = 4
+    var i: i64 = 0
+    while i < n {
+        var c = champs[i]
+        total = total + 4 + 4 + str_len(c.cn) + str_len(c.skill_name) + str_len(c.skill_desc) + len(c.traits) + len(c.stats)
+        i = i + 1
+    }
+    return total
+}
+
+func main() -> i64 {
+    ensure_model_data()
+    var n: i64 = 4000
+    // 构造 n 条跨模块 struct 记录（含数百字符中文技能文本；触发量级对齐
+    // 报告「总量约 5-6 万元素时旧编译器内存无界增长」的最小同族规模）
+    var champs: table<ChampRec> = []
+    var i: i64 = 0
+    while i < n {
+        var c = ChampRec()
+        c.id = i
+        c.cost = i % 5
+        c.cn = g_skill_names[i % 300]
+        c.skill_name = g_skill_names[i % 300]
+        // 长文本：基础描述 × 12 拼成数百字符中文
+        var desc = g_skill_descs[i % 300]
+        var k: i64 = 0
+        while k < 12 {
+            desc = desc + g_skill_descs[(i + k) % 300]
+            k = k + 1
+        }
+        c.skill_desc = desc
+        var tr = table_new_i64()
+        table_push(tr, i % 3)
+        table_push(tr, i % 5)
+        c.traits = tr
+        var st = table_new_i64()
+        table_push(st, i % 10)
+        table_push(st, i % 7)
+        c.stats = st
+        table_push(champs, c)
+        i = i + 1
+    }
+    var seg = build_seg(champs)
+    var el = expect_len(n, champs)
+    var ok: bool = len(seg) == el
+    // 尾部计数校验：最后 4 字节 == 段内记录数 n 的大端编码（模拟 zd.encode_array 计数）
+    if ok && seg[len(seg) - 4] == (n >> 24) && seg[len(seg) - 3] == ((n >> 16) & 255) &&
+        seg[len(seg) - 2] == ((n >> 8) & 255) && seg[len(seg) - 1] == (n & 255) {
+        println("cbs-encode PASS n=" + to_string(n) + " len=" + to_string(len(seg)))
+    } else {
+        println("cbs-encode FAIL n=" + to_string(n) + " len=" + to_string(len(seg)) + " expect=" + to_string(el))
+        exit(1)
+    }
+    return 0
+}
