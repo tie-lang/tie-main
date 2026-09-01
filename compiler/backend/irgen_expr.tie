@@ -744,7 +744,6 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         // 写入越界（SSO 静态池/堆损坏，多会话交错读写出现字节串线/丢失），
         // 大则扫描越界读未映射内存崩溃。故走 s21_raw_alloc_str（K_PTR 返回绕开
         // 扫描，ptrtoint+inttoptr 包回 TK_STR 值），与编译器内部原始分配同范式。
-        g_used_interp = true
         var n = tig_expr(call_arg(id, 0))
         if n < 0 {
             return -1
@@ -758,7 +757,6 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         if p < 0 {
             return -1
         }
-        g_used_interp = true
         tig_ext_call1("free", p, types.named(TK_STR), -1)
         g_builtin_res = tig_int_lit(0)
         return 0
