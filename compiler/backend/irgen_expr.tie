@@ -1990,17 +1990,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return 0
     }
     if nm == "regex_find_all" {
-        g_used_interp = true
-        var s = tig_expr(call_arg(id, 0))
-        if s < 0 {
-            return -1
-        }
-        var p = tig_expr(call_arg(id, 1))
-        if p < 0 {
-            return -1
-        }
-        g_builtin_res = tig_ext_call2("tie_regex_find_all", s, types.named(TK_STR), p, types.named(TK_STR), types.named(TK_STR))
-        return 0
+        // p.6.4.8：内联纯 tie 最小正则引擎（不再经 Rust tie_interp 桥）
+        return tig_regex_find_all(id)
     }
     // ---------- M4/M6 补齐：系统能力内置（对齐 Rust ir.rs 同名单分支）----------
     // 数学库（libm，llvmgen 无条件 declare；f64 → f64）。
@@ -2103,8 +2094,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_builtin_res = tig_ext_call1("tie_eval_expr", sv, types.named(TK_STR), types.named(TK_STR))
         return 0
     }
-    // 双字符串参数 → ptr 返回（path_join/msg_t_lang/eval_call/regex_find）
-    if nm == "path_join" || nm == "msg_t_lang" || nm == "eval_call" || nm == "regex_find" {
+    // 双字符串参数 → ptr 返回（path_join/msg_t_lang/eval_call）
+    if nm == "path_join" || nm == "msg_t_lang" || nm == "eval_call" {
         g_used_interp = true
         var a1 = tig_expr(call_arg(id, 0))
         if a1 < 0 {
@@ -2117,89 +2108,21 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_builtin_res = tig_ext_call2("tie_" + nm, a1, types.named(TK_STR), a2, types.named(TK_STR), types.named(TK_STR))
         return 0
     }
-    // 三字符串参数 → ptr（regex_replace：s, pattern, replacement）
+    // regex_find：p.6.4.8 内联纯 tie 最小正则引擎
+    if nm == "regex_find" {
+        return tig_regex_find(id)
+    }
+    // regex_replace：p.6.4.8 内联纯 tie 最小正则引擎
     if nm == "regex_replace" {
-        g_used_interp = true
-        var r1 = tig_expr(call_arg(id, 0))
-        if r1 < 0 {
-            return -1
-        }
-        var r2 = tig_expr(call_arg(id, 1))
-        if r2 < 0 {
-            return -1
-        }
-        var r3 = tig_expr(call_arg(id, 2))
-        if r3 < 0 {
-            return -1
-        }
-        var ats: table<i64> = table_new_i64()
-        var avs: table<i64> = table_new_i64()
-        table_push(ats, types.named(TK_STR))
-        table_push(avs, r1)
-        table_push(ats, types.named(TK_STR))
-        table_push(avs, r2)
-        table_push(ats, types.named(TK_STR))
-        table_push(avs, r3)
-        g_builtin_res = tig_ext_call_typed("tie_regex_replace", ats, avs, types.named(TK_STR))
-        return 0
+        return tig_regex_replace(id)
     }
-    // regex_group：字符串 + 字符串 + i64 → ptr
+    // regex_group：p.6.4.8 内联纯 tie 最小正则引擎
     if nm == "regex_group" {
-        g_used_interp = true
-        var g1 = tig_expr(call_arg(id, 0))
-        if g1 < 0 {
-            return -1
-        }
-        var g2 = tig_expr(call_arg(id, 1))
-        if g2 < 0 {
-            return -1
-        }
-        var g3 = tig_expr(call_arg(id, 2))
-        if g3 < 0 {
-            return -1
-        }
-        var ats: table<i64> = table_new_i64()
-        var avs: table<i64> = table_new_i64()
-        table_push(ats, types.named(TK_STR))
-        table_push(avs, g1)
-        table_push(ats, types.named(TK_STR))
-        table_push(avs, g2)
-        table_push(ats, types.named(TK_I64))
-        table_push(avs, g3)
-        g_builtin_res = tig_ext_call_typed("tie_regex_group", ats, avs, types.named(TK_STR))
-        return 0
+        return tig_regex_group(id)
     }
-    // regex_match：字符串 + 字符串 + ok 出参 → i8 → bool
+    // regex_match：p.6.4.8 内联纯 tie 最小正则引擎
     if nm == "regex_match" {
-        g_used_interp = true
-        var m1 = tig_expr(call_arg(id, 0))
-        if m1 < 0 {
-            return -1
-        }
-        var m2 = tig_expr(call_arg(id, 1))
-        if m2 < 0 {
-            return -1
-        }
-        var mo = ir.new_inst(g_cur_block, 20, types.named(TK_I8))  // alloca i8 ok
-        ir.add_operand(mo, types.named(TK_I8), 2)
-        var mats: table<i64> = table_new_i64()
-        var mavs: table<i64> = table_new_i64()
-        table_push(mats, types.named(TK_STR))
-        table_push(mavs, m1)
-        table_push(mats, types.named(TK_STR))
-        table_push(mavs, m2)
-        table_push(mats, types.named(TK_STR))
-        table_push(mavs, ir.get_value(mo))
-        var mr = tig_ext_call_typed("tie_regex_match", mats, mavs, types.named(TK_I8))
-        if mr < 0 {
-            return -1
-        }
-        var mi = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp ne 0
-        ir.add_operand(mi, mr, 0)
-        ir.add_operand(mi, 0, 2)
-        ir.add_operand(mi, 1, 2)
-        g_builtin_res = ir.get_value(mi)
-        return 0
+        return tig_regex_match(id)
     }
     // 单字符串参数 i8 返回 → bool（file_exists 已有；remove_dir_all/mkdir_all 已有
     // mkdir_all；此处补 remove_dir_all）

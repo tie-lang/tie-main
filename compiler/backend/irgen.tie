@@ -22,6 +22,7 @@ import "./irgen_stmt.tie"
 import "./irgen_agg.tie"
 import "./irgen_call.tie"
 import "./irgen_rt.tie"
+import "./irgen_regex.tie"
 // ==================== 生成器状态 ====================
 // 变量作用域：变量名池 id → (alloca 值 id, 类型 id)（线性表，作用域小）。
 // **作用域栈**：g_sc_top 为逻辑栈顶游标（tie 表无法截断，用游标模拟 pop，
@@ -73,6 +74,29 @@ var g_cur_fn_name: string = "";
 // 当前函数返回类型 id（Return 的 BoolLit 适配 trit 用：`return false` 在返回
 // trit 的函数里生成 i8 而非 i1）
 var g_cur_ret_ty: i64 = 0;
+// p.6.4.8 正则引擎（irgen_regex.tie）：编译期解析状态 + 生成期上下文。
+// 解析状态（rx_compile 期间）：
+var g_rx_u: i64 = 0;             // 模块唯一块名后缀
+var g_rx_pstr: string = "";      // 当前 pattern
+var g_rx_plen: i64 = 0;          // pattern 字节长
+var g_rx_ppos: i64 = 0;          // 解析游标
+var g_rx_prog: table<i64>;       // 编译产物：指令程序
+var g_rx_cls: table<i64>;        // 编译产物：字符类位集（每类 4×i64）
+var g_rx_ngroups: i64 = 0;       // 捕获组数
+var g_rx_ingrp: i64 = 0;         // 分组深度（0=顶层；>0 时 ')' 终止 seq）
+var g_rx_ok: bool = true;        // 解析成功标志
+// 生成期上下文（tig_regex_* 生成 IR 期间）：
+var g_rx_s: i64 = 0;             // 输入串 IR 值
+var g_rx_slen: i64 = 0;          // 输入串长度 IR 值
+var g_rx_nsl: i64 = 0;           // 捕获槽数 = 2*(ngroups+1)
+var g_rx_rprog: i64 = 0;         // 运行时 prog 表句柄 IR 值
+var g_rx_rcls: i64 = 0;          // 运行时 clsbits 表句柄 IR 值
+var g_rx_okptr: i64 = 0;         // table_at 出参 alloca i8
+var g_rx_posa: i64 = 0;          // 匹配位置 alloca
+var g_rx_pcsa: i64 = 0;          // 程序计数器 alloca
+var g_rx_spa: i64 = 0;           // 搜索起点 alloca
+var g_rx_enda: i64 = 0;          // 匹配终点 alloca
+var g_rx_slotsv: i64 = 0;        // 本次匹配尝试的捕获槽表句柄（SSA 值）
 // 表变量元素类型表（函数级）：变量名池 id → 元素类型 id。语义层 lv_telem
 // 是 per-function 且在 irgen 阶段已过期（只可靠查到最后一个函数），跨函数
 // 场景（exmath::parse_series 里 table_push(result, parse_float(...))）必须由
