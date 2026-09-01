@@ -508,6 +508,11 @@ func is_libc_sym(sym: string) -> bool {
         sym == "round" || sym == "pow" {
         return true
     }
+    // p.6.4.4：libc _gcvt（to_string(f64)：非变参 CRT，写 %g 格式数字到缓冲。Windows
+    // clang 手写 IR 的 FP 变参（snprintf）会错位，故用非变参 _gcvt）
+    if sym == "_gcvt" {
+        return true
+    }
     // runtime.a 退役：exec_code/get_env/time_now 内联到 libc 直调（不置 g_used_interp）
     if sym == "system" || sym == "getenv" || sym == "time" {
         return true

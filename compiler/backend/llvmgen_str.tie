@@ -399,14 +399,10 @@ func extern_decl(sym: string) -> string {
     if sym == "tie_to_string_i64" {
         return "declare ptr @tie_to_string_i64(i64)"
     }
-    if sym == "tie_to_string_f64" {
-        return "declare ptr @tie_to_string_f64(double)"
-    }
+    // p.6.4.4：to_string(f64) 与 parse_float 已内联 IR（tig_f64_to_str / tig_parse_float），
+    // tie_to_string_f64 / tie_parse_float 桥 declare 移除（不再被 extern_call 引用）。
     if sym == "tie_parse_int" {
         return "declare i64 @tie_parse_int(ptr, ptr)"
-    }
-    if sym == "tie_parse_float" {
-        return "declare double @tie_parse_float(ptr, ptr)"
     }
     if sym == "tie_parse_trit" {
         return "declare i8 @tie_parse_trit(ptr, ptr)"
@@ -613,6 +609,7 @@ func user_extern_decl(sym: string) -> string {
         sym == "floor" || sym == "ceil" || sym == "round" {
         return ""
     }
+    // p.6.4.4：libc _gcvt（to_string(f64)；非变参 CRT，声明由调用签名自动推导）
     var ni = ir.inst_count()
     var i: i64 = 0
     while i < ni {
