@@ -2302,8 +2302,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         if a2 < 0 {
             return -1
         }
-        // 指定语言查表；未命中回退 key 本身
-        g_builtin_res = tig_msg_find(a1, a2, a1)
+        // 指定语言查表；未命中返空串（对齐 Rust 桥原语义，ext/log 回退链 lookup 依赖）
+        g_builtin_res = tig_msg_find(a1, a2, tig_str_lit(interner.intern("\"\"")))
         return 0
     }
     // rand_range：i64 半开区间 [min,max)；内联 libc rand()（非密码学安全）
@@ -3700,7 +3700,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
     //   @__msg_texts : table<string> 文本平行表
     // 语义：msg_register(key,lang,text) 线性扫 (key,lang) 命中覆盖 texts[i] 未命中
     // 三表 append；msg_t(key) 按当前语言查未命中返 key；msg_t_lang(key,lang) 按指定
-    // 语言查未命中返 key。msg_set_lang/msg_get_lang 读写 @__msg_lang。
+    // 语言查未命中返空串 ""（对齐 Rust 桥原语义，ext/log 回退链 lookup 依赖）。
+    // msg_set_lang/msg_get_lang 读写 @__msg_lang。
     // 模块级惰性登记标记 g_msg_reg_done 声明见 irgen.tie（文件顶层，每模块一次重置）。
 
     // 惰性登记 msg 全局槽（首次 msg_* 调用时；幂等）
