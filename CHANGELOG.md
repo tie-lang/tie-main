@@ -22,7 +22,7 @@
 > **定位**：trm 开发周期长于预期，2026.1 正式版提前发布。对比 preview.5，
 > 正式版以**修复缺陷与性能问题**为主，不再新增功能面。
 
-### 修复计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善）
+### 修复计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全）
 
 **正确性（p.6.1，必查）**
 - [x] p.6.1.1 import 文件不存在 → tiec 段错误 0xC0000005，改为报错退出（已修复 4095ee1，回归 err_066–068）
@@ -127,6 +127,34 @@
 - [ ] p.6.5.9 多执行体分配/回收 + 消息传收 demo（两形态验收载体：exit 0 + 内存平衡）
 - [ ] p.6.5.10 回归与对比验收：m6_actor 零回归、路线 A/B 不受影响、简单 vs 复杂行为一致
 - [ ] p.6.5.11 收尾：trm-lite preview.2、README/CHANGELOG、已知限制清单
+
+**库补全（p.6.6，一库一子项；前置 p.6.4 原语全面 tie 化完成后启动；设计见 docs/superpowers/specs/2026-09-01-p66-library-completion-design.md）**
+- [ ] p.6.6.1 ext/tls：TLS 1.3 + 1.2 客户端（纯 tie）、X.509 解析与完整链校验、字节级网络 IO（p.6.4.5 承接）
+- [ ] p.6.6.2 std/http 升级：完整 HTTP 客户端（https/POST/headers/cookies/重定向），命名空间 httpc，旧 http.get 保留兼容
+- [ ] p.6.6.3 std/sse：SSE 流式解码（event/data/id/retry；LLM/WebSocket/Web 框架前置件）
+- [ ] p.6.6.4 ext/html：HTML 分词 + DOM 树 + 选择器抽取 + 链接提取 + HTML→纯文本
+- [ ] p.6.6.5 ext/xml：XML 分词 + 解析（与 html 共用标记语言分词底座；供 svg/配置消费）
+- [ ] p.6.6.6 ext/spidey：爬虫治理（robots.txt + 限速 + URL 去重 + 编排，依赖 p.6.6.4）
+- [ ] p.6.6.7 std/ws：WebSocket 客户端（握手 + 帧编解码 + 掩码，依赖 p.6.6.2）
+- [ ] p.6.6.8 std/smtp：SMTP 发信（EHLO/AUTH/MAIL/RCPT/DATA，可配 STARTTLS，依赖 p.6.6.1）
+- [ ] p.6.6.9 std/dns：DNS 解析（A/AAAA/TXT/MX 查询，依赖 std/net UDP）
+- [ ] p.6.6.10 std/yaml：YAML 解析（块缩进/流式/标量类型 → 平行表）
+- [ ] p.6.6.11 ext/config：TOML 支持提升（表/数组表/内联表，与 INI/KV 统一入口）
+- [ ] p.6.6.12 std/markdown：markdown 解析（块级元素/行内标记 → 结构表）
+- [ ] p.6.6.13 ext/png：PNG 编解码（chunk 遍历 + 滤波 + 位深/色彩类型）
+- [ ] p.6.6.14 ext/qr：QR 码生成（RS 纠错 + 矩阵布局 + 版本/掩码）
+- [ ] p.6.6.15 ext/svg：SVG 解析（元素树 + 路径/形状结构，依赖 p.6.6.5）
+- [ ] p.6.6.16 std/tpl：模板引擎（`{{expr}}` 求值 + 渲染字符串/文件）
+- [ ] p.6.6.17 std/diff：文本 diff（LCS → 行级增删改 + 统一格式输出）
+- [ ] p.6.6.18 std/cron：cron 调度（5 字段表达式 → 下次触发时间/到期判断）
+- [ ] p.6.6.19 std/jwt：JWT（HS256/RS256 签发验证，供 p.6.6.21 会话）
+- [ ] p.6.6.20 数据库：SQLite 驱动（C ABI 桥，参考 ext/ecdsa extern 范式）
+- [ ] p.6.6.21 Web 服务框架：std/http_server 升级（路由表 / keep-alive / 静态文件 / SSE 推送 / JWT 会话）
+- [ ] p.6.6.22 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式，依赖 p.6.6.2/p.6.6.3）
+- [ ] p.6.6.23 sys/win32：平台专用层首期（命名空间 sys_win32；注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息 + 进程枚举/服务控制/网络接口/硬件信息）
+  - 依赖方向（单向）：tls → httpc → sse；html → xml → svg；httpc → ws；tls → smtp/jwt；httpc+sse → llm
+  - 平台层：sys/win32 之后 linux/mac 同名层（sys_linux / sys_mac）
+  - 计划文档：docs/superpowers/plans/2026-09-01-p661-tls-client.md（p.6.6.1 实施计划）
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
 ## [修复] 泛型模板名恢复改用 gty_full 模板索引直查表——消除 import 扫描顺序依赖（2026-09-01）（p.6.2.2）
