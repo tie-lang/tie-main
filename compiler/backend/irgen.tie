@@ -287,39 +287,6 @@ func ig_ns_sym(full: string) -> string {
     return out
 }
 
-
-// tie 运行时桥调用（现仅 exec_output；符号 tie_exec_output，Rust 桥，返回 string）。
-// exec_code/get_env/time_now 已内联到 libc，不再经此。
-func tig_runtime_call(nm: string, id: i64) -> i64 {
-    // tie_exec_output 非 libc → tig_ext_call_typed 自动置 g_used_interp（Rust 桥）
-    // Call children = [泛型槽, 实参...]：实参从 children[slot_off] 起
-    var off = sstate.slot_off(id)
-    var nc = sstate.nchild(id) - off
-    var argvals = table_new_i64()
-    var k: i64 = 0
-    while k < nc {
-        var av = tig_expr(sstate.child(id, off + k))
-        if av < 0 {
-            return -1
-        }
-        table_push(argvals, av)
-        k = k + 1
-    }
-    var ret_ty: i64 = types.named(TK_I64)
-    if nm == "get_env" || nm == "exec_output" {
-        ret_ty = types.named(TK_STR)
-    }
-    var ats: table<i64> = table_new_i64()
-    var avs: table<i64> = table_new_i64()
-    k = 0
-    while k < len(argvals) {
-        table_push(ats, types.named(TK_STR))
-        table_push(avs, argvals[k])
-        k = k + 1
-    }
-    return tig_ext_call_typed("tie_" + nm, ats, avs, ret_ty)
-}
-
 // ==================== 阶段 A：扩展表达式/语句 ====================
 // 类型 → LLVM 桥后缀（表元素/实参类型分派；对齐 Rust table_elem_suffix）
 // string → string；bool → bool；其余（i64/f64/ptr 等）→ 按 llvm 类型
@@ -547,6 +514,14 @@ func is_libc_sym(sym: string) -> bool {
         sym == "DeleteFileW" || sym == "FindFirstFileW" || sym == "FindNextFileW" ||
         sym == "FindClose" || sym == "CopyFileW" || sym == "MoveFileW" ||
         sym == "SHFileOperationW" {
+        return true
+    }
+    // p.6.4.6 exec_output 进程管道内联：kernel32 进程/管道/句柄 API（非 interp 桥）。
+    // CreatePipe/CreateProcessW/ReadFile 捕获子进程 stdout；SetHandleInformation 置
+    // 可继承位；WaitForSingleObject/CloseHandle/GetExitCodeProcess 收尾。kernel32 经
+    // CRT 隐式链接，无需额外 .lib。GetStdHandle(负句柄常量) 供 STARTUPINFOW.hStdInput。
+    if sym == "CreatePipe" || sym == "CreateProcessW" || sym == "SetHandleInformation" ||
+        sym == "GetExitCodeProcess" || sym == "GetStdHandle" {
         return true
     }
     // p.6.4.5 网络原语内联：Winsock2 符号（ws2_32，非 interp 桥）。仅 Windows

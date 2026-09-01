@@ -1109,8 +1109,13 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return 0
     }
     if nm == "exec_output" {
-        // 保留 Rust 桥（tie_exec_output 依赖 ptr 无法内联）→ tig_ext_call_typed 置 g_used_interp
-        g_builtin_res = tig_runtime_call(nm, id)
+        // p.6.4.6：内联 CreatePipe+CreateProcessW+ReadFile 捕获子进程 stdout（零 Rust 桥）。
+        // 不再经 tig_runtime_call（g_used_interp 桥）→ 不置位，不链接 tie_interp.lib。
+        var ev = tig_expr(call_arg(id, 0))
+        if ev < 0 {
+            return -1
+        }
+        g_builtin_res = tig_exec_output_inline(ev)
         return 0
     }
     if nm == "str_len" {
@@ -3471,6 +3476,175 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         ir.add_operand(br4, hd, 1)
         g_cur_block = ex
         return s21_sb_build(hv)
+    }
+
+    // ==================== p.6.4.6 进程捕获：exec_output 内联 ====================
+    // exec_output(cmd) → 捕获子进程 stdout 到 EOF 返回（失败返回 ""）。从 Rust 桥
+    // （tie_exec_output，g_used_interp 置位）改为编译器内联 IR 直调 Win32 管道：
+    //   CreatePipe（读端父用 + 写端设可继承）→ SetHandleInformation → CreateProcessW
+    //   （宽 cmd 经 tig_wide16；STARTUPINFOW 手工 alloc 填 offset）→ CloseHandle(写端)
+    //   → 循环 ReadFile 读端到 EOF（tig_bytes_to_tie + StringBuilder 拼接）→
+    //   CloseHandle(读端/进程/线程) → 返回输出串。
+    // 全 kernel32 符号（is_libc_sym 免 interp 链接），零 Rust 桥、零 g_used_interp。
+    // 结构体布局（对齐 trm platform_win32 repo 先例，repr(C) 64 位）：
+    //   STARTUPINFOW sizeof=104：cb@0、dwFlags@60、hStdInput@80、hStdOutput@88、hStdError@96
+    //   PROCESS_INFORMATION sizeof=24：hProcess@0、hThread@8、dwProcessId@16、dwThreadId@20
+    func tig_exec_output_inline(cmd: i64) -> i64 {
+        var T64 = types.named(TK_I64)
+        var I32 = types.named(TK_I32)
+        var I8 = types.named(TK_I8)
+        var P8 = types.ptr_of(I8)
+        var nulp = tig_null_ptr()
+        // 结果槽（string，默认空串）
+        var rs = ir.new_inst(g_cur_block, 20, types.named(TK_STR))
+        ir.add_operand(rs, types.named(TK_STR), 2)
+        var rp = ir.get_value(rs)
+        s21_store(rp, tig_str_lit(interner.intern("\"\"")), types.named(TK_STR))
+        // 句柄/读计数槽 + 缓冲
+        var hr_a = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(hr_a, T64, 2)
+        var hrp = ir.get_value(hr_a)
+        var hw_a = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(hw_a, T64, 2)
+        var hwp = ir.get_value(hw_a)
+        var rc_a = ir.new_inst(g_cur_block, 20, I32)
+        ir.add_operand(rc_a, I32, 2)
+        var rcp = ir.get_value(rc_a)
+        var buf = s21_raw_alloc_str(tig_int_lit(4096))
+        var si = s21_raw_alloc_str(tig_int_lit(104))
+        var pi = s21_raw_alloc_str(tig_int_lit(24))
+        var wcmd = tig_wide16(cmd)
+        var sb = s21_sb_new()
+        // CreatePipe(&hr, &hw, NULL, 0)
+        var ats0: table<i64> = table_new_i64()
+        var avs0: table<i64> = table_new_i64()
+        table_push(ats0, P8);  table_push(avs0, hrp)
+        table_push(ats0, P8);  table_push(avs0, hwp)
+        table_push(ats0, P8);  table_push(avs0, nulp)
+        table_push(ats0, I32); table_push(avs0, tig_int_lit_ty(0, I32))
+        var cp = tig_ext_call_typed("CreatePipe", ats0, avs0, I32)
+        var okp = tig_win_ok(cp)
+        var b_bad0 = ir.new_block(g_cur_func, interner.intern("eo.bad0"))
+        var b_ppipe = ir.new_block(g_cur_func, interner.intern("eo.pipe"))
+        var b_m = ir.new_block(g_cur_func, interner.intern("eo.m"))
+        var cb0 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb0, okp, 0)
+        ir.add_operand(cb0, b_ppipe, 1)
+        ir.add_operand(cb0, b_bad0, 1)
+        // 失败（CreatePipe）：free 缓冲 → merge（结果保持空串）
+        g_cur_block = b_bad0
+        tig_ext_call1("free", buf, types.named(TK_STR), -1)
+        tig_ext_call1("free", si, types.named(TK_STR), -1)
+        tig_ext_call1("free", pi, types.named(TK_STR), -1)
+        var br0 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br0, b_m, 1)
+        // 建管成功：置可继承位，填 STARTUPINFOW，CreateProcessW
+        g_cur_block = b_ppipe
+        var hv_hr = s21_load(hrp, T64)
+        var hv_hw = s21_load(hwp, T64)
+        var ats1: table<i64> = table_new_i64()
+        var avs1: table<i64> = table_new_i64()
+        table_push(ats1, T64); table_push(avs1, hv_hw)
+        table_push(ats1, I32); table_push(avs1, tig_int_lit_ty(1, I32))
+        table_push(ats1, I32); table_push(avs1, tig_int_lit_ty(1, I32))
+        tig_ext_call_typed("SetHandleInformation", ats1, avs1, I32)
+        // 填 STARTUPINFOW：cb@0=104、dwFlags@60=0x100、hStdOutput@88、hStdError@96
+        var atsm: table<i64> = table_new_i64()
+        var avsm: table<i64> = table_new_i64()
+        table_push(atsm, P8); table_push(avsm, si)
+        table_push(atsm, I8); table_push(avsm, tig_int_lit_ty(0, I8))
+        table_push(atsm, T64); table_push(avsm, tig_int_lit(104))
+        tig_ext_call_typed("memset", atsm, avsm, -1)
+        s21_store(s21_gep(si, 0, true), tig_int_lit_ty(104, I32), I32)    // cb
+        s21_store(s21_gep(si, 60, true), tig_int_lit_ty(0x100, I32), I32) // dwFlags
+        s21_store(s21_gep(si, 80, true), tig_int_lit_ty(0, T64), T64)  // hStdInput=0（占位）
+        s21_store(s21_gep(si, 88, true), hv_hw, T64)   // hStdOutput
+        s21_store(s21_gep(si, 96, true), hv_hw, T64)   // hStdError
+        // CreateProcessW(NULL, wcmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)
+        var ats2: table<i64> = table_new_i64()
+        var avs2: table<i64> = table_new_i64()
+        table_push(ats2, P8);  table_push(avs2, nulp)
+        table_push(ats2, P8);  table_push(avs2, wcmd)
+        table_push(ats2, P8);  table_push(avs2, nulp)
+        table_push(ats2, P8);  table_push(avs2, nulp)
+        table_push(ats2, I32); table_push(avs2, tig_int_lit_ty(1, I32))   // bInheritHandles
+        table_push(ats2, I32); table_push(avs2, tig_int_lit_ty(0, I32))   // dwCreationFlags
+        table_push(ats2, P8);  table_push(avs2, nulp)
+        table_push(ats2, P8);  table_push(avs2, nulp)
+        table_push(ats2, P8);  table_push(avs2, si)
+        table_push(ats2, P8);  table_push(avs2, pi)
+        var cw = tig_ext_call_typed("CreateProcessW", ats2, avs2, I32)
+        var okw = tig_win_ok(cw)
+        var b_bad2 = ir.new_block(g_cur_func, interner.intern("eo.bad2"))
+        var b_loop = ir.new_block(g_cur_func, interner.intern("eo.lp"))
+        var cb2 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb2, okw, 0)
+        ir.add_operand(cb2, b_loop, 1)
+        ir.add_operand(cb2, b_bad2, 1)
+        // 失败（CreateProcessW）：关句柄 + free → merge
+        g_cur_block = b_bad2
+        tig_ext_call1("CloseHandle", hv_hr, T64, I32)
+        tig_ext_call1("CloseHandle", hv_hw, T64, I32)
+        tig_ext_call1("free", buf, types.named(TK_STR), -1)
+        tig_ext_call1("free", si, types.named(TK_STR), -1)
+        tig_ext_call1("free", pi, types.named(TK_STR), -1)
+        var br2b = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br2b, b_m, 1)
+        // 启动成功：父关写端 → 循环读 stdout 到 EOF
+        g_cur_block = b_loop
+        tig_ext_call1("CloseHandle", hv_hw, T64, I32)
+        var b_rd = ir.new_block(g_cur_func, interner.intern("eo.rd"))
+        var b_ap = ir.new_block(g_cur_func, interner.intern("eo.ap"))
+        var b_x = ir.new_block(g_cur_func, interner.intern("eo.x"))
+        // 读循环头（b_loop 即循环体起点，回边到自身）：
+        s21_store(rcp, tig_int_lit_ty(0, I32), I32)
+        var ats3: table<i64> = table_new_i64()
+        var avs3: table<i64> = table_new_i64()
+        table_push(ats3, T64); table_push(avs3, hv_hr)
+        table_push(ats3, P8);  table_push(avs3, buf)
+        table_push(ats3, I32); table_push(avs3, tig_int_lit_ty(4096, I32))
+        table_push(ats3, P8);  table_push(avs3, rcp)
+        table_push(ats3, P8);  table_push(avs3, nulp)
+        var rf = tig_ext_call_typed("ReadFile", ats3, avs3, I32)
+        var okr = tig_win_ok(rf)
+        var cb3 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb3, okr, 0)
+        ir.add_operand(cb3, b_rd, 1)
+        ir.add_operand(cb3, b_x, 1)
+        // b_rd：ReadFile 成功 → 判读计数
+        g_cur_block = b_rd
+        var cnt = s21_zext(s21_load(rcp, I32), I32)
+        var c0 = tig_cmp_zero(cnt, 0)
+        var cb4 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb4, c0, 0)
+        ir.add_operand(cb4, b_x, 1)
+        ir.add_operand(cb4, b_ap, 1)
+        // b_ap：拼接本块字节 → 回边到 b_loop
+        g_cur_block = b_ap
+        s21_sb_append(sb, tig_bytes_to_tie(buf, cnt))
+        var brl = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brl, b_loop, 1)
+        // b_x：EOF/出错收尾：关读端 + 等进程退出 + 关进程/线程句柄 + free + 产物
+        g_cur_block = b_x
+        tig_ext_call1("CloseHandle", hv_hr, T64, I32)
+        var ph = s21_load(pi, T64)             // pi.hProcess@0
+        var th = s21_load(s21_gep(pi, 8, true), T64)  // pi.hThread@8
+        var ats4: table<i64> = table_new_i64()
+        var avs4: table<i64> = table_new_i64()
+        table_push(ats4, T64); table_push(avs4, ph)
+        table_push(ats4, I32); table_push(avs4, tig_int_lit_ty(-1, I32))  // INFINITE (0xFFFFFFFF)
+        tig_ext_call_typed("WaitForSingleObject", ats4, avs4, I32)
+        tig_ext_call1("CloseHandle", ph, T64, I32)
+        tig_ext_call1("CloseHandle", th, T64, I32)
+        tig_ext_call1("free", buf, types.named(TK_STR), -1)
+        tig_ext_call1("free", si, types.named(TK_STR), -1)
+        tig_ext_call1("free", pi, types.named(TK_STR), -1)
+        s21_store(rp, s21_sb_build(sb), types.named(TK_STR))
+        var brx = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brx, b_m, 1)
+        // merge：返回结果槽
+        g_cur_block = b_m
+        return s21_load(rp, types.named(TK_STR))
     }
     func tig_arg_count() -> i64 {
         var T64 = types.named(TK_I64)
