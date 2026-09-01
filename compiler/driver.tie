@@ -1253,13 +1253,13 @@ func find_char(s: string, ch: string) -> i64 {
 
 // 取字符串 [start, end) 子串（码点级）。
 func slice(s: string, start: i64, end: i64) -> string {
-    var out: string = ""
+    var sb = string_builder()
     var i: i64 = start
     while i < end {
-        out = out + str_char(s, i)
+        sb_append(sb, str_char(s, i))
         i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // 去除字符串首尾空白（空格/制表）。
@@ -1293,18 +1293,18 @@ func dir_of(path: string) -> string {
         return ""
     }
     var d = slice(path, 0, last + 1)
-    var out: string = ""
+    var sb = string_builder()
     var j: i64 = 0
     while j < str_len(d) {
         var c2 = str_char(d, j)
         if c2 == "\\" {
-            out = out + "/"
+            sb_append(sb, "/")
         } else {
-            out = out + c2
+            sb_append(sb, c2)
         }
         j = j + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 // 替换路径扩展名（basename 最后一个 . 后替换；无 . 直接追加）。
