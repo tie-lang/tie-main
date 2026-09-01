@@ -1,0 +1,32 @@
+type tie<logic>
+// p.6.2.2 探针：import result.tie 与 assert.tie 的扫描顺序依赖
+// 场景 A：result 在 assert 之前（文档称此为正确顺序）
+import "../../std/result.tie"
+import "../../std/assert.tie"
+
+func read_id() -> Result<i64, string> {
+    return Result.Ok(42)
+}
+
+func main() -> i64 {
+    var r: Result<i64, string> = Result.Ok(42)
+    var ok: bool = false
+    switch r {
+        case Result.Ok(v):
+            ok = v == 42
+        case Result.Err(e):
+            println("unexpected err " + e)
+    }
+    var r2 = read_id()
+    switch r2 {
+        case Result.Ok(v2):
+            ok = ok && v2 == 42
+        case Result.Err(e2):
+            println("unexpected err2 " + e2)
+    }
+    assert.assert(ok)
+    assert.assert_eq(1, 1)
+    assert.assert_neq(1, 2)
+    println("A PASS")
+    return 0
+}

@@ -53,7 +53,7 @@ pub func check_generic_constraints(gti: i64, args: table<i64>, line: i64, col: i
 // 实例化函数模板 → 签名 id。幂等（fn_sig 已命中直接返回）。
 // args：类型实参 id 表（按模板类型参数顺序，调用方已推断/显式确定）。
 pub func instantiate_fn(gti: i64, args: table<i64>, line: i64, col: i64) -> i64 {
-    var full = intern.lookup(gty_keys[gti])
+    var full = intern.lookup(gty_full[gti])
     var mangled = mangle(full, args)
     var sig0 = sstate.fn_sig(mangled)
     if sig0 >= 0 {
@@ -189,7 +189,7 @@ pub func instantiate_fn(gti: i64, args: table<i64>, line: i64, col: i64) -> i64 
 // 实例化 struct 模板 → struct 索引。幂等（st_keys 已命中直接返回）。
 // 复制定义 → reg_struct → 字段拍平（无继承）→ g_extra_tops → gin 记录。
 pub func instantiate_struct(gti: i64, args: table<i64>) -> i64 {
-    var full = intern.lookup(gty_keys[gti])
+    var full = intern.lookup(gty_full[gti])
     var mangled = mangle(full, args)
     var sidx = sstate.bs_find(st_keys, intern.intern(mangled))
     if sidx >= 0 {

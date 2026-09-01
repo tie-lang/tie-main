@@ -507,7 +507,7 @@ pub func parse_generic_type_node(tid: i64) -> i64 {
 //  6. set_enum_name + gin_reg 登记
 // 返回 enum 索引（types.enum_of 负载）；-1 错误（sm_err_* 已置）。
 pub func instantiate_enum(gti: i64, args: table<i64>) -> i64 {
-    var full = intern.lookup(gty_keys[gti])
+    var full = intern.lookup(gty_full[gti])
     var mangled = mangle(full, args)
     var eidx = sstate.bs_find(en_keys, intern.intern(mangled))
     if eidx >= 0 {

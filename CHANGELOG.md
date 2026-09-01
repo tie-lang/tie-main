@@ -51,7 +51,7 @@
 
 **功能限制（p.6.2，评估是否在正式版放开）**
 - [x] p.6.2.1 枚举 payload 白名单（放开 f64/table/map；struct/嵌套 enum 仍限制——2026-09-01 落地，见已落地修复）
-- [ ] p.6.2.2 import result.tie 对 import assert.tie 的扫描顺序依赖
+- [x] p.6.2.2 import result.tie 对 import assert.tie 的扫描顺序依赖（已修复——2026-09-01 落地，见已落地修复）
 - [ ] p.6.2.3 语句级宏 / 方法参数默认值 / ns_call_full_name 的 using 支持
 - [ ] p.6.2.4 闭包参数 ref / 变参
 - [ ] p.6.2.5 driver 中 data/ui/db/port/zd 工具链「尚未实现」提示文本清理（--compress-data 已可用）
@@ -89,6 +89,20 @@
 - [ ] p.6.5.11 收尾：trm-lite preview.2、README/CHANGELOG、已知限制清单
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+## [修复] 泛型模板名恢复改用 gty_full 模板索引直查表——消除 import 扫描顺序依赖（2026-09-01）（p.6.2.2）
+
+import result.tie 与 assert.tie 的扫描顺序敏感根因：gt_find 返回**模板索引**
+（gty_vals，登记计数器），而 instantiate_fn/instantiate_enum/instantiate_struct 及
+sinfer 三处用 `intern.lookup(gty_keys[gti])` 恢复模板全名——gty_keys 是按 intern id
+升序的**位置表**，模板索引与其一致时（登记序 == 名字序）恰好工作，顺序不同（如
+assert.tie 先于 result.tie 导入）则 gty_keys[gti] 取到别的模板名（如 Result），
+实例化出错误符号（Result$i64），调用点却已改写为 assert::assert_eq$i64 → IR 报
+"函数 'assert::assert_eq$i64' 无签名"。修复：新增 gty_full（模板索引 -> 全名 id），
+reg_generic 登记时同步填充，六处取名全部改走 gty_full[gti]。验证：
+tests/_p6_probe/import_order_a/b.tie（result/assert 两顺序均 PASS）、自举 tiec2→tiec3
+不动点、tests/language 正例 56/56 + 负例 18/18 拒 + config_smoke 48/48、p.6.2.1 探针
+仍 ALL PASS、std 库编译零错误。
+
 ## [修复] 枚举 payload 白名单放开 f64/table/map + 多枚举 payload 字段错位（2026-09-01）（p.6.2.1）
 
 枚举 payload 白名单从「整数族/bool/char/trit/string」扩展 + f64/table<T>/map<V>（p.6.2.1 评估结论：正式版放开）：
@@ -262,8 +276,8 @@ v1 已归档至 github.com/tie-lang/lib_v1）。设计文档含三层逐模块�
   （`命名空间函数 'ns::f' 未定义`）——sinfer 命名空间调用分支补 `gt_find` 模板查找、
   irgen_call 对已 mangled 全名的调用不再二次加前缀；自举不动点 tiec→tiec2→tiec3 逐字节一致。
 - **已知限制（记录未修）**：① enum payload 白名单不支持 table/f64（Result<table> 不可
-  表达）；② `import result.tie` 须置于 `import assert.tie` 之前（泛型 enum 与断言模板
-  的扫描顺序敏感性）；③ 泛型模板体内整数字面量单态化时类型固化
+  表达，已放开见 p.6.2.1）；② `import result.tie` 须置于 `import assert.tie` 之前（泛型 enum 与断言模板
+  的扫描顺序敏感性，已修复见 p.6.2.2）；③ 泛型模板体内整数字面量单态化时类型固化
   （`abs<T>` 用 `x - x` 取 T 型零值规避）。
 
 ---

@@ -450,6 +450,7 @@ pub func check_impl(ast_text: string, base_dir: string) -> string {
     // 泛型模板登记表重置（gt_*，T3b 单态化展开器预置；每次编译清零）
     gty_keys = table_new_i64()
     gty_vals = table_new_i64()
+    gty_full = table_new_i64()
     gtyp_nparams = table_new_i64()
     gtyp_off = table_new_i64()
     gtyp_names = table_new_i64()
@@ -699,6 +700,7 @@ pub func check_ast(base_dir: string) -> string {
     // 泛型模板登记表重置（gt_*，T3b 单态化展开器预置；每次编译清零）
     gty_keys = table_new_i64()
     gty_vals = table_new_i64()
+    gty_full = table_new_i64()
     gtyp_nparams = table_new_i64()
     gtyp_off = table_new_i64()
     gtyp_names = table_new_i64()

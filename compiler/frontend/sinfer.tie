@@ -1871,7 +1871,7 @@ func infer_enum_construct(eidx: i64, vname: string, args: table<i64>, id: i64) -
 // 返回枚举类型 id（types.enum_of(实例索引)）。
 func infer_generic_enum_construct(gti: i64, vname: string, args: table<i64>, id: i64) -> i64 {
     var tmpl_node = gty_node[gti]
-    var full = intern.lookup(gty_keys[gti])
+    var full = intern.lookup(gty_full[gti])
     var soff = sstate.slot_off(tmpl_node)
     var nv = sstate.nchild(tmpl_node) - soff
     var vi: i64 = -1
@@ -2025,7 +2025,7 @@ pub func try_enum_construct_hinted(expr: i64, hint_ty: i64) -> i64 {
     if ei < 0 {
         return -1
     }
-    var full = intern.lookup(gty_keys[gidx])
+    var full = intern.lookup(gty_full[gidx])
     var mangled = sgen.mangle(full, args_t)
     s_names[recv] = intern.intern(mangled)
     // payload 实参校验（实例化后字段类型已具体化）
@@ -2217,7 +2217,7 @@ pub func infer_struct_method(recv: i64, recv_ty: i64, mname: string, args: table
         // 目标函数 = 模板方法（Box::get）→ 从接收者类型提取类型实参 → 展开
         var rec = sstate.gin_find(sname)
         if rec >= 0 && gin_is_struct[rec] == 1 {
-            var tmpl_full = intern.lookup(gty_keys[gin_tmpl[rec]])  // "Box"
+            var tmpl_full = intern.lookup(gty_full[gin_tmpl[rec]])  // "Box"
             var tmpl_method = tmpl_full + "::" + mname              // "Box::get"
             var m_gti = sstate.gt_find(tmpl_method)
             if m_gti >= 0 && gty_is_struct[m_gti] == 0 {

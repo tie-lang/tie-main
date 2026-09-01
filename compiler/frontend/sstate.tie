@@ -140,6 +140,8 @@ var tup_n: table<i64>;        // tuple 字段数
 // check_ast 状态重置时清零。
 var gty_keys: table<i64>;      // 泛型模板全名 id（intern，升序）
 var gty_vals: table<i64>;      // 模板索引（与 gty_keys 并行，sorted_insert 同插）
+var gty_full: table<i64>;      // 模板索引 -> 模板全名 id（intern；gty_keys 按名排序
+                               // 是位置表，模板索引与其不一致时不能 gty_keys[gti] 取名）
 var gtyp_nparams: table<i64>;  // 模板索引 -> 类型参数个数
 var gtyp_off: table<i64>;      // 模板索引 -> 类型参数名段偏移（gtyp_names 扁平段）
 var gtyp_names: table<i64>;    // 类型参数名 id（intern，扁平段；取自 N_TYPE_PARAM.name）
@@ -1241,6 +1243,7 @@ pub func reg_generic(full_name: string, node: i64, is_struct: i64) -> i64 {
     table_push(gtyp_conoff, con_off)
     table_push(gty_node, node)
     table_push(gty_is_struct, is_struct)
+    table_push(gty_full, intern.intern(full_name))
     sorted_insert(gty_keys, gty_vals, intern.intern(full_name), idx)
     return idx
 }
