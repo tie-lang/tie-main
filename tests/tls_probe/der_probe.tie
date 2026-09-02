@@ -1,0 +1,95 @@
+type tie<logic>
+import "../../ext/tls/tool.tie" as tbt
+import "../../ext/tls/der.tie" as der
+
+var fails: i64 = 0
+func t(cond: bool, msg: string) {
+    if cond == false {
+        fails = fails + 1
+        println("FAIL: " + msg)
+    }
+}
+func is_time(n: i64) -> bool {
+    var tg: i64 = der.tag_at(n)
+    return tg == 0x17 || tg == 0x18   // UTCTime / GeneralizedTime
+}
+
+func main() {
+    // Self-signed RSA-2048 cert (openssl req -x509, DER form) - the full hex.
+    var hex = "308203833082026ba003020102021408f77cbcb91fe0a831266989a9a2e7d7f2686e77300d06092a864886f70d01010b0500303a310b300906035504061302434e3110300e060355040a0c07546573744f72673119301706035504030c10746573742e6578616d706c652e636f6d301e170d3236303930323130303631395a170d3336303833303130303631395a303a310b300906035504061302434e3110300e060355040a0c07546573744f72673119301706035504030c10746573742e6578616d706c652e636f6d30820122300d06092a864886f70d01010105000382010f003082010a0282010100e0ffc631181abaf78d8cc2ca0bab1e3699206290b563024a9c2e7e0448acaff90464b0c981bdc385ecc7ee84eb593b7912a7e0021ab13f0882be5e8b0d205bf5e511fe9c233ad4e834984c2f90780dcd5e4e89b01a3c60a5d1f613de5546fe29f0df3a6b4ed24a694468230ac0909b1afa3659f30097553e6f4a11e7df284c9686440b922badc3c7e008f8da14e1aefd6142318951e4826c9ffd7b0134b7b5a3c042098d0eeab576da38e3fed72d8a550a891282c99b7a790349f02077805e5cf5bdf8d98aa6598c05bf35da4a72392197f5d46af7a17c2ddc638466b1a3e46543ef0beee96147ab9a3ba652fa90bdc915d50e7fc7ae5b2d35ddf1b2e45048110203010001a38180307e301d0603551d0e04160414f827e34a3869fcf0b6893b6cafba84517c33db0e301f0603551d23041830168014f827e34a3869fcf0b6893b6cafba84517c33db0e300f0603551d130101ff040530030101ff300e0603551d0f0101ff040403020186301b0603551d11041430128210746573742e6578616d706c652e636f6d300d06092a864886f70d01010b05000382010100083e3804f28cd66dd120ab7409c7197eba2598fc77598b2d073b821d9baad9f1e0ad0a486f1d8bf8ff36a3400e97a0997eab97f890989a7048c18ac4bb139d0cf6c9fdcf1da704482774f80e6f4611e5712f17c96f1a1a4ea98111d61832fb7ea0ce1013994c2a706f563f58a8868098f4a4a861366313b58a20e7d600034adfdef6a92b52fab77f97b4210b2307120ee3a821865933b742d04388a5c4bd11b78b14540fb520e947104e14d4c219e59acd3d66983a874c5f509f7fbd02cae9255d9fffa621318990bb0cb5fc021d74174d59be74dbe6d184103380f0921e1fa7262105b68c72995f02abe35396a99890ba260775849e4db088977188489c8c49"
+    var bs = tbt.hex_to_bytes(hex)
+    var root = der.parse(bs)
+    t(root >= 0, "root parse ok")
+    if root < 0 {
+        println("FAIL parse returned -1")
+        return
+    }
+
+    // root SEQUENCE with exactly 3 children (tbs / sigAlg / sigValue)
+    t(der.tag_at(root) == 0x30, "root tag SEQUENCE(0x30) got " + to_string(der.tag_at(root)))
+    t(der.is_constructed(root), "root is constructed")
+    t(der.child_count(root) == 3, "root has 3 children got " + to_string(der.child_count(root)))
+
+    var tbs = der.child(root, 0)
+    t(der.tag_at(tbs) == 0x30, "child0 tbs is SEQUENCE")
+    t(der.is_constructed(tbs), "tbs is constructed")
+
+    // tbs contains version (context [0]) and serial (INTEGER) and it is constructed
+    var ver = der.find_first(tbs, 0xA0)
+    t(ver >= 0, "tbs contains version context[0] A0")
+    t(der.is_constructed(ver), "version is constructed")
+    t(der.value_len(ver) == 3, "version content len 3 got " + to_string(der.value_len(ver)))
+    var serial = der.find_first(tbs, 0x02)
+    t(serial >= 0 && der.tag_at(serial) == 0x02, "tbs contains serial INTEGER")
+    t(der.value_len(serial) == 20, "serial len 20 got " + to_string(der.value_len(serial)))
+    var sval = der.value_at(serial)
+    t(len(sval) == 20, "serial value_at length 20")
+
+    // validity: a SEQUENCE of two time nodes (UTCTime/GeneralizedTime tag)
+    var vald: i64 = -1
+    var i: i64 = 0
+    while i < der.child_count(tbs) {
+        var c = der.child(tbs, i)
+        if der.tag_at(c) == 0x30 && der.child_count(c) == 2 &&
+           is_time(der.child(c, 0)) == true && is_time(der.child(c, 1)) == true {
+            vald = c
+        }
+        i = i + 1
+    }
+    t(vald >= 0, "validity found as two-time SEQUENCE")
+    t(der.is_constructed(vald), "validity is SEQUENCE")
+    var t1: i64 = der.tag_at(der.child(vald, 0))
+    var t2: i64 = der.tag_at(der.child(vald, 1))
+    t((t1 == 0x17 || t1 == 0x18) && (t2 == 0x17 || t2 == 0x18), "validity time tags are UTCTime/GeneralizedTime")
+
+    // SPKI: a SEQUENCE holding an algorithm SEQUENCE and a BIT STRING
+    var spki: i64 = -1
+    var j: i64 = 0
+    while j < der.child_count(tbs) {
+        var c2 = der.child(tbs, j)
+        if der.tag_at(c2) == 0x30 && der.find_first(c2, 0x03) >= 0 && der.find_first(c2, 0x30) >= 0 {
+            spki = c2
+        }
+        j = j + 1
+    }
+    t(spki >= 0, "SPKI found as child of tbs")
+    t(der.find_first(spki, 0x30) >= 0, "SPKI holds algorithm SEQUENCE")
+    var sp_bit = der.find_first(spki, 0x03)
+    t(sp_bit >= 0 && der.tag_at(sp_bit) == 0x03, "SPKI holds BIT STRING (0x03)")
+    t(der.is_constructed(sp_bit) == false, "SPKI BIT STRING is primitive")
+    t(der.value_len(sp_bit) == 271, "SPKI BIT STRING content len 271 got " + to_string(der.value_len(sp_bit)))
+
+    // signature value: child2 of root is the BIT STRING
+    var sig = der.child(root, 2)
+    t(sig >= 0 && der.tag_at(sig) == 0x03, "root child2 is signature BIT STRING")
+    t(der.is_constructed(sig) == false, "signature is primitive")
+    t(der.value_len(sig) == 257, "signature content len 257 got " + to_string(der.value_len(sig)))
+    var sigalg = der.child(root, 1)
+    t(sigalg >= 0 && der.tag_at(sigalg) == 0x30, "root child1 is signature algorithm SEQUENCE")
+
+    if fails == 0 {
+        println("PASS der cert TLV assertions")
+    } else {
+        println("FAIL (assertions above)")
+    }
+}

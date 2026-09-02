@@ -1,0 +1,315 @@
+type tie<class>
+// der.tie: ext/tls DER TLV parser (namespace der)
+// X.509 cert chains are carried in DER; parse DER at byte-table level (0..255).
+// Output is a set of parallel node tables indexed by node id:
+//   d_tags[i]    merged tag value (class/constructed/tag-number encoded;
+//                equals the DER identifier byte for 1-byte tags, e.g. 0x30=SEQUENCE,
+//                0x02=INTEGER, 0x17=UTCTime, 0xA0=context[0] constructed, 0x03=BIT STRING)
+//   d_cons[i]    constructed flag (1=constructed, 0=primitive)
+//   d_offs[i]    content start offset (within original byte table)
+//   d_lens[i]    total TLV byte length (header + content)
+//   d_clens[i]   content (value) byte length
+//   d_kids[i]    constructed: start index into d_childflat; primitive: -1
+//   d_cnts[i]    constructed: child count; primitive: 0
+//   d_childflat  flat table of all child node ids. Each constructed node's direct
+//                children are a single CONTIGUOUS run [d_kids, d_kids+d_cnts) here.
+// tie tables hold scalars only, so parent/child links use a flat registry +
+// [start, length] interval (same AST style as std/json). d_bytes keeps the
+// byte table of the latest parse; value_at slices [off, off+clen) from it.
+// Contiguity: a constructed node's children are collected in a local list during
+// parsing (each child recursively appends its own subtree's groups to d_childflat),
+// then appended to d_childflat as one run -- this keeps descendants from being
+// interleaved into a parent's child run.
+// Position: tie passes params by value, so the cursor is module-global g_pos
+// (reset to 0 in parse); each TLV advances it, recursion resumes after.
+// Supported:
+//   - tag numeric encoding: class(2b)/constructed(1b)/high tag number extension
+//     (tag>=31: 0x1F then subsequent bytes, 7 value bits each, MSB continuation)
+//   - short length form (<0x80) / long form (>=0x80; 0x80 indefinite => REJECT)
+// Failure: parse returns -1 on structural error (indefinite/out-of-bounds/
+// trailing bytes). Accessors return safe values (0/empty/-1) for bad ids.
+// Naming: private helpers carry a der_ prefix; public API has none.
+// Usage: import "./der.tie" then der.parse(tbt.hex_to_bytes(hex)) -> root id.
+// ============================================================================
+
+import "./tool.tie"
+
+// ---- module-global node storage (outside namespace) ----
+var d_tags: table<i64>;
+var d_cons: table<i64>;
+var d_offs: table<i64>;
+var d_lens: table<i64>;
+var d_clens: table<i64>;
+var d_kids: table<i64>;
+var d_cnts: table<i64>;
+var d_childflat: table<i64>;
+var d_bytes: table<i64>;
+// parse cursor + scratch (global, see header note)
+var g_pos: i64 = 0;
+var g_ok: bool = true;
+var g_class: i64 = 0;
+var g_con: i64 = 0;
+var g_tagnum: i64 = 0;
+
+namespace der {
+
+// ---------- node construction (internal) ----------
+
+func der_new_node(tval: i64, con: i64) -> i64 {
+    table_push(d_tags, tval)
+    table_push(d_cons, con)
+    table_push(d_offs, 0)
+    table_push(d_lens, 0)
+    table_push(d_clens, 0)
+    table_push(d_kids, -1)
+    table_push(d_cnts, 0)
+    return len(d_tags) - 1
+}
+
+// ---------- identifier / length reading (internal) ----------
+
+// Read tag identifier first byte (incl. high-tag-number), advance g_pos, fill
+// g_class/g_con/g_tagnum. On failure set g_tagnum=-1 and g_ok=false.
+func der_read_id(bs: table<i64>) {
+    var b: i64 = bs[g_pos]
+    g_pos = g_pos + 1
+    g_class = (b >> 6) & 3
+    g_con = (b >> 5) & 1
+    var low: i64 = b & 0x1F
+    if low != 0x1F {
+        g_tagnum = low
+        return
+    }
+    // high tag number: 7 value bits per follow-up byte, MSB kills continuation
+    var tn: i64 = 0
+    var done: bool = false
+    while done == false {
+        if g_pos >= len(bs) {
+            g_tagnum = -1
+            g_ok = false
+            return
+        }
+        var c: i64 = bs[g_pos]
+        g_pos = g_pos + 1
+        tn = (tn << 7) | (c & 0x7F)
+        if (c & 0x80) == 0 {
+            done = true
+        }
+    }
+    g_tagnum = tn
+}
+
+// Merge g_class/g_con/g_tagnum into tag value (single-byte tags equal DER id byte).
+func der_tag_value() -> i64 {
+    if g_tagnum < 31 {
+        return (g_class << 6) | (g_con << 5) | g_tagnum
+    }
+    return (g_tagnum << 8) | (g_class << 6) | (g_con << 5) | 0x1F
+}
+
+// Read content length; return byte count, or -1 on failure (0x80 indefinite,
+// too many length bytes, or out-of-bounds all rejected).
+func der_read_len(bs: table<i64>) -> i64 {
+    if g_pos >= len(bs) {
+        g_ok = false
+        return -1
+    }
+    var b0: i64 = bs[g_pos]
+    g_pos = g_pos + 1
+    if b0 < 0x80 {
+        return b0
+    }
+    var n: i64 = b0 & 0x7F
+    if n == 0 {
+        // 0x80 = indefinite length (BER); reject in DER
+        g_ok = false
+        return -1
+    }
+    if n > 4 {
+        g_ok = false
+        return -1
+    }
+    var lv: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        if g_pos >= len(bs) {
+            g_ok = false
+            return -1
+        }
+        lv = (lv << 8) | bs[g_pos]
+        g_pos = g_pos + 1
+        i = i + 1
+    }
+    return lv
+}
+
+// ---------- recursive parse ----------
+
+// Parse one TLV (and its children) starting at g_pos; return node id, or -1.
+func der_parse_node(bs: table<i64>) -> i64 {
+    var start: i64 = g_pos
+    if g_pos >= len(bs) {
+        g_ok = false
+        return -1
+    }
+    der_read_id(bs)
+    if g_tagnum < 0 || g_ok == false {
+        g_ok = false
+        return -1
+    }
+    var tval: i64 = der_tag_value()
+    var iscon: i64 = g_con
+    var clen: i64 = der_read_len(bs)
+    if clen < 0 || g_ok == false {
+        g_ok = false
+        return -1
+    }
+    if g_pos + clen > len(bs) {
+        g_ok = false
+        return -1
+    }
+    var nd: i64 = der_new_node(tval, iscon)
+    d_offs[nd] = g_pos
+    d_clens[nd] = clen
+    var content_end: i64 = g_pos + clen
+    if iscon == 1 {
+        // collect direct children in a local list, then append them contiguously
+        var tmp = table_new_i64()
+        while g_pos < content_end {
+            var c: i64 = der_parse_node(bs)
+            if c < 0 {
+                g_ok = false
+                return -1
+            }
+            table_push(tmp, c)
+        }
+        if g_pos != content_end {
+            g_ok = false
+            return -1
+        }
+        var kstart: i64 = len(d_childflat)
+        d_kids[nd] = kstart
+        d_cnts[nd] = len(tmp)
+        var k: i64 = 0
+        while k < len(tmp) {
+            table_push(d_childflat, tmp[k])
+            k = k + 1
+        }
+    }
+    g_pos = content_end
+    d_lens[nd] = g_pos - start
+    return nd
+}
+
+// ---------- public API ----------
+
+// Parse a whole DER byte table; return root node id (>=0) or -1 on failure.
+pub func parse(bs: table<i64>) -> i64 {
+    d_tags = table_new_i64()
+    d_cons = table_new_i64()
+    d_offs = table_new_i64()
+    d_lens = table_new_i64()
+    d_clens = table_new_i64()
+    d_kids = table_new_i64()
+    d_cnts = table_new_i64()
+    d_childflat = table_new_i64()
+    d_bytes = bs
+    g_pos = 0
+    g_ok = true
+    g_class = 0
+    g_con = 0
+    g_tagnum = 0
+    if len(bs) == 0 {
+        return -1
+    }
+    var root: i64 = der_parse_node(bs)
+    if root < 0 || g_ok == false {
+        return -1
+    }
+    // DER root should consume every byte (a cert is exactly its root SEQUENCE)
+    if g_pos != len(bs) {
+        g_ok = false
+        return -1
+    }
+    return root
+}
+
+// Node tag value (class/constructed bits included; -1 for bad id).
+pub func tag_at(id: i64) -> i64 {
+    if id < 0 || id >= len(d_tags) {
+        return -1
+    }
+    return d_tags[id]
+}
+
+// Constructed flag (false for bad id).
+pub func is_constructed(id: i64) -> bool {
+    if id < 0 || id >= len(d_tags) {
+        return false
+    }
+    return d_cons[id] == 1
+}
+
+// Content (value) byte length (0 for bad id).
+pub func value_len(id: i64) -> i64 {
+    if id < 0 || id >= len(d_tags) {
+        return 0
+    }
+    return d_clens[id]
+}
+
+// Content byte slice ([off, off+clen) of the original byte table).
+pub func value_at(id: i64) -> table<i64> {
+    if id < 0 || id >= len(d_tags) {
+        return table_new_i64()
+    }
+    return tbt.sub(d_bytes, d_offs[id], d_clens[id])
+}
+
+// The i-th child node id of id (-1 for bad id / non-constructed / out-of-range).
+pub func child(id: i64, i: i64) -> i64 {
+    if id < 0 || id >= len(d_tags) {
+        return -1
+    }
+    if d_cons[id] != 1 {
+        return -1
+    }
+    if i < 0 || i >= d_cnts[id] {
+        return -1
+    }
+    return d_childflat[d_kids[id] + i]
+}
+
+// Number of children of id (0 for bad id / non-constructed).
+pub func child_count(id: i64) -> i64 {
+    if id < 0 || id >= len(d_tags) {
+        return 0
+    }
+    if d_cons[id] != 1 {
+        return 0
+    }
+    return d_cnts[id]
+}
+
+// First direct child of id whose tag == tag; -1 if none.
+pub func find_first(id: i64, tag: i64) -> i64 {
+    if id < 0 || id >= len(d_tags) {
+        return -1
+    }
+    if d_cons[id] != 1 {
+        return -1
+    }
+    var n: i64 = d_cnts[id]
+    var k: i64 = d_kids[id]
+    var i: i64 = 0
+    while i < n {
+        var cid: i64 = d_childflat[k + i]
+        if d_tags[cid] == tag {
+            return cid
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+}

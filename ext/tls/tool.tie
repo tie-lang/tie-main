@@ -1,0 +1,203 @@
+type tie<class>
+// ============================================================================
+// tool.tie：ext/tls 公共工具——字节表运算与 hex 编解码（命名空间 tbt）
+// 用途：TLS 全链路以 table<i64>（0..255）承载二进制数据（tie 字符串不能承载
+// ≥0x80），本模块提供协议所需的字节表基础运算：
+//   - hex ↔ 字节表（与 ext/aes、ext/chacha20 接口一致：小写 hex 字符串）
+//   - 大端序 u16/u24/u32/u64 读写（TLS/DER/证书内部普遍用大端长度）
+//   - 拼接 / 切段 / 比较 / 补零（协议消息组装与地址计算）
+// 性能约定：全部基于 table_push 摊销构建，禁止逐字符字符串拼接（O(n²)）；
+// 仅 hex 串输出场景使用小规模拼接（握手转录本 ≤ KB 级，可接受）。
+// 备注：命名空间内互调为裸调用，内部函数不加 tbt_ 前缀。
+// ============================================================================
+
+namespace tbt {
+
+// ---- hex ↔ 字节表 ----
+
+func hex_nibble(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// 小写 hex 字符串 → 字节表（每 2 个 hex 字符 1 字节；输入须偶数长度）。
+pub func hex_to_bytes(h: string) -> table<i64> {
+    var out = table_new_i64()
+    var n: i64 = len(h)
+    var i: i64 = 0
+    while i < n {
+        var hi = hex_nibble(str_char(h, i))
+        var lo = hex_nibble(str_char(h, i + 1))
+        table_push(out, (hi << 4) | lo)
+        i = i + 2
+    }
+    return out
+}
+
+// 字节表 → 小写 hex 字符串（每字节 2 个 hex 字符）。
+pub func bytes_to_hex(bs: table<i64>) -> string {
+    var hex = "0123456789abcdef"
+    var out: string = ""
+    var i: i64 = 0
+    while i < len(bs) {
+        out = out + str_char(hex, (bs[i] >> 4) & 0xF) + str_char(hex, bs[i] & 0xF)
+        i = i + 1
+    }
+    return out
+}
+
+// ---- 基本表运算 ----
+
+// a == b 逐字节比较。
+pub func eq(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 拼接 a + b。
+pub func concat(a: table<i64>, b: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < len(a) {
+        table_push(out, a[i])
+        i = i + 1
+    }
+    i = 0
+    while i < len(b) {
+        table_push(out, b[i])
+        i = i + 1
+    }
+    return out
+}
+
+// 追加 src[off .. off+n) 到 out 尾部。
+pub func push_bytes(out: table<i64>, src: table<i64>, off: i64, n: i64) {
+    var i: i64 = 0
+    while i < n {
+        table_push(out, src[off + i])
+        i = i + 1
+    }
+}
+
+// 切段 b[off .. off+n)。
+pub func sub(b: table<i64>, off: i64, n: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(out, b[off + i])
+        i = i + 1
+    }
+    return out
+}
+
+// 全 0 字节表（长度 n）。
+pub func zeros(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(out, 0)
+        i = i + 1
+    }
+    return out
+}
+
+// ---- 大端序读取（b[off] 起，越界按 0 处理）----
+
+pub func u16_be(b: table<i64>, off: i64) -> i64 {
+    var v: i64 = 0
+    if off < len(b) {
+        v = v | (b[off] << 8)
+    }
+    if off + 1 < len(b) {
+        v = v | b[off + 1]
+    }
+    return v
+}
+
+pub func u24_be(b: table<i64>, off: i64) -> i64 {
+    var v: i64 = 0
+    if off < len(b) {
+        v = v | (b[off] << 16)
+    }
+    if off + 1 < len(b) {
+        v = v | (b[off + 1] << 8)
+    }
+    if off + 2 < len(b) {
+        v = v | b[off + 2]
+    }
+    return v
+}
+
+pub func u32_be(b: table<i64>, off: i64) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 4 {
+        if off + i < len(b) {
+            v = (v << 8) | b[off + i]
+        } else {
+            v = v << 8
+        }
+        i = i + 1
+    }
+    return v
+}
+
+pub func u64_be(b: table<i64>, off: i64) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        if off + i < len(b) {
+            v = (v << 8) | b[off + i]
+        } else {
+            v = v << 8
+        }
+        i = i + 1
+    }
+    return v
+}
+
+// ---- 大端序写入 ----
+
+// 高位优先压入 v 的低 n 字节到 out 尾部（n=1..8）。
+pub func push_be(out: table<i64>, v: i64, n: i64) {
+    var i: i64 = n
+    while i > 0 {
+        var shift = (i - 1) * 8
+        table_push(out, (v >> shift) & 0xFF)
+        i = i - 1
+    }
+}
+
+pub func push_u16(out: table<i64>, v: i64) {
+    push_be(out, v, 2)
+}
+
+pub func push_u24(out: table<i64>, v: i64) {
+    push_be(out, v, 3)
+}
+
+pub func push_u32(out: table<i64>, v: i64) {
+    push_be(out, v, 4)
+}
+
+pub func push_u64(out: table<i64>, v: i64) {
+    push_be(out, v, 8)
+}
+
+}
