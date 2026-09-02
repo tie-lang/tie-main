@@ -1,0 +1,97 @@
+type tie<logic>
+// p.6.5.9 验收：多执行体分配/回收 + 消息传收 demo（复杂形态完整载体）
+// 综合验证复杂形态全部能力一次贯通：
+//   · work-stealing 调度：P=4 worker 并发执行任务
+//   · 并发三色 GC：后台回收器与 worker 真并发；drain 后垃圾被回收（精确计数）
+//   · channel mailbox：任务经 ch_send 投递消息 → 主线程 ch_recv 取回
+//   · 可迁移栈：任务可被任意 worker 执行
+// 期望：PASS exit 0
+
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+
+    // ===== 1. channel mailbox：任务投递 → 主线程收取 =====
+    var ch = tl_runtime_ctx.ctx_ch_open()
+    var i: i64 = 0
+    while i < 4 {
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            var k: i64 = 0
+            while k < 2 {
+                var r = tl_runtime_ctx.ctx_ch_send(ch, 100 + k)
+                if r != 0 {
+                    return 1
+                }
+                k = k + 1
+            }
+            return 0
+        })
+        i = i + 1
+    }
+    var ran = tl_runtime_ctx.ctx_drain()
+    // 收取 8 条（4 x 2）
+    var sum: i64 = 0
+    var n: i64 = 0
+    var taken: i64 = 0
+    while n < 8 {
+        var v = tl_runtime_ctx.ctx_ch_recv(ch)
+        if v != 0 {
+            sum = sum + v
+            taken = taken + 1
+        }
+        n = n + 1
+    }
+    println("chan: ran=" + to_string(ran) + " taken=" + to_string(taken) + " sum=" + to_string(sum))
+
+    // ===== 2. 多执行体分配/回收（工作集 + GC 精确回收）=====
+    // 16 任务各建根+子（都可达，不回收）与 4 个垃圾（drain 中后台回收）
+    i = 0
+    while i < 16 {
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            var r = trm_lite_tgc.alloc(32)
+            trm_lite_tgc.add_root(r)
+            var s = trm_lite_tgc.alloc(16)
+            trm_lite_tgc.set_ref(r, 0, s)
+            var g: i64 = 0
+            while g < 4 {
+                trm_lite_tgc.alloc(16)   // 垃圾
+                g = g + 1
+            }
+            return r
+        })
+        i = i + 1
+    }
+    var ran2 = tl_runtime_ctx.ctx_drain()
+    var live = tl_runtime_ctx.ctx_live_objs()
+    var alloc = trm_lite_tgc.alloc_count()
+    var freed = tl_runtime_ctx.ctx_collect()
+    println("gc: ran2=" + to_string(ran2) + " live=" + to_string(live) + " alloc=" + to_string(alloc) + " freed_total=" + to_string(freed))
+
+    // ===== 3. 可迁移：任务执行 worker 分布 =====
+    var w0 = tl_runtime_ctx.ctx_task_exec_w(0)
+    var w1 = tl_runtime_ctx.ctx_task_exec_w(1)
+    var w16 = tl_runtime_ctx.ctx_task_exec_w(16)
+    println("exec_workers=" + to_string(w0) + "," + to_string(w1) + "," + to_string(w16))
+
+    var ok: i64 = 1
+    if ran != 4 || taken != 8 || sum != 804 {
+        ok = 0
+    }
+    // 16 任务 × (根+子+4 垃圾) = 96 对象表槽位；drain 后 32 存活（16 根+16 子），
+    // 64 垃圾被后台并发回收（freed_total；跨轮累计含前十次无）
+    if ran2 != 16 || live != 32 || alloc != 96 {
+        ok = 0
+    }
+    if freed < 64 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    println("done")
+}

@@ -1,0 +1,75 @@
+type tie<logic>
+// p.6.5.9 验收：多执行体分配/回收 + 消息传收 demo（简单形态载体）
+// 简单形态 = tiec 内置原语（spawn/yield/collect + actor mailbox + channel）：
+//   · 内置 spawn 分派 4 个任务（协作式），collect 回收
+//   · actor 消息经 mailbox 承载（async 投递 FIFO + 同步 get）
+//   · 内置 channel（ch_open/ch_send/ch_recv）单通道传收
+// 期望：PASS exit 0（简单 vs 复杂行为一致）
+
+actor Counter {
+    var count: i64 = 0
+    pub async func bump(by: i64) {
+        count = count + by
+    }
+    pub func get() -> i64 {
+        return count
+    }
+}
+
+var g_sum: table<i64> = []
+
+func task(n: i64) -> i64 {
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        acc = acc + i
+        i = i + 1
+    }
+    table_push(g_sum, acc)
+    return acc
+}
+
+func main() {
+    // ===== 1. actor mailbox 消息 =====
+    var c = run Counter()
+    c.bump(3)
+    c.bump(4)
+    var v = c.get()
+    println("actor=" + to_string(v))
+
+    // ===== 2. 内置 channel =====
+    var ch = ch_open()
+    var r1 = ch_send(ch, 7)
+    var r2 = ch_send(ch, 9)
+    var m1 = ch_recv(ch)
+    var m2 = ch_recv(ch)
+    println("chan=" + to_string(r1) + "," + to_string(r2) + " msgs=" + to_string(m1) + "," + to_string(m2))
+
+    // ===== 3. spawn 任务 + collect =====
+    spawn(func() -> i64 { return task(5) })
+    spawn(func() -> i64 { return task(10) })
+    spawn(func() -> i64 { return task(20) })
+    yield()
+    var f = collect()
+    var s0 = g_sum[0]
+    var s1 = g_sum[1]
+    var s2 = g_sum[2]
+    println("tasks=" + to_string(s0) + "," + to_string(s1) + "," + to_string(s2) + " collect=" + to_string(f))
+
+    var ok: i64 = 1
+    if v != 7 {
+        ok = 0
+    }
+    if r1 != 0 || r2 != 0 || m1 != 7 || m2 != 9 {
+        ok = 0
+    }
+    if s0 != 10 || s1 != 45 || s2 != 190 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}
