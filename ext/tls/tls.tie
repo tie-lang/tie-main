@@ -1,0 +1,487 @@
+type tie<class>
+// ============================================================================
+// tls.tie：ext/tls——TLS 客户端统一入口（命名空间 tls，纯 tie）
+// Unified TLS client entry point (namespace tls, pure-tie).
+// 用途（Purpose）：在 tls1_3（TLS 1.3）与 tls1_2（TLS 1.2）两层实现之上，提供
+// 统一 connect/send/recv/close 数据平面 API，供 p.6.6.2 httpc 及后续依赖方直接
+// 复用。数据平面全以 table<i64>（0..255）承载二进制。
+// 协商（Negotiation）：connect 依 supported_versions 优先尝试 TLS 1.3（发 tls13
+// ClientHello）。ServerHello 套件为 0x1301（TLS_AES_128_GCM_SHA256）即走 TLS 1.3
+// 完整握手；否则（非 0x1301、报警、或对端关闭）判定为非 1.3 服务器，关闭重连后
+// 按 tls12 流程握手（TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256，0xC02F）。
+// Session：socket 句柄 + 协商版本（0x0304=1.3 / 0x0303=1.2）+ 该连接密钥态
+// （发送/接收写密钥、iv/salt）+ 读缓冲平行表（跨记录重组解密明文字节）。
+//
+// Features:
+//   - connect(host, pport) -> Session   建 TCP + TLS 握手（1.3 优先，1.2 回退）
+//   - send(s, plain) -> bool            明文 -> 记录层加密并发送
+//   - recv(s, max) -> table             阻塞读，跨记录重组解密，最多返回 max 字节
+//   - close(s)                          关闭底层 socket
+//
+// 语言约束（Language constraints）：
+//   - tie struct 为值类型：跨函数调用只读 i64 字段不改写；唯一可跨调用持久化的是
+//     表字段内容（表对象共享引用）。故可变状态一律放表字段：seqs=[c_seq, s_seq]、
+//     rbuf。握手机能组装完成回传 Session（值返回），调用方接收。
+//   - 结构体字段表禁止直接 table_push / 下标写：必须经局部变量重拼/改后写回。
+//   - `port` 是 tie 保留字，端口参数命名为 pport。
+// ============================================================================
+
+import "./tool.tie"
+import "./hash.tie"
+import "./tls1_3.tie"
+import "./tls1_2.tie"
+import "../../std/x25519.tie"
+import "../../std/net.tie"
+
+// ---- Session：单连接状态（句柄 + 版本 + 密钥态 + 读缓冲）----
+struct Session {
+    var handle: i64 = 0                         // 底层 socket 句柄；0/负 = 无效/失败
+    var version: i64 = 0                        // 协商版本：0x0304=1.3，0x0303=1.2
+    var mode: i64 = 0                           // 13 / 12
+    var seqs: table<i64> = table_new_i64()      // [c_seq(发送), s_seq(接收)]（可持久化）
+    var rbuf: table<i64> = table_new_i64()      // 读缓冲（解密明文，跨记录重组）
+    var c_key: table<i64> = table_new_i64()     // 客户端写密钥
+    var c_iv: table<i64> = table_new_i64()      // TLS1.3 客户端 iv（12B）/（1.2 不使用）
+    var c_salt: table<i64> = table_new_i64()    // TLS1.2 客户端 salt（4B）
+    var s_key: table<i64> = table_new_i64()     // 服务端写密钥
+    var s_iv: table<i64> = table_new_i64()      // TLS1.3 服务端 iv（12B）/（1.2 不使用）
+    var s_salt: table<i64> = table_new_i64()    // TLS1.2 服务端 salt（4B）
+}
+
+namespace tls {
+
+// ---- 内部工具 ----
+
+// 新序号表 [c_seq=0, s_seq=0]。
+func new_seqs() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0)
+    table_push(t, 0)
+    return t
+}
+
+// 5 字节密文记录头（TLS1.3 AAD = type|ver|len）。
+func rec_hdr(rlen: i64) -> table<i64> {
+    var hdr = table_new_i64()
+    table_push(hdr, 0x17); table_push(hdr, 0x03); table_push(hdr, 0x03)
+    tbt.push_be(hdr, rlen, 2)
+    return hdr
+}
+
+// ServerHelloDone（type 14）是否已完整出现于 TLS1.2 服务器明文握缓冲。
+func has_server_hello_done(s: table<i64>) -> bool {
+    var off: i64 = 0
+    while off + 4 <= len(s) {
+        var mtype: i64 = s[off]
+        var mlen: i64 = tbt.u24_be(s, off + 1)
+        if mtype == 14 {
+            return true
+        }
+        if off + 4 + mlen > len(s) {
+            return false
+        }
+        off = off + 4 + mlen
+    }
+    return false
+}
+
+// ---- TLS 1.3 握手（ServerHello 已收，传输完剩余 flight + 校验）----
+// 成功返回填好的 Session（handle>0）；失败返回 handle<0 的 Session。
+func finish13(s: Session, h: i64, ch_msg: table<i64>, sh_body: table<i64>, server_pub: table<i64>, sk_hex: string) -> Session {
+    var transcript = tbt.concat(ch_msg, sh_body)
+    var shared = tls13.shared_secret(sk_hex, server_pub)
+    if len(shared) != 32 {
+        s.handle = -1
+        return s
+    }
+    var hs = tls13.handshake_secret(shared)
+    var cht = tls13.client_hs_traffic(hs, transcript)
+    var sht = tls13.server_hs_traffic(hs, transcript)
+    var (c_k, c_iv) = tls13.sched_keys(cht)
+    var (s_k_hs, s_iv_hs) = tls13.sched_keys(sht)
+    var s_fk = tls13.finished_key(sht)
+    var c_fk = tls13.finished_key(cht)
+
+    // 收加密的服务器 Flight，解密并校验 server Finished。
+    var pbuf = table_new_i64()
+    var hoff: i64 = 0
+    var ss: i64 = 0
+    var flight_done = false
+    while flight_done == false {
+        var (otype, body) = tls13.recv_record(h)
+        if otype < 0 {
+            s.handle = -1
+            return s
+        }
+        if otype == 20 {
+            continue        // 兼容 legacy ChangeCipherSpec
+        }
+        if otype != 23 {
+            s.handle = -1
+            return s
+        }
+        var hdr = rec_hdr(len(body))
+        var (ok, itype, content) = tls13.decrypt_record(s_k_hs, s_iv_hs, ss, hdr, body)
+        ss = ss + 1
+        if ok == false {
+            s.handle = -1
+            return s
+        }
+        if itype != 22 {
+            s.handle = -1
+            return s
+        }
+        var kk: i64 = 0
+        while kk < len(content) {
+            table_push(pbuf, content[kk])
+            kk = kk + 1
+        }
+        while len(pbuf) - hoff >= 4 && flight_done == false {
+            var mtype: i64 = pbuf[hoff]
+            var mlen: i64 = tbt.u24_be(pbuf, hoff + 1)
+            if len(pbuf) - (hoff + 4) < mlen {
+                break
+            }
+            var full = tbt.sub(pbuf, hoff, 4 + mlen)
+            var mbody = tbt.sub(pbuf, hoff + 4, mlen)
+            if mtype == 20 {
+                // server Finished：transcript 此刻尚不含 Finished
+                var expected = thash.hmac(s_fk, thash.sha256(transcript))
+                if tbt.eq(expected, mbody) == false {
+                    s.handle = -1
+                    return s
+                }
+                transcript = tbt.concat(transcript, full)
+                flight_done = true
+            } else {
+                // EncryptedExtensions(8)/Certificate(11)/CertificateVerify(15)
+                transcript = tbt.concat(transcript, full)
+            }
+            hoff = hoff + 4 + mlen
+        }
+    }
+
+    // 派生 application traffic 密钥（transcript 已含 server Finished）。
+    var ms = tls13.master_secret(hs)
+    var cat = tls13.client_ap_traffic(ms, transcript)
+    var sat = tls13.server_ap_traffic(ms, transcript)
+    var (ca_k, ca_iv) = tls13.sched_keys(cat)
+    var (sa_k, sa_iv) = tls13.sched_keys(sat)
+
+    // 发送 client Finished（用 client hs 密钥、hs seq 0）。
+    var cfin = thash.hmac(c_fk, thash.sha256(transcript))
+    var cfin_msg = tls13.hs_message(20, cfin)
+    var rec_fin = tls13.encrypt_record(c_k, c_iv, 0, 22, cfin_msg)
+    net.tcp_send_bytes(h, rec_fin)
+
+    // 填 Session（应用数据阶段客户端 seq 从 0 起）。
+    s.handle = h
+    s.version = 0x0304
+    s.mode = 13
+    s.c_key = ca_k
+    s.c_iv = ca_iv
+    s.s_key = sa_k
+    s.s_iv = sa_iv
+    s.seqs = new_seqs()
+    s.rbuf = table_new_i64()
+    return s
+}
+
+// ---- TLS 1.2 完整握手（发 CH 起，含 CKE/CCS/Finished 双向）----
+func finish12(s: Session, h: i64) -> Session {
+    var (rec, ch_msg, sk_hex, c_rand) = tls12.make_client_hello()
+    net.tcp_send_bytes(h, rec)
+
+    // 读服务器明文 Flight（ServerHello..ServerHelloDone）。
+    var srv_hs = table_new_i64()
+    var guard2: i64 = 0
+    while has_server_hello_done(srv_hs) == false && guard2 < 40 {
+        var (otype, body) = tls12.recv_record(h)
+        if otype < 0 {
+            s.handle = -1
+            return s
+        }
+        if otype != 22 {
+            s.handle = -1
+            return s
+        }
+        var k: i64 = 0
+        while k < len(body) {
+            table_push(srv_hs, body[k])
+            k = k + 1
+        }
+        guard2 = guard2 + 1
+    }
+    if has_server_hello_done(srv_hs) == false {
+        s.handle = -1
+        return s
+    }
+
+    var (ver, cs, s_rand, spub) = tls12.parse_server_flight(srv_hs)
+    if cs != 0xC02F {
+        s.handle = -1
+        return s
+    }
+    if len(s_rand) != 32 || len(spub) != 32 {
+        s.handle = -1
+        return s
+    }
+
+    var pre = tbt.hex_to_bytes(x25519.dh(sk_hex, tbt.bytes_to_hex(spub)))
+    if len(pre) != 32 {
+        s.handle = -1
+        return s
+    }
+    var master = tls12.master_secret(pre, c_rand, s_rand)
+    var kb = tls12.key_block(master, c_rand, s_rand)
+    var c_key = tbt.sub(kb, 0, 16)
+    var s_key = tbt.sub(kb, 16, 16)
+    var c_salt = tbt.sub(kb, 32, 4)
+    var s_salt = tbt.sub(kb, 36, 4)
+
+    // ClientKeyExchange（ECDHE 临时公钥）明文 + CCS。
+    var cp = tbt.hex_to_bytes(x25519.keygen(sk_hex))
+    var cke_body = table_new_i64()
+    table_push(cke_body, len(cp))
+    var k2: i64 = 0
+    while k2 < len(cp) {
+        table_push(cke_body, cp[k2])
+        k2 = k2 + 1
+    }
+    var cke_frame = tls12.hs_message(16, cke_body)
+    var cke_rec = table_new_i64()
+    table_push(cke_rec, 0x16); table_push(cke_rec, 0x03); table_push(cke_rec, 0x03)
+    tbt.push_be(cke_rec, len(cke_frame), 2)
+    k2 = 0
+    while k2 < len(cke_frame) {
+        table_push(cke_rec, cke_frame[k2])
+        k2 = k2 + 1
+    }
+    net.tcp_send_bytes(h, cke_rec)
+    var ccs = tbt.hex_to_bytes("140303000101")
+    net.tcp_send_bytes(h, ccs)
+
+    // client Finished（client hs seq 0）。
+    var transcript = tbt.concat(ch_msg, srv_hs)
+    transcript = tbt.concat(transcript, cke_frame)
+    var cfin = tls12.prf(master, "client finished", thash.sha256(transcript), 12)
+    var cfin_frame = tls12.hs_message(20, cfin)
+    net.tcp_send_bytes(h, tls12.encrypt_record(c_salt, c_key, 0, 0x16, cfin_frame))
+
+    // 收 CCS + 解密校验 server Finished（server hs seq 0）。
+    var ss: i64 = 0
+    var (otype, body) = tls12.recv_record(h)
+    if otype != 20 {
+        s.handle = -1
+        return s
+    }
+    var (otype2, body2) = tls12.recv_record(h)
+    if otype2 != 0x16 {
+        s.handle = -1
+        return s
+    }
+    var (ok, pt_fin) = tls12.decrypt_record(s_salt, s_key, ss, otype2, body2)
+    ss = 1
+    if ok == false {
+        s.handle = -1
+        return s
+    }
+    var serv_fin = tbt.sub(pt_fin, 4, 12)
+    var exp_fin = tls12.prf(master, "server finished",
+        thash.sha256(tbt.concat(transcript, cfin_frame)), 12)
+    if tbt.eq(serv_fin, exp_fin) == false {
+        s.handle = -1
+        return s
+    }
+
+    // 填 Session（客户端 Finished 已用 seq 0，应用数据从 seq 1 起）。
+    s.handle = h
+    s.version = 0x0303
+    s.mode = 12
+    s.c_key = c_key
+    s.c_salt = c_salt
+    s.s_key = s_key
+    s.s_salt = s_salt
+    s.seqs = new_seqs()
+    var q = s.seqs
+    q[0] = 1        // 客户端应用数据序号（client Finished 已用 0）
+    q[1] = 1        // 服务端应用数据序号（server Finished 已用 0）
+    s.seqs = q
+    s.rbuf = table_new_i64()
+    return s
+}
+
+// ---- 公共 API ----
+
+// 连接并完成 TLS 握手。返回空（handle<0）的 Session 表示失败。
+pub func connect(host: string, pport: i64) -> Session {
+    var s = Session()
+    s.handle = 0
+    var h = net.tcp_connect(host, pport)
+    if h < 0 {
+        s.handle = -1
+        return s
+    }
+    // 优先 TLS 1.3：发 ClientHello，看 ServerHello 是否为 0x1301。
+    var (rec, ch_msg, sk_hex) = tls13.make_client_hello()
+    net.tcp_send_bytes(h, rec)
+    var (otype, body) = tls13.recv_record(h)
+    if otype == 22 {
+        var (ver, cs, server_pub, sh_rand) = tls13.parse_server_hello(body)
+        if cs == 0x1301 && len(server_pub) == 32 {
+            // 确定为 TLS 1.3 服务器；握手失败即整体失败，不回退 1.2。
+            return finish13(s, h, ch_msg, body, server_pub, sk_hex)
+        }
+    }
+    // 回退 TLS 1.2：关闭重连后走 tls12 完整握手。
+    net.close(h)
+    var h2 = net.tcp_connect(host, pport)
+    if h2 < 0 {
+        s.handle = -1
+        return s
+    }
+    return finish12(s, h2)
+}
+
+// 记录层加密发送明文，成功返回 true。
+pub func send(s: Session, plain: table<i64>) -> bool {
+    var h = s.handle
+    if h < 0 {
+        return false
+    }
+    var seqs = s.seqs
+    if s.mode == 13 {
+        var rec = tls13.encrypt_record(s.c_key, s.c_iv, seqs[0], 23, plain)
+        seqs[0] = seqs[0] + 1
+        s.seqs = seqs
+        var n = net.tcp_send_bytes(h, rec)
+        return n == len(rec)
+    } else if s.mode == 12 {
+        var rec = tls12.encrypt_record(s.c_salt, s.c_key, seqs[0], 0x17, plain)
+        seqs[0] = seqs[0] + 1
+        s.seqs = seqs
+        var n = net.tcp_send_bytes(h, rec)
+        return n == len(rec)
+    }
+    return false
+}
+
+// 阻塞读，跨记录重组解密，最多返回 max 字节（有数据即返回，不等待凑满）。
+// 返回空表表示对端关闭 / 无更多数据。
+pub func recv(s: Session, max: i64) -> table<i64> {
+    var out = table_new_i64()
+    if max <= 0 {
+        return out
+    }
+    // 读缓冲为空则持续读记录直到出现应用数据或对端关闭。
+    var guard2: i64 = 0
+    while len(s.rbuf) == 0 && guard2 < 128 {
+        var r: i64 = 0
+        if s.mode == 13 {
+            r = read_app13(s)
+        } else {
+            r = read_app12(s)
+        }
+        if r < 0 {
+            break
+        }
+        guard2 = guard2 + 1
+    }
+    var take: i64 = len(s.rbuf)
+    if take > max {
+        take = max
+    }
+    var i: i64 = 0
+    while i < take {
+        table_push(out, s.rbuf[i])
+        i = i + 1
+    }
+    // 截去已消费部分，剩余留在读缓冲。
+    var nb = table_new_i64()
+    i = take
+    while i < len(s.rbuf) {
+        table_push(nb, s.rbuf[i])
+        i = i + 1
+    }
+    s.rbuf = nb
+    return out
+}
+
+// 关闭底层 socket。
+pub func close(s: Session) {
+    if s.handle > 0 {
+        net.close(s.handle)
+    }
+}
+
+// ---- 内部：单条记录解密入读缓冲 ----
+// 返回：1=已灌入 rbuf 应用数据；0=跳过控制记录需继续；-1=关闭/alert/错误。
+
+// TLS 1.3：外层密文 0x17，内层 type 区分应用数据(23)/握手中NewSessionTicket(22)/alert(21)。
+func read_app13(s: Session) -> i64 {
+    var (otype, body) = tls13.recv_record(s.handle)
+    if otype < 0 {
+        return -1
+    }
+    if otype == 20 {
+        return 0        // 兼容 CCS
+    }
+    if otype != 23 {
+        return -1
+    }
+    var hdr = rec_hdr(len(body))
+    var seqs = s.seqs
+    var recseq = seqs[1]
+    var (ok, itype, content) = tls13.decrypt_record(s.s_key, s.s_iv, recseq, hdr, body)
+    seqs[1] = recseq + 1
+    s.seqs = seqs
+    if ok == false {
+        return -1
+    }
+    if itype == 21 {
+        return -1
+    }
+    if itype != 23 {
+        return 0        // NewSessionTicket 等握手消息，跳过继续
+    }
+    var acc = s.rbuf
+    var i: i64 = 0
+    while i < len(content) {
+        table_push(acc, content[i])
+        i = i + 1
+    }
+    s.rbuf = acc
+    return 1
+}
+
+// TLS 1.2：应用数据外层 type 0x17，直接解密。
+func read_app12(s: Session) -> i64 {
+    var (otype, body) = tls12.recv_record(s.handle)
+    if otype < 0 {
+        return -1
+    }
+    if otype == 20 {
+        return 0
+    }
+    if otype == 23 {
+        var seqs = s.seqs
+        var recseq = seqs[1]
+        var (ok, pt) = tls12.decrypt_record(s.s_salt, s.s_key, recseq, otype, body)
+        seqs[1] = recseq + 1
+        s.seqs = seqs
+        if ok == false {
+            return -1
+        }
+        var acc = s.rbuf
+        var i: i64 = 0
+        while i < len(pt) {
+            table_push(acc, pt[i])
+            i = i + 1
+        }
+        s.rbuf = acc
+        return 1
+    }
+    return -1       // alert（21）等
+}
+
+}   // namespace tls

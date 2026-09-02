@@ -251,6 +251,29 @@
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
 
+## [feat] ext/tls p.6.6.1 全流程闭环——统一入口 connect/send/recv/close（2026-09-02）（p.6.6.1）
+
+- **AC-1 字节网络 IO 原语 + 回环探针**：net_tcp_recv_bytes/send_bytes（p.6.4.5 承接）内联
+  IR，TCP 字节回环探针全字节往返 PASS。
+- **AC-2 DER 解析器**：ext/tls/der.tie DER TLV 解析（短/长长度形式、tag 分类、序列遍历）
+  对已知证书字段断言 PASS。
+- **AC-3 AES-GCM**：ext/tls/gcm.tie 对 RFC 8452 §A.1/A.3 权威向量 seal/open 一致。
+- **AC-3b ChaCha20-Poly1305**：ext/tls/aead.tie（组合 ext/chacha20 + std/poly1305）对 RFC
+  8439 §2.8.2 向量 PASS。
+- **AC-4 TLS 1.3 握手 + 记录层**：ext/tls/tls1_3.tie 对本机 openssl s_server 真实握手 +
+  应用数据回环（AES-128-GCM）。
+- **AC-5 X.509 链校验 + 内置 CA**：ext/tls/{x509,chain,ca}.tie，本地自签链校验通过 + 伪造/
+  过期/主机名不符三拒绝场景（CVer 实况验签未闭环，见开放项）。
+- **AC-6 TLS 1.2**：ext/tls/tls1_2.tie 对仅支持 TLS 1.2 的服务器握手成功（ECDHE +
+  AES-128-GCM，PRF-SHA256）。
+- **AC-7 统一入口（本次）**：新增 ext/tls/tls.tie（命名空间 tls + Session 结构体，数据平面全
+  table<i64>）与 ext/tls/demo/tls_echo_client.tie 全流程 demo——connect 依 supported_versions
+  优先 TLS 1.3（ServerHello 套件非 0x1301 则回退重连走 TLS 1.2），send/recv 跨记录重组读缓冲；
+  实测分别对 19844（-tls1_3 -rev）与 19845（-tls1_2 -rev）两个 s_server connect/send/recv
+  回环 PASS 且退出码 0。
+- **开放项**：TLS1.3 CertificateVerify 实况验签待根治，见
+  docs/bugreports/2026-09-02-cver-live-mismatch.md。
+
 ## [新增] trm-lite p.6.5 收官——分代/整理 GC、可迁移栈、channel、actor mailbox（2026-09-02）（p.6.5.4-6.5.11）
 
 - **p.6.5.4 分代 + mark-compact**：gc_tri 新生代/老年代（年龄表 + 晋升阈值）、

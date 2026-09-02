@@ -1,0 +1,77 @@
+type tie<logic>
+// ============================================================================
+// tls_echo_client.tie：ext/tls 统一入口全流程 demo（命名空间 tls）——p.6.6.1 AC-7。
+// TLS echo client demo for the unified entry (tls.connect/send/recv/close).
+// 连接 127.0.0.1:PORT，connect 后 send "hello p.6.6.1"，recv 回读回显并打印
+// 收到内容；对 openssl s_server 的 -rev 服务器（逐字节反转回显）断言收到内容等于
+// 发送内容的逐字节反转。
+// 用法（Usage）：
+//   openssl s_server -accept 19844 -tls1_3 -cert c.pem -key k.pem -rev
+//   compiler\tiec.exe ext\tls\demo\tls_echo_client.tie   （PORT 默认 19844）
+// 对 TLS 1.2 服务器把下方 PORT 改 19845 后重编译即可复验 1.2 回退路径。
+// 期望：打印已协商版本/mode，回环断言 PASS 且退出码 0。
+// ============================================================================
+
+import "../tls.tie"
+import "../tool.tie" as tbt
+
+func main() {
+    // 目标端口（参数常量；-rev s_server 分别用 19844=1.3 / 19845=1.2）。
+    var PORT: i64 = 19844
+    println("connect to 127.0.0.1:" + to_string(PORT))
+    var s = tls.connect("127.0.0.1", PORT)
+    if s.handle < 0 {
+        println("FAIL connect")
+        exit(1)
+    }
+    println("INFO connected version=" + to_string(s.version) + " mode=" + to_string(s.mode))
+
+    // 内容 = "hello p.6.6.1"；为触发 s_server -rev 回显（按行反转）追加换行。
+    var txt = "hello p.6.6.1"
+    var msg = table_new_i64()
+    var i: i64 = 0
+    while i < len(txt) {
+        table_push(msg, str_byte(txt, i))
+        i = i + 1
+    }
+    // payload = 内容 + "\n"
+    var payload = table_new_i64()
+    i = 0
+    while i < len(msg) {
+        table_push(payload, msg[i])
+        i = i + 1
+    }
+    table_push(payload, 0x0A)
+
+    if tls.send(s, payload) == false {
+        println("FAIL send")
+        exit(1)
+    }
+
+    var echo = tls.recv(s, 1024)
+    if len(echo) == 0 {
+        println("FAIL recv empty")
+        exit(1)
+    }
+    println("INFO recv " + to_string(len(echo)) + " bytes")
+    println("INFO received hex=" + tbt.bytes_to_hex(echo))
+
+    // -rev 服务器：反转内容字节、换行仍保留在末尾。期望 = reverse(内容) + "\n"。
+    var want = table_new_i64()
+    i = len(msg) - 1
+    while i >= 0 {
+        table_push(want, msg[i])
+        i = i - 1
+    }
+    table_push(want, 0x0A)
+    if tbt.eq(echo, want) {
+        println("PASS echo roundtrip via -rev server")
+    } else {
+        println("FAIL echo got=" + tbt.bytes_to_hex(echo) +
+            " want=" + tbt.bytes_to_hex(want))
+        exit(1)
+    }
+
+    tls.close(s)
+    println("PASS")
+}
