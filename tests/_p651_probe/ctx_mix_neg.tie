@@ -1,0 +1,12 @@
+type tie<logic>
+// p.6.5.1 负例：import 复杂形态汇总库 + 使用内置 spawn → tiec 编译期报错
+//（内置与 import 是替代运行时路径，不能混用；编译必须失败）。
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+func task() -> i64 { return 1 }
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    var t = spawn(task)     // 应报「spawn 内置与 import trm-lite 冲突」
+    println(to_string(t))
+}

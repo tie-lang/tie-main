@@ -2388,7 +2388,10 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_used_trmlite = true
         // 替代路径检测：当前模块已 import trm-lite（同名运行时函数已定义）→ 报错。
         // 内置与 import 是替代运行时路径，混用会导致 extern declare 与 define 冲突。
-        if sstate.fn_def_node("trm_lite_sched::spawn_task") >= 0 {
+        // p.6.5.1 扩展：复杂形态汇总库（tl_runtime_ctx::ctx_*，独立命名空间）亦为
+        // 替代路径——import 复杂形态（import 即选择）后使用内置 spawn → 明确报错。
+        if sstate.fn_def_node("trm_lite_sched::spawn_task") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_spawn") >= 0 {
             sm_err_msg = "spawn 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
             return -1
         }
@@ -2451,7 +2454,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         // call_indirect 一次跑完；无栈迁移，任务体运行期不续跑）。返回哑值 0。
         // 与 actor 等待循环共用 tig_yield_drain。
         g_used_trmlite = true
-        if sstate.fn_def_node("trm_lite_sched::queued_count") >= 0 {
+        if sstate.fn_def_node("trm_lite_sched::queued_count") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_drain") >= 0 {
             sm_err_msg = "yield 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
             return -1
         }
@@ -2463,7 +2467,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         // collect() → i64（本轮回收对象数）：调 trm_lite_gc$collect
         //（stop-the-world mark-sweep，trm_lite.a 静态链接）。
         g_used_trmlite = true
-        if sstate.fn_def_node("trm_lite_gc::collect") >= 0 {
+        if sstate.fn_def_node("trm_lite_gc::collect") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_collect") >= 0 {
             sm_err_msg = "collect 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
             return -1
         }

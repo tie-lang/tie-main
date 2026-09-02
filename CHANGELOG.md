@@ -135,7 +135,10 @@
 
 **trm-lite 完善（p.6.5，复杂形态完整实现）**
 
-- [ ] p.6.5.1 复杂形态静态链接外壳：import trm-lite → tiec 静态链接复杂 runtime
+- [x] p.6.5.1 复杂形态静态链接外壳：import trm-lite → tiec 静态链接复杂 runtime
+  （落地 2026-09-02：独立命名空间 trm_lite_ws/trm_lite_tgc/tl_runtime_ctx 骨架 +
+  协作 FIFO 函数值任务队列 + GC 登记占位；内置 spawn/yield/collect 混用检测扩展
+  到复杂形态汇总库；ctx_shell_demo 验收 exit 0 + 负例 ctx_mix_neg 编译期报错）
 
 - [ ] p.6.5.2 work-stealing 调度器：多 OS 线程池 + 双端队列 + 任务窃取 + 抢占 + M:N 承托
 
@@ -211,6 +214,27 @@
   - 计划文档：docs/superpowers/plans/2026-09-01-p661-tls-client.md（p.6.6.1 实施计划）
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+
+## [新增] 复杂形态静态链接外壳——trm-lite 复杂形态骨架（2026-09-02）（p.6.5.1）
+
+p.6.5 首片：为「Go 式静态内置 runtime」复杂形态立起**import 即选择**的静态链接外壳：
+- trm-lite 侧新增独立命名空间的三件骨架（与简单形态物理隔离，避免与 trm_lite.a
+  符号重复）：
+  * `core/mnn/sched_ws.tie`（`trm_lite_ws`）：函数值任务队列（`table<fn() -> i64>`）
+    协作 FIFO `spawn/queued_count/task_at/dequeue/drain`——p.6.5.2 在此升级 work-stealing
+  * `core/gc/gc_tri.tie`（`trm_lite_tgc`）：分配登记占位 `alloc/alloc_count/collect`
+    （collect 恒 0，p.6.5.3 并发三色接管）
+  * `core/runtime/tl_runtime_ctx.tie`（`tl_runtime_ctx`）：复杂形态汇总库，语言层入口
+    `ctx_ensure/ctx_spawn/ctx_queued/ctx_drain/ctx_collect/ctx_version`——用户
+    `import` 本库即选择复杂形态（复杂 runtime 静态内置进单一二进制）
+- tiec 侧：内置 spawn/yield/collect 的「与 import trm-lite 冲突」检测扩展到复杂形态
+  汇总库（`tl_runtime_ctx::ctx_*` 定义存在即报错）——复杂 import 与内置混用编译期明确拒绝
+- 记录：全局 `table<fn() -> i64>` 惰性 `= []` 重赋值有缺陷（fn 元素路径崩溃
+  0xC0000005），须声明时初始化（骨架已采用）
+验收：`trm-lite/tests/s65_ctx/ctx_shell_demo.tie`（捕获闭包+命名函数 3 任务排队 →
+drain → collect，输出 queued=3/run=3/cnt=7，exit 0）；负例
+`tests/_p651_probe/ctx_mix_neg.tie`（复杂 import + 内置 spawn → 编译期报错）；
+回归 spawn_demo（简单形态）零回归；自举 tiec→tiec2→tiec3 IR 不动点一致。
 
 ## [修复] driver 工具链占位提示清理（2026-09-01）（p.6.2.5）
 
