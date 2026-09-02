@@ -1,0 +1,28 @@
+type tie<logic>
+
+// shift_bound 探针（2026-09-02 编译器根治）：移位计数 ≥ 位宽不再 UB/挂起
+// ============================================================
+// 语义定界（JS 式）：count & 63。
+//   shl：左移；右移有符号=ashr（符号扩展）、无符号=lshr。全 i64 路径。
+// 断言全走运行时变量（避开前端常量折叠歧义）。
+import "../../std/assert.tie"
+using assert;
+
+func main() {
+    var a: i64 = 1
+    var c: i64 = 88
+    var r1 = a << c          // 1 << 88 -> 1 << 24
+    assert.assert_eq(r1, 16777216)
+    var b: i64 = 256
+    var r2 = b >> c          // 256 >> 88 -> 0
+    assert.assert_eq(r2, 0)
+    var neg: i64 = -8
+    var c2: i64 = 100
+    var r3 = neg >> c2       // -8 >> 100 -> -8 >> 36 -> -1（ashr 符号扩展）
+    assert.assert_eq(r3, -1)
+    // 边界内移位不受影响：1<<24 / 256>>8 / 1000>>3
+    assert.assert_eq(a << 24, 16777216)
+    assert.assert_eq(b >> 8, 1)
+    assert.assert_eq(1000 >> 3, 125)
+    println("shift_bound 探针通过")
+}

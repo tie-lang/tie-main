@@ -651,8 +651,17 @@ func gen_inst(inst_id: i64) {
                 opname = "ashr"
             }
         }
+        // 移位计数 ≥ 位宽在 LLVM 是毒值（UB）：生成代码可能挂起/值损坏
+        // （2026-09-02 实测 `1 >> 88` 程序无输出）。语义定界为 JS 式掩码
+        // count & 63（与既有的 tie 侧 `shift < 64` 护栏行为兼容：≥64 一律 0/1..）。
         var ty = llvm_ty(ir.ins_ty(inst_id))
-        line(reg + " = " + opname + " " + ty + " " + opnd_ref(inst_id, 0) + ", " + opnd_ref(inst_id, 1))
+        if op == 10 || op == 11 {
+            // 移位数类型与结果类型一致（i64/大数 i128/u 类型），掩码常量随类型。
+            line("%sm" + to_string(inst_id) + " = and " + ty + " " + opnd_ref(inst_id, 1) + ", 63")
+            line(reg + " = " + opname + " " + ty + " " + opnd_ref(inst_id, 0) + ", %sm" + to_string(inst_id))
+        } else {
+            line(reg + " = " + opname + " " + ty + " " + opnd_ref(inst_id, 0) + ", " + opnd_ref(inst_id, 1))
+        }
         return
     }
     if op == 33 {
