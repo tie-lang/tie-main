@@ -1,0 +1,63 @@
+type tie<logic>
+// p.6.5.7 验收：channel 语言原语（tiec 内置 ch_open/ch_send/ch_recv/ch_close，
+// 静态链接 trm_lite.a mailbox）
+// 断言：
+//   A. FIFO：send 3 条 → recv 按序取回（Chanel 队列）
+//   B. 空 recv（未关）→ 0；close 后排空 → -1；close 幂等
+//   C. 队列满：容量 64 满后 ch_send 返回 1
+// 期望：PASS exit 0
+
+func main() {
+    var ch = ch_open()
+    println("ch=" + to_string(ch))
+
+    // A：FIFO
+    var r1 = ch_send(ch, 11)
+    var r2 = ch_send(ch, 22)
+    var r3 = ch_send(ch, 33)
+    var v1 = ch_recv(ch)
+    var v2 = ch_recv(ch)
+    var v3 = ch_recv(ch)
+    println("send=" + to_string(r1) + "," + to_string(r2) + "," + to_string(r3) + " recv=" + to_string(v1) + "," + to_string(v2) + "," + to_string(v3))
+
+    // B：空/关闭语义
+    var empty = ch_recv(ch)         // 空未关 → 0
+    ch_close(ch)
+    var after_close = ch_recv(ch)   // 关且空 → -1
+    ch_close(ch)                    // 幂等
+    println("empty=" + to_string(empty) + " after_close=" + to_string(after_close))
+
+    // C：满（新通道，容量 64）
+    var ch2 = ch_open()
+    var cap: i64 = 64
+    var i: i64 = 0
+    var full_fail: i64 = 0
+    while i < cap + 5 {
+        var r = ch_send(ch2, i)
+        if r != 0 && i < cap {
+            full_fail = 1
+        }
+        if i >= cap && r == 0 {
+            full_fail = 2
+        }
+        i = i + 1
+    }
+    println("full_test fail_code=" + to_string(full_fail))
+
+    var ok: i64 = 1
+    if r1 != 0 || r2 != 0 || r3 != 0 || v1 != 11 || v2 != 22 || v3 != 33 {
+        ok = 0
+    }
+    if empty != 0 || after_close != -1 {
+        ok = 0
+    }
+    if full_fail != 0 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

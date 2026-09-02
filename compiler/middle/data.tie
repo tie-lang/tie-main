@@ -244,8 +244,9 @@ func ensure_builtins() {
         return
     }
     var names: table<string> =  ["arg_count", "arg_string", "bit_read", "bit_write", "byte_concat",
-        "byte_read", "byte_write", "ceil", "char_code", "collect",
-        "copy_dir", "cos", "cwd", "eval", "eval_call",
+        "byte_read", "byte_write", "ceil", "ch_close", "ch_open",
+        "ch_recv", "ch_send", "char_code", "collect", "copy_dir", "cos",
+        "cwd", "eval", "eval_call",
         "exec_code", "exec_output", "exit", "exp", "file_append",
         "file_copy", "file_delete", "file_exists", "file_move", "file_read",
         "file_write", "floor", "get_env", "http_get", "http_get_file",
@@ -260,21 +261,21 @@ func ensure_builtins() {
         "time_now", "to_string", "untar_gz", "unzip", "walk_dir",
         "yield", "to_trit", "trit_val"]
     // 参数个数（-1 = 任意，println/print）
-    var nargs: table<i64> =  [0, 1, 2, 3, 2, 1, 2, 1, 1, 0, 2, 1, 0, 1, 2,
+    var nargs: table<i64> =  [0, 1, 2, 3, 2, 1, 2, 1, 1, 0, 1, 2, 1, 0, 2, 1, 0, 1, 2,
         1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 2, 1, 1, 1, 2,
         1, 1, 1, 1, 0, 3, 1, 1, 2, 1, 1, 1, 2, 2, -1,
         1, -1, 2, 0, 2, 2, 3, 2, 3, 1, 1, 2, 1, 1, 1,
         1, 2, 1, 2, 0, 0, 0, 0, 2, 1, 0, 1, 2, 2, 1,
         0, 1, 1]
     // 返回编码 kind（0=Named 1=table<Named> 2=裸 table）
-    var kinds: table<i64> =  [0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    var kinds: table<i64> =  [0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1,
         0, 0, 0]
     // 返回编码 kw（TyKw 索引；kind=0/1 时有效）
-    var kws: table<i64> =  [3, 13, 3, 10, 0, 3, 10, 9, 3, 3, 10, 9, 13, 13, 13,
+    var kws: table<i64> =  [3, 13, 3, 10, 0, 3, 10, 9, 14, 3, 3, 3, 3, 3, 10, 9, 13, 13, 13,
         3, 13, 14, 9, 10, 10, 10, 10, 10, 13, 10, 9, 13, 13, 10,
         3, 13, 9, 10, 13, 14, 14, 13, 13, 9, 3, 3, 13, 9, 14,
         14, 14, 3, 13, 13, 13, 13, 10, 13, 10, 9, 14, 9, 3, 9,

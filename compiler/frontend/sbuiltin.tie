@@ -896,6 +896,47 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_I64)
     }
+    // ---------- channel 原语（p.6.5.7：mailbox 承载，静态链接 trm_lite.a）----------
+    // ch_open() -> i64（新通道句柄），0 参数。
+    if fn_name == "ch_open" {
+        if nargs != 0 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "ch_open() 期望 0 个参数，实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
+    // ch_send(ch, v) -> i64（0=入队成功 1=失败），2 参数。
+    if fn_name == "ch_send" {
+        if nargs != 2 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "ch_send() 期望 2 个参数（通道, 值），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
+    // ch_recv(ch) -> i64（消息值；0=空未关；-1=已关闭且空），1 参数。
+    if fn_name == "ch_recv" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "ch_recv() 期望 1 个参数（通道），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
+    // ch_close(ch) -> void（幂等关闭，唤醒等待者），1 参数。
+    if fn_name == "ch_close" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "ch_close() 期望 1 个参数（通道），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_VOID)
+    }
     // 未识别：按用户函数处理（返回 -3 表示不是内置）
     return -3
 }

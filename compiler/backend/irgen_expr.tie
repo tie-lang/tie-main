@@ -489,6 +489,10 @@ func is_builtin_name(nm: string) -> bool {
     if nm == "spawn" || nm == "yield" || nm == "collect" {
         return true
     }
+    // ---------- channel 原语（p.6.5.7：ch_open/ch_send/ch_recv/ch_close，静态链接 trm_lite.a）----------
+    if nm == "ch_open" || nm == "ch_send" || nm == "ch_recv" || nm == "ch_close" {
+        return true
+    }
     return false
 }
 
@@ -2474,6 +2478,87 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         }
         var T64 = types.named(TK_I64)
         g_builtin_res = tig_trmlite_call("trm_lite_gc$collect", tig_empty_types(), tig_empty_vals(), T64)
+        return 0
+    }
+    // ---------- channel 原语（p.6.5.7：mailbox 承载，静态链接 trm_lite.a）----------
+    // ch_open() → i64 新通道句柄；入队前初始化各平行数组/环形缓冲（trm_lite.a 内部完成）。
+    if nm == "ch_open" {
+        g_used_trmlite = true
+        // 复杂形态汇总结构冲突检测：import trm_lite_chan / tl_runtime_ctx 后使用内置 → 报错。
+        if sstate.fn_def_node("trm_lite_chan::ch_open") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_ch_open") >= 0 {
+            sm_err_msg = "ch_open 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var T64ch = types.named(TK_I64)
+        g_builtin_res = tig_trmlite_call("trm_lite_chan$ch_open", tig_empty_types(), tig_empty_vals(), T64ch)
+        return 0
+    }
+    // ch_send(ch, v) → i64（0=入队成功 1=失败：通道关闭或队列满）。
+    if nm == "ch_send" {
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_chan::ch_send") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_ch_send") >= 0 {
+            sm_err_msg = "ch_send 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var T64s = types.named(TK_I64)
+        var c_nd = call_arg(id, 0)
+        var c_v = tig_expr(c_nd)
+        if c_v < 0 {
+            return -1
+        }
+        var v_nd = call_arg(id, 1)
+        var v_v = tig_expr(v_nd)
+        if v_v < 0 {
+            return -1
+        }
+        var ats: table<i64> = table_new_i64()
+        var avs: table<i64> = table_new_i64()
+        table_push(ats, T64s); table_push(avs, c_v)
+        table_push(ats, T64s); table_push(avs, v_v)
+        g_builtin_res = tig_trmlite_call("trm_lite_chan$ch_send", ats, avs, T64s)
+        return 0
+    }
+    // ch_recv(ch) → i64（消息值；0=空未关；-1=已关闭且空）。
+    if nm == "ch_recv" {
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_chan::ch_recv") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_ch_recv") >= 0 {
+            sm_err_msg = "ch_recv 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var T64r = types.named(TK_I64)
+        var c_nd2 = call_arg(id, 0)
+        var c_v2 = tig_expr(c_nd2)
+        if c_v2 < 0 {
+            return -1
+        }
+        var ats2: table<i64> = table_new_i64()
+        var avs2: table<i64> = table_new_i64()
+        table_push(ats2, T64r); table_push(avs2, c_v2)
+        g_builtin_res = tig_trmlite_call("trm_lite_chan$ch_recv", ats2, avs2, T64r)
+        return 0
+    }
+    // ch_close(ch) → void：置关闭位（幂等）；唤醒等待者。trm_lite_chan$ch_close。
+    if nm == "ch_close" {
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_chan::ch_close") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_ch_close") >= 0 {
+            sm_err_msg = "ch_close 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var T64cc = types.named(TK_I64)
+        var c_nd3 = call_arg(id, 0)
+        var c_v3 = tig_expr(c_nd3)
+        if c_v3 < 0 {
+            return -1
+        }
+        var ats3: table<i64> = table_new_i64()
+        var avs3: table<i64> = table_new_i64()
+        table_push(ats3, T64cc); table_push(avs3, c_v3)
+        tig_trmlite_call("trm_lite_chan$ch_close", ats3, avs3, -1)  // void 桥
+        g_builtin_res = tig_int_lit(0)
         return 0
     }
     return -1  // 非内置
