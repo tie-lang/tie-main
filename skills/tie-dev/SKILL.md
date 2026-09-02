@@ -10,6 +10,8 @@ tie：静态类型、四段式编译（预处理→前端→中端→后端 LLVM
 目标：全领域通用——写逻辑、写界面、写数据库、当数据交换格式。
 编译器 **tiec 由 tie 100% 自写**（自举闭环，0-Rust）；发布包内置精简 LLVM 工具链，解压即用。
 本文档是**应用开发者向**：用 tie 写程序，不涉及编译器内部开发。
+并发（preview.5+）：内置 actor 原语 + channel 消息通道（p.6.5.7/6.5.8）；复杂形态
+`import trm-lite`（work-stealing 调度 + 并发三色 GC 分代/整理 + mailbox，p.6.5.x 完整落地）。
 
 ## 1. 快速开始
 
@@ -581,7 +583,10 @@ tie search <关键字> / tie info <包>  # 查询注册表
 
 ## 15. 并发：actor（消息方法——多参标量 sync/async）
 
-actor 是原生并发原语（零运行时，编译期降到 OS 线程 + 互斥/条件变量，或 trm-lite 简单执行体承载）。`run Typed()` 建句柄，方法调用即跨线程消息。
+actor 是原生并发原语：编译期降到 OS 线程 + 互斥/条件变量，消息处理由 **trm-lite 承载**
+（p.6.5.8：每条消息经 per-actor **channel mailbox** 入队 + 轻量任务取出执行，
+`spawn`/`yield` 协作排空；`#[unsafe.trm]` 标注作为显式接入确认，语法零改动）。
+`run Typed()` 建句柄，方法调用即消息投递。
 
 ```tie
 actor Counter {
@@ -600,7 +605,27 @@ c.bump(3)             // async：不阻塞
 
 * 私有状态字段为 actor 独占（串行消费免锁）；字段初值暂用**类型默认值**（如 i64=0）；
 
-* 指针/slice 宽类型共享消息属 unsafe 门禁（`#[unsafe.share]` 等），安全路径限标量。
+* 指针/slice 宽类型共享消息属 unsafe 门禁（`#[unsafe.share]` 等），安全路径限标量；
+
+* actor 与 `import trm-lite`（复杂形态）混用 → 编译期报错（替代运行时路径）。
+  复杂形态下 actor 消息同样经 mailbox 承载（同一 trm_lite.a）。
+
+### 15.1 channel（mailbox 消息通道，p.6.5.7）
+
+内置原语（简单形态，零 import）：
+
+```tie
+var ch = ch_open()          // 建通道（句柄 1 起）
+var r = ch_send(ch, 42)     // 入队：0=成功 1=失败（已关闭或队列满）
+var v = ch_recv(ch)         // 取队首：v=消息值 0=空(未关) -1=已关闭且排空
+ch_close(ch)                // 置关闭位（幂等），唤醒等待者
+```
+
+* 环形缓冲 mailbox（互斥 + 条件变量），FIFO 有序；单通道容量 64，满后 `ch_send` 返回 1；
+* 非阻塞语义（Go 阻塞 send/recv 的降级）：空 `ch_recv` 返回 0、满 `ch_send` 返回 1，
+  调用方据此轮询/协商，避免语言无挂起能力下的死锁；
+* 复杂形态（`import tl_runtime_ctx`）用 `ctx_ch_open/ctx_ch_send/ctx_ch_recv/ctx_ch_close/
+  ctx_ch_len/ctx_ch_count`，语义与内置一致（同源 mailbox）。
 
 ## 16. unsafe、移动语义与三期限量语法（概览）
 
