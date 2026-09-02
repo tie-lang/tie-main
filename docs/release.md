@@ -86,6 +86,27 @@ EN: `doc/` ships README, CHANGELOG, LICENSE plus the full `docs/` tree (language
 
 EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is completed with: **trm** (runtime: dynamic-library lazy binding + the system domain terminal/process/fs/env/session/clock/net/data); the **UI framework** (trm.ui window/drawing/events + the tieui composable component tree/layout); **tiedb** (the database in full form: columnar persistence + vecsearch over the zd format); and **tiwi** (the tie installer builder: FLTK GUI + self-extracting setup, hexagonal architecture).
 
+### 3.4 仓库组织与发行版位置（2026.2 多仓拆分）
+*EN: Repository organization and release-artifact location (multi-repo split in 2026.2)*
+
+2026.2 起 tie-lang org 下按组件拆为独立仓库：
+
+- **tie-main**：聚合/发行仓——保留 `dist/` 发行产物与**当前版本文档**；其余内容全部搬出
+- **组件仓库**：各组件（编译器 tiec、运行时 trm/UI、tiedb、tiwi 等）各自独立仓，独立演进与发布
+
+发行物：
+
+- `dist/` 仍为发行产物目录（package.tie 产出），但**发行物出仓**——zip 等产物不再进 git 跟踪，经 GitHub / GitCode Release 附件分发
+- tie-main 保留当前版本的发行物与文档；历史版本由 Release 历史承担
+
+EN: From 2026.2 the tie-lang org splits into per-component repositories:
+- **tie-main** is the aggregation/release repository: it keeps the `dist/` release artifacts and the **current-version documentation**; everything else moves out.
+- **Component repositories**: each component (compiler tiec, runtime trm/UI, tiedb, tiwi, …) lives in its own repository, evolving and releasing independently.
+
+Release artifacts:
+- `dist/` remains the artifact directory (produced by package.tie), but artifacts **leave the git tree** — zips are distributed as GitHub/GitCode Release assets instead of being tracked.
+- tie-main keeps the current release artifacts and docs; historical versions are carried by the Release history.
+
 ## 4. 工程改造点
 *EN: Engineering Modifications*
 
@@ -153,5 +174,7 @@ EN: 1. Infer the version number (year.revision, confirm with the user); 2. updat
 - 目标平台：**仅 win-x64**（本机可验证；跨平台后续版本）
 - LLVM：**捆绑精简工具链**（bin/llvm/，无需用户另装）
 - 打包器：**tie 语言自写**（scripts/package.tie，0-PowerShell）
+- 仓库组织：**多仓拆分**——tie-main 聚合/发行仓（发行物 + 当前版本文档），其余组件独立仓
+- 发行物：**出仓**——zip 经 GitHub / GitCode Release 附件分发，不进 git 跟踪
 
-EN: Packaging artifacts: **zip archives only** (`tie-{version}-win-x64.zip`); installers arrive with tiwi in 2026.2. Editor extension: **included** — `editor/vscode-tie` (distributed with the release). Target platform: **win-x64 only** (verifiable on this machine; cross-platform comes in a later version). LLVM: **bundled as a minimal toolchain** (bin/llvm/, no separate install needed). Packager: **written in tie** (scripts/package.tie, 0-PowerShell).
+EN: Packaging artifacts: **zip archives only** (`tie-{version}-win-x64.zip`); installers arrive with tiwi in 2026.2. Editor extension: **included** — `editor/vscode-tie` (distributed with the release). Target platform: **win-x64 only** (verifiable on this machine; cross-platform comes in a later version). LLVM: **bundled as a minimal toolchain** (bin/llvm/, no separate install needed). Packager: **written in tie** (scripts/package.tie, 0-PowerShell). Repo organization: **multi-repo split** — tie-main is the aggregation/release repository (artifacts + current-version docs), other components live in their own repositories. Release artifacts: **leave the git tree** — zips are distributed as GitHub/GitCode Release assets.
