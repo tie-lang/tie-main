@@ -1214,10 +1214,13 @@ func tig_stmt(id: i64) -> i64 {
     }
     if tag == 105 {
         // If：children=[cond, then, else]
-        var cond = tig_expr(sstate.child(id, 0))
+        var cond_nid = sstate.child(id, 0)
+        var cond = tig_expr(cond_nid)
         if cond < 0 {
             return -1
         }
+        // p.6.5.2：条件归一化 i1（`if x` x:i64 / 整型字面量 → icmp ne 0）
+        cond = tig_cond_to_bool(cond, node_types[cond_nid])
         var then_blk = ir.new_block(g_cur_func, interner.intern("if.then"))
         var else_blk = ir.new_block(g_cur_func, interner.intern("if.else"))
         var merge_blk = ir.new_block(g_cur_func, interner.intern("if.merge"))
@@ -1394,6 +1397,9 @@ func tig_stmt(id: i64) -> i64 {
         if cv < 0 {
             return -1
         }
+        // p.6.5.2：条件归一化 i1（`while 1` / 整型条件 → icmp ne 0；
+        // 旧实现把 i64 直接喂 cond_br，LLVM 校验失败）
+        cv = tig_cond_to_bool(cv, node_types[cond])
         var cb = ir.new_inst(g_cur_block, 31, -1)
         ir.add_operand(cb, cv, 0)
         ir.add_operand(cb, body_blk, 1)

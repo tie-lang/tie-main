@@ -1,0 +1,178 @@
+type tie<logic>
+// p.6.5.2 验收：work-stealing 调度器（复杂形态）
+// 断言：
+//   1) 并行真实性：P=4 轮 8 个任务记录的线程 id 去重 ≥ 2（多 OS 线程并行执行）
+//   2) 结果正确：各任务写入独立槽位 g_res[i]（无读改写竞态），校验总和
+//   3) 子任务编排：4 父 × 各 3 子 → 本轮执行数 == 16
+//   4) 溢出窃取：1 父超大 burst（>P×段容量）→ 溢出全局队列被窃取，stolen>0
+//   5) 并行加速（信息/宽松断言）：P=4 墙钟短于 P=1（GetTickCount64 原生计时）
+// 期望：acc4/acc1=true / dist_tid>=2 / child=16 / burst=1301 / stolen>0 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_res: table<i64> = []   // 各任务结果槽（独立下标写，无读改写竞态）
+var g_tid: table<i64> = []   // 任务执行线程 id 槽（并行真实性证据）
+
+unsafe extern fn GetTickCount64() -> i64
+unsafe extern fn GetCurrentThreadId() -> i64
+
+func wall_ms() -> i64 {
+    unsafe {
+        return GetTickCount64()
+    }
+}
+func tid_now() -> i64 {
+    unsafe {
+        return GetCurrentThreadId()
+    }
+}
+
+// CPU 密集求和（size 越大越重；不均衡负载触发延迟窃取）
+func busy(size: i64) -> i64 {
+    var s: i64 = 0
+    var i: i64 = 1
+    while i <= size {
+        s = s + i
+        i = i + 1
+    }
+    return s
+}
+
+// 任务工厂：闭包逐调用独立绑定捕获（每闭包独享 idx/sz 的 env 副本）
+func make_task(nridx: i64, n: i64) -> fn() -> i64 {
+    return func() -> i64 {
+        var v = busy(n * (9 - (nridx % 8)))
+        g_res[nridx] = v
+        g_tid[nridx] = tid_now()
+        return v
+    }
+}
+
+// 期望和 = Σ size_i*(size_i+1)/2（i=0..7，size_i = n*(9-i)）
+func expected_sum(n: i64) -> i64 {
+    var exp: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        var sz = n * (9 - i)
+        exp = exp + sz * (sz + 1) / 2
+        i = i + 1
+    }
+    return exp
+}
+
+func verify_sum(lo: i64) -> i64 {
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        s = s + g_res[lo + i]
+        i = i + 1
+    }
+    return s
+}
+
+// 槽位 [lo, lo+8) 中去重线程数
+func distinct_tid(lo: i64) -> i64 {
+    var ids: table<i64> = []
+    var i: i64 = 0
+    while i < 8 {
+        var t = g_tid[lo + i]
+        var dup: i64 = 0
+        var j: i64 = 0
+        while j < len(ids) {
+            if ids[j] == t {
+                dup = 1
+            }
+            j = j + 1
+        }
+        if dup == 0 {
+            table_push(ids, t)
+        }
+        i = i + 1
+    }
+    return len(ids)
+}
+
+func main() {
+    var n: i64 = 3000000
+    var i: i64 = 0
+    while i < 16 {
+        table_push(g_res, 0)
+        table_push(g_tid, 0)
+        i = i + 1
+    }
+    tl_runtime_ctx.ctx_ensure()
+
+    // 轮 1：P=4 并行（轻重不均 + 线程 id 记录）
+    tl_runtime_ctx.ctx_set_workers(4)
+    i = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(make_task(i, n))
+        i = i + 1
+    }
+    var t0 = wall_ms()
+    var ran4 = tl_runtime_ctx.ctx_drain()
+    var t1 = wall_ms()
+    var ms4 = t1 - t0
+    var dt4 = distinct_tid(0)
+
+    // 轮 2：P=1 串行（同量任务，槽位 8..15）
+    tl_runtime_ctx.ctx_set_workers(1)
+    i = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(make_task(8 + i, n))
+        i = i + 1
+    }
+    var t2 = wall_ms()
+    var ran1 = tl_runtime_ctx.ctx_drain()
+    var t3 = wall_ms()
+    var ms1 = t3 - t2
+    var dt1 = distinct_tid(8)
+
+    // 轮 3：子任务编排（4 父 × 各 3 子 = 16）
+    i = 0
+    while i < 4 {
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            var k: i64 = 0
+            while k < 3 {
+                tl_runtime_ctx.ctx_spawn(func() -> i64 { return busy(50000) })
+                k = k + 1
+            }
+            return busy(50000)
+        })
+        i = i + 1
+    }
+    var child = tl_runtime_ctx.ctx_drain()
+
+    // 轮 4：溢出窃取（1 父超大 burst → 段溢出进全局队列，其它 worker 窃取）
+    tl_runtime_ctx.ctx_set_workers(4)
+    tl_runtime_ctx.ctx_spawn(func() -> i64 {
+        var k: i64 = 0
+        while k < 1300 {
+            tl_runtime_ctx.ctx_spawn(func() -> i64 { return busy(2000) })
+            k = k + 1
+        }
+        return busy(2000)
+    })
+    var burst = tl_runtime_ctx.ctx_drain()
+
+    var s1 = verify_sum(0)
+    var s2 = verify_sum(8)
+    var exp = expected_sum(n)
+    var stolen = tl_runtime_ctx.ctx_stolen()
+    println("ran4=" + to_string(ran4) + " ran1=" + to_string(ran1) + " child=" + to_string(child) + " burst=" + to_string(burst))
+    println("acc4=" + to_string(s1) + "==" + to_string(exp) + " acc1=" + to_string(s2) + "==" + to_string(exp))
+    println("dist_tid4=" + to_string(dt4) + " dist_tid1=" + to_string(dt1))
+    println("ms4=" + to_string(ms4) + " ms1=" + to_string(ms1) + " stolen=" + to_string(stolen))
+    var ok: i64 = 1
+    if ran4 != 8 || ran1 != 8 || child != 16 || burst != 1301 { ok = 0 }
+    if s1 != exp || s2 != exp { ok = 0 }
+    if dt4 < 2 || dt1 != 1 { ok = 0 }
+    if ms1 <= ms4 { ok = 0 }
+    if stolen <= 0 { ok = 0 }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    println("done")
+}

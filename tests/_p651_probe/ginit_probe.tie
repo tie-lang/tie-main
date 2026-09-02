@@ -1,0 +1,11 @@
+type tie<logic>
+var g_a: i64 = 4
+var g_b: i64 = 0
+func main() {
+    if g_a == 0 {
+        println("GLOBAL INITIALIZER NOT APPLIED (g_a=0)")
+    } else {
+        println("g_a=" + to_string(g_a))
+    }
+    println("g_b=" + to_string(g_b))
+}

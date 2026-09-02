@@ -140,7 +140,12 @@
   协作 FIFO 函数值任务队列 + GC 登记占位；内置 spawn/yield/collect 混用检测扩展
   到复杂形态汇总库；ctx_shell_demo 验收 exit 0 + 负例 ctx_mix_neg 编译期报错）
 
-- [ ] p.6.5.2 work-stealing 调度器：多 OS 线程池 + 双端队列 + 任务窃取 + 抢占 + M:N 承托
+- [x] p.6.5.2 work-stealing 调度器：多 OS 线程池 + 双端队列 + 任务窃取 + 抢占 + M:N 承托
+  （落地 2026-09-02：sched_ws 重写——每 worker 段式双端队列（P×段容量预分配，
+  固定不重叠）+ 段尾 LIFO 自取 / 段头 FIFO 窃取 / 段满溢出全局队列；真 OS 线程池
+  按轮创建/回收；CRITICAL_SECTION + CONDITION_VARIABLE 同步；终止协议
+  pending/active 原子视图无最后-worker 竞态；ctx_ws_demo 验收：dist_tid4=4（真实
+  并行）、数值全对、子任务 16、溢出窃取 stolen>0、P=4 快于 P=1）
 
 - [ ] p.6.5.3 并发三色 GC：标记栈/写屏障 + 后台回收器 + 精确根扫描（无栈图降级保守根）
 
@@ -214,6 +219,45 @@
   - 计划文档：docs/superpowers/plans/2026-09-01-p661-tls-client.md（p.6.6.1 实施计划）
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+
+## [修复] 语句/表达式条件归一化 i1——`while 1` 等整型条件 IR 校验失败（2026-09-02）（tiec 缺陷）
+
+if/while/三目 的条件过去直接把 tig_expr 结果喂给 cond_br：bool 比较没问题，
+但**整型字面量/整型条件**（`while 1`、`while i`）产 i64 值 → LLVM 校验失败
+（-O0 invalid redefinition / -O2 "defined with type 'i64' but expected 'i1'"）。
+修复：新增 `tig_cond_to_bool`（irgen_arith，整型族 icmp ne 0 → i1；bool 直用），
+if（irgen_stmt 105）、while（irgen_stmt 106）、三目（irgen_lit tig_ternary）
+三处接线。语义层 while 本就允许数字条件（`while 条件必须是 bool` 检查对
+while 放宽 is_number），故为真缺陷修复而非绕行。验证：w1_probe（`while 1`
++ 循环 break）编译运行正确；自举 tiec→tiec2→tiec3 IR 不动点一致。
+
+## [新增] 复杂形态 work-stealing 调度器——多 OS 线程池 + 每线程双端队列 + 任务窃取（2026-09-02）（p.6.5.2）
+
+p.6.5 第二片：复杂形态执行层从协作 FIFO 升级为真实多线程 work-stealing：
+- trm-lite `core/mnn/sched_ws.tie`（`trm_lite_ws`）重写：
+  * **每线程双端队列** = 任务注册表 `g_regs`（table<fn() -> i64>，regid=下标）
+     + `g_items` 预分配 P×SEG_CAP 槽承载 regid（段固定不重叠；owner 段尾 LIFO
+     自取，他人段头 FIFO 窃取，段满溢出全局 `g_ovf` 队列）
+  * **多 OS 线程池**：每轮 drain 经 kernel32 CreateThread 起 P worker、完成后
+     join 回收；worker 锁外执行 `g_regs[regid]()`（闭包 env 堆分配，跨线程安全
+     ——ws_thread_fn_probe 实证）
+  * **同步**：单 CRITICAL_SECTION 保护全部调度状态；CONDITION_VARIABLE +
+    50ms 轮询兜底（防丢唤）
+  * **终止协议**：worker 仅在「无可取 && pending==0 && active==0」（同锁原子
+    视图；spawn 恒先 pending++，任务运行中 active≥1 才再 spawn）→ 无最后
+    -worker 竞态；drain 等 pending==0 → join → 复位段游标
+  * **抢占**：任务为 fn() -> i64 原子执行体不可中断；抢占体现为调度级（任务
+    边界让出 + 窃取均衡）；时间片硬抢占待 p.6.5.5 可迁移栈，文档明示
+- tl_runtime_ctx 接线：ctx_drain 升级为并行 run（返回本轮执行数增量）；
+  ctx_set_workers/ctx_workers/ctx_stolen/ctx_completed 控制与观察量
+- 验收 `tests/_p651_probe/ctx_ws_demo.tie`：P=4 轮 8 任务执行线程去重=4（真实
+  并行）、结果总和全对、4 父×3 子=16、1 父 burst 1300+ 溢出窃取 stolen>0、
+  P=4 墙钟（78ms）< P=1（125ms）、exit 0；回归 ctx_shell_demo/spawn_demo/
+  actor 零回归
+- 发现并记录：tie **标量全局变量初值被静默丢弃**（`var g: i64 = 4` 实际 0；
+  表全局 `= []` 初值却生效——不一致，ginit_probe 探针留证）；sched_ws 在
+  ensure_state 强制默认池大小规避 `% 0` 除零。全局初始化语义待 p.6.1 类
+  correctness 模块再根治
 
 ## [新增] 复杂形态静态链接外壳——trm-lite 复杂形态骨架（2026-09-02）（p.6.5.1）
 

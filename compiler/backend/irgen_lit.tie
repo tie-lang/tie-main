@@ -101,10 +101,13 @@ func tig_trit_lit(v: i64) -> i64 {
 // AST：Ternary[children=[cond, then, else]]；then/else 为表达式（无 return），
 // 分支内必然以 br merge 结束，无需 block_terminated 检查。
 func tig_ternary(id: i64) -> i64 {
-    var cond = tig_expr(sstate.child(id, 0))
+    var cond_nid = sstate.child(id, 0)
+    var cond = tig_expr(cond_nid)
     if cond < 0 {
         return -1
     }
+    // p.6.5.2：条件归一化 i1（整型字面量条件同 while/if 缺陷，统一修）
+    cond = tig_cond_to_bool(cond, node_types[cond_nid])
     var then_blk = ir.new_block(g_cur_func, interner.intern("tern.then"))
     var else_blk = ir.new_block(g_cur_func, interner.intern("tern.else"))
     var merge_blk = ir.new_block(g_cur_func, interner.intern("tern.merge"))

@@ -444,6 +444,40 @@ func tig_cmp_zero(v0: i64, cc: i64) -> i64 {
     return ir.get_value(ic)
 }
 
+// p.6.5.2 修复（直面编译器缺陷）：语句/表达式条件统一归一化为 i1——
+// cond_br 的条件操作数必须是 i1，而字面量/整型条件（`while 1`、`if x` x:i64）
+// 过去把 i64 值直接喂给 cond_br（LLVM 校验失败：-O0 报 invalid redefinition、
+// -O2 报 "defined with type 'i64' but expected 'i1'"）。Bool 型直接用；
+// 整型族（i8..u128/char/trit）经 icmp ne 0 转 i1（非零即真）；其余原样
+//（浮点/其它不该出现在条件位，保持旧行为，语义层应有拦截）。
+func tig_is_int_ty(t: i64) -> bool {
+    if t == types.named(TK_I8) || t == types.named(TK_I16) {
+        return true
+    }
+    if t == types.named(TK_I32) || t == types.named(TK_I64) || t == types.named(TK_I128) {
+        return true
+    }
+    if t == types.named(TK_U8) || t == types.named(TK_U16) {
+        return true
+    }
+    if t == types.named(TK_U32) || t == types.named(TK_U64) || t == types.named(TK_U128) {
+        return true
+    }
+    if t == types.named(TK_CHAR) || t == types.named(TK_TRIT) {
+        return true
+    }
+    return false
+}
+func tig_cond_to_bool(cv: i64, ty: i64) -> i64 {
+    if ty == types.named(TK_BOOL) {
+        return cv
+    }
+    if tig_is_int_ty(ty) {
+        return tig_icmp_c(cv, tig_int_lit_ty(0, ty), 1)  // ne 0 → i1
+    }
+    return cv
+}
+
 // and i1 快捷
 func tig_and_i1(v0: i64, v1: i64) -> i64 {
     var a2 = ir.new_inst(g_cur_block, 6, types.named(TK_BOOL))
