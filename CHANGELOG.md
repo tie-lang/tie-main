@@ -131,7 +131,7 @@
 - [x] p.6.4.7 消息系统（msg_* 内联运行期全局消息表；msg_t_lang 未命中空串语义对齐 log 回退链）
 - [x] p.6.4.8 正则（regex_* 纯 tie 最小引擎：字面量 pattern 内联回溯 VM；运行期 pattern 回退桥）
 - [x] p.6.4.9 归档/HTTP（untar_gz/unzip 内联 DEFLATE inflate 底座 + tar/zip 容器；http_get/http_get_file Winsock 内联）
-- [x] p.6.4.10 脚本通道+收尾（read_line 内联；rand_range 修 RAND_MAX 上限改 64 位 LCG；eval/eval_call 降级去桥；全量零 tie_interp.lib 链接验证——path_*、regex 运行期 pattern、alloc/free 三组残留桥记录）
+- [x] p.6.4.10 脚本通道+收尾（read_line 内联；rand_range 修 RAND_MAX 上限改 64 位 LCG；eval/eval_call 降级去桥；全量零 tie_interp.lib 链接验证——path_*、regex 运行期 pattern、alloc/free 三组残留桥记录。**残留桥已全清**：alloc/free 假 interp 标移除、path_* 纯 tie 内联（tig_path_*）、regex 运行期 pattern 改 std 纯 tie 引擎——综合程序零 tie_interp 依赖）
 
 **trm-lite 完善（p.6.5，复杂形态完整实现）**
 
