@@ -1,0 +1,257 @@
+type tie<class>
+// ============================================================================
+// gcm.tie：ext/tls——AES-GCM 认证加密（命名空间 gcm，纯 tie 实现）
+// 用途：TLS AEAD 层底座，按 NIST SP 800-38D / McGrew-Viega GCM 规范实现。
+// 全部以 table<i64>（0..255）承载二进制数据；块加密复用 ext/aes.tie 的单块
+// AES-128/256（E_K，hex 中转），未使用任何 extern / 非 tie 实现。
+//
+// == 组件 ==
+//   - E_K ：aes.encrypt_ecb(key, block)（单块 AES，hex 进出）
+//   - GHASH：GF(2^128)/big-endian 位序，右移位 + R=0xe1 右移位约简逐位乘
+//   - GCTR ：计数器大端 +1（inc32：仅最低 32 位进位）
+//   - 标签 ：T = GHASH(A || 0^lenA || lenC || lenA(64) || lenC(64)) XOR E_K(J0)，
+//           其中 GHASH 内部对 A、C 各补到 16 字节块并追加 len 块；J0 规则：
+//           12 字节 IV → J0 = IV || 0^31 || 1（主路径）
+//           其他长度 IV → J0 = GHASH(H, {}, IV)
+//   - 加密封装 ：ct = GCTR(K, inc32(J0), P)；返回 ct || tag
+//
+// == 权威向量（NIST SP 800-38D / GCM spec Appendix B，McGrew & Viega）==
+//   已与 pycryptodome AES-GCM 交叉核对（tests/tls_probe/gcm_probe.tie）。
+// 接口：
+//   gcm.seal(key:hex, iv:表, aad:表, pt:表) -> 表  返回 ct||tag（16 字节标签）
+//   gcm.open(key:hex, iv:表, aad:表, ct:表, tag:表) -> 表  认证通过返回 pt，否则空表
+// 备注：命名空间内互调为裸调用，内部辅助函数不加 gcm_ 前缀。
+// ============================================================================
+
+import "../aes.tie"
+import "./tool.tie"
+
+namespace gcm {
+
+// ---- 16 字节块辅助 ----
+
+// 全 0 的 16 字节块。
+func zeros16() -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < 16 {
+        table_push(out, 0)
+        i = i + 1
+    }
+    return out
+}
+
+// 空字节表。
+func empty() -> table<i64> {
+    return table_new_i64()
+}
+
+// 取 data[off..off+16)，不足补 0。
+func block_at_pad(data: table<i64>, off: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < 16 {
+        if off + i < len(data) {
+            table_push(out, data[off + i])
+        } else {
+            table_push(out, 0)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// E_K(block)：aes 单块加密（hex 中转）。key 为 hex 字符串。
+func hex_e(key: string, block: table<i64>) -> table<i64> {
+    return tbt.hex_to_bytes(aes.encrypt_ecb(key, tbt.bytes_to_hex(block)))
+}
+
+// 两 16 字节块逐字节异或。
+func xor16(a: table<i64>, b: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < 16 {
+        table_push(out, (a[i] ^ b[i]) & 0xFF)
+        i = i + 1
+    }
+    return out
+}
+
+// ---- GF(2^128) 乘法（big-endian 位序，右移位约简） ----
+
+// 16 字节块大端右移 1 位（就地改写），返回移出位（原最低位，即 LSb）。
+func shr1_inplace(blk: ref table<i64>) -> i64 {
+    var lsb = blk[15] & 1
+    var j: i64 = 15
+    while j >= 0 {
+        var inj: i64 = 0
+        if j > 0 {
+            inj = blk[j - 1] & 1
+        }
+        blk[j] = (blk[j] >> 1) | (inj << 7)
+        j = j - 1
+    }
+    return lsb
+}
+
+// GF(2^128) 逐位乘：Z=0, V=X；扫描 y 的每个位（MSB 起），V 每次右移，
+// 移出位为 1 时 V ^= R（R=0xe1 接 0x00…，即最简可约多项式 x^128+x^7+x^2+x+1）。
+func gf_mul(x: table<i64>, y: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    table_push(r, 0xE1)
+    var i: i64 = 0
+    while i < 15 {
+        table_push(r, 0)
+        i = i + 1
+    }
+    var z = zeros16()
+    var v = table_new_i64()
+    i = 0
+    while i < 16 {
+        table_push(v, x[i])
+        i = i + 1
+    }
+    var p: i64 = 0
+    while p < 128 {
+        var bij = p >> 3
+        var bit = (y[bij] >> (7 - (p & 7))) & 1
+        if bit == 1 {
+            z = xor16(z, v)
+        }
+        var lsb = shr1_inplace(v)
+        if lsb == 1 {
+            v = xor16(v, r)
+        }
+        p = p + 1
+    }
+    return z
+}
+
+// GHASH(H, A, C)：A 与 C 各按 16 字节块补零累乘，最后追加 64 位 len(A)*8 ||
+// 64 位 len(C)*8（大端）再乘一次。
+func ghash(h: table<i64>, a: table<i64>, c: table<i64>) -> table<i64> {
+    var y = zeros16()
+    var pos: i64 = 0
+    var alen = len(a)
+    while pos < alen {
+        y = gf_mul(h, xor16(y, block_at_pad(a, pos)))
+        pos = pos + 16
+    }
+    pos = 0
+    var clen = len(c)
+    while pos < clen {
+        y = gf_mul(h, xor16(y, block_at_pad(c, pos)))
+        pos = pos + 16
+    }
+    var lb = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(lb, (alen * 8) >> (8 * (7 - i)) & 0xFF)
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        table_push(lb, (clen * 8) >> (8 * (7 - i)) & 0xFF)
+        i = i + 1
+    }
+    return gf_mul(h, xor16(y, lb))
+}
+
+// ---- 计数器与 GCTR ----
+
+// inc32：最低 32 位（大端）加 1。
+func inc32(cb: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < 16 {
+        table_push(out, cb[i])
+        i = i + 1
+    }
+    var j: i64 = 15
+    while j >= 12 {
+        out[j] = (out[j] + 1) & 0xFF
+        if out[j] != 0 {
+            break
+        }
+        j = j - 1
+    }
+    return out
+}
+
+// J0 初始计数块。
+func j0block(key: string, iv: table<i64>) -> table<i64> {
+    if len(iv) == 12 {
+        var out = table_new_i64()
+        var i: i64 = 0
+        while i < 12 {
+            table_push(out, iv[i])
+            i = i + 1
+        }
+        table_push(out, 0)
+        table_push(out, 0)
+        table_push(out, 0)
+        table_push(out, 1)
+        return out
+    }
+    var h = hex_e(key, zeros16())
+    return ghash(h, empty(), iv)
+}
+
+// GCTR：从 start 计数块起逐块异或 E_K；不足一块时只异或前若干字节。
+func gctr(key: string, start: table<i64>, x: table<i64>) -> table<i64> {
+    var cur = table_new_i64()
+    var i: i64 = 0
+    while i < 16 {
+        table_push(cur, start[i])
+        i = i + 1
+    }
+    var out = table_new_i64()
+    var pos: i64 = 0
+    var xn = len(x)
+    while pos < xn {
+        var keyb = hex_e(key, cur)
+        var k: i64 = 0
+        while (pos + k) < xn && k < 16 {
+            table_push(out, x[pos + k] ^ keyb[k])
+            k = k + 1
+        }
+        cur = inc32(cur)
+        pos = pos + 16
+    }
+    return out
+}
+
+// ---- 公有接口 ----
+
+// 认证加密：返回 ct || tag（16 字节标签）。
+pub func seal(key: string, iv: table<i64>, aad: table<i64>, pt: table<i64>) -> table<i64> {
+    var j0 = j0block(key, iv)
+    var ct = gctr(key, inc32(j0), pt)
+    var h = hex_e(key, zeros16())
+    var t = xor16(ghash(h, aad, ct), hex_e(key, j0))
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < len(ct) {
+        table_push(out, ct[i])
+        i = i + 1
+    }
+    i = 0
+    while i < 16 {
+        table_push(out, t[i])
+        i = i + 1
+    }
+    return out
+}
+
+// 认证解密：标签匹配时返回明文 pt，否则返回空表。
+pub func open(key: string, iv: table<i64>, aad: table<i64>, ct: table<i64>, tag: table<i64>) -> table<i64> {
+    var j0 = j0block(key, iv)
+    var h = hex_e(key, zeros16())
+    var t = xor16(ghash(h, aad, ct), hex_e(key, j0))
+    if !tbt.eq(t, tag) {
+        return table_new_i64()
+    }
+    return gctr(key, inc32(j0), ct)
+}
+
+}   // namespace gcm

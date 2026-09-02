@@ -1,0 +1,113 @@
+type tie<logic>
+// ============================================================================
+// gcm_probe.tie：AES-GCM（ext/tls/gcm.tie）权威向量探针。
+// 向量来源：NIST SP 800-38D / McGrew-Viega GCM spec Appendix B 标准测试用例
+// （Test Case 1-4 为 AES-128，AES-256 用例同源），并经 pycryptodome
+// AES-MODE_GCM 交叉核对一致（见 tests/cipher_probe 同款做法）。
+// 断言：
+//   1) seal 输出 = ct||tag 与向量逐字节一致（ct 与 tag 分开核对 + 整段一致）
+//   2) open 往返 = 原始明文
+//   3) 篡改 ct / tag / aad 任一字节 → open 返回空表（认证失败）
+// 期望输出：全部 PASS + "gcm 探针全部通过"。
+// ============================================================================
+import "../../ext/tls/gcm.tie"
+import "../../ext/tls/tool.tie"
+
+// hex 字符串 → 字节表。
+func bh(h: string) -> table<i64> {
+    return tbt.hex_to_bytes(h)
+}
+
+func check_hex(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        println("  got=" + got)
+        println("  want=" + want)
+        exit(1)
+    }
+}
+
+// open 结果应为 want 明文。
+func check_pt(name: string, pt: table<i64>, want: string) {
+    check_hex(name, tbt.bytes_to_hex(pt), want)
+}
+
+// open 应认证失败 → 空表。
+func check_fail(name: string, ret: table<i64>) {
+    if len(ret) == 0 {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " 实际返回了内容")
+        exit(1)
+    }
+}
+
+func main() {
+    var k128 = "00000000000000000000000000000000"
+    var k128b = "feffe9928665731c6d6a8f9467308308"
+    var k256 = "0000000000000000000000000000000000000000000000000000000000000000"
+    var iv0 = bh("000000000000000000000000")
+    var ivc = bh("cafebabefacedbaddecaf888")
+    var empty = bh("")
+
+    // ---- 1) AES-128：16 字节 pt，无 AAD（GCM Test Case 2）----
+    var pt_16 = "00000000000000000000000000000000"
+    check_hex("v128_1blk_seal",
+        tbt.bytes_to_hex(gcm.seal(k128, iv0, empty, bh(pt_16))),
+        "0388dace60b6a392f328c2b971b2fe78" + "ab6e47d42cec13bdf53a67b21257bddf")
+    check_pt("v128_1blk_open",
+        gcm.open(k128, iv0, empty, bh("0388dace60b6a392f328c2b971b2fe78"), bh("ab6e47d42cec13bdf53a67b21257bddf")),
+        pt_16)
+
+    // ---- 2) AES-128：0 长 pt（GCM Test Case 1，ct 空，仅 tag）----
+    check_hex("v128_empty_seal",
+        tbt.bytes_to_hex(gcm.seal(k128, iv0, empty, empty)),
+        "58e2fccefa7e3061367f1d57a4e7455a")
+
+    // ---- 3) AES-128：多块 pt + AAD（GCM Test Case 4）----
+    var pt4 = "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39"
+    var aad4 = "feedfacedeadbeeffeedfacedeadbeefabaddad2"
+    var ct4 = "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091"
+    var tag4 = "5bc94fbc3221a5db94fae95ae7121a47"
+    check_hex("v128_aad_seal",
+        tbt.bytes_to_hex(gcm.seal(k128b, ivc, bh(aad4), bh(pt4))),
+        ct4 + tag4)
+    check_pt("v128_aad_open",
+        gcm.open(k128b, ivc, bh(aad4), bh(ct4), bh(tag4)), pt4)
+
+    // ---- 4) AES-128：多块 pt，无 AAD（GCM Test Case 3）----
+    var pt3 = "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255"
+    var ct3 = "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985"
+    var tag3 = "4d5c2af327cd64a62cf35abd2ba6fab4"
+    check_hex("v128_multiblk_seal",
+        tbt.bytes_to_hex(gcm.seal(k128b, ivc, empty, bh(pt3))), ct3 + tag3)
+    check_pt("v128_multiblk_open",
+        gcm.open(k128b, ivc, empty, bh(ct3), bh(tag3)), pt3)
+
+    // ---- 5) AES-256：16 字节 pt + 0 长 pt（同源向量）----
+    check_hex("v256_blk_seal",
+        tbt.bytes_to_hex(gcm.seal(k256, iv0, empty, bh(pt_16))),
+        "cea7403d4d606b6e074ec5d3baf39d18" + "d0d1c8a799996bf0265b98b5d48ab919")
+    check_pt("v256_blk_open",
+        gcm.open(k256, iv0, empty, bh("cea7403d4d606b6e074ec5d3baf39d18"), bh("d0d1c8a799996bf0265b98b5d48ab919")),
+        pt_16)
+    check_hex("v256_empty_seal",
+        tbt.bytes_to_hex(gcm.seal(k256, iv0, empty, empty)),
+        "530f8afbc74536b9a963b4f1c4cb738b")
+
+    // ---- 篡改负例：任一字节改动 → open 空表 ----
+    // ct 首字节翻转
+    var bad_ct = bh(ct4)
+    bad_ct[0] = bad_ct[0] ^ 1
+    check_fail("tamper_ct", gcm.open(k128, ivc, bh(aad4), bad_ct, bh(tag4)))
+    // tag 末字节翻转
+    var bad_tag = bh(tag4)
+    bad_tag[15] = bad_tag[15] ^ 1
+    check_fail("tamper_tag", gcm.open(k128, ivc, bh(aad4), bh(ct4), bad_tag))
+    // aad 篡改
+    check_fail("tamper_aad", gcm.open(k128, ivc, bh("00"), bh(ct4), bh(tag4)))
+
+    println("gcm 探针全部通过")
+}
