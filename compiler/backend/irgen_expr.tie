@@ -2084,15 +2084,19 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_builtin_res = tig_http_get(sv)
         return 0
     }
-    if nm == "path_basename" || nm == "path_dirname" || nm == "path_abs" ||
-        nm == "path_normalize" {
-        g_used_interp = true
-        var sv = tig_expr(call_arg(id, 0))
-        if sv < 0 {
-            return -1
-        }
-        g_builtin_res = tig_ext_call1("tie_" + nm, sv, types.named(TK_STR), types.named(TK_STR))
-        return 0
+    // path_* 原语：p.6.4.10 内联纯 tie IR 生成（tig_path_*，见 irgen_path.tie），
+    // 去 Rust tie_path_* 桥，不再置 g_used_interp（p.6.4 残留桥清零）。
+    if nm == "path_basename" {
+        return tig_path_basename(id)
+    }
+    if nm == "path_dirname" {
+        return tig_path_dirname(id)
+    }
+    if nm == "path_abs" {
+        return tig_path_abs(id)
+    }
+    if nm == "path_normalize" {
+        return tig_path_normalize(id)
     }
     if nm == "eval" {
         // p.6.4.10：eval 降级——tie:script 解释器未内嵌（完整实现=内嵌解释器，
@@ -2113,18 +2117,9 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_builtin_res = tig_str_lit(interner.intern("\"\""))
         return 0
     }
+    // path_join：p.6.4.10 内联纯 tie IR 生成（同 basename/dirname 系列）
     if nm == "path_join" {
-        g_used_interp = true
-        var a1 = tig_expr(call_arg(id, 0))
-        if a1 < 0 {
-            return -1
-        }
-        var a2 = tig_expr(call_arg(id, 1))
-        if a2 < 0 {
-            return -1
-        }
-        g_builtin_res = tig_ext_call2("tie_" + nm, a1, types.named(TK_STR), a2, types.named(TK_STR), types.named(TK_STR))
-        return 0
+        return tig_path_join(id)
     }
     // regex_find：p.6.4.8 内联纯 tie 最小正则引擎
     if nm == "regex_find" {

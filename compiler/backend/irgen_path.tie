@@ -1,0 +1,479 @@
+type tie<class>
+// compiler/backend/irgen_path.tie —— 生成器 p.6.4.10：路径原语去 Rust 桥内联 IR 生成
+// ============================================================
+// 把 path_basename/path_dirname/path_abs/path_normalize/path_join 五个语言底座原语
+// 从 Rust tie_interp.lib（tie_path_* 桥，g_used_interp=true）改为编译器内联 IR 生成
+//（纯 tie，零 Rust 桥）。与 irgen_regex.tie（p.6.4.8）同范式：namespace irgen 内的
+// 生成函数裸名调用，经 irgen_expr.tie 分派切换调用。
+//
+// 语义锚定：用旧 tiec.exe 跑探针记录 Rust 桥返回值，逐字节对齐（P.anchors）：
+//   basename(p)：去尾分隔符（/与\）→ 结果空则返原串；否则取最后一个分隔符之后；
+//     无分隔符返整串                 e.g. "a/b"→"b" "a/"→"a" "/"→"/" "a/b/"→"b"
+//   dirname(p)：去尾分隔符 → 结果空则返 ""；否则取最后一个分隔符之前；无则 ""。
+//                                     e.g. "a/b"→"a" "a/"→"" "C:\x\y"→"C:\x"
+//   join(a,b)：a 空→b；b 绝对（首分隔符或盘符）→b；a 以分隔符结尾→a+b；否则 a+"\"+b
+//                                     e.g. "a"+b→"a\b" "a/"+b→"a/b" "a"+"/b"→"/b"
+//   normalize(p)：按 / 与 \ 分段，用段表折叠 "." 与 ".."（栈：.. 弹末段，栈空忽略），
+//     段间以 "\" 连接；原串首分隔符保留为前导 "\"；空结果 → "."
+//                                     e.g. "a/./b/../c"→"a\c" "/a/./b/../c"→"\a\c" ""→"."
+//   abs(p)：p 绝对(首分隔符/盘符 x:)→normalize(p)；否则 normalize(join(cwd,p))。
+//
+// 生成纪律：字符串拼接一律 StringBuilder（s21_sb_*，p.6.3 教训）；段表用 table<string>
+//（s21_table_*，trm-lite，非 Rust 桥）；逐字节扫描用 str_byte + 显式 cond_br 循环。
+// 路径分隔符常量用 s21_codepoint_to_str(92) 构造单反斜杠串（规避源码转义）。
+
+namespace irgen {
+// ---------- 块/分支/字节 便捷辅助 ----------
+func pa_br(blk: i64) {
+    var b = ir.new_inst(g_cur_block, 30, -1)
+    ir.add_operand(b, blk, 1)
+}
+func pa_cbr(cond: i64, bt: i64, bf: i64) {
+    var b = ir.new_inst(g_cur_block, 31, -1)
+    ir.add_operand(b, cond, 0)
+    ir.add_operand(b, bt, 1)
+    ir.add_operand(b, bf, 1)
+}
+func pa_alloca(ty: i64) -> i64 {
+    var a = ir.new_inst(g_cur_block, 20, ty)
+    ir.add_operand(a, ty, 2)
+    return ir.get_value(a)
+}
+func pa_byte(s: i64, i: i64) -> i64 {
+    return s21_str_byte(s, i)
+}
+// '/' (47) 或 '\' (92)
+func pa_is_sep(b: i64) -> i64 {
+    return tig_or_i1(tig_icmp_c(b, tig_int_lit(47), 0), tig_icmp_c(b, tig_int_lit(92), 0))
+}
+// 是否为绝对路径：首分隔符，或盘符 x:（s[0] 字母 且 s[1]==':'），长>=2。
+// 纯布尔代数（无分支）：空串时 byte 读 0/垫区安全，由长度守卫 and 归零。
+func pa_is_abs(s: i64) -> i64 {
+    var n = s21_str_head_len(s)
+    var b0 = pa_byte(s, tig_int_lit(0))
+    var lead = tig_and_i1(tig_icmp_c(n, tig_int_lit(0), 3), pa_is_sep(b0))
+    var islow = tig_and_i1(tig_icmp_c(b0, tig_int_lit(97), 5), tig_icmp_c(b0, tig_int_lit(122), 4))
+    var isup = tig_and_i1(tig_icmp_c(b0, tig_int_lit(65), 5), tig_icmp_c(b0, tig_int_lit(90), 4))
+    var alpha = tig_or_i1(islow, isup)
+    var b1 = pa_byte(s, tig_int_lit(1))
+    var drive = tig_and_i1(tig_and_i1(tig_icmp_c(n, tig_int_lit(2), 5), alpha), tig_icmp_c(b1, tig_int_lit(58), 0))
+    return tig_or_i1(lead, drive)
+}
+// 单反斜杠串常量（codepoint 92 → UTF-8"\")
+func pa_backslash() -> i64 {
+    return s21_codepoint_to_str(tig_int_lit(92))
+}
+
+// ============ basename ============
+func pa_basename_value(s: i64) -> i64 {
+    var T64 = types.named(TK_I64)
+    var TS = types.named(TK_STR)
+    var len0 = s21_str_head_len(s)
+    var rs = pa_alloca(TS)
+    var ep = pa_alloca(T64)
+    s21_store(ep, len0, T64)
+    // 去尾分隔符：while e>0 && issep(s[e-1]) { e-- }
+    var tcond = ir.new_block(g_cur_func, interner.intern("pab.tc"))
+    var tsep = ir.new_block(g_cur_func, interner.intern("pab.ts"))
+    var tdone = ir.new_block(g_cur_func, interner.intern("pab.td"))
+    pa_br(tcond)
+    g_cur_block = tcond
+    var e1 = s21_load(ep, T64)
+    var gt0 = tig_icmp_c(e1, tig_int_lit(0), 3)
+    var cchk = ir.new_block(g_cur_func, interner.intern("pab.cc"))
+    pa_cbr(gt0, cchk, tdone)
+    g_cur_block = cchk
+    var prev = s21_bin(1, e1, tig_int_lit(1))
+    var bprev = pa_byte(s, prev)
+    var ssep = pa_is_sep(bprev)
+    pa_cbr(ssep, tsep, tdone)
+    g_cur_block = tsep
+    s21_store(ep, s21_bin(1, e1, tig_int_lit(1)), T64)
+    pa_br(tcond)
+    // e==0 → 返原串
+    g_cur_block = tdone
+    var e2 = s21_load(ep, T64)
+    var fin = ir.new_block(g_cur_func, interner.intern("pab.fn"))
+    var zblk = ir.new_block(g_cur_func, interner.intern("pab.zz"))
+    var nzblk = ir.new_block(g_cur_func, interner.intern("pab.nz"))
+    pa_cbr(tig_icmp_c(e2, tig_int_lit(0), 0), zblk, nzblk)
+    g_cur_block = zblk
+    s21_store(rs, s, TS)
+    pa_br(fin)
+    // e>0：扫最后一个分隔符下标
+    g_cur_block = nzblk
+    var lp = pa_alloca(T64)
+    s21_store(lp, tig_int_lit(-1), T64)
+    var ip = pa_alloca(T64)
+    s21_store(ip, tig_int_lit(0), T64)
+    var scond = ir.new_block(g_cur_func, interner.intern("pab.sc"))
+    var sbody = ir.new_block(g_cur_func, interner.intern("pab.sb"))
+    var sdone = ir.new_block(g_cur_func, interner.intern("pab.sd"))
+    pa_br(scond)
+    g_cur_block = scond
+    var i1 = s21_load(ip, T64)
+    pa_cbr(tig_icmp_c(i1, e2, 2), sbody, sdone)
+    g_cur_block = sbody
+    var i2 = s21_load(ip, T64)
+    var nxt = ir.new_block(g_cur_func, interner.intern("pab.nx"))
+    var keep = ir.new_block(g_cur_func, interner.intern("pab.kp"))
+    pa_cbr(pa_is_sep(pa_byte(s, i2)), keep, nxt)
+    g_cur_block = keep
+    s21_store(lp, i2, T64)
+    pa_br(nxt)
+    g_cur_block = nxt
+    s21_store(ip, s21_bin(0, i2, tig_int_lit(1)), T64)
+    pa_br(scond)
+    // last>=0 → s[last+1,e)；否则 s[0,e)
+    g_cur_block = sdone
+    var lastv = s21_load(lp, T64)
+    var yblk = ir.new_block(g_cur_func, interner.intern("pab.yy"))
+    var nblk = ir.new_block(g_cur_func, interner.intern("pab.nn"))
+    pa_cbr(tig_icmp_c(lastv, tig_int_lit(-1), 1), yblk, nblk)
+    g_cur_block = yblk
+    s21_store(rs, s21_str_sub_bytes(s, s21_bin(0, lastv, tig_int_lit(1)), e2), TS)
+    pa_br(fin)
+    g_cur_block = nblk
+    s21_store(rs, s21_str_sub_bytes(s, tig_int_lit(0), e2), TS)
+    pa_br(fin)
+    g_cur_block = fin
+    return s21_load(rs, TS)
+}
+
+// ============ dirname ============
+func pa_dirname_value(s: i64) -> i64 {
+    var T64 = types.named(TK_I64)
+    var TS = types.named(TK_STR)
+    var len0 = s21_str_head_len(s)
+    var rs = pa_alloca(TS)
+    var ep = pa_alloca(T64)
+    s21_store(ep, len0, T64)
+    // 去尾分隔符
+    var tcond = ir.new_block(g_cur_func, interner.intern("pad.tc"))
+    var tsep = ir.new_block(g_cur_func, interner.intern("pad.ts"))
+    var tdone = ir.new_block(g_cur_func, interner.intern("pad.td"))
+    pa_br(tcond)
+    g_cur_block = tcond
+    var e1 = s21_load(ep, T64)
+    var cchk = ir.new_block(g_cur_func, interner.intern("pad.cc"))
+    pa_cbr(tig_icmp_c(e1, tig_int_lit(0), 3), cchk, tdone)
+    g_cur_block = cchk
+    var prev = s21_bin(1, e1, tig_int_lit(1))
+    pa_cbr(pa_is_sep(pa_byte(s, prev)), tsep, tdone)
+    g_cur_block = tsep
+    s21_store(ep, s21_bin(1, e1, tig_int_lit(1)), T64)
+    pa_br(tcond)
+    // e==0 → ""
+    g_cur_block = tdone
+    var e2 = s21_load(ep, T64)
+    var fin = ir.new_block(g_cur_func, interner.intern("pad.fn"))
+    var zblk = ir.new_block(g_cur_func, interner.intern("pad.zz"))
+    var nzblk = ir.new_block(g_cur_func, interner.intern("pad.nz"))
+    pa_cbr(tig_icmp_c(e2, tig_int_lit(0), 0), zblk, nzblk)
+    g_cur_block = zblk
+    s21_store(rs, tig_str_lit(interner.intern("\"\"")), TS)
+    pa_br(fin)
+    // e>0：扫最后一个分隔符下标
+    g_cur_block = nzblk
+    var lp = pa_alloca(T64)
+    s21_store(lp, tig_int_lit(-1), T64)
+    var ip = pa_alloca(T64)
+    s21_store(ip, tig_int_lit(0), T64)
+    var scond = ir.new_block(g_cur_func, interner.intern("pad.sc"))
+    var sbody = ir.new_block(g_cur_func, interner.intern("pad.sb"))
+    var sdone = ir.new_block(g_cur_func, interner.intern("pad.sd"))
+    pa_br(scond)
+    g_cur_block = scond
+    var i1 = s21_load(ip, T64)
+    pa_cbr(tig_icmp_c(i1, e2, 2), sbody, sdone)
+    g_cur_block = sbody
+    var i2 = s21_load(ip, T64)
+    var nxt = ir.new_block(g_cur_func, interner.intern("pad.nx"))
+    var keep = ir.new_block(g_cur_func, interner.intern("pad.kp"))
+    pa_cbr(pa_is_sep(pa_byte(s, i2)), keep, nxt)
+    g_cur_block = keep
+    s21_store(lp, i2, T64)
+    pa_br(nxt)
+    g_cur_block = nxt
+    s21_store(ip, s21_bin(0, i2, tig_int_lit(1)), T64)
+    pa_br(scond)
+    g_cur_block = sdone
+    var lastv = s21_load(lp, T64)
+    var yblk = ir.new_block(g_cur_func, interner.intern("pad.yy"))
+    var nblk = ir.new_block(g_cur_func, interner.intern("pad.nn"))
+    pa_cbr(tig_icmp_c(lastv, tig_int_lit(-1), 1), yblk, nblk)
+    g_cur_block = yblk
+    // 取父目录：结果 = s[0: 最后一个分隔符文段的起点]（折叠重复分隔符，对齐
+    // Rust 桥 parent 语义：a//b → a，不保留尾部分隔符）
+    var S_slot = pa_alloca(T64)
+    s21_store(S_slot, lastv, T64)
+    // 回溯：while v>0 && issep(s[v-1]) { v-- }
+    var bcond = ir.new_block(g_cur_func, interner.intern("pad.bdc"))
+    var bdec = ir.new_block(g_cur_func, interner.intern("pad.bdd"))
+    var bdone = ir.new_block(g_cur_func, interner.intern("pad.bdo"))
+    pa_br(bcond)
+    g_cur_block = bcond
+    var v1 = s21_load(S_slot, T64)
+    var bck = ir.new_block(g_cur_func, interner.intern("pad.bck"))
+    pa_cbr(tig_icmp_c(v1, tig_int_lit(0), 3), bck, bdone)
+    g_cur_block = bck
+    var prev2 = s21_bin(1, v1, tig_int_lit(1))
+    pa_cbr(pa_is_sep(pa_byte(s, prev2)), bdec, bdone)
+    g_cur_block = bdec
+    s21_store(S_slot, prev2, T64)
+    pa_br(bcond)
+    g_cur_block = bdone
+    var S = s21_load(S_slot, T64)
+    s21_store(rs, s21_str_sub_bytes(s, tig_int_lit(0), S), TS)
+    pa_br(fin)
+    g_cur_block = nblk
+    s21_store(rs, tig_str_lit(interner.intern("\"\"")), TS)
+    pa_br(fin)
+    g_cur_block = fin
+    return s21_load(rs, TS)
+}
+
+// ============ join ============
+func pa_join_value(a: i64, b: i64) -> i64 {
+    var T64 = types.named(TK_I64)
+    var TS = types.named(TK_STR)
+    var na = s21_str_head_len(a)
+    var rs = pa_alloca(TS)
+    var a_empty = tig_icmp_c(na, tig_int_lit(0), 0)
+    var b_abs = pa_is_abs(b)
+    // a_endsep：仅 na>0 有意义（select 钳索引 0 防负）
+    var aidx = tig_select_i(tig_icmp_c(na, tig_int_lit(0), 3), s21_bin(1, na, tig_int_lit(1)), tig_int_lit(0), T64)
+    var a_endsep = pa_is_sep(pa_byte(a, aidx))
+    var need_sep = tig_and_i1(tig_icmp_c(na, tig_int_lit(0), 3), tig_and_i1(tig_cmp_zero(b_abs, 0), tig_cmp_zero(a_endsep, 0)))
+    // 注意：b_abs/a_endsep 为 i1 bool 值；tig_cmp_zero(x,0)= x==0（i1 与 0 比较）
+    var fin = ir.new_block(g_cur_func, interner.intern("paj.fn"))
+    var b1 = ir.new_block(g_cur_func, interner.intern("paj.b1"))
+    var b2 = ir.new_block(g_cur_func, interner.intern("paj.b2"))
+    pa_cbr(tig_or_i1(a_empty, b_abs), b1, b2)
+    g_cur_block = b1
+    s21_store(rs, b, TS)
+    pa_br(fin)
+    // else：a + (need_sep? "\":"") + b —— StringBuilder 条件拼接（不用 select 混
+    // const_str(i64) 与指针，避免 llvmgen 类型错配）
+    g_cur_block = b2
+    var sb = s21_sb_new()
+    s21_sb_append(sb, a)
+    var bs = ir.new_block(g_cur_func, interner.intern("paj.bs"))
+    var be = ir.new_block(g_cur_func, interner.intern("paj.be"))
+    pa_cbr(need_sep, bs, be)
+    g_cur_block = bs
+    s21_sb_append(sb, pa_backslash())
+    pa_br(be)
+    g_cur_block = be
+    s21_sb_append(sb, b)
+    s21_store(rs, s21_sb_build(sb), TS)
+    pa_br(fin)
+    g_cur_block = fin
+    return s21_load(rs, TS)
+}
+
+// ============ normalize（段表折叠） ============
+// 处理一个段 [lo,hi)：空段跳过；"." 跳过；".." 弹末段（栈空忽略）；其余入栈。
+func pa_proc_seg(s: i64, stack: i64, lo: i64, hi: i64) {
+    var T64 = types.named(TK_I64)
+    var TS = types.named(TK_STR)
+    var comp = s21_str_sub_bytes(s, lo, hi)
+    var clen = s21_str_head_len(comp)
+    var fin = ir.new_block(g_cur_func, interner.intern("pps.fn"))
+    var nz = ir.new_block(g_cur_func, interner.intern("pps.nz"))
+    pa_cbr(tig_icmp_c(clen, tig_int_lit(0), 0), fin, nz)
+    g_cur_block = nz
+    var b0 = pa_byte(comp, tig_int_lit(0))
+    var isdot = tig_and_i1(tig_icmp_c(clen, tig_int_lit(1), 0), tig_icmp_c(b0, tig_int_lit(46), 0))
+    var dot = ir.new_block(g_cur_func, interner.intern("pps.dt"))
+    var ndot = ir.new_block(g_cur_func, interner.intern("pps.nd"))
+    pa_cbr(isdot, dot, ndot)
+    g_cur_block = dot
+    pa_br(fin)
+    g_cur_block = ndot
+    var b1 = pa_byte(comp, tig_int_lit(1))
+    var isdd = tig_and_i1(tig_and_i1(tig_icmp_c(clen, tig_int_lit(2), 0), tig_icmp_c(b0, tig_int_lit(46), 0)), tig_icmp_c(b1, tig_int_lit(46), 0))
+    var dd = ir.new_block(g_cur_func, interner.intern("pps.dd"))
+    var nudd = ir.new_block(g_cur_func, interner.intern("pps.ndd"))
+    pa_cbr(isdd, dd, nudd)
+    g_cur_block = dd
+    var stlen = s21_table_len(stack)
+    var popblk = ir.new_block(g_cur_func, interner.intern("pps.pk"))
+    var nopop = ir.new_block(g_cur_func, interner.intern("pps.np"))
+    pa_cbr(tig_icmp_c(stlen, tig_int_lit(0), 3), popblk, nopop)
+    g_cur_block = popblk
+    tl_void_2("tl_tbl$tbl_set_len", t21_ptri(stack), s21_bin(1, stlen, tig_int_lit(1)))
+    pa_br(nopop)
+    g_cur_block = nopop
+    pa_br(fin)
+    g_cur_block = nudd
+    s21_table_push(stack, TS, comp)
+    pa_br(fin)
+    g_cur_block = fin
+}
+
+func pa_normalize_value(s: i64) -> i64 {
+    var T64 = types.named(TK_I64)
+    var TS = types.named(TK_STR)
+    var n = s21_str_head_len(s)
+    var b0 = pa_byte(s, tig_int_lit(0))
+    var has_lead = tig_and_i1(tig_icmp_c(n, tig_int_lit(0), 3), pa_is_sep(b0))
+    var stack = s21_table_new(tig_int_lit_ty(8, T64))
+    var jp = pa_alloca(T64)
+    s21_store(jp, tig_int_lit(0), T64)
+    var sp = pa_alloca(T64)
+    s21_store(sp, tig_int_lit(0), T64)
+    // 扫描循环
+    var loop = ir.new_block(g_cur_func, interner.intern("pan.lp"))
+    var lbody = ir.new_block(g_cur_func, interner.intern("pan.lb"))
+    var ldone = ir.new_block(g_cur_func, interner.intern("pan.ld"))
+    var step = ir.new_block(g_cur_func, interner.intern("pan.st"))
+    pa_br(loop)
+    g_cur_block = loop
+    var j1 = s21_load(jp, T64)
+    pa_cbr(tig_icmp_c(j1, n, 4), lbody, ldone)
+    // body
+    g_cur_block = lbody
+    var j2 = s21_load(jp, T64)
+    var eblk = ir.new_block(g_cur_func, interner.intern("pan.eb"))
+    var neblk = ir.new_block(g_cur_func, interner.intern("pan.ne"))
+    pa_cbr(tig_icmp_c(j2, n, 0), eblk, neblk)
+    // 非末位：分隔符 → 处理段 [start..j2]，start=j2+1
+    g_cur_block = neblk
+    var sblk = ir.new_block(g_cur_func, interner.intern("pan.sb"))
+    var skipblk = ir.new_block(g_cur_func, interner.intern("pan.sk"))
+    pa_cbr(pa_is_sep(pa_byte(s, j2)), sblk, skipblk)
+    g_cur_block = sblk
+    var slo = s21_load(sp, T64)
+    pa_proc_seg(s, stack, slo, j2)
+    s21_store(sp, s21_bin(0, j2, tig_int_lit(1)), T64)
+    pa_br(step)
+    g_cur_block = skipblk
+    pa_br(step)
+    // 末位：处理 [start..n]
+    g_cur_block = eblk
+    var s2 = s21_load(sp, T64)
+    pa_proc_seg(s, stack, s2, n)
+    pa_br(step)
+    g_cur_block = step
+    var j3 = s21_load(jp, T64)
+    s21_store(jp, s21_bin(0, j3, tig_int_lit(1)), T64)
+    pa_br(loop)
+    // 收尾：栈空 → "."；否则拼段（前导 "\" 按需）
+    g_cur_block = ldone
+    var stacklen = s21_table_len(stack)
+    var rs = pa_alloca(TS)
+    var zb = ir.new_block(g_cur_func, interner.intern("pan.zz"))
+    var nb = ir.new_block(g_cur_func, interner.intern("pan.nb"))
+    var fin = ir.new_block(g_cur_func, interner.intern("pan.fn"))
+    pa_cbr(tig_icmp_c(stacklen, tig_int_lit(0), 0), zb, nb)
+    g_cur_block = zb
+    s21_store(rs, tig_str_lit(interner.intern("\".\"")), TS)
+    pa_br(fin)
+    g_cur_block = nb
+    var sb = s21_sb_new()
+    var lback = ir.new_block(g_cur_func, interner.intern("pan.lb2"))
+    var k0 = ir.new_block(g_cur_func, interner.intern("pan.k0"))
+    pa_cbr(has_lead, lback, k0)
+    g_cur_block = lback
+    s21_sb_append(sb, pa_backslash())
+    pa_br(k0)
+    // 段循环
+    g_cur_block = k0
+    var kp2 = pa_alloca(T64)
+    s21_store(kp2, tig_int_lit(0), T64)
+    var kc = ir.new_block(g_cur_func, interner.intern("pan.kc"))
+    var kbd = ir.new_block(g_cur_func, interner.intern("pan.kb"))
+    var kdn = ir.new_block(g_cur_func, interner.intern("pan.kd"))
+    var ksep = ir.new_block(g_cur_func, interner.intern("pan.ks"))
+    var kdata = ir.new_block(g_cur_func, interner.intern("pan.kda"))
+    pa_br(kc)
+    g_cur_block = kc
+    var k1 = s21_load(kp2, T64)
+    var klt = tig_icmp_c(k1, stacklen, 2)
+    pa_cbr(klt, kbd, kdn)
+    g_cur_block = kbd
+    var kgt = tig_icmp_c(k1, tig_int_lit(0), 3)
+    pa_cbr(kgt, ksep, kdata)
+    g_cur_block = ksep
+    s21_sb_append(sb, pa_backslash())
+    pa_br(kdata)
+    g_cur_block = kdata
+    var okmark = pa_alloca(types.named(TK_I8))
+    var compv = s21_table_at(stack, k1, okmark, TS)
+    s21_sb_append(sb, compv)
+    s21_store(kp2, s21_bin(0, k1, tig_int_lit(1)), T64)
+    pa_br(kc)
+    g_cur_block = kdn
+    s21_store(rs, s21_sb_build(sb), TS)
+    pa_br(fin)
+    g_cur_block = fin
+    return s21_load(rs, TS)
+}
+
+// ============ abs ============
+func pa_abs_value(s: i64) -> i64 {
+    var TS = types.named(TK_STR)
+    var rs = pa_alloca(TS)
+    var fin = ir.new_block(g_cur_func, interner.intern("paa.fn"))
+    var b1 = ir.new_block(g_cur_func, interner.intern("paa.b1"))
+    var b2 = ir.new_block(g_cur_func, interner.intern("paa.b2"))
+    pa_cbr(pa_is_abs(s), b1, b2)
+    g_cur_block = b1
+    s21_store(rs, pa_normalize_value(s), TS)
+    pa_br(fin)
+    g_cur_block = b2
+    var cwdv = tig_cwd()
+    var joined = pa_join_value(cwdv, s)
+    s21_store(rs, pa_normalize_value(joined), TS)
+    pa_br(fin)
+    g_cur_block = fin
+    return s21_load(rs, TS)
+}
+
+// ============ 五个原语分派（irgen_expr.tie 调用） ============
+func tig_path_basename(id: i64) -> i64 {
+    var sv = tig_expr(call_arg(id, 0))
+    if sv < 0 {
+        return -1
+    }
+    g_builtin_res = pa_basename_value(sv)
+    return 0
+}
+func tig_path_dirname(id: i64) -> i64 {
+    var sv = tig_expr(call_arg(id, 0))
+    if sv < 0 {
+        return -1
+    }
+    g_builtin_res = pa_dirname_value(sv)
+    return 0
+}
+func tig_path_normalize(id: i64) -> i64 {
+    var sv = tig_expr(call_arg(id, 0))
+    if sv < 0 {
+        return -1
+    }
+    g_builtin_res = pa_normalize_value(sv)
+    return 0
+}
+func tig_path_abs(id: i64) -> i64 {
+    var sv = tig_expr(call_arg(id, 0))
+    if sv < 0 {
+        return -1
+    }
+    g_builtin_res = pa_abs_value(sv)
+    return 0
+}
+func tig_path_join(id: i64) -> i64 {
+    var a1 = tig_expr(call_arg(id, 0))
+    if a1 < 0 {
+        return -1
+    }
+    var a2 = tig_expr(call_arg(id, 1))
+    if a2 < 0 {
+        return -1
+    }
+    g_builtin_res = pa_join_value(a1, a2)
+    return 0
+}
+}

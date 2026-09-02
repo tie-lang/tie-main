@@ -691,8 +691,10 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_STR)
     }
-    // 路径工具（M4）：path_basename/path_dirname/path_abs → string
-    if fn_name == "path_basename" || fn_name == "path_dirname" || fn_name == "path_abs" {
+    // 路径工具（M4+）：path_basename/path_dirname/path_abs/path_normalize → string
+    //（path_normalize 为 p.6.4.10 内联原语新增的前端类型登记）
+    if fn_name == "path_basename" || fn_name == "path_dirname" || fn_name == "path_abs" ||
+        fn_name == "path_normalize" {
         if nargs != 1 {
             sm_err_line = s_lines[call_node]
             sm_err_col = s_cols[call_node]

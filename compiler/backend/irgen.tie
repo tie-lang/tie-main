@@ -23,6 +23,7 @@ import "./irgen_agg.tie"
 import "./irgen_call.tie"
 import "./irgen_rt.tie"
 import "./irgen_regex.tie"
+import "./irgen_path.tie"
 // ==================== 生成器状态 ====================
 // 变量作用域：变量名池 id → (alloca 值 id, 类型 id)（线性表，作用域小）。
 // **作用域栈**：g_sc_top 为逻辑栈顶游标（tie 表无法截断，用游标模拟 pop，

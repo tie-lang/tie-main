@@ -552,21 +552,6 @@ func extern_decl(sym: string) -> string {
     if sym == "tie_walk_dir" {
         return "declare ptr @tie_walk_dir(ptr)"
     }
-    if sym == "tie_path_basename" {
-        return "declare ptr @tie_path_basename(ptr)"
-    }
-    if sym == "tie_path_dirname" {
-        return "declare ptr @tie_path_dirname(ptr)"
-    }
-    if sym == "tie_path_abs" {
-        return "declare ptr @tie_path_abs(ptr)"
-    }
-    if sym == "tie_path_normalize" {
-        return "declare ptr @tie_path_normalize(ptr)"
-    }
-    if sym == "tie_path_join" {
-        return "declare ptr @tie_path_join(ptr, ptr)"
-    }
     return ""
 }
 
