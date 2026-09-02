@@ -1,0 +1,160 @@
+type tie<logic>
+// p.6.5.4 验收：分代 + mark-compact GC
+// 覆盖：
+//   A. minor 晋升：存活对象多轮 minor age 递增，达阈值晋升老年代
+//   B. rs 隔离：仅经 老年代非根对象 出边引用的新生代对象，无 root、无根遍历 ——
+//      minor 存活（证明记忆集种子生效）；且 rs 跨轮持久（第二轮继续存活并晋升）
+//   C. 老年代对象不受 minor 影响：去掉引用成为老垃圾后，后续 minor 不回收
+//   D. major 全量回收老垃圾 + mark-compact 重排、边/根重写、remap 查询
+// 期望：PASS exit 0
+
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+
+    var ch: table<i64> = table_new_i64()
+    var roots: table<i64> = table_new_i64()
+    var i: i64 = 0
+    // 10 根 + 每股 5 子 = 60 常驻对象
+    while i < 10 {
+        var r = trm_lite_tgc.alloc(32)
+        trm_lite_tgc.add_root(r)
+        table_push(roots, r)
+        var k: i64 = 0
+        while k < 5 {
+            var c = trm_lite_tgc.alloc(16)
+            trm_lite_tgc.set_ref(r, k, c)
+            table_push(ch, c)
+            k = k + 1
+        }
+        i = i + 1
+    }
+    var ch00 = ch[0]               // 将被 drop_ref 的「孤儿」对象
+
+    // ---- 三轮 minor：60 常驻 → age 0→1→2（晋升老年代）----
+    var f1 = tl_runtime_ctx.ctx_gc_minor()   // freed 0
+    var f2_0: i64 = 0
+    while f2_0 < 30 {
+        trm_lite_tgc.alloc(8)
+        f2_0 = f2_0 + 1
+    }
+    var f2 = tl_runtime_ctx.ctx_gc_minor()   // freed 30（垃圾 G1）
+    var f3_0: i64 = 0
+    while f3_0 < 30 {
+        trm_lite_tgc.alloc(8)
+        f3_0 = f3_0 + 1
+    }
+    var f3 = tl_runtime_ctx.ctx_gc_minor()   // freed 30（垃圾 G2）
+    var live_old = tl_runtime_ctx.ctx_live_objs()
+    println("A: f1=" + to_string(f1) + " f2=" + to_string(f2) + " f3=" + to_string(f3) + " live=" + to_string(live_old))
+
+    // 年龄断言：10 根 age>=2 = 老年代
+    var promoted: i64 = 0
+    i = 0
+    while i < 10 {
+        var r = roots[i]
+        if tl_runtime_ctx.ctx_obj_alive(r) && tl_runtime_ctx.ctx_obj_age(r) >= 2 {
+            promoted = promoted + 1
+        }
+        i = i + 1
+    }
+    println("B: promoted roots=" + to_string(promoted) + "/10")
+
+    // ---- rs 隔离测试：ch00（老垃圾，非 root）→ y（新生代）----
+    trm_lite_tgc.drop_ref(roots[0], 0)        // 断开 r0→ch00
+    var y = trm_lite_tgc.alloc(16)
+    trm_lite_tgc.set_ref(ch00, 0, y)          // 老→新：写屏障记 rs
+    var f4 = tl_runtime_ctx.ctx_gc_minor()    // y 仅经 rs 存活：f4 必须 0
+    var y_alive4 = tl_runtime_ctx.ctx_obj_alive(y)
+    var y_age4 = tl_runtime_ctx.ctx_obj_age(y)
+    println("C: minor4 freed=" + to_string(f4) + " y_alive=" + to_string(y_alive4) + " y_age=" + to_string(y_age4))
+
+    // rs 持久：第二轮继续经 rs 存活并晋升
+    var f5 = tl_runtime_ctx.ctx_gc_minor()
+    var y_alive5 = tl_runtime_ctx.ctx_obj_alive(y)
+    var y_age5 = tl_runtime_ctx.ctx_obj_age(y)
+    println("D: minor5 freed=" + to_string(f5) + " y_alive=" + to_string(y_alive5) + " y_age=" + to_string(y_age5))
+
+    // ---- 老垃圾不受 minor 影响：ch00 无引用仍存活 -----
+    var g3: i64 = 0
+    while g3 < 30 {
+        trm_lite_tgc.alloc(8)
+        g3 = g3 + 1
+    }
+    var f6 = tl_runtime_ctx.ctx_gc_minor()    // 回收 G3(=30)，不碰 ch00
+    var ch00_alive6 = tl_runtime_ctx.ctx_obj_alive(ch00)
+    println("E: minor6 freed=" + to_string(f6) + " ch00_alive(old garbage)=" + to_string(ch00_alive6))
+
+    // ---- major：全量回收老垃圾 + mark-compact 重排 ----
+    // y 经 ch00 存活于 minor（rs），但 major 前重新挂到根 r0 的新槽位，
+    // 让 y 在 major 后存活（验证老→新 引用边重写正确）。
+    trm_lite_tgc.set_ref(roots[0], 9, y)      // 槽位超出活跃边数 → 纯新增 r0→y
+    var g4: i64 = 0
+    while g4 < 20 {
+        trm_lite_tgc.alloc(8)
+        g4 = g4 + 1
+    }
+    var f7 = tl_runtime_ctx.ctx_gc_major()    // major 回收 ch00 + 20 G4 = 21；其余收缩重排
+    var compacted = tl_runtime_ctx.ctx_compacted()
+    var live_final = tl_runtime_ctx.ctx_live_objs()
+    var alloc_final = trm_lite_tgc.alloc_count()
+    println("F: major freed=" + to_string(f7) + " compacted=" + to_string(compacted) +
+            " live=" + to_string(live_final) + " alloc_slots=" + to_string(alloc_final))
+
+    // remap：根对象新 id、互异、可达；r0 的新 id 下的新槽位 → y 新 id
+    var r0n = tl_runtime_ctx.ctx_remapped(roots[0])
+    var r1n = tl_runtime_ctx.ctx_remapped(roots[1])
+    var ch1n = tl_runtime_ctx.ctx_remapped(ch[1])
+    var yn = tl_runtime_ctx.ctx_remapped(y)
+    var edge0 = trm_lite_tgc.ref_to(r0n, 0)
+    var edgey = trm_lite_tgc.ref_to(r0n, 4)
+    println("G: remap r0=" + to_string(r0n) + " r1=" + to_string(r1n) + " ch1=" + to_string(ch1n) + " y=" + to_string(yn) + " r0.e0=" + to_string(edge0) + " r0.ey=" + to_string(edgey))
+
+    // ---- 断言 ----
+    var ok: i64 = 1
+    if promoted != 10 {
+        ok = 0
+    }
+    if f1 != 0 || f2 != 30 || f3 != 30 {
+        ok = 0
+    }
+    if f4 != 0 || y_alive4 != true {
+        ok = 0
+    }
+    if f5 != 0 || y_alive5 != true || y_age5 < 2 {
+        ok = 0
+    }
+    if f6 != 30 || ch00_alive6 != true {
+        ok = 0
+    }
+    if f7 != 21 {
+        ok = 0
+    }
+    if live_final != 60 || compacted != 60 {
+        ok = 0
+    }
+    if r0n < 0 || r1n < 0 || ch1n < 0 || yn < 0 || r0n == r1n || r0n == yn {
+        ok = 0
+    }
+    if edge0 != ch1n {
+        ok = 0
+    }
+    if edgey != yn {
+        ok = 0
+    }
+    if alloc_final != 60 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("res: promoted=" + to_string(promoted) + " f1=" + to_string(f1) + " f2=" + to_string(f2) + " f3=" + to_string(f3) +
+            " f4=" + to_string(f4) + " f5=" + to_string(f5) + " f6=" + to_string(f6) + " f7=" + to_string(f7) +
+            " live=" + to_string(live_final) + " compacted=" + to_string(compacted))
+    trm_lite_tgc.shutdown()
+    tl_runtime_ctx.ctx_shutdown()
+    println("done")
+}

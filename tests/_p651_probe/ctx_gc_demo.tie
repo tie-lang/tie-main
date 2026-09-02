@@ -58,16 +58,27 @@ func main() {
         i = i + 1
     }
     var ranB = tl_runtime_ctx.ctx_drain()
-    // drain 后根表已含 b；最后 set_ref(a,0,b)。同步收一次：应无任何可达对象被误回收
+    // drain 后根表已含 b；最后 set_ref(a,0,b)。同步收一次：
+    // 临时 t 垃圾应收（sync_freed>0），而全部登记根（A 8 + B 8）
+    // 经 mark-compact 重映射后仍应全部存活（无误回收）。
     var sync_freed = trm_lite_tgc.gc_collect_sync()
+    var root_live = trm_lite_tgc.root_survivors()
 
     println("ranA=" + to_string(ranA) + " allocA=" + to_string(allocA) + " liveA=" + to_string(liveA) + " freedA=" + to_string(freedA))
-    println("steps=" + to_string(steps) + " rounds=" + to_string(rounds) + " ranB=" + to_string(ranB) + " sync_freedB=" + to_string(sync_freed))
+    println("steps=" + to_string(steps) + " rounds=" + to_string(rounds) + " ranB=" + to_string(ranB) + " sync_freedB=" + to_string(sync_freed) + " root_live=" + to_string(root_live))
     var ok: i64 = 1
-    if ranA != 8 { ok = 0 }
-    if allocA != 24 || liveA != 16 || freedA != 8 { ok = 0 }
-    if steps <= 0 || rounds < 1 { ok = 0 }
-    if ranB != 4 || sync_freed != 0 { ok = 0 }
+    if ranA != 8 {
+        ok = 0
+    }
+    if allocA != 24 || liveA != 16 || freedA != 8 {
+        ok = 0
+    }
+    if steps <= 0 || rounds < 1 {
+        ok = 0
+    }
+    if ranB != 4 || sync_freed <= 0 || root_live != 16 {
+        ok = 0
+    }
     if ok == 1 {
         println("PASS")
     } else {
