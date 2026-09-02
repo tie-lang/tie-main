@@ -3,9 +3,9 @@
 
 > 本文档定义 tie 语言**正式发行版（Release）**的版本规则、内部代号、
 > 工具链合集组成、工程改造点与发布流程。
-> 实施依据：README 路线图 Harbor M0（正式发行版基础）。
+> 实施依据：README 路线图 Harbor M0（2026.1 正式发行版基础）、Shipyard 2026.2（完整形态）。
 
-EN: This document defines the **official release** rules for the tie language: versioning, internal codenames, the toolchain-collection composition, engineering modifications, and the release process. Implementation basis: the Harbor M0 milestone (official-release foundation) in the README roadmap.
+EN: This document defines the **official release** rules for the tie language: versioning, internal codenames, the toolchain-collection composition, engineering modifications, and the release process. Implementation basis: the Harbor M0 milestone (2026.1 official-release foundation) in the README roadmap, and Shipyard 2026.2 (full toolchain form).
 
 ## 1. 版本命名规则
 *EN: Version Naming Rules*
@@ -17,13 +17,10 @@ EN: The official-release version format is `year.revision`, e.g. `2026.1`.
 - **年份**：发行年份（4 位数字），如 `2026`。
 - **修订号**：该年内的发行序数，从 1 递增（`2026.1` → `2026.2` → …）。
 - 版本号与 git tag 一致：`2026.1`（裸版本号，不带 `v` 前缀）。
-- Cargo crate 版本号与发行版号**保持一致**：
-  `2026.1` 本身是合法 semver（主版本 2026，次版本 1），可直接用于 Cargo。
 
 EN: **Year**: the release year (4 digits), e.g. `2026`.
 EN: **Revision**: the release ordinal within that year, incrementing from 1 (`2026.1` → `2026.2` → …).
 EN: The version matches the git tag exactly: `2026.1` (a bare version without a `v` prefix).
-EN: The Cargo crate version **stays identical** to the release version: `2026.1` is itself valid semver (major 2026, minor 1), so it can be used directly in Cargo.
 
 ## 2. 内部代号（架构代号）
 *EN: Internal Codenames (architecture codenames)*
@@ -47,137 +44,114 @@ EN: The codename is used only for promotion, docs, and artifact naming (e.g. ins
 ## 3. 工具链合集组成
 *EN: Toolchain Collection Composition*
 
-正式发行版是一套**工具链的合集**：把当前分散的 6 个 crate 二进制
-+ REPL 外壳 + 文档打包为一个可安装、可分发的整体。
+正式发行版是一套**工具链的合集**：把自举编译器、REPL 外壳、包管理器、
+捆绑 LLVM 精简工具链、标准/扩展库与文档打包为一个可安装、可分发的整体。
+2026.1 起整链 **0-Rust 自举**（Rust 参考编译器已归档 tiec_rust）。
 
-EN: An official release is a **collection of a toolchain**: it packages the current 6 scattered crate binaries + the REPL shell + the documentation into a single installable, distributable whole.
+EN: An official release is a **collection of a toolchain**: it packages the self-hosted compiler, the REPL shell, the package manager, a bundled minimal LLVM toolchain, the standard/extension libraries, and the documentation into a single installable, distributable whole. From 2026.1 the whole chain is **0-Rust self-hosted** (the Rust reference compiler is archived as tiec_rust).
 
 ### 3.1 二进制组件（bin/）
 *EN: Binary components (bin/)*
 
 | 组件 | 源 | 职责 |
 | --- | --- | --- |
-| `tie.exe` | crates/tie | 总入口（四段式调度器 + REPL 启动） |
-| `tie-prep.exe` | crates/tie-prep | 预处理（清理代码 + 识别文件角色） |
-| `tie-frontend.exe` | crates/tie-frontend | 前端三阶段（词法/语法/语义，调试用） |
-| `tie-llvm.exe` | crates/tie-llvm | 编译（IR 生成 + opt/clang/lld 后端） |
-| `tie-lsp.exe` | crates/tie-lsp | 语言服务器（LSP over stdio） |
-| `tie-interp.exe` | crates/tie-interp | 解释执行 |
-| `repl.exe` | repl/repl.tie | REPL 外壳（tie 语言自写，自举产物） |
+| `tiec.exe` | compiler/driver.tie | 自举编译器（tie 语言自写，前端→tie-IR→LLVM 后端工具链驱动） |
+| `repl.exe` | repl/repl.tie | REPL 外壳（tie 自写解释器求值，自举产物） |
+| `pkg.exe` | pkg/ | 包管理器（依赖解析 + tie.lock，自举产物） |
+| `bin/llvm/` | D:\LLVM 捆绑精简 | clang / opt / llvm-ar / lld-link + 头文件，`TIE_LLVM_HOME` 开箱即用，用户无需另装 LLVM |
 
-EN: The table above lists each binary component, its source crate, and its responsibility: `tie.exe` (crater `/tie`) is the main entry (four-stage dispatcher + REPL startup); `tie-prep.exe` (crates/tie-prep) does preprocessing (code cleanup + file-role recognition); `tie-frontend.exe` (crates/tie-frontend) is the front-end three stages (lexing/parsing/semantics, for debugging); `tie-llvm.exe` (crates/tie-llvm) compiles (IR generation + opt/clang/lld back end); `tie-lsp.exe` (crates/tie-lsp) is the language server (LSP over stdio); `tie-interp.exe` (crates/tie-interp) does interpretation; `repl.exe` (repl/repl.tie) is the REPL shell (self-written in tie, a bootstrap artifact).
+EN: The table above lists each binary component and its source/role: `tiec.exe` (from compiler/driver.tie) is the self-hosted compiler written in tie (frontend → tie-IR → LLVM-backend toolchain driver); `repl.exe` (repl/repl.tie) is the REPL shell backed by the tie-written interpreter; `pkg.exe` (pkg/) is the package manager (dependency resolution + tie.lock); `bin/llvm/` is the bundled minimal LLVM toolchain (clang/opt/llvm-ar/lld-link + headers) so users need no separate LLVM install.
 
-### 3.2 文档（doc/）
-*EN: Documentation (doc/)*
+### 3.2 库与源码包
+*EN: Libraries and source packages*
 
-- `README.md`（工程入口）
-- `docs/language.md`（语法规范）
-- `docs/ai-guide.md`（AI 教学指南）
-- `docs/prompt-pack.md`（Prompt 包）
-- `CHANGELOG.md`（版本变更记录）
-- `LICENSE`（自创通用宽松许可证 Open Source License v1.0，覆盖 tie 官方全部仓库）
+- `doc/`：README、CHANGELOG、LICENSE + `docs/` 文档全目录（language/ai-guide/prompt-pack/release 等）
+- `examples/`：示例 `.tie` 源码（hello / wide / table / tuple / oop / m4_ops 等）
+- `std/` `ext/` `rdu/`：标准库、扩展库与嵌入式基础层（全部 tie 语言自写；rdu 无栈纪律，零原语/零动态内存）
+- `skills/`：tie-dev 开发技能（SKILL.md，面向开发者与 AI 助手）
+- `editor/vscode-tie/`：VSCode 扩展（语法高亮 + LSP 诊断）
+- `compiler/`：编译器全部 `.tie` 源码（已剪除 `.exe/.ll/.bc` 编译产物，便于检视与二次开发）
 
-EN: `README.md` (project entry); `docs/language.md` (language spec); `docs/ai-guide.md` (AI teaching guide); `docs/prompt-pack.md` (Prompt pack); `CHANGELOG.md` (version changelog); `LICENSE` (the original permissive license Open Source License v1.0, covering all official tie repositories).
+EN: `doc/` ships README, CHANGELOG, LICENSE plus the full `docs/` tree (language/ai-guide/prompt-pack/release, etc.); `examples/` ships example `.tie` sources; `std/`, `ext/` and `rdu/` are the standard library, extension library and embedded base layer (all written in tie; rdu follows stack-discipline with zero primitives/zero dynamic memory); `skills/` ships the tie-dev development skill; `editor/vscode-tie/` ships the VSCode extension (syntax highlighting + LSP diagnostics); `compiler/` ships all compiler `.tie` sources with build artifacts pruned.
 
-### 3.3 示例（examples/）
-*EN: Examples (examples/)*
+### 3.3 2026.2 完整形态（Shipyard）
+*EN: Full form in 2026.2 (Shipyard)*
 
-全部示例 `.tie` 源文件（hello / wide / table / tuple / oop / m4_ops 等）。
+2026.2 除 Keel 架构重构后的编译器外，工具链补齐下列组件，随发行版一体交付：
 
-EN: All example `.tie` source files (hello / wide / table / tuple / oop / m4_ops, etc.).
+- **trm**（运行时）：动态库延迟绑定 + system 域（terminal/process/fs/env/session/clock/net/data）
+- **UI 框架**：trm.ui 窗口/绘制/事件基础 + tieui 组件树/布局组合式框架
+- **tiedb**（数据库）：tieDB 完整形态（列式持久化 + 向量检索 vecsearch，zd 格式底座）
+- **tiwi**（安装器）：tie 安装程序制作器（FLTK GUI + 自解压 setup，六边形架构）
 
-### 3.4 编辑器扩展（editor/vscode-tie）
-*EN: Editor extension (editor/vscode-tie)*
-
-VSCode 扩展（`editor/vscode-tie`）随发行版一起分发，提供语法高亮与
-LSP 诊断支持（配合 `tie-lsp`）。
-
-EN: The VSCode extension (`editor/vscode-tie`) is distributed with the release, providing syntax highlighting and LSP diagnostics support (in conjunction with `tie-lsp`).
-
-### 3.5 前置依赖（不随包分发）
-*EN: Prerequisite dependencies (not shipped with the package)*
-
-编译链路调用外部 LLVM 工具链：`opt` / `clang` / `llvm-ar`。
-发行版**不捆绑** LLVM（体积过大），依赖用户机器已安装 LLVM（PATH 或
-`D:\LLVM\bin` 等常见位置）。安装文档与 `tie --version` 输出中说明此依赖。
-
-EN: The compilation chain invokes an external LLVM toolchain: `opt` / `clang` / `llvm-ar`. The release does **not bundle** LLVM (too large), relying on LLVM already installed on the user's machine (in PATH or at common locations such as `D:\LLVM\bin`). This dependency is stated in the installation docs and in the `tie --version` output.
+EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is completed with: **trm** (runtime: dynamic-library lazy binding + the system domain terminal/process/fs/env/session/clock/net/data); the **UI framework** (trm.ui window/drawing/events + the tieui composable component tree/layout); **tiedb** (the database in full form: columnar persistence + vecsearch over the zd format); and **tiwi** (the tie installer builder: FLTK GUI + self-extracting setup, hexagonal architecture).
 
 ## 4. 工程改造点
 *EN: Engineering Modifications*
 
-### 4.1 Cargo 版本号统一
-*EN: Unified Cargo version numbers*
+### 4.1 自举验证与二阶自举
+*EN: Bootstrap verification and second-order bootstrap*
 
-- 根 `Cargo.toml` 的 `[workspace.package]` 增加 `version = "2026.1"`。
-- 6 个 crate 的 `Cargo.toml` 改为 `version.workspace = true`（消除版本号散落）。
+- 一阶：`tiec.exe compiler/driver.tie -o compiler/tiec2.exe`（自举编译零错误，产物生成判定成功）
+- 二阶：新 tiec 再编自身，产出与一阶 byte-identical（自举不动点）
+- 种子边界：编译用户程序、链接运行时、REPL 运行、解释器求值全部不触碰 Rust 产物
+  （scripts/zero-rust-check.ps1 验证）
 
-EN: Add `version = "2026.1"` to the root `Cargo.toml`'s `[workspace.package]`.
-EN: Change the `Cargo.toml` of the 6 crates to `version.workspace = true` (eliminating scattered version numbers).
+EN: First order: `tiec.exe compiler/driver.tie -o compiler/tiec2.exe` (bootstrap compile with zero errors, success judged by artifact generation). Second order: the new tiec compiles itself again, byte-identical to the first order (bootstrap fixed point). Seed boundary: compiling user programs, linking the runtime, running the REPL and interpreter evaluation never touch Rust artifacts (verified by scripts/zero-rust-check.ps1).
 
-### 4.2 tie --version
-*EN: `tie --version`*
+### 4.2 版本与代号
+*EN: Version and codename*
 
-- `tie --version` 输出版本与代号：
-  ```
-  tie 2026.1 (Harbor)
-  ```
-- 版本号读取自 `CARGO_PKG_VERSION`（编译期注入），代号为编译期常量。
-- 各子工具（tie-prep / tie-frontend / tie-llvm / tie-lsp / tie-interp）
-  同步支持 `--version`（复用同一模式）。
+- 发行版号与代号由打包参数注入、产物按 `tie-{版本}-win-x64.zip` 命名
+  （如 `tie-Harbor-2026.1-preview.5-win-x64.zip`、`tie-2026.1-win-x64.zip`）
+- `tiec --version` 输出版本与代号为后续增强项（当前 CLI 见 compiler/README.tie）
 
-EN: `tie --version` outputs the version and codename:
-EN: `tie 2026.1 (Harbor)` (the output text above, shown as-is).
-EN: The version number is read from `CARGO_PKG_VERSION` (injected at compile time); the codename is a compile-time constant.
-EN: Each sub-tool (tie-prep / tie-frontend / tie-llvm / tie-lsp / tie-interp) also supports `--version` (reusing the same pattern).
+EN: The release version and codename are injected as packager arguments; artifacts are named `tie-{version}-win-x64.zip` (e.g. `tie-Harbor-2026.1-preview.5-win-x64.zip`, `tie-2026.1-win-x64.zip`). A `tiec --version` output of version+codename is a future enhancement (current CLI is documented in compiler/README.tie).
 
-### 4.3 打包脚本
-*EN: Packaging script*
+### 4.3 打包器
+*EN: Packager*
 
-新增 `scripts/` 目录：
+`scripts/package.tie`（tie 语言自写，0-PowerShell，与旧 package.ps1 一一对应）：
+1. 自举验证（tiec 编译 driver.tie → tiec2.exe）
+2. repl.exe 自举（`skip-repl` 可跳过）
+3. 组装 `dist/tie-{版本}/`（bin / bin/llvm / doc / examples / std·ext·rdu / skills / editor / compiler 源码）
+4. 打包 zip（Windows 自带 bsdtar：`tar -a -c -f`）
 
-EN: Add a `scripts/` directory:
+用法：`compiler/tiec.exe scripts/package.tie -- 2026.2`（`skip-repl` / `skip-llvm` 可选）。
 
-- `scripts/package.ps1`：Windows 打包脚本。
-  1. `cargo build --release`（全 workspace，验证 0 错误）
-  2. 复制 6 个 exe + repl.exe 到 `dist/tie-2026.1/bin/`
-  3. 复制文档与示例到 `dist/tie-2026.1/`
-  4. 复制 VSCode 扩展（editor/vscode-tie）到 `dist/tie-2026.1/editor/vscode-tie/`
-  5. 压缩为 `dist/tie-2026.1-win-x64.zip`
-
-EN: `scripts/package.ps1`: the Windows packaging script — 1. `cargo build --release` (the whole workspace, verified with 0 errors); 2. copy the 6 exes + repl.exe into `dist/tie-2026.1/bin/`; 3. copy the docs and examples into `dist/tie-2026.1/`; 4. copy the VSCode extension (editor/vscode-tie) into `dist/tie-2026.1/editor/vscode-tie/`; 5. compress into `dist/tie-2026.1-win-x64.zip`.
+EN: `scripts/package.tie` is the packager written in tie (0-PowerShell, one-to-one with the old package.ps1): 1. bootstrap verification (tiec compiles driver.tie → tiec2.exe); 2. repl.exe self-host build (`skip-repl` to skip); 3. assemble `dist/tie-{version}/` (bin / bin/llvm / doc / examples / std·ext·rdu / skills / editor / compiler sources); 4. zip via the Windows-bundled bsdtar (`tar -a -c -f`). Usage: `compiler/tiec.exe scripts/package.tie -- 2026.2` (optional `skip-repl` / `skip-llvm`).
 
 ### 4.4 README 路线图
 *EN: README roadmap*
 
-Harbor M0 里程碑 = 正式发行版基础，规划内容如上。
+Harbor M0 里程碑 = 2026.1 正式发行版基础；Shipyard = 2026.2 完整形态（Keel 架构 + trm/UI/tiedb/tiwi）。
 
-EN: The Harbor M0 milestone = the official-release foundation, planned as described above.
+EN: The Harbor M0 milestone = the 2026.1 official-release foundation; Shipyard = the 2026.2 full form (Keel architecture + trm/UI/tiedb/tiwi).
 
 ## 5. 发布流程
 *EN: Release Process*
 
-适配自 publish-release 技能（原面向 dotnet，此处 Rust 化）：
+适配自 publish-release 技能（dotnet/Rust 版已随 0-Rust 迁移退役）：
 
-EN: Adapted from the publish-release skill (originally for dotnet, here Rust-ified):
+EN: Adapted from the publish-release skill (the dotnet/Rust variant retired with the 0-Rust migration):
 
 1. 推断版本号（年份.修订号，向用户确认）
-2. 同步 Cargo 版本号（workspace + `--version` 输出）
-3. 更新 CHANGELOG.md
-4. 同步文档（README、language.md、ai-guide 等）
-5. `cargo build --release` 验证（0 错误）
-6. 运行打包脚本生成 zip（+ 可选安装包）
-7. 提交并推送（git.franj2.top）
-8. 打 git tag（裸版本号 `2026.1`）
-9. 创建双平台 Release（GitHub / GitCode），上传安装包与压缩包
+2. 更新 CHANGELOG.md（按 CHANGELOG 写入规则，随提交即时记录）
+3. 同步文档（README、language.md、ai-guide、release.md 代号表等）
+4. `compiler/tiec.exe scripts/package.tie -- {版本}` 自举验证 + 打包生成 zip
+5. 提交并推送双端（git.franj2.top + GitHub）
+6. 打 git tag（裸版本号 `2026.1`）
+7. 创建双平台 Release（GitHub / GitCode），上传压缩包（安装包自 2026.2 tiwi 起）
 
-EN: 1. Infer the version number (year.revision, confirm with the user); 2. sync the Cargo version numbers (workspace + `--version` output); 3. update CHANGELOG.md; 4. sync the docs (README, language.md, ai-guide, etc.); 5. verify with `cargo build --release` (0 errors); 6. run the packaging script to generate the zip (+ optional installer); 7. commit and push (git.franj2.top); 8. create the git tag (bare version `2026.1`); 9. create the dual-platform Release (GitHub / GitCode), uploading the installer and the zip.
+EN: 1. Infer the version number (year.revision, confirm with the user); 2. update CHANGELOG.md (per changelog-writing rules, recorded immediately with each commit); 3. sync the docs (README, language.md, ai-guide, the release.md codename table, etc.); 4. run `compiler/tiec.exe scripts/package.tie -- {version}` for bootstrap verification + zip packaging; 5. commit and push to both remotes (git.franj2.top + GitHub); 6. create the git tag (bare version `2026.1`); 7. create the dual-platform Release (GitHub / GitCode) and upload the archives (installers arrive with tiwi in 2026.2).
 
 ## 6. 既定决策
 *EN: Established Decisions*
 
-- 打包产物：**仅 zip 压缩包**（`tie-2026.1-win-x64.zip`），安装包后续版本再做
+- 打包产物：**仅 zip 压缩包**（`tie-{版本}-win-x64.zip`）；安装器自 2026.2（tiwi）引入
 - 编辑器扩展：**包含** `editor/vscode-tie`（随发行版分发）
 - 目标平台：**仅 win-x64**（本机可验证；跨平台后续版本）
+- LLVM：**捆绑精简工具链**（bin/llvm/，无需用户另装）
+- 打包器：**tie 语言自写**（scripts/package.tie，0-PowerShell）
 
-EN: Packaging artifacts: **zip archives only** (`tie-2026.1-win-x64.zip`); installers come in a later version. Editor extension: **included** — `editor/vscode-tie` (distributed with the release). Target platform: **win-x64 only** (verifiable on this machine; cross-platform comes in a later version).
+EN: Packaging artifacts: **zip archives only** (`tie-{version}-win-x64.zip`); installers arrive with tiwi in 2026.2. Editor extension: **included** — `editor/vscode-tie` (distributed with the release). Target platform: **win-x64 only** (verifiable on this machine; cross-platform comes in a later version). LLVM: **bundled as a minimal toolchain** (bin/llvm/, no separate install needed). Packager: **written in tie** (scripts/package.tie, 0-PowerShell).
