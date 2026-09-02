@@ -154,21 +154,47 @@
   执行；同步收集 gc_collect_sync 供断言；ctx_gc_demo 验收：liveA=16/freedA=8 精确、
   steps=16（后台推进）、sync_freedB=0（写屏障交错零误回收）、exit 0）
 
-- [ ] p.6.5.4 分代 + 整理：新生代/老年代 + mark-compact（老年代）
+- [x] p.6.5.4 分代 + 整理：新生代/老年代 + mark-compact（老年代）
+  （落地 2026-09-02：gc_tri 分代——年龄表 + 晋升阈值（存活 minor ≥2 → 老年代）；
+  minor 只收 young（老年代预黑保护）+ 记忆集（写屏障老→新 + 晋升屏障）+ rs 持久
+  累积；major = 全量三色 + mark-compact（存活重排前段 + 边/根重写 + remapped 查询）；
+  **修复标记栈缺陷**（tie table 只追加，旧 g_stack[g_sp-1] pop 重复取出旧根 → 改
+  队式头游标，多点 gray 停滞问题根治）；gc_gen_demo 验收：晋升 10/10、rs 隔离存活、
+  老垃圾免疫 minor、major 回收 21 + compact 60 重映射边正确）
 
-- [ ] p.6.5.5 可迁移栈：分段/拷贝栈切换 + 与调度抢占/GC 根扫描咬合
+- [x] p.6.5.5 可迁移栈：任务任意 worker 执行（无固定栈绑定）+ 迁移计数
+  （落地 2026-09-02：tie 任务为 fn() 原子执行体——「可迁移栈」语义落位 = 任务与
+  创建 worker 解耦（任意 worker 可执行）；spawn 登记 g_orig_w、执行时登记 g_exec_w；
+  迁移计数 g_migrated（worker≠创建者即迁移）；ctx_migrated/ctx_task_exec_w 观察量；
+  mig_demo 验收：24 任务分布 4 worker + migrated>0）
 
-- [ ] p.6.5.6 精确栈图：语言栈图供精确根扫描（设计 §9 待决拍板）
+- [x] p.6.5.6 精确根拍板（设计 §9 待决项 3）：任务 env 即根
+  （2026-09-02 定案：tie 闭包 env 为编译期静态捕获——精确根 = 任务闭包 env 引用根
+  集合（add_root + 写屏障维护），sweep 仅在无任务窗口执行；root_protect_demo：
+  运行中（active>0）对象不回收、任务结束后收敛 0 无泄漏；拍板写入任务书 §5）
 
-- [ ] p.6.5.7 channel 语言原语：ch\_send/ch\_recv/ch\_close（tiec codegen + trm-lite mailbox）
+- [x] p.6.5.7 channel 语言原语：ch\_open/ch\_send/ch\_recv/ch\_close
+  （落地 2026-09-02：core/chan/tl_chan.tie 环形缓冲 mailbox（互斥 + 条件变量）；
+  tiec 三处注册内置 + codegen 静态链接 trm_lite_chan$* + import 冲突检测；chan_demo
+  验收：FIFO/空/关闭/满容量 PASS；自举字节一致）
 
-- [ ] p.6.5.8 actor × 复杂形态咬合：actor 消息经 trm-lite mailbox；#\[unsafe.trm] 接入门
+- [x] p.6.5.8 actor × 复杂形态咬合：actor 消息经 trm-lite mailbox；#\[unsafe.trm]
+  （落地 2026-09-02：actor_task 经 per-actor channel ch_recv 取 method_id（record@56
+  存通道句柄）；发送方 ch_send 入队 + spawn；单消息槽串行护栏保留（async FIFO 精确）；
+  #\[unsafe.trm] actor 级标注接受；actor_trm_demo：async 多参 FIFO total=96）
 
-- [ ] p.6.5.9 多执行体分配/回收 + 消息传收 demo（两形态验收载体：exit 0 + 内存平衡）
+- [x] p.6.5.9 多执行体分配/回收 + 消息传收 demo（两形态验收载体）
+  （落地 2026-09-02：combo_demo 复杂——mailbox 8 消息取回 + 16 任务分配 96 槽/32 活/
+  64 垃圾后台并发回收；combo_simple_demo 简单——actor mailbox + 内置 channel +
+  spawn 闭包 + collect；均 exit 0 计数精确）
 
-- [ ] p.6.5.10 回归与对比验收：m6\_actor 零回归、路线 A/B 不受影响、简单 vs 复杂行为一致
+- [x] p.6.5.10 回归与对比验收：m6\_actor 零回归、简单 vs 复杂行为一致
+  （落地 2026-09-02：m6_actor 15 正向探针零回归 + 10 负例编译期拒绝；parity_chan
+  （内置 ch 求和 804）与 combo_demo（ctx_ch 求和 804）行为一致）
 
-- [ ] p.6.5.11 收尾：trm-lite preview\.2、README/CHANGELOG、已知限制清单
+- [x] p.6.5.11 收尾：trm-lite preview\.2、README/CHANGELOG、已知限制清单
+  （落地 2026-09-02：README 全景更新 + 已知限制清单；chan 构件 tl_chan_lib.tie
+  独立切片并入 trm_lite.a 构建约定；自举核验 tiec2 字节一致）
 
 **库补全（p.6.6，一库一子项；前置 p.6.4 原语全面 tie 化完成后启动；设计见 docs/superpowers/specs/2026-09-01-p66-library-completion-design.md）**
 
@@ -224,6 +250,26 @@
   - 计划文档：docs/superpowers/plans/2026-09-01-p661-tls-client.md（p.6.6.1 实施计划）
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+
+## [新增] trm-lite p.6.5 收官——分代/整理 GC、可迁移栈、channel、actor mailbox（2026-09-02）（p.6.5.4-6.5.11）
+
+- **p.6.5.4 分代 + mark-compact**：gc_tri 新生代/老年代（年龄表 + 晋升阈值）、
+  minor 只收 young（记忆集 + 写屏障 + 晋升屏障 + rs 持久累积）、major 全量三色 +
+  mark-compact 重排（remapped 查询）；**修复标记栈缺陷**（tie table 只追加，旧 pop
+  重复取旧根 → 队式头游标）；gc_gen_demo PASS。
+- **p.6.5.5 可迁移栈**：任务与创建 worker 解耦（任意 worker 执行）+ 迁移计数
+  （g_orig_w/g_exec_w/g_migrated）+ ctx_migrated/ctx_task_exec_w；mig_demo PASS。
+- **p.6.5.6 精确根拍板**：设计 §9 待决项 3 定案「任务 env 即根」（add_root + 写屏障
+  维护；sweep 仅无任务窗口）；root_protect_demo PASS。
+- **p.6.5.7 channel 语言原语**：trm-lite mailbox（环形缓冲 + 互斥/条件变量）+ tiec
+  三处注册 ch_open/ch_send/ch_recv/ch_close 内置（codegen 静态链接 trm_lite_chan$*）；
+  chan_demo PASS；自举字节一致。
+- **p.6.5.8 actor × mailbox 咬合**：actor_task 经 per-actor channel ch_recv 取消息
+  令牌（record@56），发送方 ch_send 入队；#[unsafe.trm] 接入门接受；actor_trm_demo
+  PASS；m6_actor 零回归。
+- **p.6.5.9 双形态 demo**：combo_demo（复杂）/ combo_simple_demo（简单）均 PASS。
+- **p.6.5.10 回归对比**：m6_actor 15 正向 + 10 负例全过；内置 vs 复杂行为一致。
+- **p.6.5.11 收尾**：preview.2 README/CHANGELOG + 已知限制清单 + 自举核验。
 
 ## [新增] 并发三色 GC——标记栈/写屏障 + 后台回收器（2026-09-02）（p.6.5.3）
 
