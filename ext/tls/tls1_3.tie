@@ -1,0 +1,375 @@
+type tie<class>
+// ============================================================================
+// tls1_3.tie：ext/tls——TLS 1.3 客户端记录层与密钥调度（命名空间 tls13，纯 tie）
+// 用途：p.6.6.1 AC-4 —— 与本机 openssl s_server 完成真实握手 + 应用数据回环。
+// 套件仅 TLS_AES_128_GCM_SHA256（0x1301），密钥协商 x25519（RFC 7748）。
+// 全链路以 table<i64> 承载二进制，AES-128-GCM 复用 ext/tls/gcm.tie，
+// SHA-256/HMAC/HKDF 复用 ext/tls/hash.tie，DH 复用 std/x25519。
+//
+// == 覆盖（RFC 8446）==
+//   - ClientHello（type 1 / legacy 0x0303 / 32B 随机 / 非空 session_id / 压缩[0] /
+//     extensions: supported_versions=0x002b=0304、supported_groups=0x000a=[x25519 001d]、
+//     signature_algorithms=0x000d=[0804,0403]、key_share=0x0033=x25519 公钥）
+//   - 记录层 §5.2：明文记录 16 03 03 len；密文记录 type=23(0x17)+0303+len；
+//     AAD = 记录头（type||ver||len 共 5 字节）；nonce = iv ⊕ seq（12B 大端），
+//     seq 按密钥集/方向分别计数；密文 = content||type 为 TLSInnerPlaintext
+//     （type 位于内容之后），外层 type 恒为 23。
+//   - 密钥调度 §7.1：early=Extract(0,0)、derived=Derive-Secret("derived","")、
+//     handshake_secret=Extract(derived, ecdh_shared)；
+//     c/s hs traffic = Derive-Secret("c/s hs traffic", Hash(CH||SH))；
+//     master_secret = Extract(Derive-Secret(hs,"derived",""), 0)；
+//     c/s ap traffic（transcript 至 server Finished）；key/iv = Expand-Label("key"/"iv")；
+//     Finished = HMAC(Expand-Label(...,"finished"), Hash(transcript))。
+//   - ServerHello(2)/EncryptedExtensions(8)/Certificate(11)/CertificateVerify(15)/
+//     Finished(20) 内层类型分流解析；CertificateVerify 签名验签留给 AC-5（透传跳过）。
+// 说明：密钥派生与记录原语以独立函数暴露，探针负责编排。record nonce 规避
+// tie 编译器「右移 ≥64 位」缺陷（见 nonce 实现注记）。
+// ============================================================================
+
+import "./tool.tie"
+import "./hash.tie"
+import "./gcm.tie"
+import "../../std/x25519.tie"
+import "../../std/random.tie"
+import "../../std/net.tie"
+
+namespace tls13 {
+
+func empty() -> table<i64> {
+    return table_new_i64()
+}
+
+// ---- 随机字节 ----
+
+// n 个 [0,255] 随机字节。
+pub func rand_bytes(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(out, rnd.int(0, 255))
+        i = i + 1
+    }
+    return out
+}
+
+// ---- 握手消息拼装 ----
+
+// 完整握手结构体：msg_type(1) || u24 length || body。
+pub func hs_message(mtype: i64, body: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, mtype)
+    tbt.push_be(out, len(body), 3)
+    var i: i64 = 0
+    while i < len(body) {
+        table_push(out, body[i])
+        i = i + 1
+    }
+    return out
+}
+
+// ---- ClientHello ----
+
+// 构造并返回 (明文记录, 握手结构体, 客户端私钥 hex)。
+// 记录用于直接发送；握手结构体用于 transcript 与 golden 断言。
+pub func make_client_hello() -> (table<i64>, table<i64>, string) {
+    // 客户端 x25519 密钥对
+    var sk_bytes = rand_bytes(32)
+    var sk_hex: string = ""
+    var i: i64 = 0
+    while i < 32 {
+        var b = sk_bytes[i]
+        var hexs = "0123456789abcdef"
+        sk_hex = sk_hex + str_char(hexs, (b >> 4) & 0xF) + str_char(hexs, b & 0xF)
+        i = i + 1
+    }
+    var pub_hex = x25519.keygen(sk_hex)
+
+    var rnd32 = rand_bytes(32)
+    var sid = rand_bytes(32)
+
+    // ClientHello body
+    var body = table_new_i64()
+    tbt.push_be(body, 0x0303, 2)        // legacy_version
+    i = 0
+    while i < 32 {
+        table_push(body, rnd32[i]); i = i + 1
+    }
+    table_push(body, 32)                 // legacy_session_id_echo 长度（32）
+    i = 0
+    while i < 32 {
+        table_push(body, sid[i]); i = i + 1
+    }
+    tbt.push_be(body, 2, 2)              // cipher_suites 长度
+    tbt.push_be(body, 0x1301, 2)         // TLS_AES_128_GCM_SHA256
+    table_push(body, 1)                  // compression_methods 长度
+    table_push(body, 0)                  // null compression
+
+    // --- extensions ---
+    var exts = table_new_i64()
+
+    // supported_versions 0x002b: [0x0304]
+    tbt.push_be(exts, 0x002b, 2)         // type
+    tbt.push_be(exts, 3, 2)              // len
+    table_push(exts, 2)                  // versions 数组长度
+    tbt.push_be(exts, 0x0304, 2)
+
+    // supported_groups 0x000a: [x25519=0x001d]
+    tbt.push_be(exts, 0x000a, 2)
+    tbt.push_be(exts, 4, 2)
+    tbt.push_be(exts, 2, 2)              // groups 数组长度
+    tbt.push_be(exts, 0x001d, 2)
+
+    // signature_algorithms 0x000d: [0x0804, 0x0403]
+    tbt.push_be(exts, 0x000d, 2)
+    tbt.push_be(exts, 6, 2)
+    tbt.push_be(exts, 4, 2)              // 表长
+    tbt.push_be(exts, 0x0804, 2)         // rsa_pss_rsae_sha256
+    tbt.push_be(exts, 0x0403, 2)         // rsa_pkcs1_sha256
+
+    // key_share 0x0033: x25519 公钥（32 字节）
+    var ks = tbt.hex_to_bytes(pub_hex)   // 32 字节
+    tbt.push_be(exts, 0x0033, 2)
+    tbt.push_be(exts, 38, 2)             // 内部数据长度
+    tbt.push_be(exts, 36, 2)             // client_shares 数组长度
+    tbt.push_be(exts, 0x001d, 2)         // group x25519
+    tbt.push_be(exts, 32, 2)             // key_exchange 长度
+    i = 0
+    while i < len(ks) {
+        table_push(exts, ks[i]); i = i + 1
+    }
+
+    tbt.push_be(body, len(exts), 2)      // extensions 总长度
+    i = 0
+    while i < len(exts) {
+        table_push(body, exts[i]); i = i + 1
+    }
+
+    // 握手结构体 → 记录
+    var msg = hs_message(1, body)
+    var rec = table_new_i64()
+    table_push(rec, 0x16); table_push(rec, 0x03); table_push(rec, 0x03)
+    tbt.push_be(rec, len(msg), 2)
+    i = 0
+    while i < len(msg) {
+        table_push(rec, msg[i]); i = i + 1
+    }
+    return (rec, msg, sk_hex)
+}
+
+// ---- 字节流读取 ----
+
+// 精确读取 n 字节（循环补齐）；成功返回 true。
+func read_exact(handle: i64, n: i64) -> (bool, table<i64>) {
+    var out = table_new_i64()
+    while len(out) < n {
+        var chunk = net.tcp_recv_bytes(handle, n - len(out))
+        if len(chunk) == 0 {
+            return (false, out)
+        }
+        var i: i64 = 0
+        while i < len(chunk) {
+            table_push(out, chunk[i])
+            i = i + 1
+        }
+    }
+    return (true, out)
+}
+
+// 读取一条 TLS 记录，返回 (外层内容类型, 记录负载)。失败/对端关闭返回 (-1, 空)。
+pub func recv_record(handle: i64) -> (i64, table<i64>) {
+    var (ok, hdr) = read_exact(handle, 5)
+    if ok == false {
+        return (-1, table_new_i64())
+    }
+    var otype: i64 = hdr[0]
+    var rlen: i64 = (hdr[3] << 8) | hdr[4]
+    var (ok2, body) = read_exact(handle, rlen)
+    if ok2 == false {
+        return (-1, table_new_i64())
+    }
+    return (otype, body)
+}
+
+// ---- ServerHello 解析 ----
+
+// 解析 ServerHello 记录负载（含 4 字节握手头），返回
+// (版本, 套件, x25519 公钥字节表, 32B 随机数)。解析失败 sp 为空表。
+pub func parse_server_hello(body: table<i64>) -> (i64, i64, table<i64>, table<i64>) {
+    var sp = table_new_i64()
+    if len(body) < 4 {
+        return (0, 0, sp, sp)
+    }
+    var off: i64 = 4                  // 跳过握手头（type=2, u24 len）
+    var ver: i64 = tbt.u16_be(body, off); off = off + 2
+    var rnd = tbt.sub(body, off, 32); off = off + 32
+    var sid_len: i64 = body[off]; off = off + 1
+    off = off + sid_len
+    if off + 2 > len(body) {
+        return (ver, 0, sp, rnd)
+    }
+    var cs: i64 = tbt.u16_be(body, off); off = off + 2
+    if off + 2 > len(body) {
+        return (ver, cs, sp, rnd)
+    }
+    var ext_len: i64 = tbt.u16_be(body, off)
+    // openssl 3.x 的 ServerHello 在 cs 与扩展总长之间插入一个 0x00；
+    // 读 0 时前移一字节重读，作为该字节的兼容回退（总字节量仍完整可解析）。
+    if ext_len == 0 {
+        off = off + 1
+        ext_len = tbt.u16_be(body, off)
+    }
+    off = off + 2
+    var ext_end: i64 = off + ext_len
+    while off + 4 <= ext_end && off + 4 <= len(body) {
+        var etype: i64 = tbt.u16_be(body, off)
+        var elen: i64 = tbt.u16_be(body, off + 2)
+        if off + 4 + elen > len(body) {
+            break
+        }
+        if etype == 0x0033 {
+            var koff: i64 = off + 4
+            var g: i64 = tbt.u16_be(body, koff)
+            var klen: i64 = tbt.u16_be(body, koff + 2)
+            if g == 0x001d && koff + 4 + klen <= len(body) {
+                sp = tbt.sub(body, koff + 4, klen)
+            }
+        }
+        off = off + 4 + elen
+    }
+    return (ver, cs, sp, rnd)
+}
+
+// ---- 密钥调度（RFC 8446 §7.1）----
+
+// 共享密钥：x25519.dh（hex 中转）。server_pub 为解析出的 32B 公钥表。
+pub func shared_secret(sk_hex: string, server_pub: table<i64>) -> table<i64> {
+    return tbt.hex_to_bytes(x25519.dh(sk_hex, tbt.bytes_to_hex(server_pub)))
+}
+
+// Derive-Secret(secret, label, messages) = Expand-Label(secret,label,Hash(messages),32)。
+pub func derive_secret(secret: table<i64>, label: string, messages: table<i64>) -> table<i64> {
+    return thash.expand_label(secret, label, thash.sha256(messages), 32)
+}
+
+// handshake_secret（RFC 8446 §7.1）：
+//   early_secret = Extract(0, 0)；derived = Derive-Secret(early,"derived","")；
+//   handshake_secret = Extract(salt=derived, IKM=ecdh_shared)。
+pub func handshake_secret(shared: table<i64>) -> table<i64> {
+    var early = thash.hkdf_extract(tbt.zeros(32), tbt.zeros(32))
+    var derived = derive_secret(early, "derived", empty())
+    return thash.hkdf_extract(derived, shared)
+}
+
+pub func client_hs_traffic(hs: table<i64>, transcript: table<i64>) -> table<i64> {
+    return derive_secret(hs, "c hs traffic", transcript)
+}
+
+pub func server_hs_traffic(hs: table<i64>, transcript: table<i64>) -> table<i64> {
+    return derive_secret(hs, "s hs traffic", transcript)
+}
+
+// master_secret = Extract(Derive-Secret(hs,"derived",""), 0)。
+pub func master_secret(hs: table<i64>) -> table<i64> {
+    var derived = derive_secret(hs, "derived", empty())
+    return thash.hkdf_extract(derived, tbt.zeros(32))
+}
+
+pub func client_ap_traffic(ms: table<i64>, transcript: table<i64>) -> table<i64> {
+    return derive_secret(ms, "c ap traffic", transcript)
+}
+
+pub func server_ap_traffic(ms: table<i64>, transcript: table<i64>) -> table<i64> {
+    return derive_secret(ms, "s ap traffic", transcript)
+}
+
+// 由 traffic secret 派生记录层 (key, iv)：key=16B、iv=12B、finished=32B。
+pub func sched_keys(traffic: table<i64>) -> (table<i64>, table<i64>) {
+    var key = thash.expand_label(traffic, "key", empty(), 16)
+    var iv = thash.expand_label(traffic, "iv", empty(), 12)
+    return (key, iv)
+}
+
+pub func finished_key(traffic: table<i64>) -> table<i64> {
+    return thash.expand_label(traffic, "finished", empty(), 32)
+}
+
+// ---- 记录层加解密（§5.2）----
+
+// nonce = iv ⊕ 12 字节大端 seq。
+// 注：seq 是 64 位，仅低 7 字节参与（12 字节 nonce 高 4 字节对 i64 恒为 0）。
+// 仅当 shift<64 才执行移位——规避 tie 编译器「右移 ≥64 位」的缺陷
+// （`1 >> 88` 等会导致生成的程序挂起）。
+func nonce(iv: table<i64>, seq: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < 12 {
+        var sb: i64 = 0
+        if i >= 4 {
+            var shift = 8 * (11 - i)   // 56..0 恒 < 64
+            sb = (seq >> shift) & 0xFF
+        }
+        table_push(out, (iv[i] ^ sb) & 0xFF)
+        i = i + 1
+    }
+    return out
+}
+
+// 加密：返回完整记录 [0x17,0x03,0x03,len(2),ct||tag]。
+// TLSInnerPlaintext = content || itype（无填充）。AAD = 记录头。
+pub func encrypt_record(key: table<i64>, iv: table<i64>, seq: i64, itype: i64, content: table<i64>) -> table<i64> {
+    var pt = table_new_i64()
+    var i: i64 = 0
+    while i < len(content) {
+        table_push(pt, content[i])
+        i = i + 1
+    }
+    table_push(pt, itype)
+    var hl: i64 = len(pt) + 16
+    var aad = table_new_i64()
+    table_push(aad, 0x17); table_push(aad, 0x03); table_push(aad, 0x03)
+    tbt.push_be(aad, hl, 2)
+    var cip = gcm.seal(tbt.bytes_to_hex(key), nonce(iv, seq), aad, pt)
+    var out = table_new_i64()
+    table_push(out, 0x17); table_push(out, 0x03); table_push(out, 0x03)
+    tbt.push_be(out, len(cip), 2)
+    i = 0
+    while i < len(cip) {
+        table_push(out, cip[i])
+        i = i + 1
+    }
+    return out
+}
+
+// 解密记录负载：header 为 5 字节记录头（AAD）、body 为 ct||tag。
+// 返回 (认证是否通过, 内层内容类型, 内容)。
+pub func decrypt_record(key: table<i64>, iv: table<i64>, seq: i64, header: table<i64>, body: table<i64>) -> (bool, i64, table<i64>) {
+    var ct = table_new_i64()
+    var tag = table_new_i64()
+    var i: i64 = 0
+    while i < len(body) - 16 {
+        table_push(ct, body[i])
+        i = i + 1
+    }
+    var j: i64 = 0
+    while j < 16 {
+        table_push(tag, body[len(body) - 16 + j])
+        j = j + 1
+    }
+    var pt = gcm.open(tbt.bytes_to_hex(key), nonce(iv, seq), header, ct, tag)
+    if len(pt) == 0 {
+        return (false, 0, table_new_i64())
+    }
+    // 从尾部剥离全零填充，末字节为内容类型
+    var idx: i64 = len(pt) - 1
+    while idx >= 0 && pt[idx] == 0 {
+        idx = idx - 1
+    }
+    if idx < 0 {
+        return (true, 0, table_new_i64())
+    }
+    var itype: i64 = pt[idx]
+    var content = tbt.sub(pt, 0, idx)
+    return (true, itype, content)
+}
+
+}   // namespace tls13

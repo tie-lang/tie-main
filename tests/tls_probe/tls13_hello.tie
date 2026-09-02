@@ -1,0 +1,294 @@
+type tie<logic>
+// ============================================================================
+// tls13_hello.tie：TLS 1.3 客户端探针（ext/tls/tls1_3.tie）——p.6.6.1 AC-4。
+// 分三部分：
+//   1) 单元断言（hash.tie）：SHA-256 FIPS 向量 "" / "abc"；HMAC-SHA256
+//      RFC 4231 用例；HKDF RFC 5869 Test Case 1（Extract PRK + Expand OKM）。
+//   2) ClientHello golden：首三字节 16 03 03；含扩展 0x002b（supported_versions）
+//      与套件 0x1301（TLS_AES_128_GCM_SHA256）。
+//   3) 真实握手回环：连接 127.0.0.1:19844 的 openssl s_server -tls1_3：
+//      发 ClientHello → 收 ServerHello（明文）→ 派生 hs 密钥 → 收加密的
+//      EncryptedExtensions/Certificate/CertificateVerify/Finished → 校验 server
+//      Finished → 派生 master/ap 密钥 → 发 client Finished → 发应用数据
+//      "pong-test" → 解密回读并逐字节断言一致。
+// CertificateVerify 签名字节透传跳过（AC-5 做验签）。
+// 期望：全部 PASS + "tls13 握手回环探针全部通过"。
+// 前置：openssl s_server -accept 19844 -tls1_3 -cert c.pem -key k.pem -rev
+//   （用 -rev 使 s_server 回显收到的应用数据——逐字节反转；回环断言其等于
+//   发送字节的反转 "tset-gnop\n"，即真实双向 TLS 应用数据回环）
+// ============================================================================
+import "../../ext/tls/tool.tie" as tbt
+import "../../ext/tls/hash.tie" as thash
+import "../../ext/tls/tls1_3.tie" as tls13
+import "../../std/net.tie" as net
+
+func bh(h: string) -> table<i64> {
+    return tbt.hex_to_bytes(h)
+}
+
+// 字节表内是否含子序列 pat（golden 断言用）。
+func contains_bytes(t: table<i64>, pat: table<i64>) -> bool {
+    if len(pat) == 0 {
+        return true
+    }
+    var i: i64 = 0
+    while i + len(pat) <= len(t) {
+        var m = true
+        var j: i64 = 0
+        while j < len(pat) {
+            if t[i + j] != pat[j] {
+                m = false
+            }
+            j = j + 1
+        }
+        if m {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got + " want=" + want)
+        exit(1)
+    }
+}
+
+func fail(msg: string) {
+    println("FAIL " + msg)
+    exit(1)
+}
+
+func main() {
+    // ---- 1) 哈希单测 ----
+    chk("sha256_empty", tbt.bytes_to_hex(thash.sha256(bh(""))),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    // "abc"
+    chk("sha256_abc", tbt.bytes_to_hex(thash.sha256(bh("616263"))),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+    // HMAC-SHA256（RFC 4231 case 1：HMAC(0x0b*20, "Hi There")，"Hi There" hex）
+    chk("hmac_rfc4231", tbt.bytes_to_hex(thash.hmac(
+            bh("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"),
+            bh("4869205468657265"))),
+        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+
+    // HKDF RFC 5869 Test Case 1
+    var ikm = bh("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")   // 22B 0x0b
+    var salt = bh("000102030405060708090a0b0c")
+    var info = bh("f0f1f2f3f4f5f6f7f8f9")
+    var prk = thash.hkdf_extract(salt, ikm)
+    chk("hkdf_extract_prk", tbt.bytes_to_hex(prk),
+        "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5")
+    var okm = thash.hkdf_expand(prk, info, 42)
+    chk("hkdf_expand_okm", tbt.bytes_to_hex(okm),
+        "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")
+
+    // RFC 8448 A.1：Expand-Label 的 "key"/"iv" 派生（server hs traffic → 写密钥）
+    var s_hs = bh("b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38")
+    chk("rfc8448_s_hs_key", tbt.bytes_to_hex(thash.expand_label(s_hs, "key", table_new_i64(), 16)),
+        "3fce516009c21727d0f2e4e86ee403bc")
+    chk("rfc8448_s_hs_iv", tbt.bytes_to_hex(thash.expand_label(s_hs, "iv", table_new_i64(), 12)),
+        "5d313eb2671276ee13000b30")
+    // RFC 8448 A.1：handshake_secret = Extract(Derive-Secret(Extract(0,0),"derived",""), dhe)
+    chk("rfc8448_handshake_secret", tbt.bytes_to_hex(tls13.handshake_secret(
+            bh("8bd4054fb55b9d63fdfbacf9f04b9f0d35e6d63f537563efd46272900f89492d"))),
+        "1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac")
+
+    // ---- 2) ClientHello golden ----
+    var (rec, ch_msg, sk_hex) = tls13.make_client_hello()
+    if rec[0] == 0x16 && rec[1] == 0x03 && rec[2] == 0x03 {
+        println("PASS clienthello_header_160303")
+    } else {
+        fail("clienthello_header_160303")
+    }
+    if contains_bytes(ch_msg, bh("002b")) {
+        println("PASS clienthello_ext_supported_versions")
+    } else {
+        fail("clienthello_ext_supported_versions")
+    }
+    if contains_bytes(ch_msg, bh("1301")) {
+        println("PASS clienthello_cipher_tls_aes_128_gcm_sha256")
+    } else {
+        fail("clienthello_cipher")
+    }
+
+    // ---- 3) 真实握手 ----
+    var h = net.tcp_connect("127.0.0.1", 19844)
+    if h < 0 {
+        fail("tcp_connect")
+    }
+    println("INFO connected")
+
+    net.tcp_send_bytes(h, rec)                       // 发送 ClientHello 明文记录
+
+    // 收 ServerHello（明文 type 22）
+    var (otype, body) = tls13.recv_record(h)
+    if otype != 22 {
+        fail("expected plaintext ServerHello record (22), got " + to_string(otype))
+    }
+    println("PASS recv ServerHello plaintext")
+
+    var (ver, cs, server_pub, sh_rand) = tls13.parse_server_hello(body)
+    if len(server_pub) != 32 {
+        fail("ServerHello key_share pub len != 32 (" + to_string(len(server_pub)) + ")")
+    }
+    if cs == 0x1301 {
+        println("PASS ServerHello cipher_suite 1301")
+    } else {
+        fail("ServerHello cipher_suite got " + to_string(cs))
+    }
+
+    // transcript = ClientHello || ServerHello（完整握手结构体）
+    var transcript = tbt.concat(ch_msg, body)
+
+    var shared = tls13.shared_secret(sk_hex, server_pub)
+    if len(shared) != 32 {
+        fail("shared secret len != 32")
+    }
+    var hs = tls13.handshake_secret(shared)
+    var cht = tls13.client_hs_traffic(hs, transcript)
+    var sht = tls13.server_hs_traffic(hs, transcript)
+    var (c_k, c_iv) = tls13.sched_keys(cht)
+    var (s_k, s_iv) = tls13.sched_keys(sht)
+    var s_fk = tls13.finished_key(sht)
+    var c_fk = tls13.finished_key(cht)
+
+    // 收加密的服务器 Flight，解析内层握手消息
+    var pbuf = table_new_i64()
+    var hoff: i64 = 0
+    var ss: i64 = 0                // server hs 记录序号
+    var flight_done = false
+    while flight_done == false {
+        var (otype, body) = tls13.recv_record(h)
+        if otype == 20 {
+            // legacy change_cipher_spec（middlebox 兼容），跳过
+            continue
+        }
+        if otype != 23 {
+            fail("expected encrypted record (23) got " + to_string(otype))
+        }
+        var rlen = len(body)
+        var hdr = table_new_i64()
+        table_push(hdr, 0x17); table_push(hdr, 0x03); table_push(hdr, 0x03)
+        tbt.push_be(hdr, rlen, 2)
+        var (ok, itype, content) = tls13.decrypt_record(s_k, s_iv, ss, hdr, body)
+        ss = ss + 1
+        if ok == false {
+            fail("server flight record auth failed")
+        }
+        if itype != 22 {
+            fail("expected handshake inner type 22, got " + to_string(itype))
+        }
+        var k: i64 = 0
+        while k < len(content) {
+            table_push(pbuf, content[k])
+            k = k + 1
+        }
+        // 解析尽可能多的完整握手消息
+        while len(pbuf) - hoff >= 4 {
+            var mtype: i64 = pbuf[hoff]
+            var mlen: i64 = tbt.u24_be(pbuf, hoff + 1)
+            if len(pbuf) - (hoff + 4) < mlen {
+                break
+            }
+            var full = tbt.sub(pbuf, hoff, 4 + mlen)
+            var mbody = tbt.sub(pbuf, hoff + 4, mlen)
+            if mtype == 20 {
+                // Finished：transcript 此刻尚不含 Finished
+                var expected = thash.hmac(s_fk, thash.sha256(transcript))
+                if tbt.eq(expected, mbody) {
+                    println("PASS server Finished verify_data")
+                } else {
+                    fail("server Finished verify_data mismatch")
+                }
+                transcript = tbt.concat(transcript, full)
+                flight_done = true
+            } else {
+                // 8 EncryptedExtensions / 11 Certificate / 15 CertificateVerify（透传）
+                if mtype == 8 || mtype == 11 || mtype == 15 {
+                    println("INFO handshake msg type " + to_string(mtype) + " bytes=" + to_string(mlen))
+                } else {
+                    fail("unexpected handshake msg type " + to_string(mtype))
+                }
+                transcript = tbt.concat(transcript, full)
+            }
+            hoff = hoff + 4 + mlen
+            if flight_done {
+                break
+            }
+        }
+    }
+
+    // 派生 application traffic（transcript 已含 server Finished）
+    var ms = tls13.master_secret(hs)
+    var cat = tls13.client_ap_traffic(ms, transcript)
+    var sat = tls13.server_ap_traffic(ms, transcript)
+    var (ca_k, ca_iv) = tls13.sched_keys(cat)
+    var (sa_k, sa_iv) = tls13.sched_keys(sat)
+
+    // client Finished（transcript 含 server Finished）
+    var cfin = thash.hmac(c_fk, thash.sha256(transcript))
+    var cfin_msg = tls13.hs_message(20, cfin)
+    var rec_fin = tls13.encrypt_record(c_k, c_iv, 0, 22, cfin_msg)
+    net.tcp_send_bytes(h, rec_fin)
+
+    // 应用数据 "pong-test\n"（s_server -rev 会逐字节反转后回显）
+    var app = bh("706f6e672d746573740a")        // "pong-test\n"
+    var expected = bh("747365742d676e6f700a")   // 反转 = "tset-gnop\n"
+    var rec_app = tls13.encrypt_record(ca_k, ca_iv, 0, 23, app)
+    net.tcp_send_bytes(h, rec_app)
+
+    // 读回 echo（server ap key, 序号 0 起）；-rev 服务器回显一条 type-23。
+    // 收到首条 type-23 或收到 alert/对端关闭即跳出，随后断言。
+    var echo_buf = table_new_i64()
+    var sa_seq: i64 = 0
+    var got = false
+    var guard: i64 = 0
+    var seen23 = false
+    while guard < 20 && got == false && seen23 == false {
+        var (otype, body) = tls13.recv_record(h)
+        if otype < 0 {
+            fail("echo recv closed early")
+        }
+        var rlen = len(body)
+        var hdr = table_new_i64()
+        table_push(hdr, 0x17); table_push(hdr, 0x03); table_push(hdr, 0x03)
+        tbt.push_be(hdr, rlen, 2)
+        var (ok, itype, content) = tls13.decrypt_record(sa_k, sa_iv, sa_seq, hdr, body)
+        sa_seq = sa_seq + 1
+        if ok == false {
+            fail("app echo auth failed")
+        }
+        if itype == 23 {
+            var t: i64 = 0
+            while t < len(content) {
+                table_push(echo_buf, content[t])
+                t = t + 1
+            }
+            if tbt.eq(echo_buf, expected) {
+                got = true
+            }
+            seen23 = true
+        } else {
+            println("INFO skip post-handshake inner type " + to_string(itype))
+            if itype == 21 {
+                break   // alert（如 close_notify）：对端即将关闭
+            }
+        }
+        guard = guard + 1
+    }
+
+    if got == true {
+        println("PASS app echo roundtrip (pong-test reversed)")
+    } else {
+        fail("app echo mismatch got=" + tbt.bytes_to_hex(echo_buf))
+    }
+
+    net.close(h)
+    println("tls13 握手回环探针全部通过")
+}

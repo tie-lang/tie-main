@@ -1,0 +1,318 @@
+type tie<class>
+// ============================================================================
+// hash.tie：ext/tls——字节表哈希与 HKDF 原语（命名空间 thash，纯 tie 实现）
+// 用途：TLS 1.3 握手密钥调度（RFC 8446 §7.1 / RFC 5869）所需的纯数学底座。
+// 与 std/sha256（string 输入）、std/hmac（hex 输入）不同，本模块直接作用于
+// 原始字节表 table<i64>（0..255）——tie 字符串无法承载 ≥0x80，而 TLS 转写
+// 本、共享密钥、HKDF 上下文都是二进制，故哈希必须逐字节作用于原始输入，
+// 不允许经 hex 中转（不复制底层算法，仅实现字节导向接口）。
+//
+// == 实现 ==
+//   - SHA-256（FIPS 180-4）：64 项 K 常量 + 初始 H[0..7]，消息填充（0x80 +
+//     0^padding + 64 位大端比特长度），64 轮压缩（Σ0/Σ1 循环移位、Ch/Maj）。
+//     全 32 位字，每步 & 0xFFFFFFFF 保持恒正，>> 等价逻辑右移。
+//   - HMAC-SHA256（RFC 2104）：key>64 先用 SHA-256 压缩，零填充到 64；
+//     inner=SHA(ipad||msg)、outer=SHA(opad||inner)。
+//   - HKDF-Extract/Expand（RFC 5869）。
+//   - HKDF-Expand-Label（RFC 8446 §7.1，label 前缀 "tls13 "）。
+// 标准向量：
+//   SHA-256("")=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+//   SHA-256("abc")=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+//   HKDF RFC 5869 test case 1（见探针断言）
+// 接口（输入均为字节表；label 为 ASCII 字符串）：
+//   thash.sha256(msg)                    -> table (32B)
+//   thash.hmac(key, msg)                 -> table (32B)
+//   thash.hkdf_extract(salt, ikm)        -> table (32B); 空 salt 视为 32 个 0
+//   thash.hkdf_expand(prk, info, length) -> table
+//   thash.expand_label(secret,label,context,length) -> table（"tls13 " 前缀）
+// 备注：命名空间内互调为裸调用，内部辅助函数不加 th_ 前缀。
+// ============================================================================
+
+import "./tool.tie"
+
+// 顶层常量（懒构建）。
+var th_k: table<i64>;   // 64 个 SHA-256 轮常量（32 位）
+var th_h: table<i64>;   // 初始状态 H[0..7]
+
+namespace thash {
+
+// ---- 常量构建 ----
+
+func ensure_consts() {
+    if len(th_k) > 0 {
+        return
+    }
+    var ks = "428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5" +
+             "d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174" +
+             "e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da" +
+             "983e5152a831c66db00327c8bf597fc7c6e00bf3d5a7914706ca635114292967" +
+             "27b70a852e1b21384d2c6dfc53380d13650a7354766a0abb81c2c92e92722c85" +
+             "a2bfe8a1a81a664bc24b8b70c76c51a3d192e819d6990624f40e3585106aa070" +
+             "19a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3" +
+             "748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2"
+    var hs = "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19"
+    var i: i64 = 0
+    while i < 64 {
+        table_push(th_k, parse_hex32(substr(ks, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        table_push(th_h, parse_hex32(substr(hs, i * 8, i * 8 + 8)))
+        i = i + 1
+    }
+}
+
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+func nib(c: string) -> i64 {
+    var digits = "0123456789abcdef"
+    var i: i64 = 0
+    while i < 16 {
+        if str_char(digits, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+func parse_hex32(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        v = ((v << 4) | nib(str_char(s, i))) & 0xFFFFFFFF
+        i = i + 1
+    }
+    return v
+}
+
+// 32 位循环右移（v 恒 <2^32 正数，>> 即逻辑右移）。
+func rr(v: i64, n: i64) -> i64 {
+    return ((v >> n) | (v << (32 - n))) & 0xFFFFFFFF
+}
+
+// ---- SHA-256 压缩（字节表）----
+
+// 填充后消息在逻辑字节位置 pos 处的字节值。
+func pad_byte(m: table<i64>, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, pos: i64) -> i64 {
+    if pos < n {
+        return m[pos]
+    }
+    if pos == n {
+        return 0x80
+    }
+    if pos >= pad_len - 8 {
+        var idx = pos - (pad_len - 8)
+        var val: i64 = len_hi
+        if idx >= 4 {
+            val = len_lo
+            idx = idx - 4
+        }
+        return (val >> (24 - idx * 8)) & 0xFF
+    }
+    return 0
+}
+
+// 对单个 64 字节块做一次压缩，就地累加状态 h[0..7]。
+func compress_block(h: ref table<i64>, m: table<i64>, n: i64, pad_len: i64, len_hi: i64, len_lo: i64, block: i64, w: ref table<i64>) {
+    var i: i64 = 0
+    while i < 16 {
+        var word: i64 = 0
+        var j: i64 = 0
+        while j < 4 {
+            var pos = block * 64 + i * 4 + j
+            word = ((word << 8) | pad_byte(m, n, pad_len, len_hi, len_lo, pos)) & 0xFFFFFFFF
+            j = j + 1
+        }
+        w[i] = word
+        i = i + 1
+    }
+    i = 16
+    while i < 64 {
+        var s0 = rr(w[i - 15], 7) ^ rr(w[i - 15], 18) ^ (w[i - 15] >> 3)
+        var s1 = rr(w[i - 2], 17) ^ rr(w[i - 2], 19) ^ (w[i - 2] >> 10)
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 0xFFFFFFFF
+        i = i + 1
+    }
+    var aa: i64 = h[0]; var bb: i64 = h[1]; var cc: i64 = h[2]; var dd: i64 = h[3]
+    var ee: i64 = h[4]; var ff: i64 = h[5]; var gg: i64 = h[6]; var hh: i64 = h[7]
+    var m32: i64 = 0xFFFFFFFF
+    var t: i64 = 0
+    while t < 64 {
+        var sum1: i64 = rr(ee, 6) ^ rr(ee, 11) ^ rr(ee, 25)
+        var ch: i64 = (ee & ff) ^ ((ee ^ m32) & gg)
+        var t1: i64 = (hh + sum1 + ch + th_k[t] + w[t]) & m32
+        var sum0: i64 = rr(aa, 2) ^ rr(aa, 13) ^ rr(aa, 22)
+        var maj: i64 = (aa & bb) ^ (aa & cc) ^ (bb & cc)
+        var t2: i64 = (sum0 + maj) & m32
+        hh = gg; gg = ff; ff = ee
+        ee = (dd + t1) & m32
+        dd = cc; cc = bb; bb = aa
+        aa = (t1 + t2) & m32
+        t = t + 1
+    }
+    h[0] = (h[0] + aa) & m32
+    h[1] = (h[1] + bb) & m32
+    h[2] = (h[2] + cc) & m32
+    h[3] = (h[3] + dd) & m32
+    h[4] = (h[4] + ee) & m32
+    h[5] = (h[5] + ff) & m32
+    h[6] = (h[6] + gg) & m32
+    h[7] = (h[7] + hh) & m32
+}
+
+// 字节表 → 32 字节 SHA-256 摘要。
+pub func sha256(m: table<i64>) -> table<i64> {
+    ensure_consts()
+    var m32: i64 = 0xFFFFFFFF
+    var n: i64 = len(m)
+    var bits: i64 = n * 8
+    var len_hi: i64 = (bits >> 32) & m32
+    var len_lo: i64 = bits & m32
+    var pad_len: i64 = ((n + 72) / 64) * 64
+    var num_blocks: i64 = pad_len / 64
+    var h = table_new_i64()
+    var i: i64 = 0
+    while i < 8 {
+        table_push(h, th_h[i])
+        i = i + 1
+    }
+    var w = table_new_i64()
+    i = 0
+    while i < 64 {
+        table_push(w, 0)
+        i = i + 1
+    }
+    var blk: i64 = 0
+    while blk < num_blocks {
+        compress_block(h, m, n, pad_len, len_hi, len_lo, blk, w)
+        blk = blk + 1
+    }
+    var out = table_new_i64()
+    i = 0
+    while i < 8 {
+        var v = h[i]
+        var b4: i64 = 0
+        while b4 < 4 {
+            table_push(out, (v >> (24 - b4 * 8)) & 0xFF)
+            b4 = b4 + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ---- HMAC-SHA256 ----
+
+// 建 keypad 64 字节：key>64 先压缩，再零填充到 64。
+func build_keypad(key: table<i64>) -> table<i64> {
+    var kp = table_new_i64()
+    if len(key) > 64 {
+        var dig = sha256(key)
+        var i: i64 = 0
+        while i < 64 {
+            if i < 32 {
+                table_push(kp, dig[i])
+            } else {
+                table_push(kp, 0)
+            }
+            i = i + 1
+        }
+    } else {
+        var i: i64 = 0
+        while i < 64 {
+            if i < len(key) {
+                table_push(kp, key[i])
+            } else {
+                table_push(kp, 0)
+            }
+            i = i + 1
+        }
+    }
+    return kp
+}
+
+func xorb(kp: table<i64>, val: i64) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < 64 {
+        table_push(t, kp[i] ^ val)
+        i = i + 1
+    }
+    return t
+}
+
+// HMAC-SHA256（字节表输入），返回 32 字节表。
+pub func hmac(key: table<i64>, msg: table<i64>) -> table<i64> {
+    var kp = build_keypad(key)
+    return sha256(concat(xorb(kp, 0x5c), sha256(concat(xorb(kp, 0x36), msg))))
+}
+
+// ---- HKDF（RFC 5869）----
+
+func concat(a: table<i64>, b: table<i64>) -> table<i64> {
+    return tbt.concat(a, b)
+}
+
+// HKDF-Extract：空 salt 视为 32 个 0。
+pub func hkdf_extract(salt: table<i64>, ikm: table<i64>) -> table<i64> {
+    var s = salt
+    if len(s) == 0 {
+        s = tbt.zeros(32)
+    }
+    return hmac(s, ikm)
+}
+
+// HKDF-Expand：用 counter i（1..255）连续调用 HMAC 直到凑够 length 字节。
+pub func hkdf_expand(prk: table<i64>, info: table<i64>, length: i64) -> table<i64> {
+    var out = table_new_i64()
+    var t = table_new_i64()   // 上一段 T(i)
+    var counter: i64 = 1
+    while len(out) < length {
+        var blk = concat(t, info)
+        table_push(blk, counter)
+        t = hmac(prk, blk)
+        var need = length - len(out)
+        var i: i64 = 0
+        while i < 32 {
+            if i >= need {
+                break
+            }
+            table_push(out, t[i])
+            i = i + 1
+        }
+        counter = counter + 1
+    }
+    return out
+}
+
+// HKDF-Expand-Label（RFC 8446 §7.1）：label 拼接 "tls13 " 前缀；context 字节表。
+pub func expand_label(secret: table<i64>, label: string, context: table<i64>, length: i64) -> table<i64> {
+    var full_label = "tls13 " + label
+    var hkdf_label = table_new_i64()
+    tbt.push_be(hkdf_label, length, 2)              // uint16 length
+    table_push(hkdf_label, len(full_label))         // u8 标签长度
+    var i: i64 = 0
+    while i < len(full_label) {
+        table_push(hkdf_label, str_byte(full_label, i))
+        i = i + 1
+    }
+    table_push(hkdf_label, len(context))            // u8 上下文长度
+    i = 0
+    while i < len(context) {
+        table_push(hkdf_label, context[i])
+        i = i + 1
+    }
+    return hkdf_expand(secret, hkdf_label, length)
+}
+
+}   // namespace thash
