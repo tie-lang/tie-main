@@ -1,0 +1,74 @@
+type tie<logic>
+// p.6.5.5 验收：可迁移栈（任务任意 worker 执行 + 迁移计数）
+// 设计落位：tie 任务为 fn() 原子执行体（无 OS 协程栈）；「可迁移栈」语义 =
+//   1) 任务与创建 worker 解耦——任意 worker 皆可执行（g_exec_w 登记）
+//   2) 迁移计数——worker ≠ 创建者 的执行（窃取/溢出）即迁移（g_migrated）
+//   （运行中任务根保护——GC sweep 仅在无任务窗口——由 gc_gen_demo 并发轮覆盖）
+// 期望：PASS exit 0
+
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+
+    // 24 个任务：各做一段较重 busy 计算，使 4 worker 都有机会从他人段偷取执行
+    var i: i64 = 0
+    while i < 24 {
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            var acc: i64 = 0
+            var k: i64 = 0
+            while k < 2000000 {
+                acc = acc + k % 3
+                k = k + 1
+            }
+            return acc % 7
+        })
+        i = i + 1
+    }
+    var ran = tl_runtime_ctx.ctx_drain()
+    var mig = tl_runtime_ctx.ctx_migrated()
+    var comp = tl_runtime_ctx.ctx_completed()
+    println("ran=" + to_string(ran) + " migrated=" + to_string(mig) + " completed=" + to_string(comp))
+
+    var distinct: i64 = 0
+    var seen: table<i64> = table_new_i64()
+    i = 0
+    while i < 24 {
+        var w = tl_runtime_ctx.ctx_task_exec_w(i)
+        println("task[" + to_string(i) + "] exec_worker=" + to_string(w))
+        var dup: i64 = 0
+        var j: i64 = 0
+        while j < len(seen) {
+            if seen[j] == w {
+                dup = 1
+            }
+            j = j + 1
+        }
+        if dup == 0 {
+            table_push(seen, w)
+            distinct = distinct + 1
+        }
+        i = i + 1
+    }
+    println("distinct_exec_workers=" + to_string(distinct))
+
+    var ok: i64 = 1
+    if ran != 24 || comp != 24 {
+        ok = 0
+    }
+    // 可迁移证据：任务在 >1 个 worker 上执行（P=4 竞争下典型 2-4）
+    if distinct < 2 || distinct > 4 {
+        ok = 0
+    }
+    // 迁移计数 == 被执行任务里 (exec_w != orig_w) 次数；busy 窗口下应 >0
+    if mig <= 0 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}
