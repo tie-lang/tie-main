@@ -1,6 +1,6 @@
 # Keel Architecture — Core Mechanism Summary
 
-> **Keel（龙骨）** is the codename for the tie 2026.2 compiler architecture, corresponding to the release codename **Drydock（干船坞, 2026.2）**. Official designation: the complete compiler restructure enters the **Keel Architecture** era.
+> **Keel（龙骨）** is the codename for the tie 2026.2 compiler architecture, corresponding to the release codename **Shipyard（造船厂, 2026.2）**. Official designation: the complete compiler restructure enters the **Keel Architecture** era, and the 2026.2 toolchain reaches its full form (trm / UI framework / tiedb / tiwi).
 >
 > Sources: [tie 全平台插件化设计](docs/superpowers/specs/2026-08-29-plugin-kernel-design.md) · [plugin-kernel 实施计划](docs/plans/plugin-kernel.md) · [tieir 格式](docs/plans/tieir-format.md) · [发行版设计规划 · 代号表](docs/release.md)
 

@@ -35,10 +35,10 @@ EN: Each official release is assigned an internal codename that represents the a
 | 版本 | 内部代号 | 含义 |
 | --- | --- | --- |
 | 2026.1 | **Harbor 港湾** | 首个正式版 = 工具链第一次靠岸停泊，形成可交付的稳定形态 |
-| 2026.2 | **Drydock 干船坞** | 编译器彻底重构 = 进入 **Keel 龙骨架构**时代：核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；插件/包经 tieir 分发与审计链入港 |
+| 2026.2 | **Shipyard 造船厂** | 编译器彻底重构 = 进入 **Keel 龙骨架构**时代：核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；插件/包经 tieir 分发与审计链入港。工具链完整形态：**trm**（运行时）、**UI 框架**、**tiedb**（数据库/向量检索）与 **tiwi**（安装器）随船厂一体下水 |
 
 EN: The table above lists each release version, its internal codename, and its meaning: 2026.1 is codenamed **Harbor 港湾**, where the first official release = the toolchain's first docking and berthing, forming a deliverable, stable shape.
-EN: 2026.2 is codenamed **Drydock 干船坞**, marking the complete compiler restructure into the **Keel 龙骨架构** era: the core retains only the mechanism layer (registry/auditor/loader/execution skeleton, zero behavior), and all behavior is a registration item; plugins/packages dock via tieir distribution and the audit chain.
+EN: 2026.2 is codenamed **Shipyard 造船厂**, marking the complete compiler restructure into the **Keel 龙骨架构** era: the core retains only the mechanism layer (registry/auditor/loader/execution skeleton, zero behavior), and all behavior is a registration item; plugins/packages dock via tieir distribution and the audit chain. The toolchain reaches its full form — **trm** (runtime), **UI framework**, **tiedb** (database/vector search) and **tiwi** (installer builder) are launched together from the shipyard.
 
 代号仅用于宣传/文档/产物命名（如安装包名），不进入版本号。
 
