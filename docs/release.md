@@ -74,6 +74,9 @@ EN: The table above lists each binary component and its source/role: `tiec.exe` 
 
 EN: `doc/` ships README, CHANGELOG, LICENSE plus the full `docs/` tree (language/ai-guide/prompt-pack/release, etc.); `examples/` ships example `.tie` sources; `std/`, `ext/` and `rdu/` are the standard library, extension library and embedded base layer (all written in tie; rdu follows stack-discipline with zero primitives/zero dynamic memory); `skills/` ships the tie-dev development skill; `editor/vscode-tie/` ships the VSCode extension (syntax highlighting + LSP diagnostics); `compiler/` ships all compiler `.tie` sources with build artifacts pruned.
 
+> 2026.2 变化：发行目录下设 `src/`，**将上述全部源码（compiler/std/ext/rdu/examples/skills/editor）收拢到 `src/` 下**；发行时另附一个**只带 `src/` 目录的源码包**（`tie-{版本}-src.zip`）。
+> EN (2026.2): a `src/` directory is added under the release layout; **all of the above sources (compiler/std/ext/rdu/examples/skills/editor) are gathered under `src/`**, and a **source-only archive containing just `src/`** (`tie-{version}-src.zip`) is shipped alongside.
+
 ### 3.3 2026.2 完整形态（Shipyard）
 *EN: Full form in 2026.2 (Shipyard)*
 
@@ -140,6 +143,10 @@ EN: The release version and codename are injected as packager arguments; artifac
 
 用法：`compiler/tiec.exe scripts/package.tie -- 2026.2`（`skip-repl` / `skip-llvm` 可选）。
 
+> 2026.2 变化：组装时把源码（compiler/std/ext/rdu/examples/skills/editor）收拢到
+> `dist/tie-{版本}/src/`，除全量包外另打 `tie-{版本}-src.zip`（只含 `src/`）。
+> EN (2026.2): sources are gathered under `dist/tie-{version}/src/`, and a `tie-{version}-src.zip` containing only `src/` is produced in addition to the full archive.
+
 EN: `scripts/package.tie` is the packager written in tie (0-PowerShell, one-to-one with the old package.ps1): 1. bootstrap verification (tiec compiles driver.tie → tiec2.exe); 2. repl.exe self-host build (`skip-repl` to skip); 3. assemble `dist/tie-{version}/` (bin / bin/llvm / doc / examples / std·ext·rdu / skills / editor / compiler sources); 4. zip via the Windows-bundled bsdtar (`tar -a -c -f`). Usage: `compiler/tiec.exe scripts/package.tie -- 2026.2` (optional `skip-repl` / `skip-llvm`).
 
 ### 4.4 README 路线图
@@ -176,5 +183,6 @@ EN: 1. Infer the version number (year.revision, confirm with the user); 2. updat
 - 打包器：**tie 语言自写**（scripts/package.tie，0-PowerShell）
 - 仓库组织：**多仓拆分**——tie-main 聚合/发行仓（发行物 + 当前版本文档），其余组件独立仓
 - 发行物：**出仓**——zip 经 GitHub / GitCode Release 附件分发，不进 git 跟踪
+- 源码包（2026.2）：发行目录设 `src/` 收拢全部源码，另出只含 `src/` 的 `tie-{版本}-src.zip`
 
 EN: Packaging artifacts: **zip archives only** (`tie-{version}-win-x64.zip`); installers arrive with tiwi in 2026.2. Editor extension: **included** — `editor/vscode-tie` (distributed with the release). Target platform: **win-x64 only** (verifiable on this machine; cross-platform comes in a later version). LLVM: **bundled as a minimal toolchain** (bin/llvm/, no separate install needed). Packager: **written in tie** (scripts/package.tie, 0-PowerShell). Repo organization: **multi-repo split** — tie-main is the aggregation/release repository (artifacts + current-version docs), other components live in their own repositories. Release artifacts: **leave the git tree** — zips are distributed as GitHub/GitCode Release assets.
