@@ -1,0 +1,46 @@
+type tie<logic>
+// p.6.5.10 对照载体：同一「生产者→channel→消费者」逻辑在简单/复杂两形态下
+// 行为一致。本文件经内置原语运行（简单形态）；combo_demo 的 chan 段（复杂
+// 形态 ctx_ch_*）验证等价语义。断言：8 消息 FIFO 求和 = 804。
+// 期望：PASS exit 0
+
+func main() {
+    var ch = ch_open()
+    // 生产者：4 批 × 2 消息（100,101），数字与 combo_demo 复杂形态完全一致
+    var sum: i64 = 0
+    var n: i64 = 0
+    var sent: i64 = 0
+    while n < 4 {
+        var k: i64 = 0
+        while k < 2 {
+            var r = ch_send(ch, 100 + k)
+            if r != 0 {
+                sent = 1
+            }
+            k = k + 1
+        }
+        n = n + 1
+    }
+    // 消费者：取回 8 条
+    var m: i64 = 0
+    var taken: i64 = 0
+    while m < 8 {
+        var v = ch_recv(ch)
+        if v != 0 {
+            sum = sum + v
+            taken = taken + 1
+        }
+        m = m + 1
+    }
+    println("sum=" + to_string(sum) + " taken=" + to_string(taken) + " sent_fail=" + to_string(sent))
+    var ok: i64 = 1
+    if sum != 804 || taken != 8 || sent != 0 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}
