@@ -1,5 +1,7 @@
-# 设计：tie 全平台插件化（核心 + 插件）
+# 设计：tie 全平台插件化（核心 + 插件）——Keel 龙骨架构
 
+> 架构正式命名：**Keel（龙骨架构）**，对应发行版代号 **Drydock（干船坞，2026.2）**——
+> 编译器彻底重构后核心只余机制层（注册表/审计器/加载器/执行骨架），一切行为皆为注册项。
 > 状态：**设计定稿**（2026-08-29 讨论定稿，S1 起逐步实现）
 > 关联：角色模型（role-model.md，S3.4 插件化）、包模型（package-model.md，tieir 分发 L2/P5c）、
 > tieir 格式（tieir-format.md）、动态库（dynamic-library.md，M5）、编译解耦（compiler-decouple.md）。
