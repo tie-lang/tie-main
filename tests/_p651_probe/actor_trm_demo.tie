@@ -1,0 +1,35 @@
+type tie<logic>
+// p.6.5.8 验收：actor × 复杂形态咬合——`#[unsafe.trm]` 接入门 + 消息经 mailbox 承载
+// 断言：
+//   A. `#[unsafe.trm]` actor 级标注被接受（语法零改动，属性通道白名单 unsafe.trm）
+//   B. 标注 actor 消息经 trm-lite channel mailbox 承载：连续 async 投递 + 同步
+//      get() 按 FIFO 处理（actor_a4_async 同款逻辑，证实 mailbox 承载正确）
+//   C. 多参方法（bump(by, tag)）消息经单消息槽 + mailbox 令牌仍精确
+// 期望：PASS exit 0
+
+#[unsafe.trm]
+actor T {
+
+    var total: i64 = 0
+    pub async func bump(by: i64, tag: i64) {
+        total = total + by * 10 + tag
+    }
+    pub func get() -> i64 {
+        return total
+    }
+}
+
+func main() {
+    var c = run T()
+    c.bump(2, 1)   // +21
+    c.bump(3, 2)   // +32
+    c.bump(4, 3)   // +43
+    var v = c.get()
+    println("total=" + to_string(v))
+    if v == 96 {
+        println("PASS A5")
+    } else {
+        println("FAIL total=" + to_string(v))
+    }
+    println("done")
+}

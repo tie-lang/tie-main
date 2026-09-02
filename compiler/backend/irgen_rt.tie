@@ -422,7 +422,8 @@ func tig_cb_ptr(id: i64) -> i64 {
 //   @0   : i64 magic（0xAC70524E 校验句柄/记录）
 //   @8   : CRITICAL_SECTION lock（40 字节）
 //   @48  : CONDITION_VARIABLE cv（8 字节）
-//   @56+ : mailbox / 状态字段（Step4 起：shutdown/队列头尾/容量）
+//   @56  : mailbox_ch（per-actor 消息通道句柄，ch_open() 返回值；消息入口经
+//           ch_send 入队 method_id 令牌，actor_task 经 ch_recv 取出）
 // 布局常量用内联字面量（namespace 体内不允许 const/var 声明）。
 
 // `run<Actor>(实参...)` 生成：求值实参（step4 起作初始消息）→ 分配 per-actor
@@ -451,7 +452,7 @@ func tig_actor_run(id: i64) -> i64 {
         return -1
     }
     var T64 = types.named(TK_I64)
-    // B 组固定头：@0 magic|@8 lock(40B)|@48 cv|@56 shutdown|@64 pending|
+    // B 组固定头：@0 magic|@8 lock(40B)|@48 cv|@56 mailbox_ch|@64 pending|
     // @72 method_id|@80 args[0..8)（8 槽多参数消息槽）|@144 result|@152 done|
     // @160 dispatch_addr|@168 fail|@176 字段区起（scollect FIELD_BASE 同步）。
     var FIELD_BASE = 176
@@ -490,6 +491,9 @@ func tig_actor_run(id: i64) -> i64 {
     s21_store(s21_gep(rec, 64, true), tig_int_lit_ty(0, T64), T64)
     s21_store(s21_gep(rec, 152, true), tig_int_lit_ty(0, T64), T64)
     s21_store(s21_gep(rec, 160, true), tig_func_addr("actor_disp_" + to_string(aidx)), T64)
+    // @56 mailbox_ch：per-actor 消息通道句柄（ch_open()）。消息发送经 ch_send 入队
+    // method_id 令牌，actor_task 经 ch_recv 从该通道取 method_id（mailbox 队列）。
+    s21_store(s21_gep(rec, 56, true), tig_trmlite_call("trm_lite_chan$ch_open", tig_empty_types(), tig_empty_vals(), T64), T64)
     // 句柄 = ptrtoint record（i64；var-decl 槽类型 K_ACTOR = i64，LLVM 类型匹配）
     var pi = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint → i64
     ir.add_operand(pi, rec, 0)
@@ -499,10 +503,12 @@ func tig_actor_run(id: i64) -> i64 {
 
 // actor 消息任务 `actor_task` 生成（fn(ptr rec) -> i64）。**急切生成**：模块
 // 生成开始（tig_ast 内、任何用户函数之前）调用一次，避免指令编号交错。
-// 阶段1块2：actor 由简单执行体承载——每条消息 = trm-lite 调度任务（spawn_task），
-// 本函数是通用消息处理任务：setjmp 捕获 handler panic → 读 record@72 mid → 清
-// pending@64 → 间接调 dispatch（record@160）→ 写 result@144/fail@168 → 置
-// done@152 → 返回 0。单线程协作模型下无锁无竞态（调用方在任务跑完后才写新消息）。
+// 阶段1块2＋mailbox：actor 由简单执行体承载——每条消息 = trm-lite 调度任务
+// （spawn_task）；消息入口走 mailbox 通道：ch_recv(record@56 的 ch) 取 method_id
+// 令牌（发送方 ch_send 入队，替换读 record@72）。本函数是通用消息处理任务：
+// setjmp 捕获 handler panic → ch_recv 取 mi → 清 pending@64 → 间接调 dispatch
+// （record@160）→ 写 result@144/fail@168 → 置 done@152 → 返回 0。单线程协作
+// 模型下无锁无竞态（调用方先 ch_send 入队、再 spawn，故任务内通道必有消息）。
 func gen_actor_task_eager() {
     if len(ac_keys) == 0 {
         return
@@ -511,6 +517,7 @@ func gen_actor_task_eager() {
         return
     }
     g_actor_task_gen = 1
+    g_used_trmlite = true  // 任务经 ch_recv 走 trm_lite.a，须链接
     var T64 = types.named(TK_I64)
     var saved_func = g_cur_func
     var saved_block = g_cur_block
@@ -522,7 +529,6 @@ func gen_actor_task_eager() {
     g_cur_block = entry
     var recp = ir.param_val(fid, 0)
     var pendp = s21_gep(recp, 64, true)
-    var midp = s21_gep(recp, 72, true)
     var resp = s21_gep(recp, 144, true)
     var donep = s21_gep(recp, 152, true)
     var dispp = s21_gep(recp, 160, true)
@@ -556,7 +562,7 @@ func gen_actor_task_eager() {
     ir.add_operand(cbr2, ir.get_value(is0), 0)
     ir.add_operand(cbr2, wok, 1)
     ir.add_operand(cbr2, wcap, 1)
-    // wok：active=1 → 取 mid → 清 pending → 间接调 dispatch → active=0 → result/fail=0
+    // wok：active=1 → ch_recv(mailbox_ch) 取 mi → 清 pending → 间接调 dispatch → active=0 → result/fail=0
     var act_id = interner.intern("@tie_panic_active")
     g_cur_block = wok
     var trA = tig_bool_lit(1)
@@ -564,7 +570,14 @@ func gen_actor_task_eager() {
     ir.add_operand(stA1, types.named(TK_BOOL), 2)
     ir.add_operand(stA1, trA, 0)
     ir.add_operand(stA1, act_id, 3)
-    var mid_v = s21_load(midp, T64)
+    // 消息入口 = mailbox：ch_recv(record@56 的 ch) 取 method_id（发送方先 ch_send 入队再
+    // spawn，任务跑时通道必有消息，故单次 recv 即得 token；返回值直接作 method_id）。
+    var mchp = s21_gep(recp, 56, true)
+    var mch = s21_load(mchp, T64)
+    var recv_ats: table<i64> = table_new_i64()
+    var recv_avs: table<i64> = table_new_i64()
+    table_push(recv_ats, T64); table_push(recv_avs, mch)
+    var mid_v = tig_trmlite_call("trm_lite_chan$ch_recv", recv_ats, recv_avs, T64)
     s21_store(pendp, tig_int_lit_ty(0, T64), T64)
     var disp = s21_load(dispp, T64)
     var fp = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr
@@ -967,11 +980,11 @@ func tig_actor_wait(ptr: i64, cond_eq: bool) {
     g_cur_block = exit
 }
 
-// 调用方同步 RPC 生成（阶段1块2：actor 由简单执行体承载）：`c.m(args...)` →
-// 等 pending 空闲（yield 驱动前一消息任务）→ 写 method_id/args/done=0/pending=1 →
-// spawn 消息任务（通用 actor_task(rec)）→ async 即返回 / 同步等 done（yield 驱动
-// 本消息任务）→ 读 result/fail（fail≠0 → raise）。单线程协作，天然无锁无竞态。
-// 返回结果值 id（void → 0 哑值）。
+// 调用方同步 RPC 生成（阶段1块2＋mailbox：actor 由简单执行体承载）：`c.m(args...)`
+// → 写 method_id/args/done=0/pending=1 → ch_send(ch, mi) 入 mailbox 通道（不再等
+// pending 空闲，多消息可入队）→ spawn 消息任务（通用 actor_task(rec)，经 ch_recv
+// 取令牌）→ async 即返回 / 同步等 done（yield 驱动本消息任务）→ 读 result/fail
+// （fail≠0 → raise）。单线程协作，天然无锁无竞态。返回结果值 id（void → 0 哑值）。
 func gen_actor_sync_call(rech: i64, mi: i64, args: table<i64>, ret_ty: i64, is_async: bool) -> i64 {
     g_used_trmlite = true
     var T64 = types.named(TK_I64)
@@ -984,7 +997,9 @@ func gen_actor_sync_call(rech: i64, mi: i64, args: table<i64>, ret_ty: i64, is_a
     var resp = s21_gep(rec_ptr, 144, true)
     var donep = s21_gep(rec_ptr, 152, true)
     var is_void = (ret_ty == types.named(TK_VOID))
-    // ① 等 pending 空闲（yield 驱动前一消息任务跑完，腾出单消息槽）
+    // ① 等 pending 空闲（yield 驱动前一消息任务跑完，腾出单消息槽 args@80）——mailbox
+    // 通道提供消息入口，但单槽 args 仍须串行：async 连续发消息时，若不等前一任务
+    // 消费完槽就覆写，dispatch 会用错的参数。故保留 tig_actor_wait(pendp, true)。
     tig_actor_wait(pendp, true)
     // ② 写消息槽（mid + 多参数消息槽段 @80+k*8）+ done=0 + pending=1
     s21_store(midp, tig_int_lit_ty(mi, T64), T64)
@@ -996,7 +1011,15 @@ func gen_actor_sync_call(rech: i64, mi: i64, args: table<i64>, ret_ty: i64, is_a
     }
     s21_store(donep, tig_int_lit_ty(0, T64), T64)
     s21_store(pendp, tig_int_lit_ty(1, T64), T64)
-    // ③ spawn 消息任务：actor_task(rec)（通用任务，dispatch 地址存 record@160）
+    // ③ mailbox 入队：ch_send(ch, mi) 把 method_id 令牌入通道（record@56 的 ch；actor_task 经 ch_recv 取出）
+    var chp2 = s21_gep(rec_ptr, 56, true)
+    var ch_h = s21_load(chp2, T64)
+    var send_ats: table<i64> = table_new_i64()
+    var send_avs: table<i64> = table_new_i64()
+    table_push(send_ats, T64); table_push(send_avs, ch_h)
+    table_push(send_ats, T64); table_push(send_avs, tig_int_lit_ty(mi, T64))
+    tig_trmlite_call("trm_lite_chan$ch_send", send_ats, send_avs, T64)
+    // ④ spawn 消息任务：actor_task(rec)（通用任务，dispatch 地址存 record@160）
     var rec_i = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint rec_ptr → i64
     ir.add_operand(rec_i, rec_ptr, 0)
     // task 入口地址：op63 const_global 不能直接作 call 实参（arg_ref 会直引 @sym
@@ -1017,7 +1040,7 @@ func gen_actor_sync_call(rech: i64, mi: i64, args: table<i64>, ret_ty: i64, is_a
     if is_async {
         return tig_int_lit_ty(0, T64)
     }
-    // ④ 同步：等 done=1 → 读 result/fail（fail≠0 → raise）
+    // ⑤ 同步：等 done=1 → 读 result/fail（fail≠0 → raise）
     tig_actor_wait(donep, false)
     var res = s21_load(resp, T64)
     var failp = s21_gep(rec_ptr, 168, true)
