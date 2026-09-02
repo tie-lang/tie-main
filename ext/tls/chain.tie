@@ -1,0 +1,552 @@
+type tie<class>
+// ============================================================================
+// chain.tie：ext/tls——X.509 证书链构建与校验（命名空间 chn，纯 tie）
+// 目的：p.6.6.1 AC-5 —— 由叶子证书向上逐级到信任锚，并校验整链。
+//
+// == 链表示 ==
+//   证书链 = `table<any>`，元素为各证书的**原始 DER 字节表**（table<i64> 装箱），
+//   顺序为 leaf -> 中间 CA -> ... -> 根（信任锚）。
+//   `build(leaf_der, store)`：在 store（中间/根证书 DER 的 table）中按 issuer ==
+//   父 subject 逐级向上找上级，直到叶子/中间自签（issuer==subject）或根 SPKI
+//   命中 ca 表。返回完整链（含 leaf），空链（len==0）表示失败。
+//
+// == 校验 ==
+//   `verify(chain, roots, host) -> bool`：
+//     - trust anchor：链顶证书 SPKI 命中 roots 表（table<any>，每元素为根 SPKI DER）。
+//     - 每级签名验证（下级 tbs 由上级 SPKI 验签，按下级签名算法 OID）。
+//     - 有效期窗口：每级 notBefore<=now<=notAfter。
+//     - 主机名匹配：叶子 SAN dNSName 优先，无 SAN 回退 CN。
+//   `verify_cver(spki_der, sig_algo_id, msg, sig) -> bool`：
+//     供 tls1_3 验证 CertificateVerify。spki_der 为服务器证书 SPKI，msg 为
+//     待签名摘要（TLS1.3 = Hash(transcript) 32B），sig 为原始签名字节。
+//     sig_algo_id 为 TLS 签名算法（0x0804=rsa_pss_rsae_sha256，0x0403=ECDSA，
+//     0x0401=rsa_pkcs1_sha256）。
+//
+// == 签名验证实现 ==
+//   - RSA-PKCS1 v1.5（RFC 8017 §8.2）：m = sig^e mod n；期望 EM = 00 01 FF..FF
+//     00 || DigestInfo(SHA-256)，还原后逐字节比较（bigint.powmod）。
+//   - RSA-PSS（RFC 8017 §9.1.2，MGF1-SHA256，sLen=32）：EMSA-PSS-VERIFY，
+//     用于 TLS1.3 CertificateVerify（RSA 键必须 PSS）。
+//   - ECDSA P-256：TLS 原始 r||s 64B，构造 ECCPUBLICBLOB，ext/ecdsa.verify。
+//   DigestInfo(SHA-256) = 30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00 04 20。
+//
+// == 依赖 ==
+//   x509（证书解析）、std/bigint（powmod）、ext/ecdsa（P-256 验签）、std/time（now）。
+//   全链字节表；hex 仅 bigint/ecdsa 适配层中转。
+// ============================================================================
+
+import "./tool.tie"
+import "./der.tie"
+import "./x509.tie"
+import "../../std/bigint.tie"
+import "../../std/time.tie"
+import "../../ext/ecdsa.tie"
+
+// DigestInfo(SHA-256) 前缀（19 字节，不含摘要）。
+var DI_PREFIX: table<i64>;
+
+// TLS 签名算法常量（channel const，避免顶层 var 初始化时序问题）
+const SA_RSA_PSS_SHA256: i64 = 0x0804
+const SA_RSA_PKCS1_SHA256: i64 = 0x0401
+const SA_ECDSA_SHA256: i64 = 0x0403
+
+namespace chn {
+
+func ensure() {
+    if len(DI_PREFIX) > 0 {
+        return
+    }
+    DI_PREFIX = tbt.hex_to_bytes("3031300d060960864801650304020105000420")
+}
+
+// ---- 字节 <-> bigint ----
+
+// 大端字节（可能带前导 0）-> bigint。
+func bn_from_bytes(b: table<i64>) -> table<i64> {
+    return bigint.from_hex(tbt.bytes_to_hex(b))
+}
+
+// DER INTEGER 内容可能带前导 0x00（正数最高位保护），去掉得到模数本体的真正长度。
+func strip_lead0(b: table<i64>) -> table<i64> {
+    var i: i64 = 0
+    while i < len(b) - 1 && b[i] == 0 {
+        i = i + 1
+    }
+    return tbt.sub(b, i, len(b) - i)
+}
+
+// bigint -> 恰好 k 字节大端字节表（高位补 0）。
+// 注意：bigint.to_hex 输出最小化 hex，可能**奇数长度**（如 0x01ff.. 开头，to_hex
+// 去掉前导 0nibble 得 "1ff.."）。hex_to_bytes 按成对解析，奇数长度会丢尾 nibble，
+// 故必须先把 hex 补成偶数长度再解码（编译器缺陷护栏，见探针注记）。
+func bytes_from_bn(bi: table<i64>, k: i64) -> table<i64> {
+    var h = bigint.to_hex(bi)
+    if len(h) % 2 != 0 {
+        h = "0" + h
+    }
+    var bs = tbt.hex_to_bytes(h)
+    var out = table_new_i64()
+    var pad: i64 = k - len(bs)
+    var i: i64 = 0
+    while i < pad {
+        table_push(out, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < len(bs) {
+        table_push(out, bs[i])
+        i = i + 1
+    }
+    return out
+}
+
+// ---- RSA-PKCS1 v1.5（SHA-256）----
+func verify_pkcs1(n_bytes: table<i64>, e_bytes: table<i64>, sig_bytes: table<i64>, digest: table<i64>) -> bool {
+    ensure()
+    var nb = strip_lead0(n_bytes)
+    var k: i64 = len(nb)
+    if k == 0 || len(sig_bytes) > k {
+        return false
+    }
+    var nbi = bn_from_bytes(nb)
+    var ebi = bn_from_bytes(e_bytes)
+    var sbi = bn_from_bytes(sig_bytes)
+    if bigint.cmp(sbi, nbi) >= 0 {
+        return false
+    }
+    var m = bigint.powmod(sbi, ebi, nbi)
+    var em = bytes_from_bn(m, k)
+    if k < 54 {
+        return false
+    }
+    if em[0] != 0x00 || em[1] != 0x01 {
+        return false
+    }
+    var ps: i64 = k - 54
+    var i: i64 = 2
+    while i < 2 + ps {
+        if em[i] != 0xFF {
+            return false
+        }
+        i = i + 1
+    }
+    if em[2 + ps] != 0x00 {
+        return false
+    }
+    // DigestInfo = prefix(19) || digest(32)
+    var o: i64 = 2 + ps + 1
+    var j: i64 = 0
+    while j < len(DI_PREFIX) {
+        if em[o + j] != DI_PREFIX[j] {
+            return false
+        }
+        j = j + 1
+    }
+    j = 0
+    while j < 32 {
+        if em[o + len(DI_PREFIX) + j] != digest[j] {
+            return false
+        }
+        j = j + 1
+    }
+    return true
+}
+
+// ---- MGF1-SHA-256（RFC 8017 §B.2.1）----
+func mgf1(seed: table<i64>, mask_len: i64) -> table<i64> {
+    var out = table_new_i64()
+    var c: i64 = 0
+    while len(out) < mask_len {
+        var blk = tbt.concat(seed, mgf_counter(c))
+        var hs = thash.sha256(blk)
+        var need = mask_len - len(out)
+        var i: i64 = 0
+        while i < 32 {
+            if i >= need {
+                break
+            }
+            table_push(out, hs[i])
+            i = i + 1
+        }
+        c = c + 1
+    }
+    return out
+}
+
+// 4 字节大端计数器。
+func mgf_counter(c: i64) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, (c >> 24) & 0xFF)
+    table_push(out, (c >> 16) & 0xFF)
+    table_push(out, (c >> 8) & 0xFF)
+    table_push(out, c & 0xFF)
+    return out
+}
+
+// ---- RSA-PSS（SHA-256，MGF1-SHA256，sLen=32）----
+func verify_pss(n_bytes: table<i64>, e_bytes: table<i64>, sig_bytes: table<i64>, mhash: table<i64>) -> bool {
+    ensure()
+    var nb = strip_lead0(n_bytes)
+    var k: i64 = len(nb)
+    if k == 0 || len(sig_bytes) > k {
+        return false
+    }
+    var nbi = bn_from_bytes(nb)
+    var ebi = bn_from_bytes(e_bytes)
+    var sbi = bn_from_bytes(sig_bytes)
+    if bigint.cmp(sbi, nbi) >= 0 {
+        return false
+    }
+    var em = bytes_from_bn(bigint.powmod(sbi, ebi, nbi), k)
+    var hLen: i64 = 32
+    var sLen: i64 = 32
+    if k < hLen + sLen + 2 {
+        return false
+    }
+    if em[k - 1] != 0xBC {
+        return false
+    }
+    // maskedDB = EM[0 .. emLen-hLen-2]，H = EM[emLen-hLen-1 .. emLen-2]
+    var DBlen: i64 = k - hLen - 1
+    var db = tbt.sub(em, 0, DBlen)
+    var H = tbt.sub(em, DBlen, hLen)
+    var dbmask = mgf1(H, DBlen)
+    var i: i64 = 0
+    while i < DBlen {
+        db[i] = db[i] ^ dbmask[i]
+        i = i + 1
+    }
+    // emBits = modBits - 1：对 8 的倍数位键，DB 最左 1 位（bit7 of db[0]）须为 0
+    // （RFC 8017 EMSA-PSS-VERIFY 第 7 步：设 DB 最左 8*emLen-emBits 位为 0）。
+    db[0] = db[0] & 0x7F
+    var lz: i64 = DBlen - sLen - 1
+    i = 0
+    while i < lz {
+        if db[i] != 0x00 {
+            return false
+        }
+        i = i + 1
+    }
+    if db[lz] != 0x01 {
+        return false
+    }
+    var salt = tbt.sub(db, lz + 1, sLen)
+    // H' = Hash(0x00*8 || mHash || salt)
+    var m2 = table_new_i64()
+    i = 0
+    while i < 8 {
+        table_push(m2, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < 32 {
+        table_push(m2, mhash[i])
+        i = i + 1
+    }
+    i = 0
+    while i < sLen {
+        table_push(m2, salt[i])
+        i = i + 1
+    }
+    var H2 = thash.sha256(m2)
+    return tbt.eq(H2, H)
+}
+
+// ---- ECDSA（P-256，ext/ecdsa）----
+// EC 公钥点（0x04||X||Y 65B）-> ECCPUBLICBLOB hex（magic 'ECS1' + cbKey + X + Y）。
+func ec_blob_hex(point: table<i64>) -> string {
+    var blob = table_new_i64()
+    // BCRYPT_ECDSA_PUBLIC_P256_MAGIC = 0x31534345（小端 'ECS1'）
+    table_push(blob, 0x45)
+    table_push(blob, 0x43)
+    table_push(blob, 0x53)
+    table_push(blob, 0x31)
+    // cbKey = 32（小端 4 字节）
+    table_push(blob, 32)
+    table_push(blob, 0)
+    table_push(blob, 0)
+    table_push(blob, 0)
+    // point[0]==0x04 后 X(32) || Y(32)
+    var i: i64 = 1
+    while i < len(point) {
+        table_push(blob, point[i])
+        i = i + 1
+    }
+    return tbt.bytes_to_hex(blob)
+}
+
+func verify_ecdsa(point: table<i64>, sig: table<i64>, digest: table<i64>) -> bool {
+    if len(point) != 65 || point[0] != 0x04 || len(sig) != 64 || len(digest) != 32 {
+        return false
+    }
+    var kb = ec_blob_hex(point)
+    return ecdsa.verify(kb, tbt.bytes_to_hex(digest), tbt.bytes_to_hex(sig)) == 1
+}
+
+// ---- SPKI 解析 ----
+// 从 SPKI 原始 DER 提取 (is_rsa, is_ec, n, e, point)。
+func x509_parse_spki(spki_der: table<i64>) -> (bool, bool, table<i64>, table<i64>, table<i64>) {
+    var rsaF: bool = false
+    var ecF: bool = false
+    var n = table_new_i64()
+    var e = table_new_i64()
+    var pt = table_new_i64()
+    var root = der.parse(spki_der)
+    if root < 0 || der.tag_at(root) != 0x30 {
+        return (rsaF, ecF, n, e, pt)
+    }
+    var alg = der.child(root, 0)
+    var oid = der.child(alg, 0)
+    if oid < 0 || der.tag_at(oid) != 0x06 {
+        return (rsaF, ecF, n, e, pt)
+    }
+    var ob = der.value_at(oid)
+    var ek = der.find_first(root, 0x03)
+    if tbt.eq(ob, tbt.hex_to_bytes("2a864886f70d010101")) && ek >= 0 {
+        rsaF = true
+        var bb = der.value_at(ek)
+        var rd = der.parse(tbt.sub(bb, 1, len(bb) - 1))
+        if rd >= 0 {
+            n = der.value_at(der.child(rd, 0))
+            var eid = der.child(rd, 1)
+            if eid >= 0 {
+                e = der.value_at(eid)
+            }
+        }
+    } else if tbt.eq(ob, tbt.hex_to_bytes("2a864886ce3d0201")) && ek >= 0 {
+        ecF = true
+        var bb = der.value_at(ek)
+        if len(bb) == 66 && bb[1] == 0x04 {
+            pt = tbt.sub(bb, 1, 65)
+        }
+    }
+    return (rsaF, ecF, n, e, pt)
+}
+
+// ---- 主机名匹配（大小写不敏感）----
+
+func lower(s: string) -> string {
+    var out: string = ""
+    var i: i64 = 0
+    while i < str_len(s) {
+        var c = str_char(s, i)
+        var cp: i64 = char_code(c)
+        if cp >= 65 && cp <= 90 {
+            cp = cp + 32
+            c = str_char("abcdefghijklmnopqrstuvwxyz", cp - 97)
+        }
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+// host 命中当前已 parse 证书的 SAN dNSName 或 CN（无 SAN 时回退 CN）。
+func hostname_match(host: string) -> bool {
+    var h = lower(host)
+    var sans = x509.san_list()
+    var i: i64 = 0
+    while i < len(sans) {
+        if lower(sans[i]) == h {
+            return true
+        }
+        i = i + 1
+    }
+    if len(sans) == 0 {
+        return lower(x509.cn()) == h
+    }
+    return false
+}
+
+// ---- 链构建 ----
+
+func build_inner(leaf: table<i64>, store: table<any>) -> table<any> {
+    var chain: table<any> = []
+    table_push(chain, leaf)
+    var cur = leaf
+    var guard: i64 = 0
+    var maxd = len(store) + 2
+    while guard < maxd {
+        var ok = x509.parse(cur)
+        if ok == false {
+            return chain
+        }
+        var cur_iss = x509.issuer_der()
+        // 自签（根）：停
+        if tbt.eq(cur_iss, x509.subject_der()) {
+            break
+        }
+        // 在 store 中找 subject == cur_iss 的上级
+        var si: i64 = -1
+        var i: i64 = 0
+        while i < len(store) {
+            var cb = as_table_i64(store[i])
+            var p = x509.parse(cb)
+            if p && tbt.eq(cur_iss, x509.subject_der()) {
+                si = i
+            }
+            i = i + 1
+        }
+        if si < 0 {
+            break
+        }
+        var parent = as_table_i64(store[si])
+        table_push(chain, parent)
+        cur = parent
+        guard = guard + 1
+    }
+    return chain
+}
+
+// ---- 校验 ----
+
+func verify_level_spki(spki_der: table<i64>, tbs_bytes: table<i64>, sig_bytes: table<i64>, digest: table<i64>, algo: i64) -> bool {
+    var (isf, ief, nb, eb, pt) = x509_parse_spki(spki_der)
+    if isf {
+        if algo == 0 {
+            return verify_pkcs1(nb, eb, sig_bytes, digest)
+        }
+        if algo == 1 {
+            return verify_pss(nb, eb, sig_bytes, digest)
+        }
+        return false
+    }
+    if ief {
+        return verify_ecdsa(pt, sig_bytes, digest)
+    }
+    return false
+}
+
+func anchor_hit(spki: table<i64>, roots: table<any>) -> bool {
+    var i: i64 = 0
+    while i < len(roots) {
+        if tbt.eq(spki, as_table_i64(roots[i])) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ---- 主入口 ----
+
+// build(leaf_der, store)：构建 leaf->根 的链（table<any>，各元素 DER）。
+pub func build(leaf: table<i64>, store: table<any>) -> table<any> {
+    return build_inner(leaf, store)
+}
+
+// verify(chain, roots, host)：roots 为信任锚 SPKI DER 的 table<any>。
+pub func verify(ch: table<any>, roots: table<any>, host: string) -> bool {
+    if len(ch) == 0 {
+        return false
+    }
+    var n = len(ch)
+    var now = time.now()
+
+    // 逐级校验签名与有效期（除根外）
+    var i: i64 = n - 1
+    while i >= 1 {
+        var lower_der = as_table_i64(ch[i - 1])
+        var upper_der = as_table_i64(ch[i])
+        var cl = x509.parse(lower_der)
+        if cl == false {
+            return false
+        }
+        var ltbs = x509.tbs()
+        var lsig = x509.sig()
+        var lid = x509.sig_id()
+        if now < x509.not_before() || now > x509.not_after() {
+            return false
+        }
+        var ldigest = thash.sha256(ltbs)
+        var cu = x509.parse(upper_der)
+        if cu == false {
+            return false
+        }
+        var sp = x509.spki()
+        if verify_level_spki(sp, ltbs, lsig, ldigest, lid) == false {
+            return false
+        }
+        i = i - 1
+    }
+
+    // 信任锚：链顶 SPKI 命中 roots
+    var top_der = as_table_i64(ch[n - 1])
+    var ct = x509.parse(top_der)
+    if ct == false {
+        return false
+    }
+    if now < x509.not_before() || now > x509.not_after() {
+        return false
+    }
+    var top_spki = x509.spki()
+    if anchor_hit(top_spki, roots) == false {
+        return false
+    }
+
+    // 主机名：叶子
+    var leaf_der = as_table_i64(ch[0])
+    var ll = x509.parse(leaf_der)
+    if ll == false {
+        return false
+    }
+    if hostname_match(host) == false {
+        return false
+    }
+    return true
+}
+
+// ---- verify_cver ----
+// 供 tls1_3 验证 CertificateVerify。spki_der 为服务器证书 SPKI，sig_algo_id 为
+// TLS 签名算法（0x0804 rsa_pss_rsae_sha256 / 0x0401 rsa_pkcs1_sha256 / 0x0403 ecdsa）。
+// msg = 握手 transcript 原始字节；sig = 原始签名字节。
+// RFC 8446 §4.4.3：CertificateVerify.signature 覆盖 content = 0x20*64 || Transcript-Hash；
+// 各签名算法的 mHash/digest 即 Hash(content)。本函数在内部做好该封装。
+pub func verify_cver(spki_der: table<i64>, sig_algo_id: i64, msg: table<i64>, sig: table<i64>) -> bool {
+    // mRNA content = 0x20*64 || SHA256(msg)
+    var th = thash.sha256(msg)
+    var content = table_new_i64()
+    var qi: i64 = 0
+    while qi < 64 {
+        table_push(content, 0x20)
+        qi = qi + 1
+    }
+    qi = 0
+    while qi < 32 {
+        table_push(content, th[qi])
+        qi = qi + 1
+    }
+    var digest = thash.sha256(content)   // 各算法使用的 mHash/digest
+    var (isf, ief, nb, eb, pt) = x509_parse_spki(spki_der)
+    if isf && sig_algo_id == SA_RSA_PSS_SHA256 {
+        return verify_pss(nb, eb, sig, digest)
+    }
+    if isf && sig_algo_id == SA_RSA_PKCS1_SHA256 {
+        return verify_pkcs1(nb, eb, sig, digest)
+    }
+    if ief && sig_algo_id == SA_ECDSA_SHA256 {
+        return verify_ecdsa(pt, sig, digest)
+    }
+    return false
+}
+
+// 单级验签测试入口（探针 debug 用）：用 signer SPKI 验 subject.
+// algo 为证书签名算法 id（0=RSA-PKCS1 SHA256）。
+pub func vtest(spki_der: table<i64>, tbs_bytes: table<i64>, sig_bytes: table<i64>, digest: table<i64>, algo: i64) -> bool {
+    return verify_level_spki(spki_der, tbs_bytes, sig_bytes, digest, algo)
+}
+
+// ---- 链元素辅助 ----
+
+pub func cert_at(ch: table<any>, i: i64) -> table<i64> {
+    if i < 0 || i >= len(ch) {
+        return table_new_i64()
+    }
+    return as_table_i64(ch[i])
+}
+
+pub func chain_len(ch: table<any>) -> i64 {
+    return len(ch)
+}
+
+}  // namespace chn

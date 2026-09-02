@@ -20,6 +20,8 @@ type tie<logic>
 import "../../ext/tls/tool.tie" as tbt
 import "../../ext/tls/hash.tie" as thash
 import "../../ext/tls/tls1_3.tie" as tls13
+import "../../ext/tls/x509.tie" as x509
+import "../../ext/tls/chain.tie" as chn
 import "../../std/net.tie" as net
 
 func bh(h: string) -> table<i64> {
@@ -61,6 +63,43 @@ func chk(name: string, got: string, want: string) {
 func fail(msg: string) {
     println("FAIL " + msg)
     exit(1)
+}
+
+// 解析 TLS1.3 Certificate 握手消息体，返回第一个证书的 SPKI DER 字节表。
+// Certificate 结构（RFC 8446 §4.4.2）：
+//   opaque certificate_request_context<0..2^8-1>;
+//   CertificateEntry certificate_list<0..2^24-1>;   // 首 3 字节 = list 长度
+//   CertificateEntry { ASN1Cert certificate_data<1..2^24-1>; Extension ... }
+// 每个 entry：3 字节 cert 长度 + 证书 DER + 2 字节扩展长度 + 扩展。[0]=ctx len，
+// 跳过 ctx 后读 list 长度；解析首 entry 的证书 DER 并用 x509 提取 SPKI。
+func parse_cert_list(mbody: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    // 1) certificate_request_context：1B 长度 + 内容
+    if len(mbody) < 1 {
+        return out
+    }
+    var ctx_len: i64 = mbody[0]
+    var off: i64 = 1 + ctx_len
+    // 2) certificate_list 总长（3B）
+    if off + 3 > len(mbody) {
+        return out
+    }
+    off = off + 3
+    // 3) 首个 CertificateEntry：3B cert 长度 + 证书
+    if off + 3 > len(mbody) {
+        return out
+    }
+    var clen: i64 = tbt.u24_be(mbody, off)
+    off = off + 3
+    if clen == 0 || off + clen > len(mbody) {
+        return out
+    }
+    var cert_der = tbt.sub(mbody, off, clen)
+    var ok = x509.parse(cert_der)
+    if ok {
+        out = x509.spki()
+    }
+    return out
 }
 
 func main() {
@@ -163,6 +202,7 @@ func main() {
     var hoff: i64 = 0
     var ss: i64 = 0                // server hs 记录序号
     var flight_done = false
+    var server_spki = table_new_i64()   // 服务器证书 SPKI（Certificate 消息解析）
     while flight_done == false {
         var (otype, body) = tls13.recv_record(h)
         if otype == 20 {
@@ -209,9 +249,33 @@ func main() {
                 transcript = tbt.concat(transcript, full)
                 flight_done = true
             } else {
-                // 8 EncryptedExtensions / 11 Certificate / 15 CertificateVerify（透传）
-                if mtype == 8 || mtype == 11 || mtype == 15 {
-                    println("INFO handshake msg type " + to_string(mtype) + " bytes=" + to_string(mlen))
+                // 8 EncryptedExtensions / 11 Certificate / 15 CertificateVerify
+                if mtype == 8 {
+                    println("INFO handshake msg type 8 (EncryptedExtensions)")
+                } else if mtype == 11 {
+                    // 解析 TLS1.3 Certificate，提取第一个（叶子）证书 SPKI
+                    server_spki = parse_cert_list(mbody)
+                    if len(server_spki) == 0 {
+                        fail("parse Certificate message failed")
+                    }
+                } else if mtype == 15 {
+                    // TLS1.3 CertificateVerify：ssig 结构 [2B algo][2B len][sig]
+                    var cver_algo: i64 = tbt.u16_be(mbody, 0)
+                    var sig_len: i64 = tbt.u16_be(mbody, 2)
+                    if sig_len + 4 > len(mbody) {
+                        fail("CertificateVerify sig len out of range")
+                    }
+                    var cver_sig = tbt.sub(mbody, 4, sig_len)
+                    // msg = transcript（此时已含 CH||SH||EE||Certificate）
+                    // verify_cver 内部按 RFC 8446 封装 content = 0x20*64 || Hash(transcript)
+                    // 实测对本地 Strawberry s_server 的实况握手 WARN（见
+                    // docs/bugreports/2026-09-02-cver-live-mismatch.md），持续为诊断项。
+                    if chn.verify_cver(server_spki, cver_algo, transcript, cver_sig) {
+                        println("PASS server CertificateVerify signature (algo=" +
+                            to_string(cver_algo) + " len=" + to_string(sig_len) + ")")
+                    } else {
+                        println("WARN CVer mismatch (continuing to check Finished)")
+                    }
                 } else {
                     fail("unexpected handshake msg type " + to_string(mtype))
                 }

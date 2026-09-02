@@ -291,6 +291,32 @@ pub func child_count(id: i64) -> i64 {
     return d_cnts[id]
 }
 
+// Full TLV bytes of node id incl. DER header (header_len = lens - clens starts
+// at offs - (lens-clens)). Returns empty table for bad id.
+pub func node_bytes(id: i64) -> table<i64> {
+    if id < 0 || id >= len(d_tags) {
+        return table_new_i64()
+    }
+    var hdr: i64 = d_lens[id] - d_clens[id]
+    return tbt.sub(d_bytes, d_offs[id] - hdr, d_lens[id])
+}
+
+// Content start offset (within raw parse buffer) of node id; 0 for bad id.
+pub func off(id: i64) -> i64 {
+    if id < 0 || id >= len(d_tags) {
+        return 0
+    }
+    return d_offs[id]
+}
+
+// Total DER TLV length (header+content) of node id; 0 for bad id.
+pub func full_len(id: i64) -> i64 {
+    if id < 0 || id >= len(d_tags) {
+        return 0
+    }
+    return d_lens[id]
+}
+
 // First direct child of id whose tag == tag; -1 if none.
 pub func find_first(id: i64, tag: i64) -> i64 {
     if id < 0 || id >= len(d_tags) {

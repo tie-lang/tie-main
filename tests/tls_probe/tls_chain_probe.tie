@@ -1,0 +1,192 @@
+type tie<logic>
+// ============================================================================
+// tls_chain_probe.tie：ext/tls 证书链校验探针——p.6.6.1 AC-5。
+// 本地 openssl 建三证书链：根(self-signed, CA:true) → 中间(CA:true) → leaf(SAN
+// DNS:localhost, days 5)。目录 _chain_test 用后即清。断言：
+//   1 完整链校验通过（SHA256WithRSA 自签 → PKCS#1 v1.5 验签 + 有效期 + host 匹配）。
+//   2 主机名不符（另建 SAN=not.localhost 的 leaf）被拒。
+//   3 过期（leaf notAfter 固定过去 2020-01-01）被拒。
+//   4 篡改签名（用 der 定位 leaf 签名值翻转 1 字节重建）被拒。
+//   5 未知 CA（根不入表，用内置 ca 表）被拒。
+// 另验证 ca 内置表 count()、ca.lookup（set_ca 追加命中）。
+//
+// 前置：openssl 3.x 在 PATH；打包版默认 config 路径损坏（Strawberry），故所有
+// req 生成命令须显式 -config tests/tls_probe/_openssl.cnf。
+// ============================================================================
+import "../../ext/tls/tool.tie" as tbt
+import "../../ext/tls/der.tie" as der
+import "../../ext/tls/x509.tie" as x509
+import "../../ext/tls/chain.tie" as chn
+import "../../ext/tls/ca.tie" as ca
+import "../../std/process.tie" as proc
+import "../../std/fs.tie" as fs
+
+var fails: i64 = 0
+
+func t(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        fails = fails + 1
+        println("FAIL " + msg)
+    }
+}
+
+func run(cmd: string) -> bool {
+    return proc.exec_code(cmd) == 0
+}
+
+// 生成三证书链到 dir：根(CA) → 中间(CA) → leaf(localhost)。
+func gen_chain(dir: string) -> bool {
+    var cnf = "tests/tls_probe/_openssl.cnf"
+    var ok = true
+    ok = ok && run("openssl req -config " + cnf + " -x509 -newkey rsa:2048 -nodes -keyout " + dir +
+        "root.key -out " + dir + "root.pem -days 30 -subj /CN=TestRoot " +
+        "-addext basicConstraints=critical,CA:TRUE 2>nul")
+    ok = ok && run("openssl req -config " + cnf + " -new -newkey rsa:2048 -nodes -keyout " + dir +
+        "int.key -out " + dir + "int.csr -subj /CN=TestInt 2>nul")
+    ok = ok && run("(echo basicConstraints=critical,CA:TRUE)>" + dir + "int.cnf")
+    ok = ok && run("openssl x509 -req -in " + dir + "int.csr -CA " + dir +
+        "root.pem -CAkey " + dir + "root.key -CAcreateserial -out " + dir +
+        "int.pem -days 20 -extfile " + dir + "int.cnf 2>nul")
+    ok = ok && run("openssl req -config " + cnf + " -new -newkey rsa:2048 -nodes -keyout " + dir +
+        "leaf.key -out " + dir + "leaf.csr -subj /CN=localhost 2>nul")
+    ok = ok && run("(echo subjectAltName=DNS:localhost)>" + dir + "leaf.cnf")
+    ok = ok && run("openssl x509 -req -in " + dir + "leaf.csr -CA " + dir +
+        "int.pem -CAkey " + dir + "int.key -CAcreateserial -out " + dir +
+        "leaf.pem -days 5 -extfile " + dir + "leaf.cnf 2>nul")
+    return ok
+}
+
+// 另建一个 SAN=not.localhost 的 leaf。
+func gen_leaf_badhost(dir: string, out: string) -> bool {
+    var cnf = "tests/tls_probe/_openssl.cnf"
+    var ok = true
+    ok = ok && run("openssl req -config " + cnf + " -new -newkey rsa:2048 -nodes -keyout " + dir +
+        "bh.key -out " + dir + "bh.csr -subj /CN=notlocalhost 2>nul")
+    ok = ok && run("(echo subjectAltName=DNS:not.localhost)>" + dir + "bh.cnf")
+    ok = ok && run("openssl x509 -req -in " + dir + "bh.csr -CA " + dir +
+        "int.pem -CAkey " + dir + "int.key -CAcreateserial -out " + dir +
+        out + " -days 5 -extfile " + dir + "bh.cnf 2>nul")
+    return ok
+}
+
+// 另建一个过期 leaf（notAfter 固定在过去 2020-01-01）。
+func gen_leaf_expired(dir: string, out: string) -> bool {
+    var cnf = "tests/tls_probe/_openssl.cnf"
+    var ok = true
+    ok = ok && run("openssl req -config " + cnf + " -new -newkey rsa:2048 -nodes -keyout " + dir +
+        "ex.key -out " + dir + "ex.csr -subj /CN=localhost 2>nul")
+    ok = ok && run("(echo subjectAltName=DNS:localhost)>" + dir + "ex.cnf")
+    ok = ok && run("openssl x509 -req -in " + dir + "ex.csr -CA " + dir +
+        "int.pem -CAkey " + dir + "int.key -CAcreateserial -out " + dir +
+        out + " -not_before 20190101000000Z -not_after 20200101000000Z -extfile " + dir + "ex.cnf 2>nul")
+    return ok
+}
+
+// PEM -> DER（openssl 转换），返回 DER 字节表。
+func pem2der(dir: string, name: string, der_name: string) -> table<i64> {
+    run("openssl x509 -in " + dir + name + " -outform DER -out " + dir + der_name)
+    var rb = fs.read_bytes(dir + der_name)
+    return rb
+}
+
+// 由根 DER 提取 SPKI 字节表。
+func root_spki(root_der: table<i64>) -> table<i64> {
+    var ok = x509.parse(root_der)
+    if ok == false {
+        return table_new_i64()
+    }
+    return x509.spki()
+}
+
+func main() {
+    var dir = "tests/tls_probe/_chain_test/"
+    if fs.exists(dir) {
+        fs.remove_all(dir)
+    }
+    fs.create_dir_all(dir)
+
+    if gen_chain(dir) == false {
+        println("FAIL openssl chain generation (root/int/leaf)")
+        return
+    }
+
+    var root_der = pem2der(dir, "root.pem", "root.der")
+    var int_der = pem2der(dir, "int.pem", "int.der")
+    var leaf_der = pem2der(dir, "leaf.pem", "leaf.der")
+
+    var lf = x509.parse(leaf_der)
+    t(lf && x509.is_rsa(), "leaf parse + RSA SPKI")
+    t(lf && len(x509.san_list()) >= 1 && x509.san_list()[0] == "localhost",
+      "leaf SAN dNSName == localhost")
+    t(lf && x509.is_ca() == false, "leaf is_ca == false")
+    t(lf && x509.sig_id() == 0, "leaf sig_id == RSA-PKCS1-SHA256(0)")
+
+    var rf = x509.parse(root_der)
+    t(rf && x509.is_ca(), "root is_ca == true")
+
+    // 组装 store：中间 + 根；组装 roots：根 SPKI
+    var store: table<any> = []
+    table_push(store, int_der)
+    table_push(store, root_der)
+    var roots: table<any> = []
+    table_push(roots, root_spki(root_der))
+
+    // -- 1 完整链校验通过 --
+    var chain = chn.build(leaf_der, store)
+    t(chn.chain_len(chain) == 3, "build 链长 == 3 (leaf,int,root)")
+    t(chn.verify(chain, roots, "localhost"), "1 完整链校验通过 (verify true)")
+
+    // -- 2 主机名不符 --
+    gen_leaf_badhost(dir, "badhost.pem")
+    var bh_der = pem2der(dir, "badhost.pem", "badhost.der")
+    var chain_bh = chn.build(bh_der, store)
+    t(chn.verify(chain_bh, roots, "localhost") == false, "2 主机名不符 (SAN not.localhost) 被拒")
+
+    // -- 3 过期 leaf --
+    gen_leaf_expired(dir, "expired.pem")
+    var ex_der = pem2der(dir, "expired.pem", "expired.der")
+    var chain_ex = chn.build(ex_der, store)
+    t(chn.verify(chain_ex, roots, "localhost") == false, "3 过期 leaf (-days 0) 被拒")
+
+    // -- 4 篡改签名：用 der 定位 leaf 签名值翻转 1 字节重建 --
+    var tampered = tbt.hex_to_bytes(tbt.bytes_to_hex(leaf_der))
+    var rroot = der.parse(tampered)
+    if rroot >= 0 {
+        var sigTlv = der.child(rroot, 2)          // signatureValue BIT STRING
+        var soff = der.off(sigTlv)                // 内容起点
+        var clen = der.value_len(sigTlv)
+        if soff >= 0 && clen > 1 {
+            var last = tampered[soff + clen - 1]
+            tampered[soff + clen - 1] = last ^ 0xFF
+        }
+    }
+    var chain_tm = chn.build(tampered, store)
+    t(chn.verify(chain_tm, roots, "localhost") == false, "4 篡改签名 1 字节被拒")
+
+    // -- 5 未知 CA：根不入表（用内置 ca.roots()，不含测试根）--
+    var builtin = ca.roots()
+    t(ca.count() >= 10, "内置信任锚数 >= 10 (count=" + to_string(ca.count()) + ")")
+    var chain_uc = chn.verify(chain, builtin, "localhost")
+    t(chain_uc == false, "5 未知 CA（测试根不入内置表）被拒")
+
+    // ca.set_ca 追加 + 命中
+    var rh = tbt.bytes_to_hex(root_spki(root_der))
+    var before = ca.count()
+    ca.set_ca(rh)
+    t(ca.count() == before + 1, "ca.set_ca 追加后 count+1")
+    t(ca.lookup(root_spki(root_der)), "ca.lookup 命中追加根")
+
+    // 清理 _chain_test
+    if fs.exists(dir) {
+        fs.remove_all(dir)
+    }
+
+    if fails == 0 {
+        println("tls_chain_probe 全部断言通过")
+    } else {
+        println("tls_chain_probe 有 " + to_string(fails) + " 项失败")
+        exit(1)
+    }
+}
