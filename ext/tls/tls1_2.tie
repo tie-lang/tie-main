@@ -1,0 +1,334 @@
+type tie<class>
+// ============================================================================
+// tls1_2.tie：ext/tls——TLS 1.2 客户端握手与记录层（命名空间 tls12，纯 tie）
+// 用途：p.6.6.1 AC-6 —— 对仅支持 TLS 1.2（0x0303）的服务器完成 ECDHE + 套件
+// TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256（0xC02F）真实握手 + 应用数据回环。
+// 全链路以 table<i64> 承载二进制（tie 字符串禁 ≥0x80）；AES-128-GCM 复用
+// ext/tls/gcm.tie，SHA-256 / HMAC（P_SHA256）复用 ext/tls/hash.tie，
+// ECDHE（X25519）复用 std/x25519，随机字节复用 std/random。
+//
+// == 覆盖（RFC 5246 / RFC 5288 / RFC 8422）==
+//   - ClientHello（legacy_version 0x0303、32B 随机、空 session、cipher [0xC02F]、
+//     compression [0]、extensions: supported_groups 0x000a=[x25519 001d]、
+//     signature_algorithms 0x000d=[0804,0401,0403]）。
+//   - TLS 1.2 PRF = P_SHA256（RFC 5246 §5）：
+//       master_secret = PRF(pre_master,"master secret", client_random||server_random)[0..48]
+//       key_block      = PRF(master,"key expansion", server_random||client_random)[0..40]
+//                       = client_write_key(16)+server_write_key(16)+client_write_IV(4)+
+//                         server_write_IV(4)（AEAD 无 MAC，iv=4 字节 salt）。
+//   - Finished：verify_data = PRF(master,"client finished"/"server finished",
+//       SHA256(handshake_msgs))[0..12]；先验 server Finished（转录本精确性证明），
+//     再发 client Finished（TLS 1.2 无 CertificateVerify，服务器身份由 Finished 的
+//     PRF(master_secret) 证明，后续 x509 链校验承接）。
+//   - 记录层 AEAD（RFC 5288 §3）：AAD = seq_num(8 大端)||type(1)||version(2)||
+//     length(2)（version=记录头 0x0303）；nonce = salt(4)||explicit(8)，explicit 随密文
+//     发送（记录体 = explicit_nonce(8)||ct||tag(16)）；gcm.seal/open 复用；
+//     序列号按方向从 0 起（先 Finished=seq0，应用数据=seq1）。
+// 说明：certificate / ServerKeyExchange 验签非本步重点（透传跳过），仅解析
+// ServerKeyExchange 参数（curve_type/named_curve/pubkey）。探针负责编排。
+// ============================================================================
+
+import "./tool.tie"
+import "./hash.tie"
+import "./gcm.tie"
+import "../../std/x25519.tie"
+import "../../std/random.tie"
+import "../../std/net.tie"
+
+namespace tls12 {
+
+func empty() -> table<i64> {
+    return table_new_i64()
+}
+
+// ---- 随机字节 ----
+
+func rand_bytes(n: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(out, rnd.int(0, 255))
+        i = i + 1
+    }
+    return out
+}
+
+// ---- TLS 1.2 PRF（RFC 5246 §5）= P_SHA256 ----
+// PRF(secret,label,seed) =
+//   A(1)=HMAC(secret,label||seed); T(i)=HMAC(secret,A(i)||label||seed);
+//   A(i+1)=HMAC(secret,A(i)); 输出 T(1)||T(2)||... 凑够 length 字节。
+pub func prf(secret: table<i64>, label: string, seed: table<i64>, length: i64) -> table<i64> {
+    var lb = table_new_i64()
+    var i: i64 = 0
+    while i < len(label) {
+        table_push(lb, str_byte(label, i))
+        i = i + 1
+    }
+    var ls = tbt.concat(lb, seed)          // label || seed（A(1) 与 T(i) 公共部分）
+    var out = table_new_i64()
+    var a = thash.hmac(secret, ls)         // A(1)
+    while len(out) < length {
+        var blk = tbt.concat(a, ls)        // A(i) || label || seed
+        var u = thash.hmac(secret, blk)    // T(i)
+        var need = length - len(out)
+        var j: i64 = 0
+        while j < 32 && j < need {
+            table_push(out, u[j])
+            j = j + 1
+        }
+        a = thash.hmac(secret, a)          // A(i+1)
+    }
+    return out
+}
+
+// ---- 握手消息拼装 ----
+
+// 完整握手结构体：msg_type(1) || u24 length || body。
+pub func hs_message(mtype: i64, body: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, mtype)
+    tbt.push_be(out, len(body), 3)
+    var i: i64 = 0
+    while i < len(body) {
+        table_push(out, body[i])
+        i = i + 1
+    }
+    return out
+}
+
+// ---- ClientHello ----
+
+// 构造并返回 (明文记录, 握手结构体, 客户端私钥 hex, 32B 客户端随机数)。
+pub func make_client_hello() -> (table<i64>, table<i64>, string, table<i64>) {
+    var sk_bytes = rand_bytes(32)
+    var sk_hex: string = ""
+    var i: i64 = 0
+    while i < 32 {
+        var b = sk_bytes[i]
+        var hexs = "0123456789abcdef"
+        sk_hex = sk_hex + str_char(hexs, (b >> 4) & 0xF) + str_char(hexs, b & 0xF)
+        i = i + 1
+    }
+    var pub_hex = x25519.keygen(sk_hex)
+    var c_rand = rand_bytes(32)
+
+    // ClientHello body
+    var body = table_new_i64()
+    tbt.push_be(body, 0x0303, 2)        // legacy_version
+    i = 0
+    while i < 32 {
+        table_push(body, c_rand[i]); i = i + 1
+    }
+    table_push(body, 0)                  // session_id 长度（session 为空）
+    tbt.push_be(body, 2, 2)              // cipher_suites 长度
+    tbt.push_be(body, 0xC02F, 2)         // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    table_push(body, 1)                  // compression_methods 长度
+    table_push(body, 0)                  // null compression
+
+    // --- extensions ---
+    var exts = table_new_i64()
+
+    // supported_groups 0x000a: [x25519=0x001d]
+    tbt.push_be(exts, 0x000a, 2)
+    tbt.push_be(exts, 4, 2)
+    tbt.push_be(exts, 2, 2)              // groups 数组长度
+    tbt.push_be(exts, 0x001d, 2)
+
+    // signature_algorithms 0x000d: [0x0804, 0x0401, 0x0403]
+    tbt.push_be(exts, 0x000d, 2)
+    tbt.push_be(exts, 8, 2)
+    tbt.push_be(exts, 6, 2)              // 签名算法表长度
+    tbt.push_be(exts, 0x0804, 2)         // rsa_pss_rsae_sha256
+    tbt.push_be(exts, 0x0401, 2)         // rsa_pkcs1_sha1
+    tbt.push_be(exts, 0x0403, 2)         // rsa_pkcs1_sha256
+
+    tbt.push_be(body, len(exts), 2)      // extensions 总长度
+    i = 0
+    while i < len(exts) {
+        table_push(body, exts[i]); i = i + 1
+    }
+
+    // 握手结构体 → 记录
+    var msg = hs_message(1, body)
+    var rec = table_new_i64()
+    table_push(rec, 0x16); table_push(rec, 0x03); table_push(rec, 0x03)
+    tbt.push_be(rec, len(msg), 2)
+    i = 0
+    while i < len(msg) {
+        table_push(rec, msg[i]); i = i + 1
+    }
+    return (rec, msg, sk_hex, c_rand)
+}
+
+// ---- 字节流读取 ----
+
+// 精确读取 n 字节（循环补齐）；成功返回 true。
+func read_exact(handle: i64, n: i64) -> (bool, table<i64>) {
+    var out = table_new_i64()
+    while len(out) < n {
+        var chunk = net.tcp_recv_bytes(handle, n - len(out))
+        if len(chunk) == 0 {
+            return (false, out)
+        }
+        var i: i64 = 0
+        while i < len(chunk) {
+            table_push(out, chunk[i])
+            i = i + 1
+        }
+    }
+    return (true, out)
+}
+
+// 读取一条 TLS 记录，返回 (外层内容类型, 记录负载)。失败/对端关闭返回 (-1, 空)。
+pub func recv_record(handle: i64) -> (i64, table<i64>) {
+    var (ok, hdr) = read_exact(handle, 5)
+    if ok == false {
+        return (-1, table_new_i64())
+    }
+    var otype: i64 = hdr[0]
+    var rlen: i64 = (hdr[3] << 8) | hdr[4]
+    var (ok2, body) = read_exact(handle, rlen)
+    if ok2 == false {
+        return (-1, table_new_i64())
+    }
+    return (otype, body)
+}
+
+// ---- ServerHello / ServerKeyExchange 解析 ----
+
+// 从握手消息体解析 ServerHello：返回 (版本, 套件, 32B 随机数)。
+func parse_server_hello(mbody: table<i64>) -> (i64, i64, table<i64>) {
+    var e = table_new_i64()
+    if len(mbody) < 35 {
+        return (0, 0, e)
+    }
+    var ver: i64 = tbt.u16_be(mbody, 0)
+    var rnd = tbt.sub(mbody, 2, 32)
+    var sid_len: i64 = mbody[34]
+    var off: i64 = 35 + sid_len
+    if off + 2 > len(mbody) {
+        return (ver, 0, rnd)
+    }
+    var cs: i64 = tbt.u16_be(mbody, off)
+    return (ver, cs, rnd)
+}
+
+// 从握手消息体解析 ServerKeyExchange（ECDHE）：返回 x25519 服务器公钥（32B）。
+// 结构：curve_type(1)==3(named_curve) + named_curve(2) + pubkey_len(1) + pubkey。
+func parse_ecdhe(mbody: table<i64>) -> table<i64> {
+    var e = table_new_i64()
+    if len(mbody) < 8 {
+        return e
+    }
+    var curve_type: i64 = mbody[0]
+    var group: i64 = tbt.u16_be(mbody, 1)
+    var pub_len: i64 = mbody[3]
+    if curve_type == 3 && group == 0x001d && 4 + pub_len <= len(mbody) {
+        return tbt.sub(mbody, 4, pub_len)
+    }
+    return e
+}
+
+// 遍历服务器明文握手消息帧（srv_hs），返回 (版本, 套件, 服务器随机, 服务器 pubkey)。
+pub func parse_server_flight(srv_hs: table<i64>) -> (i64, i64, table<i64>, table<i64>) {
+    var e = table_new_i64()
+    var ver: i64 = 0
+    var cs: i64 = 0
+    var sr = e
+    var spub = e
+    var off: i64 = 0
+    while off + 4 <= len(srv_hs) {
+        var mtype: i64 = srv_hs[off]
+        var mlen: i64 = tbt.u24_be(srv_hs, off + 1)
+        if off + 4 + mlen > len(srv_hs) {
+            break
+        }
+        var mbody = tbt.sub(srv_hs, off + 4, mlen)
+        if mtype == 2 {
+            var (v, c, r) = parse_server_hello(mbody)
+            ver = v; cs = c; sr = r
+        } else if mtype == 12 {          // ServerKeyExchange（0x0c）
+            var p = parse_ecdhe(mbody)
+            if len(p) > 0 {
+                spub = p
+            }
+        }
+        off = off + 4 + mlen
+    }
+    return (ver, cs, sr, spub)
+}
+
+// ---- 密钥派生（RFC 5246 §6.3 / §6.2.3.1）----
+
+// 主密钥：PRF(pre_master,"master secret", client_random||server_random)[0..48]。
+pub func master_secret(pre: table<i64>, c_rand: table<i64>, s_rand: table<i64>) -> table<i64> {
+    return prf(pre, "master secret", tbt.concat(c_rand, s_rand), 48)
+}
+
+// 密钥块：PRF(master,"key expansion", server_random||client_random)[0..40]。
+pub func key_block(master: table<i64>, c_rand: table<i64>, s_rand: table<i64>) -> table<i64> {
+    return prf(master, "key expansion", tbt.concat(s_rand, c_rand), 40)
+}
+
+// ---- 记录层 AEAD（RFC 5288 §3）----
+
+// AAD = seq_num(8 大端) || type(1) || version(2=0x0303) || length(2)。
+// 注：TLS 1.2 AEAD（RFC 5246 §6.2.3.3）的 AAD version 取自 TLSCompressed.version，
+// 即记录头版本 0x0303（经 openssl s_server 实况验证，0x0301 会导致 bad_record_mac）。
+func build_aad(seq: i64, ctype: i64, length: i64) -> table<i64> {
+    var aad = table_new_i64()
+    tbt.push_u64(aad, seq)
+    table_push(aad, ctype)
+    tbt.push_be(aad, 0x0303, 2)
+    tbt.push_u16(aad, length)
+    return aad
+}
+
+// nonce = salt(4) || explicit(8)。
+func nonce(salt: table<i64>, explicit: table<i64>) -> table<i64> {
+    return tbt.concat(salt, explicit)
+}
+
+// 加密并返回完整记录 [ctype,0x03,0x03,len(2), explicit(8)||ct||tag]。
+pub func encrypt_record(salt: table<i64>, key: table<i64>, seq: i64, ctype: i64, content: table<i64>) -> table<i64> {
+    var expl = table_new_i64()
+    tbt.push_u64(expl, seq)                       // 8 字节显式 nonce
+    var aad = build_aad(seq, ctype, len(content))
+    var cip = gcm.seal(tbt.bytes_to_hex(key), nonce(salt, expl), aad, content)
+    var body = table_new_i64()
+    var i: i64 = 0
+    while i < len(expl) {
+        table_push(body, expl[i]); i = i + 1
+    }
+    i = 0
+    while i < len(cip) {
+        table_push(body, cip[i]); i = i + 1
+    }
+    var out = table_new_i64()
+    table_push(out, ctype); table_push(out, 0x03); table_push(out, 0x03)
+    tbt.push_be(out, len(body), 2)
+    i = 0
+    while i < len(body) {
+        table_push(out, body[i]); i = i + 1
+    }
+    return out
+}
+
+// 解密记录负载：body = explicit(8)||ct||tag。返回 (认证通过, 明文)。
+pub func decrypt_record(salt: table<i64>, key: table<i64>, seq: i64, ctype: i64, body: table<i64>) -> (bool, table<i64>) {
+    var f = table_new_i64()
+    if len(body) < 24 {
+        return (false, f)
+    }
+    var expl = tbt.sub(body, 0, 8)
+    var ct = tbt.sub(body, 8, len(body) - 8 - 16)
+    var tag = tbt.sub(body, len(body) - 16, 16)
+    var aad = build_aad(seq, ctype, len(ct))
+    var pt = gcm.open(tbt.bytes_to_hex(key), nonce(salt, expl), aad, ct, tag)
+    if len(pt) == 0 {
+        return (false, f)
+    }
+    return (true, pt)
+}
+
+}   // namespace tls12

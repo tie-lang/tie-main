@@ -1,0 +1,260 @@
+type tie<logic>
+// ============================================================================
+// tls12_hello.tie：TLS 1.2 客户端探针（ext/tls/tls1_2.tie）——p.6.6.1 AC-6。
+// 对 127.0.0.1:19845 的 openssl s_server -tls1_2 完成真实握手 + 应用数据回环：
+//   发 ClientHello（0x0303, cipher 0xC02F）→ 读服务器明文 Flight
+//   （ServerHello/Certificate/ServerKeyExchange/ServerHelloDone）→ 解析 SKE 的
+//   x25519 公钥 → 派生 pre_master/master/key_block → 发 ClientKeyExchange
+//   （客户端临时公钥）→ 发 CCS → 发 client Finished（client seq 0）→ 收 CCS →
+//   解密 server Finished（server seq 0）并校验 verify_data（PRF(master,
+//   "server finished", SHA256(CH..SHD..CKE))[0..12]）→ 发应用数据
+//   "tls12-test\n"（client seq 1）→ 读取 -rev 反显回环断言收到 "tset-21slt\n"。
+// TLS 1.2 无 CertificateVerify，服务器身份由 Finished 的 PRF(master_secret) 证明；
+// 验签非本步重点（透传跳过），x509 链校验由 AC-5 承接。
+// 记录层 AEAD（RFC 5246）：AAD=seq||type||version(0x0303)||length；
+// nonce = salt(4)||explicit(8)（explicit 随密文发送）。
+// 期望：全部 PASS + "tls12 握手回环探针全部通过"，退出码 0。
+// 前置：openssl s_server -accept 19845 -tls1_2 -cert c.pem -key k.pem -rev
+// ============================================================================
+import "../../ext/tls/tool.tie" as tbt
+import "../../ext/tls/hash.tie" as thash
+import "../../ext/tls/gcm.tie" as gcm
+import "../../ext/tls/tls1_2.tie" as tls12
+import "../../std/x25519.tie" as x25519
+import "../../std/net.tie" as net
+
+func bh(h: string) -> table<i64> {
+    return tbt.hex_to_bytes(h)
+}
+
+// 字节表内是否含子序列 pat（golden 断言用）。
+func contains_bytes(t: table<i64>, pat: table<i64>) -> bool {
+    if len(pat) == 0 {
+        return true
+    }
+    var i: i64 = 0
+    while i + len(pat) <= len(t) {
+        var m = true
+        var j: i64 = 0
+        while j < len(pat) {
+            if t[i + j] != pat[j] {
+                m = false
+            }
+            j = j + 1
+        }
+        if m {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func fail(msg: string) {
+    println("FAIL " + msg)
+    exit(1)
+}
+
+// ServerHelloDone（type 14）是否已完整出现于服务器明文握手缓冲。
+func has_server_hello_done(s: table<i64>) -> bool {
+    var off: i64 = 0
+    while off + 4 <= len(s) {
+        var mtype: i64 = s[off]
+        var mlen: i64 = tbt.u24_be(s, off + 1)
+        if mtype == 14 {
+            return true
+        }
+        if off + 4 + mlen > len(s) {
+            return false
+        }
+        off = off + 4 + mlen
+    }
+    return false
+}
+
+func main() {
+    // ---- 1) ClientHello golden ----
+    var (rec, ch_msg, sk_hex, c_rand) = tls12.make_client_hello()
+    if rec[0] == 0x16 && rec[1] == 0x03 && rec[2] == 0x03 {
+        println("PASS clienthello_header_160303")
+    } else {
+        fail("clienthello_header_160303")
+    }
+    if contains_bytes(ch_msg, bh("c02f")) {
+        println("PASS clienthello_cipher_c02f")
+    } else {
+        fail("clienthello_cipher_c02f")
+    }
+    if contains_bytes(ch_msg, bh("000a")) {
+        println("PASS clienthello_ext_supported_groups")
+    } else {
+        fail("clienthello_ext_supported_groups")
+    }
+    if contains_bytes(ch_msg, bh("000d")) {
+        println("PASS clienthello_ext_signature_algorithms")
+    } else {
+        fail("clienthello_ext_signature_algorithms")
+    }
+
+    // ---- 2) 连接 + 发 ClientHello ----
+    var h = net.tcp_connect("127.0.0.1", 19845)
+    if h < 0 {
+        fail("tcp_connect")
+    }
+    net.tcp_send_bytes(h, rec)
+
+    // ---- 3) 读取服务器明文 Flight（ServerHello..ServerHelloDone，无 CCS）----
+    var srv_hs = table_new_i64()
+    var guard: i64 = 0
+    while has_server_hello_done(srv_hs) == false && guard < 40 {
+        var (otype, body) = tls12.recv_record(h)
+        if otype < 0 {
+            fail("flight recv closed early")
+        }
+        if otype == 22 {
+            var k: i64 = 0
+            while k < len(body) {
+                table_push(srv_hs, body[k])
+                k = k + 1
+            }
+        } else {
+            fail("unexpected record type during flight " + to_string(otype))
+        }
+        guard = guard + 1
+    }
+    if has_server_hello_done(srv_hs) == false {
+        fail("no ServerHelloDone received")
+    }
+
+    // ---- 4) 解析 Flight 并派生密钥 ----
+    var (ver, cs, s_rand, spub) = tls12.parse_server_flight(srv_hs)
+    if cs == 0xC02F {
+        println("PASS server_hello_cipher_c02f")
+    } else {
+        fail("server_hello_cipher got " + to_string(cs))
+    }
+    if len(s_rand) == 32 {
+        println("PASS server_hello_random")
+    } else {
+        fail("server_hello_random len " + to_string(len(s_rand)))
+    }
+    if len(spub) == 32 {
+        println("PASS server_ecdhe_pubkey")
+    } else {
+        fail("server_ecdhe_pubkey len " + to_string(len(spub)))
+    }
+
+    var pre = tbt.hex_to_bytes(x25519.dh(sk_hex, tbt.bytes_to_hex(spub)))
+    if len(pre) != 32 {
+        fail("pre_master len != 32")
+    }
+    var master = tls12.master_secret(pre, c_rand, s_rand)
+    if len(master) != 48 {
+        fail("master_secret len != 48")
+    }
+    var kb = tls12.key_block(master, c_rand, s_rand)
+    var c_key = tbt.sub(kb, 0, 16)
+    var s_key = tbt.sub(kb, 16, 16)
+    var c_salt = tbt.sub(kb, 32, 4)
+    var s_salt = tbt.sub(kb, 36, 4)
+
+    // ---- 5) 发 ClientKeyExchange + CCS + client Finished ----
+    // CKE（ECDHE）：opaque dh_Yc<1..2^8-1> = [0x20] || 客户端 x25519 公钥（32B）。
+    var cp = tbt.hex_to_bytes(x25519.keygen(sk_hex))
+    var cke_body = table_new_i64()
+    table_push(cke_body, len(cp))               // 0x20
+    var k2: i64 = 0
+    while k2 < len(cp) {
+        table_push(cke_body, cp[k2])
+        k2 = k2 + 1
+    }
+    var cke_frame = tls12.hs_message(16, cke_body)
+    // 明文记录（ClientKeyExchange 在 CCS 之前发送）
+    var cke_rec = table_new_i64()
+    table_push(cke_rec, 0x16); table_push(cke_rec, 0x03); table_push(cke_rec, 0x03)
+    tbt.push_be(cke_rec, len(cke_frame), 2)
+    var k3: i64 = 0
+    while k3 < len(cke_frame) {
+        table_push(cke_rec, cke_frame[k3])
+        k3 = k3 + 1
+    }
+    net.tcp_send_bytes(h, cke_rec)
+
+    var ccs = bh("140303000101")                // ChangeCipherSpec 明文记录
+    net.tcp_send_bytes(h, ccs)
+
+    // transcript = ClientHello..ServerHelloDone + ClientKeyExchange（不含 CCS/Finished）
+    var transcript = tbt.concat(ch_msg, srv_hs)
+    transcript = tbt.concat(transcript, cke_frame)
+    var cfin = tls12.prf(master, "client finished", thash.sha256(transcript), 12)
+    var cfin_frame = tls12.hs_message(20, cfin)
+    net.tcp_send_bytes(h, tls12.encrypt_record(c_salt, c_key, 0, 0x16, cfin_frame))
+
+    // ---- 6) 收 CCS + 解密校验 server Finished（server_write seq 0）----
+    var ss_seq: i64 = 0
+    var (otype, body) = tls12.recv_record(h)    // ChangeCipherSpec（明文 type 20）
+    if otype != 20 {
+        fail("expected CCS (20) got " + to_string(otype))
+    }
+    var (otype2, body2) = tls12.recv_record(h)  // Finished（密文 type 22）
+    if otype2 != 0x16 {
+        fail("expected server Finished (22) got " + to_string(otype2))
+    }
+    var (ok, pt_fin) = tls12.decrypt_record(s_salt, s_key, ss_seq, otype2, body2)
+    ss_seq = ss_seq + 1
+    if ok == false {
+        fail("server Finished decrypt auth failed")
+    }
+    var serv_fin = tbt.sub(pt_fin, 4, 12)
+    // 服务器 Finished 转录本 = CH..ServerHelloDone + ClientKeyExchange + client Finished
+    var exp_fin = tls12.prf(master, "server finished",
+        thash.sha256(tbt.concat(transcript, cfin_frame)), 12)
+    if tbt.eq(serv_fin, exp_fin) {
+        println("PASS server Finished verify_data")
+    } else {
+        fail("server Finished verify_data mismatch")
+    }
+
+    // ---- 7) 应用数据回环 ----
+    // client Finished 已是 client seq0；应用数据用 client seq 1。
+    var app = bh("746c7331322d746573740a")       // "tls12-test\n"
+    var expected = bh("747365742d3231736c740a")  // 反显 = "tset-21slt\n"
+    net.tcp_send_bytes(h, tls12.encrypt_record(c_salt, c_key, 1, 0x17, app))
+
+    var echo_buf = table_new_i64()
+    var got = false
+    var g2: i64 = 0
+    while g2 < 20 && got == false {
+        var (eotype, ebody) = tls12.recv_record(h)
+        if eotype < 0 {
+            break
+        }
+        var (eok, ept) = tls12.decrypt_record(s_salt, s_key, ss_seq, eotype, ebody)
+        ss_seq = ss_seq + 1
+        if eok == false {
+            fail("echo record auth failed seq=" + to_string(ss_seq - 1))
+        }
+        if eotype == 23 {
+            var t2: i64 = 0
+            while t2 < len(ept) {
+                table_push(echo_buf, ept[t2])
+                t2 = t2 + 1
+            }
+            if tbt.eq(echo_buf, expected) {
+                got = true
+            }
+        } else if eotype == 21 {
+            break   // alert（close_notify）
+        }
+        g2 = g2 + 1
+    }
+
+    if got == true {
+        println("PASS app echo roundtrip (tls12-test reversed)")
+    } else {
+        fail("app echo mismatch got=" + tbt.bytes_to_hex(echo_buf))
+    }
+
+    net.close(h)
+    println("tls12 握手回环探针全部通过")
+}
