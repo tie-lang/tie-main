@@ -1,0 +1,74 @@
+type tie<logic>
+// p.6.5.6 验收：精确栈图拍板「任务 env 即根」+ 运行中任务根保护
+// 拍板内容（设计 §9 待决项 3 定案，落地为文档 + 机制）：
+//   · tie 闭包 env 为编译期静态捕获（副本），无运行时枚举——精确根扫描来源
+//     定义 = 任务闭包 env 引用根集合（任务内 add_root 显式登记 + 写屏障维护）
+//   · GC sweep 仅在「pending==0 && active==0」无任务窗口执行 → 任务运行期间
+//     其分配且未显式登根的对象也天然受保护（运行中任务根保护）
+// 断言：
+//   A. 任务内分配未登根对象 obj + busy → 任务运行期间 obj 持续存活
+//      （active>0 禁止 sweep；8 任务并发窗口内确定性成立）
+//   B. 任务全部结束（无任务窗口）后：同步 major 将未登根对象回收
+// 期望：PASS exit 0
+
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_ok_run: table<i64> = []
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+
+    var i: i64 = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            var obj = trm_lite_tgc.alloc(16)   // 未登根
+            var k: i64 = 0
+            var alive: i64 = 1
+            while k < 400000 {
+                // 运行中：sweep 被禁止（有 active 任务），对象必须存活
+                if trm_lite_tgc.obj_alive(obj) != true {
+                    alive = 0
+                }
+                k = k + 1
+            }
+            table_push(g_ok_run, alive)
+            return obj
+        })
+        i = i + 1
+    }
+    var ran = tl_runtime_ctx.ctx_drain()
+
+    var run_ok: i64 = 0
+    i = 0
+    while i < len(g_ok_run) {
+        if g_ok_run[i] == 1 {
+            run_ok = run_ok + 1
+        }
+        i = i + 1
+    }
+    var live_mid = tl_runtime_ctx.ctx_live_objs()
+    println("A: ran=" + to_string(ran) + " run_ok=" + to_string(run_ok) + "/8 live_mid=" + to_string(live_mid))
+
+    // B：任务全部结束——未登根对象在无任务窗口被后台/同步回收（无泄漏）
+    var freed = tl_runtime_ctx.ctx_gc_major()
+    var live_end = tl_runtime_ctx.ctx_live_objs()
+    println("B: major_freed=" + to_string(freed) + " live_end=" + to_string(live_end))
+
+    var ok: i64 = 1
+    if ran != 8 || run_ok != 8 {
+        ok = 0
+    }
+    // 运行中（active>0）对象全部存活（run_ok=8 已证）；任务结束后 live 收敛
+    // 到 0 ——未登根对象全部退场，无泄漏。
+    if live_mid != 0 || live_end != 0 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    println("done")
+}
