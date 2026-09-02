@@ -1,0 +1,101 @@
+type tie<logic>
+
+// std_net_bytes 验收（p.6.6.1 AC-1）：字节级网络 IO 全字节往返
+// ============================================================
+// 复杂形态双任务回环（import trm-lite 提供多线程并发执行）：
+//   - 服务端任务：tcp_listen → tcp_accept → tcp_recv_bytes 收满 256 字节
+//   - 客户端任务：tcp_connect（带重试防时序）→ tcp_send_bytes 发送 [0..255]
+// 断言：ran==2 / g_ok==0（无失败） / 收到 256 字节且逐字节 == 发送值。
+// 数据平面验证：全部字节值 0..255 经 recv_bytes/send_bytes 往返无损
+// （tie 字符串不可承载 ≥0x80，二进制必须走字节表——本探针即其地基证明）。
+// 期望输出：PASS / done / exit 0
+import "../../std/net.tie"
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+using net;
+
+var g_recv: table<i64> = []   // 服务端收到的全部字节
+var g_ok: i64 = 0             // 0=正常；非 0=失败原因标记
+
+// 服务端任务：收满 256 字节
+func server_task(pport: i64) -> i64 {
+    var srv = net.tcp_listen(pport)
+    if srv < 0 {
+        g_ok = 1
+        return -1
+    }
+    var conn = net.tcp_accept(srv)
+    if conn < 0 {
+        g_ok = 2
+        return -1
+    }
+    while len(g_recv) < 256 {
+        var chunk = net.tcp_recv_bytes(conn, 64)
+        if len(chunk) == 0 {
+            break
+        }
+        var i: i64 = 0
+        while i < len(chunk) {
+            table_push(g_recv, chunk[i])
+            i = i + 1
+        }
+    }
+    net.close(conn)
+    net.close(srv)
+    return len(g_recv)
+}
+
+// 客户端任务：连接后发送 [0..255]（重试防服务端未就绪时序）
+func client_task(pport: i64) -> i64 {
+    var b = table_new_i64()
+    var i: i64 = 0
+    while i < 256 {
+        table_push(b, i)
+        i = i + 1
+    }
+    var conn: i64 = -1
+    var attempt: i64 = 0
+    while attempt < 200 && conn < 0 {
+        conn = net.tcp_connect("127.0.0.1", pport)
+        attempt = attempt + 1
+    }
+    if conn < 0 {
+        g_ok = 3
+        return -1
+    }
+    var n = net.tcp_send_bytes(conn, b)
+    net.close(conn)
+    return n
+}
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(2)
+    tl_runtime_ctx.ctx_spawn(func() -> i64 { return server_task(19843) })
+    tl_runtime_ctx.ctx_spawn(func() -> i64 { return client_task(19843) })
+    var ran = tl_runtime_ctx.ctx_drain()
+
+    var ok: i64 = 1
+    if ran != 2 {
+        ok = 0
+    }
+    if g_ok != 0 {
+        ok = 0
+    }
+    if len(g_recv) != 256 {
+        ok = 0
+    }
+    var i: i64 = 0
+    while i < 256 {
+        if g_recv[i] != i {
+            ok = 0
+        }
+        i = i + 1
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL ran=" + to_string(ran) + " g_ok=" + to_string(g_ok) + " n=" + to_string(len(g_recv)))
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    println("done")
+}

@@ -37,9 +37,20 @@ namespace net {
     }
 
     // 接收数据（最多 max 字节，阻塞），返回字符串；连接关闭返回空串。
-    // 注（p.6.4.5）：本串版仅 ASCII 安全；二进制传输请用底层 net_tcp_recv_bytes。
+    // 注（p.6.4.5）：本串版仅 ASCII 安全；二进制传输请用 tcp_recv_bytes。
     pub func tcp_recv(handle: i64, max: i64) -> string {
         return net_tcp_recv(handle, max)
+    }
+
+    // 发送字节表（0..255 原始二进制数据），返回发送字节数（失败 -1）。
+    // 数据平面协议（TLS/tink 帧等）统一走字节表，tie 字符串不能承载 ≥0x80。
+    pub func tcp_send_bytes(handle: i64, data: table<i64>) -> i64 {
+        return net_tcp_send_bytes(handle, data)
+    }
+
+    // 接收原始字节（最多 max 字节，阻塞），返回字节表；连接关闭返回空表。
+    pub func tcp_recv_bytes(handle: i64, max: i64) -> table<i64> {
+        return net_tcp_recv_bytes(handle, max)
     }
 
     // ---------- UDP ----------
