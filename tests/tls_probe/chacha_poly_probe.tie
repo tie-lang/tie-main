@@ -1,0 +1,92 @@
+type tie<logic>
+// ============================================================================
+// chacha_poly_probe.tie：ChaCha20-Poly1305 AEAD（ext/tls/aead.tie）权威向量探针。
+// 向量来源：RFC 8439 §2.8.2 官方 AEAD 测试向量（WebFetch 自 rfc-editor.org 核对）。
+//   key=808182…9f  nonce=070000004041424344454647  aad=50515253c0c1c2c3c4c5c6c7
+//   明文 114 字节 "Ladies and Gentlemen of the class of '99: …"；密文 114 字节；
+//   tag=1ae10b594f09e26a7e902ecbd0600691。
+// 断言：
+//   1) seal 输出 = ct||tag 与官方向量逐字节一致（ct 与 tag 分开核对 + 整段一致）
+//   2) open 往返 = 原始明文
+//   3) 篡改 ct / tag / aad 任一 → open 返回空表（认证失败）
+//   4) aead.poly1305 底层探针核对 RFC 8439 §2.5.2 标准向量
+//      key=85d6be78… msg="Cryptographic Forum Research Group" tag=a8061dc1305136c6c22b8baf0c0127a9
+// 期望输出：全部 PASS + "chacha_poly 探针全部通过"。
+// ============================================================================
+import "../../ext/tls/aead.tie"
+import "../../ext/tls/tool.tie"
+
+// hex 字符串 → 字节表。
+func bh(h: string) -> table<i64> {
+    return tbt.hex_to_bytes(h)
+}
+
+// ASCII 字符串 → 字节表（逐字节 str_byte，ASCII 下字节==码点）。
+func ascii_bytes(s: string) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < len(s) {
+        table_push(out, str_byte(s, i))
+        i = i + 1
+    }
+    return out
+}
+
+func check_hex(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        println("  got=" + got)
+        println("  want=" + want)
+        exit(1)
+    }
+}
+
+func check_fail(name: string, ret: table<i64>) {
+    if len(ret) == 0 {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " 实际返回了内容")
+        exit(1)
+    }
+}
+
+func main() {
+    // ---- RFC 8439 §2.8.2 官方 AEAD 向量 ----
+    var key = "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+    var nonce = bh("070000004041424344454647")
+    var aad = bh("50515253c0c1c2c3c4c5c6c7")
+    var pt = "4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e"
+    var ct = "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b6116"
+    var tag = "1ae10b594f09e26a7e902ecbd0600691"
+
+    // 1) seal = ct||tag（整段一致 = 密钥流 XOR + Poly1305 标签两部全对）
+    check_hex("rfc8439_seal", tbt.bytes_to_hex(aead.seal(key, nonce, aad, bh(pt))), ct + tag)
+    // 分开核对 ct 与 tag（前 114 字节密文、后 16 字节标签）
+    var sealed = aead.seal(key, nonce, aad, bh(pt))
+    check_hex("rfc8439_ct_bytes", tbt.bytes_to_hex(tbt.sub(sealed, 0, 114)), ct)
+    check_hex("rfc8439_tag_bytes", tbt.bytes_to_hex(tbt.sub(sealed, 114, 16)), tag)
+
+    // 2) open 往返 = 明文
+    check_hex("rfc8439_open", tbt.bytes_to_hex(aead.open(key, nonce, aad, bh(ct), bh(tag))), pt)
+
+    // 3) 篡改负例：任一字节改动 → open 空表
+    var bad_ct = bh(ct)
+    bad_ct[0] = bad_ct[0] ^ 1
+    check_fail("tamper_ct", aead.open(key, nonce, aad, bad_ct, bh(tag)))
+    var bad_tag = bh(tag)
+    bad_tag[15] = bad_tag[15] ^ 1
+    check_fail("tamper_tag", aead.open(key, nonce, aad, bh(ct), bad_tag))
+    var bad_aad = tbt.concat(aad, bh(""))
+    bad_aad[0] = bad_aad[0] ^ 1
+    check_fail("tamper_aad", aead.open(key, nonce, bad_aad, bh(ct), bh(tag)))
+
+    // 4) aead.poly1305 底层探针：RFC 8439 §2.5.2 标准向量
+    var pkey = bh("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
+    check_hex("poly1305_rfc252",
+        tbt.bytes_to_hex(aead.poly1305(pkey, ascii_bytes("Cryptographic Forum Research Group"))),
+        "a8061dc1305136c6c22b8baf0c0127a9")
+
+    println("chacha_poly 探针全部通过")
+}
