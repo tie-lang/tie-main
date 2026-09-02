@@ -147,7 +147,12 @@
   pending/active 原子视图无最后-worker 竞态；ctx_ws_demo 验收：dist_tid4=4（真实
   并行）、数值全对、子任务 16、溢出窃取 stolen>0、P=4 快于 P=1）
 
-- [ ] p.6.5.3 并发三色 GC：标记栈/写屏障 + 后台回收器 + 精确根扫描（无栈图降级保守根）
+- [x] p.6.5.3 并发三色 GC：标记栈/写屏障 + 后台回收器 + 精确根扫描（无栈图降级保守根）
+  （落地 2026-09-02：gc_tri 重写——扁平托管对象图（对象/边/根表）+ 三色标记栈 +
+  Dijkstra 写屏障（set_ref 黑→白 置灰压栈）+ 根写屏障（cycle 中 add_root 置灰）；
+  后台回收器线程与 worker 真并发推进（bg_step 轮次状态机）；sweep 仅无任务窗口
+  执行；同步收集 gc_collect_sync 供断言；ctx_gc_demo 验收：liveA=16/freedA=8 精确、
+  steps=16（后台推进）、sync_freedB=0（写屏障交错零误回收）、exit 0）
 
 - [ ] p.6.5.4 分代 + 整理：新生代/老年代 + mark-compact（老年代）
 
@@ -219,6 +224,32 @@
   - 计划文档：docs/superpowers/plans/2026-09-01-p661-tls-client.md（p.6.6.1 实施计划）
 
 ### 已落地修复（2026-08-31 起，preview.5 发布后）
+
+## [新增] 并发三色 GC——标记栈/写屏障 + 后台回收器（2026-09-02）（p.6.5.3）
+
+p.6.5 第三片：复杂形态从「分配登记占位」升级为真并发三色回收：
+- trm-lite `core/gc/gc_tri.tie`（`trm_lite_tgc`）重写：
+  * **扁平托管对象图**（对象表 size/alive/color + 扁平边表 from/to/alive + 根表
+    g_c_roots）——tie 可表达的托管堆模型
+  * **三色标记栈**：0 白 / 1 灰 / 2 黑；标记步弹灰 → 变黑 → 白子置灰压栈
+  * **Dijkstra 写屏障**：set_ref 写入「黑→白」引用时目标置灰压栈（不变量
+    「黑不指向白」，并发标记不漏标）；**根写屏障**：后台 cycle 进行中新 add_root
+    亦置灰（否则首轮 begin 早于根登记时晚到的根会被误收——实机回归发现并修复）
+  * **后台回收器**：drain 起 worker×P + GC×1；GC 线程与任务真并发推进标记
+    （bg_step 轮次状态机：首调 begin（全白重置 + 根置灰）→ 持续标记 →
+    无任务窗口收敛 sweep → 全白重置下一轮）；swep 仅在 pending==0&&active==0
+    窗口（无写屏障）执行 ⇒ 无并发写
+  * 同步原语抽宿主 `core/mnn/tl_sync.tie`：tie extern 声明**按文件作用域且跨文件
+    不可重名**（实测未声明→「未定义的函数」、双声明→「重复定义」），集中单一声明
+    CS/CV/线程/Sleep，sched/gc 均 import 复用
+  * 名称规避：gc_tri 全局改 g_c_ 前缀（如 g_c_roots）——程序链旧 trm_lite.a 时
+    归档全局（如旧 gc 的 g_roots）亦成定义，撞名即 LNK2005
+- tl_runtime_ctx 接线：ctx_collect 语义 = 已回收对象总数；新增 ctx_live_objs /
+  ctx_gc_steps / ctx_gc_rounds 观察量；ctx_version 0.3.0
+- 验收 `tests/_p651_probe/ctx_gc_demo.tie`：A 轮（8 任务根+子+垃圾）live=16/freed=8
+  精确、steps=16（后台真推进）；B 轮（黑→白 交叉改写 200 次×4 任务）后同步收集
+  freed=0（并发写屏障+标记交错零误回收）；PASS exit 0
+- 回归：ctx_ws_demo / ctx_shell_demo / spawn_demo（简单形态）零回归
 
 ## [修复] 语句/表达式条件归一化 i1——`while 1` 等整型条件 IR 校验失败（2026-09-02）（tiec 缺陷）
 

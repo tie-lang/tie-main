@@ -1,0 +1,79 @@
+type tie<logic>
+// p.6.5.3 验收：并发三色 GC（复杂形态后台回收器）
+// 断言：
+//   A 轮（并发核心）：8 任务各建「根对象 + 子对象(根可达，不显式登根) + 垃圾对象」；
+//     后台回收器与 worker 真并发标记推进；drain 后 16 活 / 8 回收精确
+//   B 轮（写屏障压力）：4 任务对各自主对象交叉 set_ref 改写（黑→白 参考写入），
+//     drain 后全登根 + 同步收集 → freed 必须 0（无并发漏标 / 无误回收）
+//   后台真实性：ctx_gc_steps>0、ctx_gc_rounds>=1（后台线程确实并发推进了标记）
+// 期望：liveA=16 freedA=8 / freedB=0 / steps>0 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+
+    // ===== A 轮：并发核心（根 + 子链 + 垃圾）=====
+    tl_runtime_ctx.ctx_set_workers(4)
+    var i: i64 = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            // 根对象（显式登根）
+            var r = trm_lite_tgc.alloc(16)
+            trm_lite_tgc.add_root(r)
+            // 子对象（经根引用可达，不显式登根 → 依赖标记）
+            var s = trm_lite_tgc.alloc(16)
+            trm_lite_tgc.set_ref(r, 0, s)
+            // 垃圾对象（无引用、无根 → 应收）
+            var g1 = trm_lite_tgc.alloc(16)
+            return r
+        })
+        i = i + 1
+    }
+    var ranA = tl_runtime_ctx.ctx_drain()
+    var liveA = trm_lite_tgc.live_count()
+    var freedA = tl_runtime_ctx.ctx_collect()
+    var allocA = trm_lite_tgc.alloc_count()
+    var steps = tl_runtime_ctx.ctx_gc_steps()
+    var rounds = tl_runtime_ctx.ctx_gc_rounds()
+
+    // ===== B 轮：写屏障压力（并发交错改写引用 + 后台标记）=====
+    tl_runtime_ctx.ctx_set_workers(4)
+    i = 0
+    while i < 4 {
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            var a = trm_lite_tgc.alloc(16)
+            trm_lite_tgc.add_root(a)
+            var b = trm_lite_tgc.alloc(16)
+            trm_lite_tgc.add_root(b)
+            var j: i64 = 0
+            while j < 200 {
+                trm_lite_tgc.set_ref(a, 0, b)  // 黑→黑（无屏障）
+                var t = trm_lite_tgc.alloc(16) // 白对象
+                trm_lite_tgc.set_ref(a, 0, t)  // 黑→白：写屏障须置灰保活
+                j = j + 1
+            }
+            trm_lite_tgc.set_ref(a, 0, b)      // 回收后 b 仍在根
+            return a
+        })
+        i = i + 1
+    }
+    var ranB = tl_runtime_ctx.ctx_drain()
+    // drain 后根表已含 b；最后 set_ref(a,0,b)。同步收一次：应无任何可达对象被误回收
+    var sync_freed = trm_lite_tgc.gc_collect_sync()
+
+    println("ranA=" + to_string(ranA) + " allocA=" + to_string(allocA) + " liveA=" + to_string(liveA) + " freedA=" + to_string(freedA))
+    println("steps=" + to_string(steps) + " rounds=" + to_string(rounds) + " ranB=" + to_string(ranB) + " sync_freedB=" + to_string(sync_freed))
+    var ok: i64 = 1
+    if ranA != 8 { ok = 0 }
+    if allocA != 24 || liveA != 16 || freedA != 8 { ok = 0 }
+    if steps <= 0 || rounds < 1 { ok = 0 }
+    if ranB != 4 || sync_freed != 0 { ok = 0 }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    trm_lite_tgc.shutdown()
+    tl_runtime_ctx.ctx_shutdown()
+    println("done")
+}
