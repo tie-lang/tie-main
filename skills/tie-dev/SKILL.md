@@ -1,8 +1,9 @@
----
+***
+
 name: tie-dev
 description: 用 tie 语言开发软件——tie 语法与类型系统、文件角色与头声明、编译运行（tiec）、数据互联（tink/zd）、表运算、标准库、包管理器、工程化工作流。在 F:\Projects\tie 仓库或任何 tie 项目中编写 .tie 应用代码时加载。
 whenToUse: 编写 tie 源文件（.tie）、编译运行 tie 程序、使用 tink 帧协议/zd 序列化、使用标准库（std/）、组织多文件项目、使用包管理器（pkg/）时使用。
----
+-----------------------------------------------------------------------------------------------
 
 # tie 开发技能（用 tie 写软件）
 
@@ -10,7 +11,7 @@ tie：静态类型、四段式编译（预处理→前端→中端→后端 LLVM
 目标：全领域通用——写逻辑、写界面、写数据库、当数据交换格式。
 编译器 **tiec 由 tie 100% 自写**（自举闭环，0-Rust）；发布包内置精简 LLVM 工具链，解压即用。
 本文档是**应用开发者向**：用 tie 写程序，不涉及编译器内部开发。
-并发（preview.5+）：内置 actor 原语 + channel 消息通道（p.6.5.7/6.5.8）；复杂形态
+并发（preview\.5+）：内置 actor 原语 + channel 消息通道（p.6.5.7/6.5.8）；复杂形态
 `import trm-lite`（work-stealing 调度 + 并发三色 GC 分代/整理 + mailbox，p.6.5.x 完整落地）。
 
 ## 1. 快速开始
@@ -413,7 +414,7 @@ intern.intern("abc")                     // 字符串 → 稳定整数 id（std/
 **path**：`join/basename/dirname/abs/normalize/ext/stem/cwd`。
 **process**：`exec_code(cmd)->i32`、`exec_output(cmd)->string`。
 **net**：`tcp_listen/tcp_accept/tcp_connect/tcp_send/tcp_recv`、`udp_bind/udp_send/udp_recv`、`close`。
-**http_server**：`listen/accept`、`read_request(conn)->Request`、`header(req,name)`、`send(conn,status,ctype,body)`、`close`。
+**http\_server**：`listen/accept`、`read_request(conn)->Request`、`header(req,name)`、`send(conn,status,ctype,body)`、`close`。
 **http**：`get(url)->Result<string,string>`、`get_file(url,path)->bool`。
 **json**：`parse(s)->i64`（句柄）、`parse_file->Result<i64,string>`、`to_str`、`type_of/is_null/is_bool/...`、`int_val/float_val/str_val`、`arr_len/arr_at/obj_keys/obj_get`。
 **csv**：`read(path)->table<string>`、`cells(line,sep)`、`write(path,lines)`。
@@ -433,36 +434,61 @@ intern.intern("abc")                     // 字符串 → 稳定整数 id（std/
 
 ### 11.2 ext 扩展库 API（`import "../../ext/xxx.tie"`）
 
-- **aes**：`encrypt_ecb/decrypt_ecb(key,block)`、`encrypt_cbc/decrypt_cbc(key,iv,msg)`（hex）。
-- **chacha20（chacha）**：`chacha20_encrypt(key,nonce,counter,msg)`（hex，加解密同函数）。
-- **ascon_aead**：`encrypt/decrypt(key,nonce,assoc,msg)`（hex）。
-- **argon2**：`argon2id(passwd_hex,salt_hex,t,m_kib,p,outlen)`。
-- **scrypt**：`scrypt(passwd_hex,salt_hex,n,r,p,dklen)`。
-- **ecdsa**：`keygen/sign(key,hash)/verify(key,hash,sig)`（P-256，hex，extern）。
-- **compress**：`lz77/lz77_decode`、`lzw/lzw_decode`（序列串）。
-- **codec/brotli|lz4|zstd**：各 `compress(s)/decompress(seq_s)/to_bytes/from_bytes`；**codec/jpeg**：`encode_pixels/decode_pixels(px,w,h)`。
-- **ml**：`svm_train/svm_predict`、`tree_train/tree_predict`（线性 SVM + 决策树）。
-- **vecsearch（vecsearch/flat）**：`l2/cosine`、`flat_add/remove/get/search`、`flat_size`。
-- **config（cfg）**：`parse_kv/parse_ini/parse_file`、`get/get_int/get_bool/has`。
-- **registry**：`set_registry/get_registry`、`pkg_url/index_url`（M6 包台账）。
-- **cache**：`set_root/get_root`、`pkg_path/hit`（包缓存）。
-- **log**：`error/warn/info/debug`（+`_f` 模板版）、`set_level/level`、`lang/set_lang/set_fallbacks`、`register/register_all/t`、`log.error.no_file`。
-- **test**：`reset/group/expect/expect_eq<T>/expect_float_eq`、`pass_count/fail_count/summary/exit_code/done`。
-- **bench**：`reset/start/end/elapsed/lap/summary`。
-- **pretty**：`render/simple(headers,rows)`、`kv(key,value,width)`（文本表格）。
-- **tui**：`line/hline/title/progress/box/pad/pad_center/indent`（纯文本装饰）。
+* **aes**：`encrypt_ecb/decrypt_ecb(key,block)`、`encrypt_cbc/decrypt_cbc(key,iv,msg)`（hex）。
+
+* **chacha20（chacha）**：`chacha20_encrypt(key,nonce,counter,msg)`（hex，加解密同函数）。
+
+* **ascon\_aead**：`encrypt/decrypt(key,nonce,assoc,msg)`（hex）。
+
+* **argon2**：`argon2id(passwd_hex,salt_hex,t,m_kib,p,outlen)`。
+
+* **scrypt**：`scrypt(passwd_hex,salt_hex,n,r,p,dklen)`。
+
+* **ecdsa**：`keygen/sign(key,hash)/verify(key,hash,sig)`（P-256，hex，extern）。
+
+* **compress**：`lz77/lz77_decode`、`lzw/lzw_decode`（序列串）。
+
+* **codec/brotli|lz4|zstd**：各 `compress(s)/decompress(seq_s)/to_bytes/from_bytes`；**codec/jpeg**：`encode_pixels/decode_pixels(px,w,h)`。
+
+* **ml**：`svm_train/svm_predict`、`tree_train/tree_predict`（线性 SVM + 决策树）。
+
+* **vecsearch（vecsearch/flat）**：`l2/cosine`、`flat_add/remove/get/search`、`flat_size`。
+
+* **config（cfg）**：`parse_kv/parse_ini/parse_file`、`get/get_int/get_bool/has`。
+
+* **registry**：`set_registry/get_registry`、`pkg_url/index_url`（M6 包台账）。
+
+* **cache**：`set_root/get_root`、`pkg_path/hit`（包缓存）。
+
+* **log**：`error/warn/info/debug`（+`_f` 模板版）、`set_level/level`、`lang/set_lang/set_fallbacks`、`register/register_all/t`、`log.error.no_file`。
+
+* **test**：`reset/group/expect/expect_eq<T>/expect_float_eq`、`pass_count/fail_count/summary/exit_code/done`。
+
+* **bench**：`reset/start/end/elapsed/lap/summary`。
+
+* **pretty**：`render/simple(headers,rows)`、`kv(key,value,width)`（文本表格）。
+
+* **tui**：`line/hline/title/progress/box/pad/pad_center/indent`（纯文本装饰）。
 
 ### 11.3 rdu 嵌入式基础层 API（无栈纪律：纯标量，`import "../../rdu/xxx.tie"`）
 
-- **rdu_ascii**：`is_digit/is_alpha/is_alnum/is_lower/is_upper/is_print/is_space`、`to_lower/to_upper(cp)`。
-- **rdu_bits**：`set/clear/toggle/test`、`rol/ror`、`bswap16/32/64`、`popcount/clz/ctz`。
-- **rdu_crc**（struct 状态 + 值回写）：`crc8_new/update/value`、`crc16_*`、`crc32_new/crc32_update/crc32_value`、`fnv1a_new/update/value`。
-- **rdu_fixed**（Q16.16 定点）：`mul/div/floor/frac`。
-- **rdu_math**：泛型 `abs<T>/max<T>/min<T>/clamp<T>`、`gcd/lcm/pow_i`、`is_odd/is_even/sign_i/avg_f`、`deg_to_rad/rad_to_deg`。
-- **rdu_rdb**（嵌入式查询）：`cond_eq/cond_range/cond_gt/cond_lt`（+f 版）、`cmp_i64`。
-- **rdu_ascon**：`ascon_mac128(key,msg)`；**rdu_poly**：`poly1305(key,msg)`。
-- **rdu_rnd**（确定性 PRNG，值回写）：`new(seed)->Rng`、`next(r)->Rng`、`value(r)->i64`、`lcg(state,mul,inc)`。
-- 用途：CRC32 增量（tink 复用）、无堆位运算、定点数、嵌入式 MAC——零动态内存/零递归/无全局状态。
+* **rdu\_ascii**：`is_digit/is_alpha/is_alnum/is_lower/is_upper/is_print/is_space`、`to_lower/to_upper(cp)`。
+
+* **rdu\_bits**：`set/clear/toggle/test`、`rol/ror`、`bswap16/32/64`、`popcount/clz/ctz`。
+
+* **rdu\_crc**（struct 状态 + 值回写）：`crc8_new/update/value`、`crc16_*`、`crc32_new/crc32_update/crc32_value`、`fnv1a_new/update/value`。
+
+* **rdu\_fixed**（Q16.16 定点）：`mul/div/floor/frac`。
+
+* **rdu\_math**：泛型 `abs<T>/max<T>/min<T>/clamp<T>`、`gcd/lcm/pow_i`、`is_odd/is_even/sign_i/avg_f`、`deg_to_rad/rad_to_deg`。
+
+* **rdu\_rdb**（嵌入式查询）：`cond_eq/cond_range/cond_gt/cond_lt`（+f 版）、`cmp_i64`。
+
+* **rdu\_ascon**：`ascon_mac128(key,msg)`；**rdu\_poly**：`poly1305(key,msg)`。
+
+* **rdu\_rnd**（确定性 PRNG，值回写）：`new(seed)->Rng`、`next(r)->Rng`、`value(r)->i64`、`lcg(state,mul,inc)`。
+
+* 用途：CRC32 增量（tink 复用）、无堆位运算、定点数、嵌入式 MAC——零动态内存/零递归/无全局状态。
 
 ## 12. 数据互联：tink 帧协议与 zd 序列化（preview\.5 核心）
 
@@ -492,6 +518,28 @@ var c = tink.crc32(p)                    // 整段 CRC32
 语言无关二进制规范：10 字节头（`TIEDBZD` 魔数 + base-48 版本 + flags），核心类型
 i64/u64/f64/string/bool/array/map/bytes/blob/null + ext 扩展类型，字符串字典/列式容器优化，
 v1 兼容读取，扩展名统一 `.zd`。规范见 docs/superpowers/specs 的 zd v2 设计文档。
+
+### 12.4 tie 生态链全景（写 tie 时要知道的兄弟仓库）
+
+tie 不是孤立的单一仓库——套件按职责拆分为多个仓库（均在 `F:\Projects\tie-repo\` 下），
+各司其职、可独立演进：
+
+| 生态成员 | 仓库 | 职责 |
+| --- | --- | --- |
+| 语言核心 | `tie-main/` | tiec 编译器 + std/ext/rdu 库 + prep/pkg/REPL/tieDB + 文档 |
+| 轻量运行时 | `trm-lite/` | Go 式静态内置 runtime（简单形态内置原语 + `import trm-lite` 复杂形态） |
+| 引擎路线 B | `trm/` | 字节码 VM 引擎（interp + ORC JIT + M:N + GC，与 tiec 并行开发互不干扰） |
+| 数据库 | `tiedb/`（组件库） | zd 编解码 / 表运算 / 向量 / CLI，编译器 `tieDB/` 内嵌同源实现 |
+| 数据互联 | `tink/` + `tink-<20+语言>/` | 帧协议多语言实现（rust/go/python/js/c/cpp/csharp/java/kotlin/zig/v/lua/ruby/php/dart/elixir/fsharp/gleam/julia/nim/odin/crystal/powershell/godot/wenyan/aardio…） |
+| Office 文档 | `tofflib/` | docx/xlsx/pptx 生成（ooxml/omml/vml + tiedoc 渲染） |
+| 归档 | `tie-archive/` | 旧设计/规划文档归档；`lib_v1/` = library-v2 重构前的旧版 std/ext/rdu |
+| 论文 | `papers/` | TSHA1 学术论文（docx） |
+
+* 写程序用 `tie-main/`（tiec + std/ext/rdu）；写并发用 `trm-lite/`
+  （`import` 即选择，见 §15.2）；跨语言传数据用 `tink/`（帧协议）或 `zd` 序列化；
+  写 Office 报告用 `tofflib/`（docx/xlsx）；查旧 API 用 `lib_v1/`（library-v2 前的签名）。
+
+* vscode 语法高亮插件在 `tie-main/editor/vscode-tie/`（发布包内置）。
 
 ### 12.3 tiec `--compress-data`（td → zd）
 
@@ -608,7 +656,7 @@ c.bump(3)             // async：不阻塞
 * 指针/slice 宽类型共享消息属 unsafe 门禁（`#[unsafe.share]` 等），安全路径限标量；
 
 * actor 与 `import trm-lite`（复杂形态）混用 → 编译期报错（替代运行时路径）。
-  复杂形态下 actor 消息同样经 mailbox 承载（同一 trm_lite.a）。
+  复杂形态下 actor 消息同样经 mailbox 承载（同一 trm\_lite.a）。
 
 ### 15.1 channel（mailbox 消息通道，p.6.5.7）
 
@@ -622,10 +670,45 @@ ch_close(ch)                // 置关闭位（幂等），唤醒等待者
 ```
 
 * 环形缓冲 mailbox（互斥 + 条件变量），FIFO 有序；单通道容量 64，满后 `ch_send` 返回 1；
+
 * 非阻塞语义（Go 阻塞 send/recv 的降级）：空 `ch_recv` 返回 0、满 `ch_send` 返回 1，
   调用方据此轮询/协商，避免语言无挂起能力下的死锁；
+
 * 复杂形态（`import tl_runtime_ctx`）用 `ctx_ch_open/ctx_ch_send/ctx_ch_recv/ctx_ch_close/
   ctx_ch_len/ctx_ch_count`，语义与内置一致（同源 mailbox）。
+
+### 15.2 复杂形态 `import trm-lite`（work-stealing + 并发三色 GC）
+
+简单形态（内置 spawn/actor/channel）作零配置默认；需要**多 OS 线程 + 并发 GC** 时
+`import` trm-lite 复杂形态汇总库（`import 即选择`，与内置路径**编译期互斥**）：
+
+```tie
+type tie<logic>
+import "../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)                       // 池大小（首个 drain 前）
+    tl_runtime_ctx.ctx_spawn(func() -> i64 { return 42 })  // 入队任意函数值执行体
+    var ran = tl_runtime_ctx.ctx_drain()                   // 并行 run（P worker）
+    var freed = tl_runtime_ctx.ctx_collect()               // 并发三色 GC 累计回收
+    println("ran=" + to_string(ran) + " freed=" + to_string(freed))
+}
+```
+
+* **入口**（`tl_runtime_ctx`）：`ctx_spawn/ctx_drain/ctx_queued/ctx_collect/ctx_set_workers/
+  ctx_workers/ctx_shutdown` + 观察量 `ctx_stolen/ctx_completed/ctx_live_objs/ctx_gc_steps/
+  ctx_gc_rounds/ctx_minor_runs/ctx_major_runs/ctx_remapped/ctx_migrated`；
+* **调度**：work-stealing——每 worker 段式双端队列 + 窃取 + 溢出；任务与创建 worker
+  解耦（任意 worker 可执行，`ctx_migrated` 计数迁移；p.6.5.5「可迁移栈」语义）；
+* **GC**：并发三色（后台回收器随 drain 与 worker 真并发推进）+ 分代（新生代/老年代
+  minor/major）+ mark-compact 整理（对象 id 重排，`ctx_remapped` 查询；p.6.5.4）；
+  精确根 = 任务闭包 env 引用集合（sweep 仅无任务窗口执行；p.6.5.6 拍板）；
+* **托管堆**（`trm_lite_tgc`，探针/组织用）：`alloc/set_ref/drop_ref/add_root/drop_root/
+  gc_minor_sync/gc_collect_sync` + 观察量；
+* **channel**：`ctx_ch_*`（§15.1）与内置同源 mailbox；
+* 局限：任务为 `fn() -> i64` 原子执行体（运行中不可抢占）；时间片硬中断待语言级
+  支持；跨任务可见状态用全局/独立槽位。
 
 ## 16. unsafe、移动语义与三期限量语法（概览）
 
@@ -660,6 +743,8 @@ ch_close(ch)                // 置关闭位（幂等），唤醒等待者
 
 * `docs/prompt-pack.md`：可粘贴 Prompt 包（自包含简介）
 
+* `docs/release.md`：发行版构成与版本边界说明
+
 * `docs/superpowers/specs/`：设计文档（tink / zd v2 / td 数据编译器 / tsha1 等）
 
 * `examples/`：可运行示例（hello / lib\_math / switch\_pattern / pkg\_demo…）
@@ -668,3 +753,8 @@ ch_close(ch)                // 置关闭位（幂等），唤醒等待者
 
 * `NEW.md` / `CHANGELOG.md`：发行版新鲜事 / 版本变更记录
 
+* `../trm-lite/README.md`：轻量运行时（简单/复杂形态入口 + 已知限制）——并参见 §15.2
+
+* `../tiedb/README.md` / `../tofflib/README.md`：zd 数据库组件 / Office 文档生成（§12.4）
+
+* `../tink-<语言>/README.md`：tink 帧协议各语言绑定（§12.1）
