@@ -1,0 +1,169 @@
+type tie<logic>
+// ============================================================================
+// std_httpc_probe.tie：std/httpc 完整 HTTP 客户端探针（p.6.6.2）。
+// 覆盖：URL 明文 GET/404、POST /echo 回显（method+body+自定义头）、Set-Cookie
+// 收集与跨请求回发、302 自动跟随（计数与最终 200）、chunked 解码、大文件多次读、
+// https（TLS 1.3 与 1.2 各拉通）、https 大文件多 TLS record 重组。
+// 前置（外部夹具，仅验收环境，不入库）：
+//   python -m http.server 19080 --bind 127.0.0.1 --directory tests\_p6_probe\httpc_fx
+//   python tests\_p6_probe\echo_server.py            （19081：echo/cookie/redir/gzip）
+//   openssl s_server -accept 19443 -tls1_3  -cert tests\tls_probe\c.pem -key tests\tls_probe\k.pem -www
+//   openssl s_server -accept 19444 -tls1_2  -cert tests\tls_probe\c.pem -key tests\tls_probe\k.pem -www
+//   （19445 大文件：openssl s_server -accept 19445 -tls1_3 -cert ... -key ... -WWW，
+//    cwd=tests\_p6_probe\httpsfx，请求 /big.txt（72000B）验证跨记录重组）
+// ============================================================================
+import "../../std/httpc.tie" as httpc
+import "../../std/string.tie" as str
+
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got + " want=" + want)
+        exit(1)
+    }
+}
+
+func chk_contains(name: string, hay: string, needle: string) {
+    if str.contains(hay, needle) {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " needle=" + needle + " hay=" + hay)
+        exit(1)
+    }
+}
+
+func chk_status(name: string, got: i64, want: i64) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func fail(msg: string) {
+    println("FAIL " + msg)
+    exit(1)
+}
+
+// 字符串 → 字节表
+func s2b(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < len(s) {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+    return t
+}
+
+func main() {
+    // 注：模块级整数全局初始化器不生效（运行时为 0，编译器缺陷），故改为局部常量。
+    var BIG_HTTP: i64 = 60000      // plaintext big.txt 大小（HTTP 明文多段读）
+    var BIG_TLS: i64 = 72000       // httpsfx/big.txt（TLS 多 record 重组）
+    // ---- 1) 明文静态：python http.server 19080 ----
+    var txt = httpc.get_text("http://127.0.0.1:19080/hello.txt")
+    chk("plain_get_text_fixture", txt, "HTTPC fixture hello\n")
+
+    // ---- 2) 404 → ok=false、status=404 ----
+    var r404 = httpc.get("http://127.0.0.1:19080/no-such-file.txt", table_new_string())
+    if r404.ok {
+        fail("plain_404_ok_should_be_false")
+    }
+    chk_status("plain_404_status", r404.status, 404)
+
+    // ---- 3) POST /echo：method + body + 自定义头回显 ----
+    var hdrs = table_new_string()
+    table_push(hdrs, "x-custom: hello-tie")
+    var rp = httpc.post("http://127.0.0.1:19081/echo", s2b("echo-body-123"), hdrs)
+    if rp.ok == false {
+        fail("post_echo_ok err=" + rp.err)
+    }
+    chk_status("post_echo_status", rp.status, 200)
+    chk_contains("post_echo_method", httpc.body_text(rp), "POST")
+    chk_contains("post_echo_body", httpc.body_text(rp), "echo-body-123")
+    chk_contains("post_echo_custom_header", httpc.body_text(rp), "hello-tie")
+
+    // ---- 4) GET /echo ----
+    var rg = httpc.get("http://127.0.0.1:19081/echo", table_new_string())
+    if rg.ok == false {
+        fail("get_echo_ok")
+    }
+    chk_contains("get_echo_method", httpc.body_text(rg), "GET")
+
+    // ---- 5) Set-Cookie：302 跳转链内回发 + 跨请求回发 ----
+    var rc = httpc.get("http://127.0.0.1:19081/setcookie", table_new_string())
+    if rc.ok == false {
+        fail("setcookie_final_ok")
+    }
+    chk_status("setcookie_final_status", rc.status, 200)   // 302 已跟随到 /cookie-check
+    var rc2 = httpc.get("http://127.0.0.1:19081/cookie-check", table_new_string())
+    chk_contains("cookie_replayed_across_calls", httpc.body_text(rc2), "sid=123")
+
+    // ---- 6) 302 自动跟随：/redir -> /echo ----
+    var rr = httpc.get("http://127.0.0.1:19081/redir", table_new_string())
+    if rr.ok == false {
+        fail("redir_final_ok")
+    }
+    chk_status("redir_final_status", rr.status, 200)
+    chk_status("redir_count", rr.redirects, 1)
+    chk_contains("redir_final_body", httpc.body_text(rr), "GET")
+
+    // ---- 7) chunked 解码：/gzip（两个数据块 + 0 终结）----
+    var rz = httpc.get_text("http://127.0.0.1:19081/gzip")
+    chk("chunked_decode", rz, "chunk-A;chunk-B;")
+
+    // ---- 8) 明文大文件：多次读累积（python http.server）----
+    var big = httpc.get_bytes("http://127.0.0.1:19080/big.txt")
+    if len(big) == BIG_HTTP {
+        println("PASS plain_big_len")
+    } else {
+        fail("plain_big_len got=" + to_string(len(big)))
+    }
+    if big[0] == 0x42 && big[1] == 0x49 && big[2] == 0x47 {
+        println("PASS plain_big_prefix")
+    } else {
+        fail("plain_big_prefix")
+    }
+    var n1 = len(big)
+    if big[n1 - 3] == 0x42 && big[n1 - 2] == 0x49 && big[n1 - 1] == 0x47 {
+        println("PASS plain_big_suffix")
+    } else {
+        fail("plain_big_suffix")
+    }
+
+    // ---- 9) https TLS 1.3（s_server -www 整页；OpenSSL 3.6.1 该页无 <title>，断言 <HTML>）----
+    var h13 = httpc.get_text("https://127.0.0.1:19443/")
+    chk_contains("https_tls13_page_markup", h13, "<HTML>")
+
+    // ---- 10) https TLS 1.2（回退路径）----
+    var h12 = httpc.get_text("https://127.0.0.1:19444/")
+    chk_contains("https_tls12_page_markup", h12, "<HTML>")
+
+    // ---- 11) https 大文件：跨多条 TLS record 重组（72000B > 16K record 上限）----
+    var big2 = httpc.get_bytes("https://127.0.0.1:19445/big.txt")
+    if len(big2) == BIG_TLS {
+        println("PASS https_big_len")
+    } else {
+        fail("https_big_len got=" + to_string(len(big2)))
+    }
+    if big2[0] == 0x54 && big2[1] == 0x4C && big2[2] == 0x53 {
+        println("PASS https_big_prefix")
+    } else {
+        fail("https_big_prefix")
+    }
+    var n2 = len(big2)
+    if big2[n2 - 3] == 0x42 && big2[n2 - 2] == 0x49 && big2[n2 - 1] == 0x47 {
+        println("PASS https_big_suffix")
+    } else {
+        fail("https_big_suffix")
+    }
+
+    println("std_httpc 探针全部通过")
+    exit(0)
+}
+
+
+
+

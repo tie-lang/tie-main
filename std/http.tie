@@ -1,31 +1,30 @@
 type tie<class>
-// http.tie：标准库——HTTP 客户端（命名空间 http），纯函数 + 底座
-// 原语 http_get / http_get_file 的直接包装，不引入任何网络依赖。
-// 调用：import 后 http.get(url) / http.get_file(url, path)；命名空间内互调为裸调用。
-// 命名规范：命名空间内函数不加 http_ 前缀（统一 func 写法，Harbor M2.1.6）。
-// 局限：
-//   1. 底座原语仅支持 http://（https/TLS 留待后续），且失败时由编译器输出
-//      "运行时错误"并退出进程（exit 1）——tie 语言暂无可捕获的异常机制，std 层
-//      无法把 http_get 的失败转为 Err 返回值，故 get 仅将成功正文包为 Result.Ok，
-//      调用前请自行确保 URL 可访问；
-//   2. get_file 失败只返回 false（不触发运行时错误），可安全用于下载判断。
-// library-v2：get 返回 Result<string, string>；删除 url_encode/url_decode
-// 及其辅助（encoding 模块已有 url 编码；旧实现受 Rust tie-llvm 后端
-// str_char 缓冲 bug 影响暂不可靠，见 2026-08-12 复现记录）。
+// http.tie：标准库——HTTP 客户端兼容层（命名空间 http）。
+// p.6.6.2：底层转发到 std/httpc.tie（命名空间 httpc）完整实现（https/POST/
+// cookies/重定向）；签名与 Result 语义保持不变。数据平面与能力说明见 httpc.tie。
+// library-v2：get 返回 Result<string, string>；连接失败/非 2xx/超时返回 Err（不再
+// 触发进程退出）。成功正文按 ASCII/UTF-8 文本字节转字符串。
 
 import "./result.tie"
+import "./httpc.tie" as httpc
 
 namespace http {
-// HTTP GET 指定 URL，返回响应正文。成功 Ok(正文)；失败返回 Result.Err
-// （实际因底座的退出行为多由调用方前置确保 URL 可访问，见文件头局限）。
-// 注意：连接失败 / 非 200 / 仅 http:// ——见文件头局限说明。
+// HTTP GET 指定 URL，返回响应正文。成功 Ok(正文文本)；
+// 失败（连接失败 / 非 2xx / 解析失败）返回 Err(原因)。
 pub func get(url: string) -> Result<string, string> {
-    return Result.Ok(http_get(url))
+    var headers = table_new_string()
+    var r = httpc.get(url, headers)
+    if r.ok {
+        return Result.Ok(httpc.body_text(r))
+    }
+    if str_len(r.err) > 0 {
+        return Result.Err(r.err)
+    }
+    return Result.Err("HTTP 请求失败（状态 " + to_string(r.status) + "）")
 }
 
-// HTTP GET 下载到本地文件；成功返回 true，失败返回 false（不触发运行时错误，
-// 失败只返回 false，可安全用于二进制包下载判断）。
+// HTTP GET 下载到本地文件；成功返回 true，失败返回 false（可安全用于下载判断）。
 pub func get_file(url: string, path: string) -> bool {
-    return http_get_file(url, path)
+    return httpc.get_file(url, path)
 }
 }

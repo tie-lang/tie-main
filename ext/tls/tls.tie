@@ -46,6 +46,7 @@ struct Session {
     var s_key: table<i64> = table_new_i64()     // 服务端写密钥
     var s_iv: table<i64> = table_new_i64()      // TLS1.3 服务端 iv（12B）/（1.2 不使用）
     var s_salt: table<i64> = table_new_i64()    // TLS1.2 服务端 salt（4B）
+    var rdone: table<i64> = table_new_i64()     // recv 已交付字节数 [consumed]（共享表，跨调用持久）
 }
 
 namespace tls {
@@ -184,6 +185,9 @@ func finish13(s: Session, h: i64, ch_msg: table<i64>, sh_body: table<i64>, serve
     s.s_iv = sa_iv
     s.seqs = new_seqs()
     s.rbuf = table_new_i64()
+    var rd = s.rdone
+    table_push(rd, 0)
+    s.rdone = rd
     return s
 }
 
@@ -308,6 +312,9 @@ func finish12(s: Session, h: i64) -> Session {
     q[1] = 1        // 服务端应用数据序号（server Finished 已用 0）
     s.seqs = q
     s.rbuf = table_new_i64()
+    var rd = s.rdone
+    table_push(rd, 0)
+    s.rdone = rd
     return s
 }
 
@@ -368,14 +375,24 @@ pub func send(s: Session, plain: table<i64>) -> bool {
 
 // 阻塞读，跨记录重组解密，最多返回 max 字节（有数据即返回，不等待凑满）。
 // 返回空表表示对端关闭 / 无更多数据。
+// 消费语义（p.6.6.2 修复）：Session 为值类型，结构字段重新绑定不跨调用传播，
+// 旧实现把剩余读缓冲局部重建后写回「本地副本」字段，调用方 rbuf 仍指向完整旧表，
+// 导致连续多次 recv 返回重复字节的新记录永远读不到。现改为共享表 rdone 记录
+// 「已交付调用方字节数」，recv 以 rdone 为下标起点取新字节并原地更新（共享表内容
+// 变异跨调用持久），rbuf 只累加不压缩（单连接单响应规模，可接受）。
 pub func recv(s: Session, max: i64) -> table<i64> {
     var out = table_new_i64()
     if max <= 0 {
         return out
     }
-    // 读缓冲为空则持续读记录直到出现应用数据或对端关闭。
+    var rd = s.rdone
+    var start: i64 = 0
+    if len(rd) > 0 {
+        start = rd[0]
+    }
+    // 读缓冲中还没有新字节则持续读记录，直到出现应用数据或对端关闭。
     var guard2: i64 = 0
-    while len(s.rbuf) == 0 && guard2 < 128 {
+    while len(s.rbuf) <= start && guard2 < 128 {
         var r: i64 = 0
         if s.mode == 13 {
             r = read_app13(s)
@@ -387,23 +404,26 @@ pub func recv(s: Session, max: i64) -> table<i64> {
         }
         guard2 = guard2 + 1
     }
-    var take: i64 = len(s.rbuf)
+    if len(s.rbuf) <= start {
+        return out
+    }
+    var avail = len(s.rbuf) - start
+    var take = avail
     if take > max {
         take = max
     }
     var i: i64 = 0
     while i < take {
-        table_push(out, s.rbuf[i])
+        table_push(out, s.rbuf[start + i])
         i = i + 1
     }
-    // 截去已消费部分，剩余留在读缓冲。
-    var nb = table_new_i64()
-    i = take
-    while i < len(s.rbuf) {
-        table_push(nb, s.rbuf[i])
-        i = i + 1
+    start = start + take
+    // 共享表原地更新已交付位置，跨调用持久（表对象内容变异不受值传递影响）。
+    if len(rd) > 0 {
+        rd[0] = start
+    } else {
+        table_push(rd, start)
     }
-    s.rbuf = nb
     return out
 }
 

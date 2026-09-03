@@ -1,0 +1,907 @@
+type tie<class>
+// ============================================================================
+// httpc.tie：标准库——完整 HTTP 客户端（命名空间 httpc，纯 tie）p.6.6.2
+// Full HTTP client (namespace httpc, pure-tie).
+//
+// 数据平面（Data plane）：
+//   请求/响应的传输层全链路以 table<i64>（元素 0..255）承载原始字节——tie 字符串
+//   不能承载 ≥0x80 原始字节，故 HTTP 报文（请求行/头/正文）在字节域组装与解析；
+//   仅对「必须按文本语义匹配」的 ASCII 片段（方法/头名/状态行/状态码）局部转
+//   string。请求头参数用 table<string>（每元素一条原始 "Name: value" 行），
+//   响应头返回同形态（保留大小写原样）。
+//
+// 功能（Features）：
+//   - get(url, headers) / post(url, body, headers) -> Response 完整请求
+//   - get_text(url) / get_bytes(url) / get_file(url, path) 便捷封装
+//   - URL 解析（scheme/host/port/path）；http 明文走 std/net 字节 IO，
+//     https 走 ext/tls（tls.connect/send/recv/close，自动 1.3 -> 1.2 协商）
+//   - HTTP/1.1 请求行 + Host + Content-Length + Connection: close
+//   - 响应解析：状态行 / 头表 / 正文按 Content-Length 或 chunked 解码
+//   - Set-Cookie 解析进模块级 cookie jar，后续请求自动回发 Cookie 头
+//   - 301/302/303/307/308 自动跟随（上限 5 次，防环）；连接失败返回 ok=false
+//
+// Response 语义（Response semantics）：
+//   status=状态码；ok=2xx；headers=头行表（原样保留大小写）；body=正文字节表；
+//   redirects=跳转次数；final_url=实际响应的 URL；失败 ok=false、err 带原因。
+//
+// 重定向（Redirect）：
+//   301/302/303 对 POST 降级为 GET（303 一律 GET），307/308 保留方法与正文；
+//   Location 支持绝对 URL 与以 "/" 开头的绝对路径；相对路径按基址目录拼接。
+//
+// 语言约束（Language constraints）：
+//   - tie struct 为值类型，结构字段表禁止直接 table_push / 下标写；一律经局部
+//     表构建后整体赋回字段。
+//   - 性能：请求/正文组装用字节表 push（摊销 O(1)）；头解析按下标推进（单遍），
+//     禁止 str_char 全串扫描 / 逐字节字符串拼接（O(n^2)）。
+//   - `port`、`text` 是 tie 保留字，参数命名用 pport / b2s 风格。
+//
+// 局限（Limits）：
+//   - 不支持 keep-alive（强制 Connection: close，一请求一连接）；
+//   - 获取正文不以 Content-Length 结尾、亦非 chunked 时，靠服务端关闭判定结束；
+//   - URL 解析不处理 IPv6 字面量 host（[::1]）与 userinfo。
+// ============================================================================
+
+import "./net.tie" as net
+import "./string.tie" as str
+import "../ext/tls/tls.tie" as tls
+
+// 全局 cookie jar：进程内跨 httpc.get/post 调用持久，同名 cookie 覆盖。
+var g_jar: table<string>;
+var g_jar_ready: bool = false;
+
+// ---- Response：一次 HTTP 响应的完整结果 ----
+struct Response {
+    var status: i64 = 0                       // 状态码（200/404/302...）；0=失败
+    var ok: bool = false                      // 是否 2xx
+    var headers: table<string> = table_new_string()   // 头行 "Name: value"（原样）
+    var body: table<i64> = table_new_i64()            // 正文字节表（失败时空）
+    var redirects: i64 = 0                    // 跳转次数
+    var final_url: string = ""                // 实际响应的 URL
+    var err: string = ""                      // 失败原因（ok=false 时）
+}
+
+namespace httpc {
+
+// ============================================================================
+// 一、字节表 <-> 字符串 / 小工具
+// ============================================================================
+
+// 字节表原样转字符串（仅用于 ASCII 段；>=0x80 字节以字节串携带，语义受限）。
+func b2s(b: table<i64>) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < len(b) {
+        sb_append_byte(sb, b[i])
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 字符串按字节追加进字节表（str_byte 按字节索引，ASCII 段 = 码点）。
+func append_str(t: table<i64>, s: string) {
+    var n: i64 = len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+}
+
+// 从 off 起查找单字节 c；未找到返回 -1。
+func find_byte(b: table<i64>, off: i64, c: i64) -> i64 {
+    var i: i64 = off
+    while i < len(b) {
+        if b[i] == c {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 在 b[off..] 中查找模式 pat（起始下标）；未找到返回 -1。
+func find_bytes(b: table<i64>, off: i64, pat: table<i64>) -> i64 {
+    var pl = len(pat)
+    if pl == 0 {
+        return off
+    }
+    var i: i64 = off
+    while i + pl <= len(b) {
+        var m = true
+        var j: i64 = 0
+        while j < pl {
+            if b[i + j] != pat[j] {
+                m = false
+            }
+            j = j + 1
+        }
+        if m {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// "\r\n\r\n" 模式表（每次调用新建，调用点稀少）。
+func crlfcrlf() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0x0D)
+    table_push(t, 0x0A)
+    table_push(t, 0x0D)
+    table_push(t, 0x0A)
+    return t
+}
+
+// "\r\n" 模式表。
+func crlf() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0x0D)
+    table_push(t, 0x0A)
+    return t
+}
+
+// 头部结束符 "\r\n\r\n" 在 buf 中的起始下标；未找到返回 -1。
+func head_end(b: table<i64>) -> i64 {
+    return find_bytes(b, 0, crlfcrlf())
+}
+
+// chunked 终结标记 "0\r\n\r\n" 恰为 buf 尾部（约定服务端不发 trailers）。
+func chunk_term(b: table<i64>) -> bool {
+    var n = len(b)
+    if n >= 5 {
+        if b[n - 5] == 0x30 && b[n - 4] == 0x0D && b[n - 3] == 0x0A &&
+           b[n - 2] == 0x0D && b[n - 1] == 0x0A {
+            return true
+        }
+    }
+    return false
+}
+
+// 十进制字节段 [s,e) -> i64（非数字字符跳过）。
+func dec_val(b: table<i64>, s: i64, e: i64) -> i64 {
+    var v: i64 = 0
+    var i: i64 = s
+    while i < e {
+        if b[i] >= 0x30 && b[i] <= 0x39 {
+            v = v * 10 + (b[i] - 0x30)
+        }
+        i = i + 1
+    }
+    return v
+}
+
+// 十六进制字节段 [s,e) -> i64（chunk size 用；遇 ';' 扩展 / 空格停止）。
+func hex_val(b: table<i64>, s: i64, e: i64) -> i64 {
+    var v: i64 = 0
+    var i: i64 = s
+    while i < e {
+        var c = b[i]
+        if c >= 0x30 && c <= 0x39 {
+            v = v * 16 + (c - 0x30)
+        } else if c >= 0x61 && c <= 0x66 {
+            v = v * 16 + (c - 0x61 + 10)
+        } else if c >= 0x41 && c <= 0x46 {
+            v = v * 16 + (c - 0x41 + 10)
+        } else if c == 0x3B || c == 0x20 {
+            break
+        } else {
+            break
+        }
+        i = i + 1
+    }
+    return v
+}
+
+// 取 b[off..off+n)。
+func take(b: table<i64>, off: i64, n: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(out, b[off + i])
+        i = i + 1
+    }
+    return out
+}
+
+// ============================================================================
+// 二、URL 解析
+// ============================================================================
+
+// 解析 URL -> [scheme, host, port, path]；格式不合法返回空表。
+// 支持 "scheme://host[:port]/path?query" 与缺省 scheme（视为 http）。
+func parse_url(url: string) -> table<string> {
+    var out = table_new_string()
+    var sch = "http"
+    var rest: string = url
+    var p = str.find(url, "://")
+    if p >= 0 {
+        if p == 0 {
+            return out
+        }
+        sch = str.slice(url, 0, p)
+        rest = str.slice(url, p + 3, str_len(url))
+    }
+    // 权威段 = 首个 '/' 之前
+    var slash = str.find(rest, "/")
+    var auth: string = rest
+    var path: string = "/"
+    if slash >= 0 {
+        auth = str.slice(rest, 0, slash)
+        path = str.slice(rest, slash, str_len(rest))
+    }
+    // host[:port]
+    var colon = str.find(auth, ":")
+    var host: string = auth
+    var prt: string = ""
+    if colon >= 0 {
+        host = str.slice(auth, 0, colon)
+        prt = str.slice(auth, colon + 1, str_len(auth))
+    }
+    if str_len(host) == 0 {
+        return out
+    }
+    table_push(out, sch)
+    table_push(out, host)
+    table_push(out, prt)
+    table_push(out, path)
+    return out
+}
+
+// scheme -> 默认端口（URL 未给端口时）。
+func conn_port(sch: string, prt: string) -> i64 {
+    if str_len(prt) > 0 {
+        return parse_int(prt)
+    }
+    if sch == "https" {
+        return 443
+    }
+    return 80
+}
+
+// 重定向目标解析：绝对 URL 原样；"/..." 按 scheme://host 拼接；否则按基址目录拼接。
+func resolve_url(base: string, loc: string) -> string {
+    if str.find(loc, "://") >= 0 {
+        return loc
+    }
+    var sco = str.find(base, "://")
+    var sch = "http"
+    var rest: string = base
+    if sco >= 0 {
+        sch = str.slice(base, 0, sco)
+        rest = str.slice(base, sco + 3, str_len(base))
+    }
+    if str_len(loc) > 0 && str_char(loc, 0) == "/" {
+        var sl = str.find(rest, "/")
+        var auth = rest
+        if sl >= 0 {
+            auth = str.slice(rest, 0, sl)
+        }
+        return sch + "://" + auth + loc
+    }
+    // 相对路径：拼接基址目录 + loc
+    var last = last_slash(rest)
+    var dir: string = ""
+    if last >= 0 {
+        dir = str.slice(rest, 0, last + 1)
+    }
+    return sch + "://" + dir + loc
+}
+
+// 返回 s 中 '/' 最后一次出现的位置（码点索引）；未找到返回 -1。
+// （std/string.tie 无 rfind，本地按码点逆扫，URL 段短为 O(n)。）
+func last_slash(s: string) -> i64 {
+    var n = str_len(s)
+    var i: i64 = n - 1
+    while i >= 0 {
+        if str_char(s, i) == "/" {
+            return i
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+// ============================================================================
+// 三、请求组装与头解析（字节域，单遍）
+// ============================================================================
+
+// 组装 HTTP/1.1 请求字节：请求行 + Host + Content-Length + Connection: close
+// + Cookie（jar）+ 用户头 + 空行 + 正文。
+func build_req(method: string, path: string, host: string, prt: string,
+               body: table<i64>, headers: table<string>) -> table<i64> {
+    var req = table_new_i64()
+    append_str(req, method)
+    append_str(req, " ")
+    append_str(req, path)
+    append_str(req, " HTTP/1.1\r\n")
+    append_str(req, "Host: ")
+    append_str(req, host)
+    if str_len(prt) > 0 {
+        append_str(req, ":")
+        append_str(req, prt)
+    }
+    append_str(req, "\r\n")
+    if len(body) > 0 {
+        append_str(req, "Content-Length: ")
+        append_str(req, to_string(len(body)))
+        append_str(req, "\r\n")
+    }
+    append_str(req, "Connection: close\r\n")
+    if len(g_jar) > 0 {
+        append_str(req, "Cookie: ")
+        append_str(req, jar_string())
+        append_str(req, "\r\n")
+    }
+    var i: i64 = 0
+    while i < len(headers) {
+        append_str(req, headers[i])
+        if str.ends_with(headers[i], "\r\n") == false {
+            append_str(req, "\r\n")
+        }
+        i = i + 1
+    }
+    append_str(req, "\r\n")
+    // 正文字节
+    i = 0
+    while i < len(body) {
+        table_push(req, body[i])
+        i = i + 1
+    }
+    return req
+}
+
+// 头行是否以 key 开头（忽略大小写，key 后须紧跟 ':'）。
+// b[s..e) 为一行（不含 \r\n）。
+func line_starts_ci(b: table<i64>, s: i64, e: i64, key: string) -> bool {
+    var m = len(key)
+    if s + m + 1 > e {
+        return false
+    }
+    var i: i64 = 0
+    while i < m {
+        var c = b[s + i]
+        if c >= 0x41 && c <= 0x5A {
+            c = c + 0x20
+        }
+        var kc = str_byte(key, i)
+        if kc >= 0x41 && kc <= 0x5A {
+            kc = kc + 0x20
+        }
+        if c != kc {
+            return false
+        }
+        i = i + 1
+    }
+    return b[s + m] == 0x3A
+}
+
+// 在头部区 [0, he) 中按名字（忽略大小写）返回值字节区间表 [s, e]；
+// 未找到返回 [-1, -1]。
+func hdr_range(b: table<i64>, he: i64, key: string) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, -1)
+    table_push(out, -1)
+    var i: i64 = 0
+    while i < he {
+        var lf = find_byte(b, i, 0x0A)
+        var le = he
+        if lf >= 0 && lf < he {
+            le = lf
+        }
+        if le > i && b[le - 1] == 0x0D {
+            le = le - 1
+        }
+        if line_starts_ci(b, i, le, key) {
+            var k: i64 = i + len(key)
+            if k < le && b[k] == 0x3A {
+                k = k + 1
+            }
+            while k < le && b[k] == 0x20 {
+                k = k + 1
+            }
+            var te = le
+            while te > k && b[te - 1] == 0x20 {
+                te = te - 1
+            }
+            out[0] = k
+            out[1] = te
+            return out
+        }
+        i = le + 1
+    }
+    return out
+}
+
+// Content-Length 头值（无则 -1）。
+func clen_of(b: table<i64>, he: i64) -> i64 {
+    var rg = hdr_range(b, he, "Content-Length")
+    if rg[0] < 0 {
+        return -1
+    }
+    return dec_val(b, rg[0], rg[1])
+}
+
+// 是否 chunked 传输编码。
+func chunked_of(b: table<i64>, he: i64) -> bool {
+    var rg = hdr_range(b, he, "Transfer-Encoding")
+    if rg[0] < 0 {
+        return false
+    }
+    var s = b2s(take(b, rg[0], rg[1] - rg[0]))
+    return str.find(str.to_lower(s), "chunked") >= 0
+}
+
+// 解析状态码：状态行 "HTTP/x.x <digits> ..."。
+func parse_status(b: table<i64>, he: i64) -> i64 {
+    var i: i64 = 0
+    while i < he && b[i] != 0x20 {
+        i = i + 1
+    }
+    while i < he && b[i] == 0x20 {
+        i = i + 1
+    }
+    var st: i64 = 0
+    while i < he && b[i] >= 0x30 && b[i] <= 0x39 {
+        st = st * 10 + (b[i] - 0x30)
+        i = i + 1
+    }
+    return st
+}
+
+// 头区 [0, he) 解析为头行表（每元素一条原始 "Name: value"）。
+func parse_headers(b: table<i64>, he: i64) -> table<string> {
+    var hs = table_new_string()
+    var l1 = find_bytes(b, 0, crlf())
+    var i: i64 = 0
+    if l1 > 0 {
+        i = l1 + 2
+    }
+    while i < he {
+        var lf = find_byte(b, i, 0x0A)
+        var le = he
+        if lf >= 0 && lf < he {
+            le = lf
+        }
+        var endln = le
+        if endln > i && b[endln - 1] == 0x0D {
+            endln = endln - 1
+        }
+        var sb = string_builder()
+        var k: i64 = i
+        while k < endln {
+            sb_append_byte(sb, b[k])
+            k = k + 1
+        }
+        table_push(hs, sb_build(sb))
+        i = le + 1
+    }
+    return hs
+}
+
+// 头表按名字取值（忽略大小写，线性查找）；未找到返回空串。
+func header_val(hs: table<string>, name: string) -> string {
+    var i: i64 = 0
+    while i < len(hs) {
+        var colon = str.find(hs[i], ":")
+        if colon > 0 {
+            var k = str.trim(str.slice(hs[i], 0, colon))
+            if str.to_lower(k) == str.to_lower(name) {
+                return str.trim(str.slice(hs[i], colon + 1, str_len(hs[i])))
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// ============================================================================
+// 四、cookie jar（模块级，进程内持久）
+// ============================================================================
+
+// 从响应头收集 Set-Cookie：取首个 ';' 前的 "name=value" 存入 jar（同名覆盖）。
+func collect_cookies(hs: table<string>) {
+    jar_init()
+    var i: i64 = 0
+    while i < len(hs) {
+        var ln = hs[i]
+        if line_is_set_cookie(ln) {
+            var v = str.trim(str.slice(ln, 11, str_len(ln)))
+            var semi = str.find(v, ";")
+            var pair = v
+            if semi >= 0 {
+                pair = str.trim(str.slice(v, 0, semi))
+            }
+            var eq = str.find(pair, "=")
+            if eq > 0 {
+                var name = str.trim(str.slice(pair, 0, eq))
+                var val = str.trim(str.slice(pair, eq + 1, str_len(pair)))
+                jar_set(name, val)
+            }
+        }
+        i = i + 1
+    }
+}
+
+// 行是否 Set-Cookie 头（忽略大小写；"Set-Cookie:" 为 11 字符）。
+func line_is_set_cookie(ln: string) -> bool {
+    if str_len(ln) < 11 {
+        return false
+    }
+    return str.to_lower(str.slice(ln, 0, 11)) == "set-cookie:"
+}
+
+// jar 设置 cookie（同名覆盖）。
+func jar_set(name: string, val: string) {
+    var i: i64 = 0
+    var found = false
+    while i < len(g_jar) {
+        var c = g_jar[i]
+        var eq = str.find(c, "=")
+        if eq > 0 && str.slice(c, 0, eq) == name {
+            g_jar[i] = name + "=" + val
+            found = true
+        }
+        i = i + 1
+    }
+    if found == false {
+        table_push(g_jar, name + "=" + val)
+    }
+}
+
+// jar 的 "n1=v1; n2=v2" 串。
+func jar_string() -> string {
+    var parts = table_new_string()
+    var i: i64 = 0
+    while i < len(g_jar) {
+        table_push(parts, g_jar[i])
+        i = i + 1
+    }
+    return str.join(parts, "; ")
+}
+
+// ============================================================================
+// 五、chunked 解码（单遍 size 链推进）
+// ============================================================================
+
+// 解码 [start..] 起的 chunked 正文；ok=false 表示数据不完整/非法。
+func dechunk(b: table<i64>, start: i64) -> (bool, table<i64>) {
+    var out = table_new_i64()
+    var pos = start
+    var okay = true
+    while okay {
+        var lf = find_byte(b, pos, 0x0A)
+        if lf < 0 {
+            okay = false
+            break
+        }
+        var le = lf
+        if le > pos && b[le - 1] == 0x0D {
+            le = le - 1
+        }
+        var sz = hex_val(b, pos, le)
+        if sz == 0 {
+            break
+        }
+        var after = lf + 1
+        if after + sz + 2 > len(b) {
+            okay = false
+            break
+        }
+        var i: i64 = 0
+        while i < sz {
+            table_push(out, b[after + i])
+            i = i + 1
+        }
+        pos = after + sz + 2
+    }
+    return (okay, out)
+}
+
+// ============================================================================
+// 六、请求执行（连接 + 发送 + 读响应 + 解析）
+// ============================================================================
+
+// 构造失败 Response。
+func err_resp(msg: string) -> Response {
+    var r = Response()
+    r.status = 0
+    r.ok = false
+    r.headers = table_new_string()
+    r.body = table_new_i64()
+    r.redirects = 0
+    r.final_url = ""
+    r.err = msg
+    return r
+}
+
+// 响应解析（不回跳）。headers 保留大小写原样；正文按 CL / chunked / 关闭收口。
+func parse_response(b: table<i64>, furl: string) -> Response {
+    var resp: Response = err_resp("malformed response")
+    resp.final_url = furl
+    var he = head_end(b)
+    if he < 0 {
+        return resp
+    }
+    var st = parse_status(b, he)
+    var hs = parse_headers(b, he)
+    var clen = clen_of(b, he)
+    var chkd = chunked_of(b, he)
+    var body = table_new_i64()
+    if chkd {
+        var (okc, dbody) = dechunk(b, he + 4)
+        if okc == false {
+            resp.err = "bad chunked body"
+            return resp
+        }
+        body = dbody
+    } else {
+        var bstart = he + 4
+        var blen = len(b)
+        var want = blen - bstart
+        if clen >= 0 {
+            want = clen
+        }
+        if want < 0 {
+            want = 0
+        }
+        var i: i64 = 0
+        while i < want && bstart + i < blen {
+            table_push(body, b[bstart + i])
+            i = i + 1
+        }
+    }
+    resp.status = st
+    resp.ok = st >= 200 && st < 300
+    resp.headers = hs
+    resp.body = body
+    resp.err = ""
+    if st == 0 {
+        resp.err = "bad status line"
+    }
+    collect_cookies(hs)
+    return resp
+}
+
+// 明文读满响应（Connection: close；CL/chunked 提前判定完成）。
+func drain_plain(h: i64, buf: table<i64>) -> string {
+    var he: i64 = -1
+    var parsed = false
+    var clen: i64 = -1
+    var chkd = false
+    var done = false
+    var g: i64 = 0
+    while done == false && g < 1000000 {
+        var chunk = net.tcp_recv_bytes(h, 65536)
+        g = g + 1
+        if len(chunk) == 0 {
+            done = true
+            break
+        }
+        var i: i64 = 0
+        while i < len(chunk) {
+            table_push(buf, chunk[i])
+            i = i + 1
+        }
+        if he < 0 {
+            he = head_end(buf)
+        }
+        if parsed == false && he >= 0 {
+            clen = clen_of(buf, he)
+            chkd = chunked_of(buf, he)
+            parsed = true
+        }
+        if parsed {
+            if chkd {
+                if chunk_term(buf) {
+                    done = true
+                }
+            } else if clen >= 0 {
+                if len(buf) >= he + 4 + clen {
+                    done = true
+                }
+            }
+        }
+    }
+    return ""
+}
+
+// TLS 读满响应（与 drain_plain 同构；tie 无函数指针/统一句柄，故双入口）。
+func drain_tls(s: Session, buf: table<i64>) -> string {
+    var he: i64 = -1
+    var parsed = false
+    var clen: i64 = -1
+    var chkd = false
+    var done = false
+    var g: i64 = 0
+    while done == false && g < 1000000 {
+        var chunk = tls.recv(s, 65536)
+        g = g + 1
+        if len(chunk) == 0 {
+            done = true
+            break
+        }
+        var i: i64 = 0
+        while i < len(chunk) {
+            table_push(buf, chunk[i])
+            i = i + 1
+        }
+        if he < 0 {
+            he = head_end(buf)
+        }
+        if parsed == false && he >= 0 {
+            clen = clen_of(buf, he)
+            chkd = chunked_of(buf, he)
+            parsed = true
+        }
+        if parsed {
+            if chkd {
+                if chunk_term(buf) {
+                    done = true
+                }
+            } else if clen >= 0 {
+                if len(buf) >= he + 4 + clen {
+                    done = true
+                }
+            }
+        }
+    }
+    return ""
+}
+
+// 单跳请求（不跟随重定向）。返回解析后的 Response（redirects 由 fetch 维护）。
+func roundtrip(u: table<string>, method: string, body: table<i64>,
+               headers: table<string>) -> Response {
+    var sch = u[0]
+    var host = u[1]
+    var prt = u[2]
+    var path = u[3]
+    var pport = conn_port(sch, prt)
+    var req = build_req(method, path, host, prt, body, headers)
+
+    if sch != "https" {
+        // 明文：直接走 net 字节 IO
+        var h = net.tcp_connect(host, pport)
+        if h < 0 {
+            return err_resp("connect failed: " + host + ":" + prt)
+        }
+        if net.tcp_send_bytes(h, req) != len(req) {
+            net.close(h)
+            return err_resp("send failed: " + host)
+        }
+        var buf = table_new_i64()
+        var rerr = drain_plain(h, buf)
+        net.close(h)
+        if rerr != "" {
+            return err_resp(rerr)
+        }
+        return parse_response(buf, url_of(u))
+    }
+    // https：tls.connect（1.3 优先，自动回退 1.2）
+    var s = tls.connect(host, pport)
+    if s.handle < 0 {
+        return err_resp("tls connect failed: " + host + ":" + prt)
+    }
+    if tls.send(s, req) == false {
+        tls.close(s)
+        return err_resp("tls send failed: " + host)
+    }
+    var buf2 = table_new_i64()
+    var rerr2 = drain_tls(s, buf2)
+    tls.close(s)
+    if rerr2 != "" {
+        return err_resp(rerr2)
+    }
+    return parse_response(buf2, url_of(u))
+}
+
+// URL 表合成字符串（错误信息/信息用）。
+func url_of(u: table<string>) -> string {
+    var s = u[0] + "://" + u[1]
+    if str_len(u[2]) > 0 {
+        s = s + ":" + u[2]
+    }
+    return s + u[3]
+}
+
+// 是否重定向状态码。
+func is_redirect(st: i64) -> bool {
+    return st == 301 || st == 302 || st == 303 || st == 307 || st == 308
+}
+
+// 完整请求（自动跟随重定向，上限 5 次；redirects = 已跳转次数）。
+func fetch(url: string, method: string, body: table<i64>,
+            headers: table<string>, redirects: i64) -> Response {
+    var u = parse_url(url)
+    if len(u) == 0 {
+        var rf: Response = err_resp("bad url: " + url)
+        rf.redirects = redirects
+        return rf
+    }
+    var resp = roundtrip(u, method, body, headers)
+    resp.redirects = redirects
+    resp.final_url = url
+    if is_redirect(resp.status) && redirects < 5 {
+        var loc = header_val(resp.headers, "Location")
+        if len(loc) > 0 {
+            var nu = resolve_url(url, loc)
+            var nm = method
+            var nb = body
+            if method == "POST" || resp.status == 303 {
+                nm = "GET"
+                nb = table_new_i64()
+            }
+            return fetch(nu, nm, nb, headers, redirects + 1)
+        }
+    }
+    return resp
+}
+
+// ============================================================================
+// 七、公共 API
+// ============================================================================
+
+// GET 请求。headers 为附加头行表（"Name: value"）；返回 Response。
+pub func get(url: string, headers: table<string>) -> Response {
+    return fetch(url, "GET", table_new_i64(), headers, 0)
+}
+
+// POST 请求，body 为正文字节表。返回 Response。
+pub func post(url: string, body: table<i64>, headers: table<string>) -> Response {
+    return fetch(url, "POST", body, headers, 0)
+}
+
+// GET 并返回正文文本（ASCII/UTF-8 内容；失败返回空串）。
+pub func get_text(url: string) -> string {
+    var headers = table_new_string()
+    var r = get(url, headers)
+    if r.ok {
+        return b2s(r.body)
+    }
+    return ""
+}
+
+// GET 并返回正文原始字节（失败返回空表）。
+pub func get_bytes(url: string) -> table<i64> {
+    var headers = table_new_string()
+    var r = get(url, headers)
+    if r.ok {
+        return r.body
+    }
+    return table_new_i64()
+}
+
+// GET 下载到本地文件；成功 true，失败 false（含非 2xx / 写入失败）。
+pub func get_file(url: string, path: string) -> bool {
+    var headers = table_new_string()
+    var r = get(url, headers)
+    if r.ok == false {
+        return false
+    }
+    if file_write(path, b2s(r.body)) == false {
+        return false
+    }
+    if file_exists(path) == false {
+        return false
+    }
+    return file_size(path) == len(r.body)
+}
+
+// Response 正文转文本（http.get 兼容层复用）。
+pub func body_text(r: Response) -> string {
+    return b2s(r.body)
+}
+
+}   // namespace httpc
+
+
+
+// 初始化 cookie jar（首次调用即建空表；跨调用持久，同名覆盖）。
+func jar_init() {
+    if g_jar_ready == false {
+        g_jar = table_new_string()
+        g_jar_ready = true
+    }
+}
+
+

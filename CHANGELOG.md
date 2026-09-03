@@ -22,6 +22,24 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] std/httpc: full pure-tie HTTP client (https/cookies/redirects/chunked) + http compat (2026-09-03)（p.6.6.2）
+
+- New std/httpc.tie (namespace httpc, type tie<class>): byte-table data plane;
+  URL parse (scheme/host/port/path), GET/POST with custom headers, Content-Length
+  body, chunked decode, Connection: close; https via ext/tls (auto 1.3 -> 1.2);
+  Set-Cookie jar (process-wide, replayed on later requests), 301/302/303/307/308
+  auto-follow (max 5, loop-safe); APIs get/get_text/get_bytes/get_file/body_text,
+  Response struct (status/ok/headers/body/redirects/final_url/err).
+- Fix ext/tls/tls.tie recv bug (first real consumer httpc): Session is value-typed
+  so the rbuf rebind inside recv never propagated to the caller — consecutive recv
+  returned duplicate bytes and never read new records. Now a shared rdone table
+  tracks the consumed offset (table content mutation survives value passing).
+- std/http.tie compat: get/get_file signatures unchanged, internally routed to
+  httpc; failures return Result.Err instead of the old runtime exit.
+- Probe tests/language/std_httpc_probe.tie: plaintext static/404/POST echo/cookie
+  replay/302 follow/chunked/big-file + https TLS 1.3 & 1.2 live + https
+  multi-record (72KB) — all PASS; curl double-run consistency noted.
+
 ## [fix] TLS 1.3 CertificateVerify 实况验签根治（2026-09-03）（p.6.6.1 收尾）
 
 - 根因三叠加：content 遗漏上下文串+NUL（RFC 8446 §4.4.3，对照 OpenSSL 源码）、
