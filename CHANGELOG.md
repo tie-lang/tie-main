@@ -22,6 +22,29 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] std/sse: streaming SSE event decoder on httpc.open_stream (p.6.6.3) (2026-09-03)
+
+- New std/sse.tie (namespace sse, type tie<class>): `text/event-stream` streaming
+  event client — connect(url, headers) -> SseConn, recv_event(c) -> SseEvent,
+  close(c); byte-table data plane end to end. Events: multi-line data joined with
+  newline, custom event name (default "message"), id / retry (last-wins), comment
+  lines ignored, CRLF+LF line endings, blank-line flush; empty flush (no data) emits
+  nothing per spec; connection end / EOF returns ok=false (no exception, same as httpc).
+- Long-lived connection: httpc.open_stream returns an un-closed StreamConn (parsed
+  status/headers; st=[status,he,bpos,clen,chunked,eof] state vector + shared-buffer
+  raw reads) with stream_recv (one incremental 64KB block; plain net / TLS dispatch)
+  and stream_close — SSE no longer reuses httpc's read-until-close semantics.
+- Incremental chunked frame decoding inside sse (size-line / payload / frame-tail /
+  terminator states persist across recv_event calls via the pst state vector), plus
+  non-chunked passthrough; decoded body stream is scanned once (indexed, no O(n^2)).
+- Failure semantics: non-200 / non-text/event-stream / connect errors -> ok=false
+  with err reason (checked at connect; Content-Type media type case-insensitive).
+- Probe tests/language/std_sse_probe.tie: 4-event live stream (multi-line data /
+  custom event / id / retry / comments / CRLF+LF mix / exact event count / stream
+  end), chunked mid-line-boundary cuts (2 events + terminator end), text/plain and
+  404 failure paths — all PASS; std_httpc_probe full regression PASS (streaming
+  additions are additive).
+
 ## [feat] std/httpc: full pure-tie HTTP client (https/cookies/redirects/chunked) + http compat (2026-09-03)（p.6.6.2）
 
 - New std/httpc.tie (namespace httpc, type tie<class>): byte-table data plane;

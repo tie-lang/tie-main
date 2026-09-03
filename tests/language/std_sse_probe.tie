@@ -1,0 +1,168 @@
+type tie<logic>
+// ============================================================================
+// std_sse_probe.tie：std/sse 流式事件解码探针（p.6.6.3）。
+// 覆盖：
+//   - /sse（长连接，服务端关闭收尾）：4 个事件逐字段断言——多行 data 拼接、
+//     自定义 event 名、id/retry 值（last-wins）、注释行忽略、CRLF 与 LF 混合、
+//     事件间空行、事件数精确、流尾 ok=false；
+//   - /sse-chunked（Transfer-Encoding: chunked，块边界故意切断行/事件）：
+//     增量帧解码 2 个事件 + 终结块收尾 ok=false；
+//   - /plain（200 text/plain）与 /404：非 SSE / 失败路径 ok=false + err。
+// 数据平面按字节表；探针断言仅 ASCII 语义。
+// 前置（外部夹具，仅验收环境，不入库）：
+//   python tests\_p6_probe\sse_server.py        （127.0.0.1:19180）
+// 编译运行：compiler\tiec.exe tests\language\std_sse_probe.tie（勿用根旧 tiec3.exe）
+// ============================================================================
+import "../../std/sse.tie" as sse
+
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=[" + got + "] want=[" + want + "]")
+        exit(1)
+    }
+}
+
+func chk_i64(name: string, got: i64, want: i64) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func chk_contains(name: string, hay: string, needle: string) {
+    var i: i64 = 0
+    var n = len(hay)
+    var m = len(needle)
+    var found = false
+    while i <= n - m {
+        var j: i64 = 0
+        var ok = true
+        while j < m {
+            if str_byte(hay, i + j) != str_byte(needle, j) {
+                ok = false
+            }
+            j = j + 1
+        }
+        if ok {
+            found = true
+        }
+        i = i + 1
+    }
+    if found {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " needle=" + needle + " hay=" + hay)
+        exit(1)
+    }
+}
+
+func fail(msg: string) {
+    println("FAIL " + msg)
+    exit(1)
+}
+
+func main() {
+    // ---- 1) /sse：长连接 4 事件 + 流尾 ----
+    var hdrs = table_new_string()
+    var c = sse.connect("http://127.0.0.1:19180/sse", hdrs)
+    if len(c.err) > 0 {
+        fail("sse_connect_err err=" + c.err)
+    }
+
+    var e1 = sse.recv_event(c)
+    if e1.ok == false {
+        fail("e1_ok err=" + e1.err)
+    }
+    chk("e1_event", e1.event, "message")
+    chk("e1_data", e1.data, "hello world\nsecond line")
+    chk("e1_id", e1.id, "msg-1")
+    chk_i64("e1_retry", e1.retry, 5000)
+
+    var e2 = sse.recv_event(c)
+    if e2.ok == false {
+        fail("e2_ok")
+    }
+    chk("e2_event", e2.event, "status")
+    chk("e2_data", e2.data, "ok\nfine")
+    chk("e2_id", e2.id, "")
+    chk_i64("e2_retry", e2.retry, 0)
+
+    var e3 = sse.recv_event(c)
+    if e3.ok == false {
+        fail("e3_ok")
+    }
+    chk("e3_event", e3.event, "message")
+    chk("e3_data", e3.data, "payload")
+    chk("e3_id", e3.id, "final-id")
+    chk_i64("e3_retry", e3.retry, 0)
+
+    var e4 = sse.recv_event(c)
+    if e4.ok == false {
+        fail("e4_ok")
+    }
+    chk("e4_event", e4.event, "message")
+    chk("e4_data", e4.data, "end")
+    chk("e4_id", e4.id, "")
+    chk_i64("e4_retry", e4.retry, 7000)
+
+    // 事件数精确：e5 必须为流尾
+    var e5 = sse.recv_event(c)
+    if e5.ok {
+        fail("e5_should_be_stream_end")
+    }
+    println("PASS sse_stream_end")
+    sse.close(c)
+
+    // ---- 2) /sse-chunked：增量块帧解码 ----
+    var c2 = sse.connect("http://127.0.0.1:19180/sse-chunked", hdrs)
+    if len(c2.err) > 0 {
+        fail("chunked_connect_err err=" + c2.err)
+    }
+    var ce1 = sse.recv_event(c2)
+    if ce1.ok == false {
+        fail("ce1_ok")
+    }
+    chk("ce1_data", ce1.data, "chunk-a\nchunk-b")
+    var ce2 = sse.recv_event(c2)
+    if ce2.ok == false {
+        fail("ce2_ok")
+    }
+    chk("ce2_data", ce2.data, "chunk-c")
+    var ce3 = sse.recv_event(c2)
+    if ce3.ok {
+        fail("ce3_should_be_stream_end")
+    }
+    println("PASS chunked_stream_end")
+    sse.close(c2)
+
+    // ---- 3) /plain：200 但非 text/event-stream → 失败 ----
+    var c3 = sse.connect("http://127.0.0.1:19180/plain", hdrs)
+    if len(c3.err) == 0 {
+        fail("plain_should_fail_at_connect")
+    }
+    var p1 = sse.recv_event(c3)
+    if p1.ok {
+        fail("plain_ok_should_false")
+    }
+    chk_contains("plain_err_has_ct", p1.err, "text/event-stream")
+    sse.close(c3)
+
+    // ---- 4) /404：失败路径 ----
+    var c4 = sse.connect("http://127.0.0.1:19180/nope", hdrs)
+    if len(c4.err) == 0 {
+        fail("nope_should_fail_at_connect")
+    }
+    var p4 = sse.recv_event(c4)
+    if p4.ok {
+        fail("nope_ok_should_false")
+    }
+    chk_contains("nope_err_has_404", p4.err, "404")
+    sse.close(c4)
+
+    println("std_sse 探针全部通过")
+    exit(0)
+}

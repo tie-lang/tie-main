@@ -1,0 +1,505 @@
+type tie<class>
+// ============================================================================
+// sse.tie：标准库——SSE（Server-Sent Events）流式事件客户端（命名空间 sse，纯 tie）
+// Streaming SSE event client (namespace sse, pure-tie). p.6.6.3
+//
+// 定位（Positioning）：在 std/httpc 流式打开（open_stream / stream_recv /
+// stream_close）之上实现 `text/event-stream` 的增量行式解码，完成
+// 「AI 流式 / 实时推送」链路的解码半段（依赖方向 tls → httpc → sse；httpc+sse
+// → llm）。https 复用 httpc 传输（tls 已验），本模块不直接触碰 TLS。
+//
+// 数据平面（Data plane）：
+//   事件流全链路以 table<i64>（0..255）承载原始字节；仅字段名匹配
+//   （event/data/id/retry）按 ASCII string 语义处理。SSE 字段名严格小写匹配
+//   （"Data:" 视为未知字段忽略，符合 HTML spec 大小写敏感规则）。
+//
+// 接口（Interface）：
+//   - connect(url, headers) -> SseConn      建立事件流连接（已校验 200 + CT）
+//   - recv_event(c) -> SseEvent             阻塞取下一个事件；流尾/失败 ok=false
+//   - close(c)                              关闭底层传输
+//
+// SseEvent 字段（Fields）：
+//   event 默认 "message"（未给 event 字段时）；data 为多行 data 值以 "\n" 拼接
+//   后的文本；id / retry 为最近一次字段值（last-wins）；retry 已解析为 i64，
+//   供调用方（如 LLM 客户端）后续实现重连策略——本模块不做重连。
+//   连接结束（服务端关闭 / chunked 终结块收讫）返回 ok=false、err=""；
+//   失败（连接/非 200/非 text/event-stream/坏帧）返回 ok=false、err 带原因。
+//   与 httpc 一致：不抛异常。
+//
+// 增量读（Incremental reading）：
+//   SSE 是长连接，不能复用 httpc 的「读满即关」语义——本模块经
+//   httpc.open_stream 打开连接（读完响应头即返回，连接保持打开），正文按需
+//   stream_recv 增量读。响应为 chunked 时内部做增量块帧解码（尺寸行 / 载荷 /
+//   帧尾 / 终结块），非 chunked 直通；解码后的正文流统一进连接级 body 缓冲，
+//   SSE 行解析只面对一层字节流。
+//
+// 事件语法（Event syntax）：
+//   字段行 `name: value`（值前至多剥一个空格）；空行 flush 事件；':' 开头为
+//   注释行忽略；行结束兼容 CRLF 与 LF（仅剥尾随 \r）；无 data 的空 flush 不
+//   发事件（符规范）；EOF 时积压的 data 事件照常补发。
+//
+// 语言约束（Language constraints）：
+//   - tie struct 为值类型，跨调用可变状态一律放连接的表字段（共享引用）：pst
+//     状态向量 [bpos, eof, ck_state, ck_rem, rpos] + body 解码正文缓冲。
+//   - 部分事件跨 recv_event 不持久化：recv_event 阻塞至事件完整才返回，
+//     事件字段累积用调用内局部表（无 O(n^2) 逐字节字符串拼接）。
+//   - 禁止 str_char 全串扫描；行扫描按下标推进（单遍）。
+//   - `port`、`text` 是 tie 保留字（本模块同样规避）。
+//
+// 局限（Limits）：
+//   - 单线程阻塞模型：一次性只有一个活动事件流（tie 无并发读）。
+//   - id 值内嵌 NUL 的截断语义（HTML spec）未实现（极少见）。
+//   - 不做重连/退避（retry 仅解析回传调用方）。
+// ============================================================================
+
+import "./httpc.tie" as httpc
+import "./string.tie" as str
+
+// ---- SseEvent：一个已解码事件 ----
+struct SseEvent {
+    var ok: bool = false        // 是否成功取到事件；false = 流尾/失败（err 说明）
+    var event: string = "message"   // 事件类型名（未给 event 字段时缺省 "message"）
+    var data: string = ""       // 多行 data 拼接后的文本（行间以 "\n" 连接）
+    var id: string = ""         // last event id（last-wins）
+    var retry: i64 = 0          // retry 毫秒数（last-wins；无该字段为 0）
+    var err: string = ""        // 失败原因（ok=false 时）
+}
+
+// ---- SseConn：一条 SSE 事件流连接 ----
+// conn：httpc 流式连接（原始字节层）；body：解码后的正文流（chunked 解码输出 /
+// 非 chunked 直通；行解析只面对它）；pst 状态向量（表共享引用，跨调用持久）：
+//   [0] bpos       body 扫描进度（字节）
+//   [1] eof        原始流已收尾（0/1）
+//   [2] ck_state   chunked 帧状态：0 尺寸行 / 1 载荷 / 2 帧尾 CRLF / 3 终结块
+//                  CRLF 待收 / 4 结束（非 chunked 恒为 4）
+//   [3] ck_rem     当前块剩余载荷字节
+//   [4] rpos       原始缓冲（conn.buf）被帧解码器消费到的位移
+struct SseConn {
+    var conn: StreamConn = StreamConn()   // 传输层（httpc 流式连接；struct 名跨文件裸用）
+    var body: table<i64> = table_new_i64()     // 解码后正文流缓冲（共享引用）
+    var pst: table<i64> = table_new_i64()      // 解析状态向量（共享引用）
+    var err: string = ""       // 连接级失败原因（connect 阶段设定）
+}
+
+namespace sse {
+
+// ============================================================================
+// 一、字节工具（沿 httpc 风格；httpc 内部函数非 pub，本地各持一份最小副本）
+// ============================================================================
+
+// 在 b[s..e) 内查找单字节 c；未找到返回 -1。
+func find_char(b: table<i64>, s: i64, e: i64, c: i64) -> i64 {
+    var i: i64 = s
+    while i < e {
+        if b[i] == c {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 从 off 起在整表 b 中查找单字节 c（行尾查找用，首个 \n 即行界）；未找到 -1。
+func find_byte(b: table<i64>, off: i64, c: i64) -> i64 {
+    var i: i64 = off
+    while i < len(b) {
+        if b[i] == c {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// b[s..e) 是否恰等于 ASCII 串 k（SSE 字段名匹配用，严格小写）。
+func bytes_eq(b: table<i64>, s: i64, e: i64, k: string) -> bool {
+    var m = len(k)
+    if e - s != m {
+        return false
+    }
+    var i: i64 = 0
+    while i < m {
+        if b[s + i] != str_byte(k, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 复制 b[s..e) 为独立字节表（event/id 的 last-wins 重绑定用；取段短小）。
+func take_bytes(b: table<i64>, s: i64, e: i64) -> table<i64> {
+    var out = table_new_i64()
+    var i: i64 = s
+    while i < e {
+        table_push(out, b[i])
+        i = i + 1
+    }
+    return out
+}
+
+// b[s..e) 转字符串（ASCII 段；逐字节进 StringBuilder，单遍无 O(n^2)）。
+func bytes_to_str(b: table<i64>, s: i64, e: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = s
+    while i < e {
+        sb_append_byte(sb, b[i])
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 十进制字节段 [s,e) -> i64（retry 值解析；非数字字节跳过）。
+func dec_val(b: table<i64>, s: i64, e: i64) -> i64 {
+    var v: i64 = 0
+    var i: i64 = s
+    while i < e {
+        if b[i] >= 0x30 && b[i] <= 0x39 {
+            v = v * 10 + (b[i] - 0x30)
+        }
+        i = i + 1
+    }
+    return v
+}
+
+// 十六进制字节段 [s,e) -> i64（chunk 尺寸行解析；遇 ';' 扩展 / 非 hex 停止）。
+func hex_val(b: table<i64>, s: i64, e: i64) -> i64 {
+    var v: i64 = 0
+    var i: i64 = s
+    while i < e {
+        var c2 = b[i]
+        if c2 >= 0x30 && c2 <= 0x39 {
+            v = v * 16 + (c2 - 0x30)
+        } else if c2 >= 0x61 && c2 <= 0x66 {
+            v = v * 16 + (c2 - 0x61 + 10)
+        } else if c2 >= 0x41 && c2 <= 0x46 {
+            v = v * 16 + (c2 - 0x41 + 10)
+        } else {
+            break
+        }
+        i = i + 1
+    }
+    return v
+}
+
+// ============================================================================
+// 二、头表查询（Content-Type 判定）
+// ============================================================================
+
+// 头行表按名字取值（忽略大小写；未找到返回空串）。httpc 内部函数非 pub，
+// 本地最小副本。
+func hdr_val(hs: table<string>, name: string) -> string {
+    var i: i64 = 0
+    while i < len(hs) {
+        var colon = str.find(hs[i], ":")
+        if colon > 0 {
+            var k = str.trim(str.slice(hs[i], 0, colon))
+            if str.to_lower(k) == str.to_lower(name) {
+                return str.trim(str.slice(hs[i], colon + 1, str_len(hs[i])))
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// 响应是否 text/event-stream（媒体类型大小写不敏感）。
+func is_event_stream(hs: table<string>) -> bool {
+    var ct = str.to_lower(hdr_val(hs, "Content-Type"))
+    return str.contains(ct, "text/event-stream")
+}
+
+// ============================================================================
+// 三、事件构造（flush）
+// ============================================================================
+
+// 依当前事件累积构造事件；dt 为空（无 data）不发事件（false）。
+// data 是事件成立的必要条件，符 HTML spec 的「data buffer 为空则不发」规则，
+// 同时天然吞掉 chunked 帧尾产生的多余空行。
+func flush_event(dt: table<i64>, en: table<i64>, ei: table<i64>,
+                 rty: i64, rth: i64) -> SseEvent {
+    var ev = SseEvent()
+    if len(dt) == 0 {
+        return ev
+    }
+    ev.ok = true
+    if len(en) > 0 {
+        ev.event = bytes_to_str(en, 0, len(en))
+    }
+    // 多行 data 拼接：值行 + "\n" 累积，末位换行剥除
+    var n = len(dt)
+    if n > 0 && dt[n - 1] == 0x0A {
+        n = n - 1
+    }
+    ev.data = bytes_to_str(dt, 0, n)
+    ev.id = bytes_to_str(ei, 0, len(ei))
+    if rth != 0 {
+        ev.retry = rty
+    }
+    return ev
+}
+
+// ============================================================================
+// 四、增量正文加载：chunked 帧解码 / 直通 -> body
+// ============================================================================
+
+// 读更多原始字节并（chunked 时）增量帧解码进 body；返回本次解码进 body 的字节
+// 数（0 = 原始流收尾 / chunked 终结块已收讫 / Content-Length 已满）。
+// 帧状态与消费位（ck_state/ck_rem/rpos）存于 pst（共享引用，跨调用持久）。
+func fill_body(c: SseConn) -> i64 {
+    var ps = c.pst
+    var body = c.body
+    var raw = c.conn.buf
+    var st = c.conn.st
+    var ck_state: i64 = ps[2]
+    var ck_rem: i64 = ps[3]
+    var rp: i64 = ps[4]
+    var chkd: i64 = 0
+    var clen: i64 = -1
+    if len(st) >= 5 {
+        chkd = st[4]
+        clen = st[3]
+    }
+    var n0 = len(body)
+    var g: i64 = 0
+    while g < 1000000 {
+        // ---- 内层帧解码：尽可能把 raw 消费进 body ----
+        var cont = true
+        while cont {
+            cont = false
+            var rn = len(raw)
+            if chkd == 1 {
+                if ck_state == 0 {
+                    // 尺寸行：找行尾并解析十六进制尺寸
+                    var lf = find_byte(raw, rp, 0x0A)
+                    if lf >= 0 {
+                        var le = lf
+                        if le > rp && raw[le - 1] == 0x0D {
+                            le = le - 1
+                        }
+                        var sz = hex_val(raw, rp, le)
+                        rp = lf + 1
+                        if sz == 0 {
+                            ck_state = 3
+                        } else {
+                            ck_rem = sz
+                            ck_state = 1
+                        }
+                        cont = true
+                    }
+                } else if ck_state == 1 {
+                    // 载荷：尽量灌入 body，按 ck_rem 收口
+                    var avail = rn - rp
+                    if avail > 0 {
+                        var take = avail
+                        if take > ck_rem {
+                            take = ck_rem
+                        }
+                        var i: i64 = 0
+                        while i < take {
+                            table_push(body, raw[rp + i])
+                            i = i + 1
+                        }
+                        rp = rp + take
+                        ck_rem = ck_rem - take
+                        if ck_rem == 0 {
+                            ck_state = 2
+                        }
+                        cont = true
+                    }
+                } else if ck_state == 2 {
+                    // 帧尾 "\r\n"
+                    if rn - rp >= 2 {
+                        rp = rp + 2
+                        ck_state = 0
+                        cont = true
+                    }
+                } else if ck_state == 3 {
+                    // 终结块尾 "\r\n"（"0\r\n\r\n" 的收尾）
+                    if rn - rp >= 2 {
+                        rp = rp + 2
+                        ck_state = 4
+                        cont = true
+                    }
+                }
+                // ck_state == 4：终结块收讫，无更多正文
+            } else {
+                // 非 chunked：raw[rp..rn] 直通复制进 body
+                if rn - rp > 0 {
+                    var i2: i64 = rp
+                    while i2 < rn {
+                        table_push(body, raw[i2])
+                        i2 = i2 + 1
+                    }
+                    rp = rn
+                    cont = true
+                }
+            }
+        }
+        // ---- 帧解码结束，状态写回（共享表）----
+        ps[2] = ck_state
+        ps[3] = ck_rem
+        ps[4] = rp
+        if len(body) - n0 > 0 {
+            return len(body) - n0
+        }
+        if chkd == 1 && ck_state == 4 {
+            return 0
+        }
+        if chkd == 0 && clen >= 0 && len(body) >= clen {
+            return 0
+        }
+        // 需要更多原始字节：增量读一次（阻塞）
+        var got = httpc.stream_recv(c.conn)
+        if got == 0 {
+            return 0
+        }
+        g = g + 1
+    }
+    return 0
+}
+
+// ============================================================================
+// 五、公共 API
+// ============================================================================
+
+// 建立事件流连接：open_stream + 校验 200 / text/event-stream。
+// 失败在连接上带 err（recv_event 原样回传）；成功初始化 pst/body 解码起点。
+pub func connect(url: string, headers: table<string>) -> SseConn {
+    var c = SseConn()
+    var sc = httpc.open_stream(url, headers)
+    c.conn = sc
+    if len(sc.err) > 0 {
+        c.err = sc.err
+        return c
+    }
+    var st = sc.st
+    if len(st) < 6 {
+        c.err = "malformed response headers"
+        return c
+    }
+    var status = st[0]
+    var he = st[1]
+    var chkd = st[4]
+    if status != 200 {
+        c.err = "http status " + to_string(status)
+        return c
+    }
+    if is_event_stream(sc.head) == false {
+        c.err = "not text/event-stream (Content-Type: " +
+                hdr_val(sc.head, "Content-Type") + ")"
+        return c
+    }
+    // 初始化解析状态：bpos=0，eof=0，非 chunked 直通(4)/chunked 从尺寸行(0)
+    // 起，rpos=头结束+4（跳过响应头区）
+    var ps = c.pst
+    table_push(ps, 0)
+    table_push(ps, 0)
+    if chkd == 1 {
+        table_push(ps, 0)
+    } else {
+        table_push(ps, 4)
+    }
+    table_push(ps, 0)
+    table_push(ps, he + 4)
+    return c
+}
+
+// 阻塞取下一个事件。服务端关闭 / chunked 终结块收讫后返回 ok=false（err=""）；
+// 连接失败 / 非 200 / 非 event-stream / 坏帧返回 ok=false 且 err 带原因。
+pub func recv_event(c: SseConn) -> SseEvent {
+    var ev = SseEvent()
+    if len(c.err) > 0 {
+        ev.err = c.err
+        return ev
+    }
+    var ps = c.pst
+    var body = c.body
+    // 当前事件累积——每次调用全新局部：recv_event 阻塞至事件完整才返回，
+    // 部分事件不会跨调用残留，故事件字段区无需挂到连接上、也无需清场。
+    var dt = table_new_i64()     // data 值行累积（值字节 + 0x0A 行间分隔）
+    var en = table_new_i64()     // event 名（last-wins；空 => "message"）
+    var ei = table_new_i64()     // id（last-wins）
+    var rty: i64 = 0             // retry（last-wins）
+    var rth: i64 = 0             // 本事件是否出现 retry 字段
+    var g: i64 = 0
+    while g < 1000000 {
+        g = g + 1
+        // ---- 从 body 扫描一个完整行 ----
+        var bpos = ps[0]
+        var lf = find_byte(body, bpos, 0x0A)
+        if lf >= 0 {
+            var le = lf
+            if le > bpos && body[le - 1] == 0x0D {
+                le = le - 1
+            }
+            ps[0] = lf + 1
+            var cl = le - bpos
+            if cl == 0 {
+                // 空行：flush 事件（无 data 不发，符规范）
+                var fe = flush_event(dt, en, ei, rty, rth)
+                if fe.ok {
+                    return fe
+                }
+                dt = table_new_i64()
+                en = table_new_i64()
+                ei = table_new_i64()
+                rty = 0
+                rth = 0
+            } else if body[bpos] == 0x3A {
+                // 注释行（':' 开头）：忽略
+            } else {
+                // 字段行 "name: value"；无冒号行视为 name=整行、value=空（被
+                // 未知字段规则忽略，与规范一致）
+                var col = find_char(body, bpos, le, 0x3A)
+                var vs = le
+                if col >= 0 {
+                    vs = col + 1
+                    if vs < le && body[vs] == 0x20 {
+                        vs = vs + 1
+                    }
+                }
+                var ne = le
+                if col >= 0 {
+                    ne = col
+                }
+                if bytes_eq(body, bpos, ne, "data") {
+                    var i: i64 = vs
+                    while i < le {
+                        table_push(dt, body[i])
+                        i = i + 1
+                    }
+                    table_push(dt, 0x0A)
+                } else if bytes_eq(body, bpos, ne, "event") {
+                    en = take_bytes(body, vs, le)
+                } else if bytes_eq(body, bpos, ne, "id") {
+                    ei = take_bytes(body, vs, le)
+                } else if bytes_eq(body, bpos, ne, "retry") {
+                    rty = dec_val(body, vs, le)
+                    rth = 1
+                }
+                // 其他字段名：忽略（自定义字段不影响事件状态）
+            }
+            continue
+        }
+        // ---- 无完整行：补字节或收尾 ----
+        if ps[1] == 1 {
+            // 流已收尾：EOF 时积压事件照常补发（有 data 才发），否则流尾
+            return flush_event(dt, en, ei, rty, rth)
+        }
+        var got = fill_body(c)
+        if got == 0 {
+            ps[1] = 1
+            continue
+        }
+    }
+    ev.err = "sse read guard exceeded"
+    return ev
+}
+
+// 关闭事件流连接（底层明文 socket / TLS 会话）。
+pub func close(c: SseConn) {
+    httpc.stream_close(c.conn)
+}
+
+}   // namespace sse

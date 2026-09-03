@@ -19,6 +19,9 @@ type tie<class>
 //   - 响应解析：状态行 / 头表 / 正文按 Content-Length 或 chunked 解码
 //   - Set-Cookie 解析进模块级 cookie jar，后续请求自动回发 Cookie 头
 //   - 301/302/303/307/308 自动跟随（上限 5 次，防环）；连接失败返回 ok=false
+//   - open_stream(url, headers) -> StreamConn 流式打开（p.6.6.3 SSE 前置）：
+//     连接 + 发送请求 + 读完响应头即返回，连接保持打开（不同于 get/post 读满即关）；
+//     配套 stream_recv（增量读，追加进连接缓冲）与 stream_close。
 //
 // Response 语义（Response semantics）：
 //   status=状态码；ok=2xx；headers=头行表（原样保留大小写）；body=正文字节表；
@@ -39,6 +42,7 @@ type tie<class>
 //   - 不支持 keep-alive（强制 Connection: close，一请求一连接）；
 //   - 获取正文不以 Content-Length 结尾、亦非 chunked 时，靠服务端关闭判定结束；
 //   - URL 解析不处理 IPv6 字面量 host（[::1]）与 userinfo。
+//   - open_stream 不跟随重定向（SSE 端点一般不跳转；身份由调用方按 status/head 判定）。
 // ============================================================================
 
 import "./net.tie" as net
@@ -58,6 +62,24 @@ struct Response {
     var redirects: i64 = 0                    // 跳转次数
     var final_url: string = ""                // 实际响应的 URL
     var err: string = ""                      // 失败原因（ok=false 时）
+}
+
+// ---- StreamConn：增量读流连接（SSE 等长连接用；p.6.6.3）----
+// 与 Response（读满即关）不同：open_stream 建连并读完响应头即返回，连接保持打开，
+// 正文由调用方（std/sse）按需增量读取。跨调用可变状态一律放表字段（共享引用）：
+//   - st  状态向量 [status, he, bpos, clen, chunked, eof]，下标定位单遍读取；
+//   - buf 原始字节缓冲（头 + 未消费正文），stream_recv 每次读一个网络块追加进 buf；
+//   - head 解析后的响应头行表（原样保留大小写）。
+// 标量字段（kind/handle/tlsx/final_url）打开时一次写定，之后只读。
+struct StreamConn {
+    var kind: i64 = 0               // 传输类型：0=明文（net），1=TLS（tls）
+    var handle: i64 = -1            // 底层 socket 句柄（明文用；TLS 时冗余存底层句柄）
+    var tlsx: Session = Session()   // TLS 会话（kind==1 有效；整体赋值/读取）
+    var st: table<i64> = table_new_i64()     // [status, he, bpos, clen, chunked, eof]
+    var buf: table<i64> = table_new_i64()    // 原始接收缓冲（共享引用跨调用持久）
+    var head: table<string> = table_new_string()  // 响应头行表
+    var err: string = ""            // 失败原因（语义同 Response.err）
+    var final_url: string = ""      // 实际响应的 URL
 }
 
 namespace httpc {
@@ -838,7 +860,154 @@ func fetch(url: string, method: string, body: table<i64>,
 }
 
 // ============================================================================
-// 七、公共 API
+// 七、流式连接（open_stream / stream_recv / stream_close，SSE 等长连接用）
+// ============================================================================
+
+// 增量读完响应头即返回（单遍扫描，命中 he 即止）。返回 "" = 头部已完整。
+// 根因（p.6.6.3）：SSE 是长连接，get/post 的「读满即关」语义不适用——本函数只
+// 读到 "\r\n\r\n" 即收手，后续正文留给调用方按需 stream_recv 增量读。
+func fill_head(c: StreamConn) -> string {
+    var g: i64 = 0
+    var he: i64 = -1
+    while g < 1000000 {
+        if he < 0 {
+            he = head_end(c.buf)
+        }
+        if he >= 0 {
+            return ""
+        }
+        var chunk = table_new_i64()
+        if c.kind == 1 {
+            var sess = c.tlsx
+            chunk = tls.recv(sess, 65536)
+        } else {
+            chunk = net.tcp_recv_bytes(c.handle, 65536)
+        }
+        if len(chunk) == 0 {
+            return "connection closed before response headers"
+        }
+        var bf = c.buf
+        var i: i64 = 0
+        while i < len(chunk) {
+            table_push(bf, chunk[i])
+            i = i + 1
+        }
+        g = g + 1
+    }
+    return "header read limit"
+}
+
+// 流式打开：连接 + 发送请求 + 读完响应头即返回（连接保持打开，不跟随重定向）。
+// 成功时 st=[status, he, bpos=he+4, clen, chunked, eof=0]；失败 err 带原因。
+// 非 2xx / 非 text/event-stream 不由本函数判定——调用方（如 std/sse）按
+// status/head 自决（语义与 Response.ok 一样：不抛异常，返回 ok=false + err）。
+pub func open_stream(url: string, headers: table<string>) -> StreamConn {
+    var c = StreamConn()
+    var u = parse_url(url)
+    if len(u) == 0 {
+        c.err = "bad url: " + url
+        return c
+    }
+    c.final_url = url
+    var sch = u[0]
+    var host = u[1]
+    var prt = u[2]
+    var path = u[3]
+    var pport = conn_port(sch, prt)
+    var req = build_req("GET", path, host, prt, table_new_i64(), headers)
+    var rerr: string = ""
+    if sch != "https" {
+        var h = net.tcp_connect(host, pport)
+        if h < 0 {
+            c.err = "connect failed: " + host + ":" + prt
+            return c
+        }
+        c.kind = 0
+        c.handle = h
+        if net.tcp_send_bytes(h, req) != len(req) {
+            net.close(h)
+            c.err = "send failed: " + host
+            return c
+        }
+        rerr = fill_head(c)
+    } else {
+        var s = tls.connect(host, pport)
+        if s.handle < 0 {
+            c.err = "tls connect failed: " + host + ":" + prt
+            return c
+        }
+        c.kind = 1
+        c.tlsx = s
+        c.handle = s.handle
+        if tls.send(s, req) == false {
+            tls.close(s)
+            c.err = "tls send failed: " + host
+            return c
+        }
+        rerr = fill_head(c)
+    }
+    if rerr != "" {
+        stream_close(c)
+        c.err = rerr
+        return c
+    }
+    var st = c.st
+    var he = head_end(c.buf)
+    var stt = parse_status(c.buf, he)
+    var hd = parse_headers(c.buf, he)
+    var cl = clen_of(c.buf, he)
+    var chk = 0
+    if chunked_of(c.buf, he) {
+        chk = 1
+    }
+    table_push(st, stt)
+    table_push(st, he)
+    table_push(st, he + 4)
+    table_push(st, cl)
+    table_push(st, chk)
+    table_push(st, 0)
+    c.head = hd
+    return c
+}
+
+// 增量读一次原始字节（明文 net / TLS tls 按 kind 派发）并追加进 c.buf；
+// 返回追加字节数；0 = 对端关闭 / 无更多数据。TLS 会话的表字段（rbuf/rdone/seqs）
+// 为共享引用，tls.recv 内部的解密消费推进跨调用持久（无需写回 tlsx）。
+pub func stream_recv(c: StreamConn) -> i64 {
+    if c.kind == 1 {
+        var sess = c.tlsx
+        var chunk = tls.recv(sess, 65536)
+        var n = len(chunk)
+        var bf = c.buf
+        var i: i64 = 0
+        while i < n {
+            table_push(bf, chunk[i])
+            i = i + 1
+        }
+        return n
+    }
+    var chunk2 = net.tcp_recv_bytes(c.handle, 65536)
+    var n2 = len(chunk2)
+    var bf2 = c.buf
+    var j: i64 = 0
+    while j < n2 {
+        table_push(bf2, chunk2[j])
+        j = j + 1
+    }
+    return n2
+}
+
+// 关闭流式连接的底层传输（明文 socket / TLS 会话）。
+pub func stream_close(c: StreamConn) {
+    if c.kind == 1 {
+        tls.close(c.tlsx)
+    } else if c.handle > 0 {
+        net.close(c.handle)
+    }
+}
+
+// ============================================================================
+// 八、公共 API
 // ============================================================================
 
 // GET 请求。headers 为附加头行表（"Name: value"）；返回 Response。
