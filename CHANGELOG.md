@@ -22,6 +22,21 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/html/dom: extended implicit-closure rules (p.6.6.4) (2026-09-03)
+
+- ext/html/dom.tie tree assembly hardening (best-effort, WHATWG-inspired subset):
+  - Same-tag auto-close extended: p/li/tr/td/th/option/dt/dd/thead/tbody/tfoot close the
+    open element of the same tag at stack top before opening a new one.
+  - p auto-close on block-level starts: div/ul/ol/table/h1..h6/pre/blockquote/form/section/
+    article/nav/header/footer/aside/main/address/dl/hr (hr keeps its void self-close).
+  - Structural tags: <body> closes an unterminated <head> (and anything above it); duplicate
+    html/head/body occurrences ignored (first wins) — e.g. <body>…<head>…</head><body>…
+    keeps one body, head after body is dropped.
+  - Headers (dom.tie/html.tie) updated; closure semantics documented line by line.
+- Probe tests/html_probe/html_probe.tie: +12 assertions (table tr/td chains, dl dt/dd,
+  p+div / p+h1 adjacency, body-closes-head, duplicate html/head/body ignored, li triple
+  implicit close); existing selector/sibling assertions adjusted to the new tree shapes.
+
 ## [feat] ext/html/links: <base href> support + %XX hex normalization (p.6.6.4) (2026-09-03)
 
 - ext/html/links.tie collect upgrade (html.links):

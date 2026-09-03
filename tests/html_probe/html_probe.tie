@@ -334,9 +334,9 @@ func tst_selectx() {
     // ---- d3：兄弟组合器 ----
     var d3 = html.parse(sample3())
     chk_i64("sx_plus_li", len(html.query(d3, "li + li")), 1)
-    chk_i64("sx_plus_p_div", len(html.query(d3, "p + div")), 0)   // p 与 div 之间隔 "tail" 文本
-    chk_i64("sx_tilde_div_span", len(html.query(d3, "p ~ span")), 1)
-    chk_i64("sx_tilde_wrong", len(html.query(d3, "div ~ span")), 0)   // div 在 span 之后（兄弟序反向）
+    chk_i64("sx_plus_p_div", len(html.query(d3, "p + div")), 1)   // p 遇 div 自动闭合后 p 与 div 相邻
+    chk_i64("sx_tilde_div_span", len(html.query(d3, "div ~ span")), 0)   // span 在 div 内（p 关闭后进入 div 子树）
+    chk_i64("sx_tilde_div_b", len(html.query(d3, "div ~ b")), 0)   // b 也在 div 内
     // ---- d4：伪类（结构 + :not + 未知伪类）----
     var d4 = html.parse("<ul><li>a</li><li>b</li><li>c</li></ul>")
     chk_i64("sx_nth_ul_li", len(html.query(d4, "ul > li")), 3)
@@ -401,6 +401,34 @@ func tst_base() {
     chk("b5_slash", l5[1], "http://e.com/x/a/b/c.png")
 }
 
+func tst_closure() {
+    // 同标签自动闭合：表格 td/tr、dl dt/dd、列表 li（li 已在 s3 覆盖）
+    var d1 = html.parse("<table><tr><td>a<td>b</tr><tr><td>c</td></tr></table>")
+    chk_i64("cl_tr", len(html.query(d1, "tr")), 2)
+    chk_i64("cl_td", len(html.query(d1, "td")), 3)
+    chk_i64("cl_tr_td", len(html.query(d1, "tr > td")), 3)
+    var d2 = html.parse("<dl><dt>a<dt>b<dd>c<dd>d</dl>")
+    chk_i64("cl_dt", len(html.query(d2, "dt")), 2)
+    chk_i64("cl_dd", len(html.query(d2, "dd")), 2)
+    // p 遇块级自动闭合：<p>a<div>b</div>c → p 与 div 相邻
+    var d3 = html.parse("<p>a<div>b</div>c")
+    chk_i64("cl_p_div", len(html.query(d3, "p + div")), 1)
+    chk_i64("cl_p_blocks_h1", len(html.query(html.parse("<p>x<h1>t</h1>"), "p + h1")), 1)
+    // body 收掉未闭合 head；重复 html/head/body 忽略
+    var d4 = html.parse("<html><head><title>t</title><body><p>x</p></body></html>")
+    chk_i64("cl_head1", len(html.query(d4, "head")), 1)
+    chk_i64("cl_body1", len(html.query(d4, "body")), 1)
+    var d5 = html.parse("<html><body><p>a</p><head><title>b</title></head><body>c</body><html>tail")
+    chk_i64("cl_dup_body", len(html.query(d5, "body")), 1)   // 重复 body 忽略
+    chk_i64("cl_dup_head", len(html.query(d5, "head")), 0)   // body 后 head 忽略
+    chk_i64("cl_dup_html", len(html.query(d5, "html")), 1)   // 尾部重复 html 忽略（首 html 保留）
+    chk_contains("cl_dup_text", html.plain(d5), "c")
+    // 未闭合标签尾部收口（既有语义保持）
+    var d6 = html.parse("<ul><li>1<li>2<li>3</ul>")
+    chk_i64("cl_li3", len(html.query(d6, "li")), 3)
+    chk_i64("cl_li3_desc", len(html.query(d6, "ul > li")), 3)
+}
+
 func main() {
     tst_sample1()
     tst_sample2()
@@ -408,6 +436,7 @@ func main() {
     tst_selectx()
     tst_plaintext()
     tst_base()
+    tst_closure()
     tst_big()
     println("html 探针全部通过 / html probe all PASS")
     exit(0)

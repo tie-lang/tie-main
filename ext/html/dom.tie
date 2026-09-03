@@ -21,8 +21,11 @@ type tie<class>
 //   - 未闭合标签收口到文档尾（栈内未闭合节点成为其父的子树收尾）；
 //   - `</x>` 与开栈中匹配的**最近**祖先（含其上未闭合中间节点，一并收口）；
 //     无匹配则忽略该闭标签；
-//   - 隐式闭合仅覆盖常见 void 元素（br/img/hr/meta/link/input/area/base/col/
-//     embed/source/track/wbr）与 p/li 级基础（开同名 p/li 时先闭合前者）；
+//   - 隐式闭合（尽力而为）：p/li/tr/td/th/option/dt/dd/thead/tbody/tfoot 开同标签时
+//     先收口栈顶同标签；p 遇块级标签（div/ul/ol/table/h1..h6/pre/blockquote/form/
+//     section/article/nav/header/footer/aside/main/address/dl/hr）自动闭合；常见
+//     void 元素自闭合（br/img/hr/meta/link/input/area/base/col/embed/source/track/wbr）；
+//     <body> 开时收掉未闭合 <head>；重复 html/head/body 结构标签忽略（首个生效）；
 //   - 注释与 doctype 不入树；raw text（script/style）内容作为文本子节点保留
 //     （text() 层跳过该子树）；CDATA 内容按文本节点保留；
 //   - 非法嵌套按上述规则"尽力而为"收口，不追求与 WHATWG 完全一致。
@@ -136,12 +139,75 @@ func is_void(tg: string) -> bool {
     return false
 }
 
-// 开标签前的隐式闭合（尽力而为：p/li 级基础——顶层栈顶同标签先收口）
+// 开标签前的隐式闭合（尽力而为）：
+//   - 同标签自动闭合：p/li/tr/td/th/option/dt/dd/thead/tbody/tfoot（栈顶同标签先收口）
+//   - p 遇块级标签自动闭合（div/ul/ol/table/h1..h6/pre/blockquote/form/section/article/
+//     nav/header/footer/aside/main/address/dl/hr）——WHATWG 的 p 在块级开头生效
+func pclose_blocks(nm: string) -> bool {
+    if nm == "div" || nm == "ul" || nm == "ol" || nm == "table" || nm == "pre" ||
+       nm == "blockquote" || nm == "form" || nm == "section" || nm == "article" ||
+       nm == "nav" || nm == "header" || nm == "footer" || nm == "aside" ||
+       nm == "main" || nm == "address" || nm == "dl" || nm == "hr" {
+        return true
+    }
+    if nm == "h1" || nm == "h2" || nm == "h3" || nm == "h4" || nm == "h5" || nm == "h6" {
+        return true
+    }
+    return false
+}
+
+func same_close_tags(nm: string) -> bool {
+    if nm == "p" || nm == "li" || nm == "tr" || nm == "td" || nm == "th" ||
+       nm == "option" || nm == "dt" || nm == "dd" || nm == "thead" ||
+       nm == "tbody" || nm == "tfoot" {
+        return true
+    }
+    return false
+}
+
+// 栈顶为同标签（in same_close_tags）→ 收口一层（i64 返回新 sp）
 func maybe_auto_close(st: table<i64>, sp: i64, nm: string) -> i64 {
+    if sp > 1 && same_close_tags(nm) {
+        var top = st[sp - 1]
+        if top > 0 && dt_tag[top] == nm {
+            return sp - 1
+        }
+    }
+    return sp
+}
+
+// 开块级标签时，栈顶为未闭合 p → 收口一层
+func close_top_p(st: table<i64>, sp: i64) -> i64 {
     if sp > 1 {
         var top = st[sp - 1]
-        if top > 0 && dt_tag[top] == nm && (nm == "p" || nm == "li") {
+        if top > 0 && dt_tag[top] == "p" {
             return sp - 1
+        }
+    }
+    return sp
+}
+
+// 栈中（不含根）是否已有标签 tg
+func has_line(st: table<i64>, sp: i64, tg: string) -> bool {
+    var i: i64 = 0
+    while i < sp {
+        if i > 0 && dt_tag[st[i]] == tg {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// 开 <body> 时若有未闭合 <head> → 收口到 head 之下（含 head 之上的中间节点）
+func close_head_for_body(st: table<i64>, sp: i64) -> i64 {
+    if sp > 1 {
+        var f = sp - 1
+        while f >= 1 && dt_tag[st[f]] != "head" {
+            f = f - 1
+        }
+        if f >= 1 {
+            return f
         }
     }
     return sp
@@ -183,23 +249,43 @@ pub func build() -> HtmlDoc {
             }
         } else if ty == MTK_OPEN || ty == MTK_SELF {
             var nm = mltok.tok_name(ti)
-            sp = maybe_auto_close(st, sp, nm)
-            var nid = new_el(nm)
-            var ao = mltok.tok_aoff(ti)
-            var ac = mltok.tok_acnt(ti)
-            if ac > 0 {
-                copy_attrs(nid, ao, ac)
+            // 重复结构标签忽略（html/head/body 已存在时再开 → 跳过，WHATWG 自动收口）
+            var skip_el: i64 = 0
+            if nm == "html" && has_line(st, sp, "html") {
+                skip_el = 1
             }
-            attach_child(st[sp - 1], nid)
-            // 虚拟栈：逻辑槽位写入（pop 后的旧槽可复用，防读到过期值）
-            if sp == len(st) {
-                table_push(st, nid)
-            } else {
-                st[sp] = nid
+            if nm == "body" && has_line(st, sp, "body") {
+                skip_el = 1
             }
-            sp = sp + 1
-            if ty == MTK_SELF || is_void(nm) {
-                sp = sp - 1
+            if nm == "head" && has_line(st, sp, "body") {
+                skip_el = 1   // body 后的 head：忽略（其内容并入当前开放容器）
+            }
+            if skip_el == 0 {
+                // 隐式闭合：同标签收口 / p 遇块级收口 / body 收掉未闭合 head
+                sp = maybe_auto_close(st, sp, nm)
+                if pclose_blocks(nm) {
+                    sp = close_top_p(st, sp)
+                }
+                if nm == "body" {
+                    sp = close_head_for_body(st, sp)
+                }
+                var nid = new_el(nm)
+                var ao = mltok.tok_aoff(ti)
+                var ac = mltok.tok_acnt(ti)
+                if ac > 0 {
+                    copy_attrs(nid, ao, ac)
+                }
+                attach_child(st[sp - 1], nid)
+                // 虚拟栈：逻辑槽位写入（pop 后的旧槽可复用，防读到过期值）
+                if sp == len(st) {
+                    table_push(st, nid)
+                } else {
+                    st[sp] = nid
+                }
+                sp = sp + 1
+                if ty == MTK_SELF || is_void(nm) {
+                    sp = sp - 1
+                }
             }
         } else if ty == MTK_CLOSE {
             var nm2 = mltok.tok_name(ti)

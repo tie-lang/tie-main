@@ -20,8 +20,9 @@ type tie<class>
 //
 // 局限（Limits）：
 //   - HTML5 规范庞大，本文档按"尽力而为"子集实现：大小写折叠（ASCII tag/attr
-//     名不敏感）、未闭合/错位标签容错（隐式闭合规则仅覆盖常见 void 元素与
-//     p/li 级基础）、注释与 doctype 跳树、script/style 内文 raw text 原样保留、
+//     名不敏感）、未闭合/错位标签容错（隐式闭合覆盖常见 void 元素、p/li/tr/td/th/
+//     option/dt/dd/表头组同标签闭合并 p 遇块级自动闭合、重复 html/head/body 忽略）、
+//     注释与 doctype 跳树、script/style 内文 raw text 原样保留、
 //     实体仅解码最小集（&amp; &lt; &gt; &quot; &#39; &nbsp; + 数字实体）。
 //   - 非法嵌套按"尽力而为"收口，不追求与 WHATWG 完全一致。
 //   - 选择器支持 tag / .class / #id / [attr] / [attr=value] / 属性部分匹配 ^= $= *=
