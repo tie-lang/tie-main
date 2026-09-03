@@ -12,7 +12,10 @@ type tie<class>
 //   - "/path..." 根路径 → scheme://authority + loc（保留 query/fragment）；
 //   - "#frag" / "?query" 仅挂当前路径后；
 //   - 其余相对路径 → scheme://authority + base 目录 + loc，随后对路径部分做
-//     "."/".." 段归并（norm_path）；query/fragment 原样保留。
+//     "."/".." 段归并（norm_path）与 %XX 十六进制统一小写（norm_hex）；
+//     query/fragment 原样保留。
+//   - **<base href> 支持**：文档内第一个 <base> 的相对值按入参 base 解析后覆盖
+//     基础地址（HTML 规范首 base 生效）；入参 base 为空时 <base> 须为绝对 URL。
 // 不对 URL 做字符编码（空串 href 视为脏数据跳过）。
 // 失败语义：base 缺 scheme 时按 "http" 处理；恒不崩溃。
 // ============================================================================
@@ -138,6 +141,11 @@ func norm_path(p: string) -> string {
         i = i + 1
     }
     var suffix = take(p, end, len(p))
+    // 路径部分是否以 '/' 结尾（"docs/" → 归并后仍需保留目录语义）
+    var tail_slash: i64 = 0
+    if end > 0 && str_byte(p, end - 1) == 47 {
+        tail_slash = 1
+    }
     // 分段（'/' 分隔，仅遍历路径部分 [0,end)；跳过空段——路径以 '/' 起）
     var segs = table_new_string()
     var s: i64 = 0
@@ -183,6 +191,9 @@ func norm_path(p: string) -> string {
         sb_append(sb, r[u])
         u = u + 1
     }
+    if tail_slash == 1 {
+        sb_append_byte(sb, 47)
+    }
     sb_append(sb, suffix)
     return sb_build(sb)
 }
@@ -204,19 +215,88 @@ func resolve(pre: table<string>, loc: string) -> string {
     if len(loc) > 0 && (str_byte(loc, 0) == 63 || str_byte(loc, 0) == 35) {
         return pre[0] + "://" + pre[1] + pre[2] + loc
     }
-    // 相对：dir + loc，路径段归并
-    var joined = pre[3] + loc
+    // 相对：dir + loc（%XX 十六进制统一小写），路径段归并
+    var joined = norm_hex(pre[3] + loc)
     return pre[0] + "://" + pre[1] + norm_path(joined)
 }
 
+// 把段中 %XX 的十六进制字母统一为小写（轻量规范化；%2F 等语义不变）。
+func norm_hex(p: string) -> string {
+    var n = len(p)
+    var i: i64 = 0
+    var has: i64 = 0
+    while i + 2 < n {
+        if str_byte(p, i) == 37 {
+            has = 1
+            break
+        }
+        i = i + 1
+    }
+    if has == 0 {
+        return p
+    }
+    var sb = string_builder()
+    var k: i64 = 0
+    while k < n {
+        var b = str_byte(p, k)
+        if b == 37 && k + 2 < n {
+            sb_append_byte(sb, 37)
+            var h1 = str_byte(p, k + 1)
+            var h2 = str_byte(p, k + 2)
+            if h1 >= 65 && h1 <= 70 {
+                h1 = h1 + 32
+            }
+            if h2 >= 65 && h2 <= 70 {
+                h2 = h2 + 32
+            }
+            sb_append_byte(sb, h1)
+            sb_append_byte(sb, h2)
+            k = k + 3
+        } else {
+            sb_append_byte(sb, b)
+            k = k + 1
+        }
+    }
+    return sb_build(sb)
+}
+
 // ============================================================================
-// 三、提取入口
+// 三、<base> 查找与提取入口
 // ============================================================================
 
+// 文档内第一个 <base href>（文档序）；无返回 ""。
+func find_base(d: HtmlDoc) -> string {
+    var cnt = dom.node_count(d)
+    var i: i64 = 1   // 跳过根
+    while i < cnt {
+        if dom.kind(d, i) == 0 && dom.tag(d, i) == "base" {
+            var v = dom.attr(d, i, "href")
+            if len(v) > 0 {
+                return v
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
 // 提取文档全部链接/资源 URL 并按 base 绝对化（文档序；空串跳过）。
+// base 解析优先序：入参 base 解析后，文档 <base href>（相对入参）覆盖之；
+// 入参 base 为空时 <base> 须为绝对 URL 才生效。
 pub func collect(d: HtmlDoc, base: string) -> table<string> {
     var out = table_new_string()
     var pre = base_parts(base)
+    // 文档 <base href> 覆盖
+    var doc_base = find_base(d)
+    if len(doc_base) > 0 {
+        if len(base) > 0 {
+            pre = base_parts(resolve(pre, doc_base))
+        } else {
+            if find_in(doc_base, 0, "://") >= 0 {
+                pre = base_parts(doc_base)
+            }
+        }
+    }
     var cnt = dom.node_count(d)
     var i: i64 = 1   // 跳过根
     while i < cnt {

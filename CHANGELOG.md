@@ -22,6 +22,19 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/html/links: <base href> support + %XX hex normalization (p.6.6.4) (2026-09-03)
+
+- ext/html/links.tie collect upgrade (html.links):
+  - Document <base href> honored: first <base> in document order wins; its relative value is
+    resolved against the passed base first, then used as the effective base (empty pass-base
+    requires an absolute <base> URL). Existing pass-base behavior unchanged when no <base>.
+  - Lightweight URL normalization on relative paths: %XX hex letters folded to lowercase
+    (norm_hex, semantic-preserving) and duplicate slashes merged (norm_path already skipped
+    empty segments); trailing-slash preserved in norm_path ("docs/" stays a directory so
+    <base href="docs/"> + "page.html" → ".../docs/page.html").
+- Probe tests/html_probe/html_probe.tie: +8 assertions (<base> root/relative/absolute,
+  dot-dot above base, no-base passthrough, %XX lowercase, slash merge).
+
 ## [feat] ext/html/text: plain-text whitespace collapsing + pre raw preservation (p.6.6.4) (2026-09-03)
 
 - ext/html/text.tie render upgrade (html.plain), browser-like extraction:

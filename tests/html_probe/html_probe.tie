@@ -378,12 +378,36 @@ func tst_plaintext() {
     chk( "pt_lead_collapse", p3, "Title 你好\nok")             // 首部空格折叠 + 块级换行
 }
 
+func tst_base() {
+    // ---- <base href> 支持 + %xx 规范化 ----
+    var d1 = html.parse("<html><head><base href=\"/sub/\"></head><body><a href=\"x.html\">x</a><a href=\"../up.html\">u</a></body></html>")
+    var l1 = html.links(d1, "http://e.com/a/b/index.html")
+    chk("b1_root", l1[0], "http://e.com/sub/x.html")
+    chk("b1_dotdot", l1[1], "http://e.com/up.html")
+    var d2 = html.parse("<html><head><base href=\"docs/\"></head><body><a href=\"page.html\">p</a></body></html>")
+    var l2 = html.links(d2, "http://e.com/a/b/index.html")
+    chk("b2_rel", l2[0], "http://e.com/a/b/docs/page.html")
+    var d3 = html.parse("<html><head><base href=\"https://cdn.e.com/root/\"></head><body><img src=\"a.png\"></body></html>")
+    var l3 = html.links(d3, "")
+    chk("b3_abs_noarg", l3[0], "https://cdn.e.com/root/a.png")
+    // 无 <base> 时不改原有行为
+    var d4 = html.parse("<a href=\"p.html\">x</a>")
+    var l4 = html.links(d4, "http://e.com/x/")
+    chk("b4_no_base", l4[0], "http://e.com/x/p.html")
+    // %XX 十六进制统一小写 + 多余斜杠归并
+    var d5 = html.parse("<a href=\"img/A%2DB.png\">y</a><a href=\"a//b/c.png\">z</a>")
+    var l5 = html.links(d5, "http://e.com/x/index.html")
+    chk("b5_hex_lower", l5[0], "http://e.com/x/img/A%2dB.png")   // %XX 十六进制字母小写（普通字符 B 不动）
+    chk("b5_slash", l5[1], "http://e.com/x/a/b/c.png")
+}
+
 func main() {
     tst_sample1()
     tst_sample2()
     tst_sample3()
     tst_selectx()
     tst_plaintext()
+    tst_base()
     tst_big()
     println("html 探针全部通过 / html probe all PASS")
     exit(0)
