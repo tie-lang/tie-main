@@ -22,6 +22,21 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/xml/tree: XML tree building + well-formed validation + structured errors (p.6.6.5) (2026-09-03)
+
+- ext/xml/tree.tie (new, namespace tree): consumes the strict-mode token stream from
+  ext/html/token.tie and assembles an XML tree in parallel tables aligned to ext/html/dom
+  (kind/tag/children/parent/attrs/content + per-node byte position).
+- Node kinds: 0=element 1=text 2=comment 3=PI 4=CDATA; comments/PIs kept in the tree,
+  CDATA preserved raw, doctype skipped.
+- Well-formed validation (strict, first error returns): single root (missing root / multiple
+  roots / non-whitespace text outside root → XEMULTIROOT), strict tag pairing (case-sensitive,
+  empty-stack close → XENOMATCH), unclosed-at-EOF → XEUNCLOSED.
+- XmlDoc structured error: err_code (shared XENONE..XEUNCLOSED) + err_line/err_col (1-based,
+  UTF-8 char column) + err_msg + err_frag (UTF-8 boundary-safe context slice).
+- Verified with a one-shot tree probe (tests/_p665, not committed): nested/self-close/CDATA/
+  comment/PI/entity/中文 tree shape, parent/attr case sensitivity, error codes + line/col.
+
 ## [feat] ext/html/token: XML strict mode — name checks / quoted attrs / strict entities / PI+doctype tokens / first-error recording (p.6.6.5) (2026-09-03)
 
 - ext/html/token.tie shared base: new MtCfg.strict configurable point (0=HTML tolerant default,

@@ -1,0 +1,476 @@
+type tie<class>
+// ============================================================================
+// tree.tie：ext/xml——XML 树（平行表）+ 建树 + well-formed 校验（命名空间 tree）p.6.6.5
+// XML tree (parallel tables, namespace tree, pure-tie). p.6.6.5
+//
+// 定位（Positioning）：消费 ext/html/token.tie 的 strict 模式 token 流，按 XML
+// well-formed 语义组装树。节点存储为**平行表**（对齐 ext/html/dom 的节点布局），
+// 节点 id = 各表下标：
+//   xt_kind    0=元素（含根容器） 1=文本 2=注释 3=处理指令(PI) 4=CDATA
+//   xt_tag     元素完整标签名（大小写保留；含前缀如 "svg:rect"）；非元素为 ""
+//   xt_fl/xt_lc/xt_sib  孩子链：首孩子 / 末孩子 / 下一个兄弟（-1=无）
+//   xt_cnum    孩子个数
+//   xt_parent  父节点 id（根容器 -1）
+//   xt_val     文本/注释/PI/CDATA 内容（元素为 ""；PI 为「目标 + 数据」全串）
+//   xt_aoff/xt_acnt  属性区间在扁平表 [xt_anames, xt_avals] 中的 [起点, 个数]
+//   xt_anames/xt_avals  扁平属性名（原名原值，含 xmlns 声明；大小写保留）
+//   xt_pos     节点起始字节位置（取自 token 流；错误定位用）
+// 命名空间列（xt_prefix/xt_local/xt_ns）由 p.6.6.5 命名空间子项补充。
+//
+// 校验（Well-formed，与 HTML 容错相反——首个结构错误即返回）：
+//   - 单根：文档根容器下仅允许一个元素根 + 注释/PI；根外非空白文本视为多根错误；
+//   - 标签严格配对：闭标签名必须与栈顶开标签名完全一致（大小写敏感）；栈空闭标签
+//     报错；文档尾仍有未闭合元素报错；
+//   - 结构化错误：XmlDoc 携带 err_code（共享错误表 XENONE..XEUNCLOSED）+ err_line/
+//     err_col（1-based，列按 UTF-8 字符计数）+ err_msg + err_frag（出错上下文片段，
+//     UTF-8 边界安全）。分词层错误（名称/引号/实体等）由 xml.parse 在 build 前
+//     拦截，本模块只处理树结构错误（多根/配对/未闭合）。
+//
+// 数据平面（Data plane）：全部 string（UTF-8 文本），不触碰字节表；属性名/标签名
+// 匹配一律大小写敏感（XML 语义，不做折叠）。
+// 失败语义：build 恒返回 XmlDoc（ok 标记成败）；错误时 root/count 为 0。
+// ============================================================================
+
+import "../html/token.tie" as mltok
+
+// ---- 文档句柄（消费方持有；节点数据在 tree 模块级全局，一次一文档）----
+struct XmlDoc {
+    var ok: bool = false      // 解析是否成功（well-formed）
+    var root: i64 = 0         // 根容器节点 id（tag=""）
+    var count: i64 = 0        // 节点总数（含根容器）
+    var err_code: i64 = 0     // 错误码（XENONE..XEUNCLOSED；0=无错误）
+    var err_line: i64 = 0     // 错误行（1-based；无错误 0）
+    var err_col: i64 = 0      // 错误列（1-based 字符计数；无错误 0）
+    var err_msg: string = ""  // 人类可读错误消息
+    var err_frag: string = "" // 出错上下文片段
+}
+
+// ---- XML 节点存储（模块级全局；build 开头重置；index = 节点 id）----
+var xt_kind: table<i64>;      // 0=元素 1=文本 2=注释 3=PI 4=CDATA
+var xt_tag: table<string>;    // 元素完整标签名（大小写保留）
+var xt_fl: table<i64>;        // 首孩子 id（-1）
+var xt_lc: table<i64>;        // 末孩子 id（-1）
+var xt_sib: table<i64>;       // 下一兄弟 id（-1）
+var xt_cnum: table<i64>;      // 孩子个数
+var xt_parent: table<i64>;    // 父节点 id（根容器 -1）
+var xt_val: table<string>;    // 文本/注释/PI/CDATA 内容（元素为空）
+var xt_aoff: table<i64>;      // 属性扁平起点（-1）
+var xt_acnt: table<i64>;      // 属性个数
+var xt_anames: table<string>; // 扁平属性名（原名，大小写保留）
+var xt_avals: table<string>;  // 扁平属性值（实体已解码）
+var xt_pos: table<i64>;       // 节点起始字节位置（-1）
+
+namespace tree {
+
+// ============================================================================
+// 一、节点构造（append 式；总 O(节点数)）
+// ============================================================================
+
+// 新建元素节点并返回 id
+func new_el(tg: string) -> i64 {
+    table_push(xt_kind, 0)
+    table_push(xt_tag, tg)
+    table_push(xt_fl, -1)
+    table_push(xt_lc, -1)
+    table_push(xt_sib, -1)
+    table_push(xt_cnum, 0)
+    table_push(xt_parent, -1)
+    table_push(xt_val, "")
+    table_push(xt_aoff, -1)
+    table_push(xt_acnt, 0)
+    table_push(xt_pos, -1)
+    return len(xt_kind) - 1
+}
+
+// 新建叶子节点（文本/注释/PI/CDATA）并挂到 par；返回 id
+func new_leaf(kind: i64, tv: string, par: i64, pos: i64) -> i64 {
+    table_push(xt_kind, kind)
+    table_push(xt_tag, "")
+    table_push(xt_fl, -1)
+    table_push(xt_lc, -1)
+    table_push(xt_sib, -1)
+    table_push(xt_cnum, 0)
+    table_push(xt_parent, par)
+    table_push(xt_val, tv)
+    table_push(xt_aoff, -1)
+    table_push(xt_acnt, 0)
+    table_push(xt_pos, pos)
+    var nid = len(xt_kind) - 1
+    attach_child(par, nid)
+    return nid
+}
+
+// 把 cid 追加为 par 的孩子（写回父指针 + 首/末兄弟链 + 计数；O(1)）
+func attach_child(par: i64, cid: i64) {
+    xt_parent[cid] = par
+    var lc = xt_lc[par]
+    if lc < 0 {
+        xt_fl[par] = cid
+    } else {
+        xt_sib[lc] = cid
+    }
+    xt_lc[par] = cid
+    xt_cnum[par] = xt_cnum[par] + 1
+}
+
+// 从 token 拷贝属性到节点（扁平区间；O(属性数)）
+func copy_attrs(nid: i64, ao: i64, ac: i64) {
+    if ac <= 0 {
+        return
+    }
+    var o = len(xt_anames)
+    var k: i64 = 0
+    while k < ac {
+        table_push(xt_anames, mltok.tok_aname(ao + k))
+        table_push(xt_avals, mltok.tok_aval(ao + k))
+        k = k + 1
+    }
+    xt_aoff[nid] = o
+    xt_acnt[nid] = ac
+}
+
+// ============================================================================
+// 二、结构化错误（码 + 行列 + 片段）
+// ============================================================================
+
+// 错误码 → 人类可读消息
+func err_text(errc: i64) -> string {
+    if errc == XENAME {
+        return "标签/属性名含非法字符（XML Name 规则）"
+    }
+    if errc == XEUNQUOTED {
+        return "属性值未加引号（或无 '=' 无值）"
+    }
+    if errc == XELTEXT {
+        return "文本内容出现孤立 '<'（非合法标记开头）"
+    }
+    if errc == XEBADMARK {
+        return "标记结构非法（未知声明 / PI 未闭合 / 闭标签后多余字符）"
+    }
+    if errc == XENTUNK {
+        return "未识别的实体引用（非最小集命名实体 / 畸形数字实体 / 裸 '&'）"
+    }
+    if errc == XENTCHAR {
+        return "数字实体解码出非法 XML 码点"
+    }
+    if errc == XENOMATCH {
+        return "闭标签与最近开标签不配对（或栈空闭标签）"
+    }
+    if errc == XEMULTIROOT {
+        return "文档缺少根元素、含多个根元素或根外非空白文本"
+    }
+    if errc == XEUNCLOSED {
+        return "文档尾仍有未闭合标签"
+    }
+    return "未知错误"
+}
+
+// 字节段 [s,e) 构造 string（逐字节拷贝，UTF-8 安全）
+func slice(src: string, s: i64, e: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = s
+    while i < e {
+        sb_append_byte(sb, str_byte(src, i))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 字节位置 → (行, 列)；列按 UTF-8 字符计数（非续字节）
+func line_col(src: string, pos: i64) -> (i64, i64) {
+    var n = len(src)
+    if pos < 0 {
+        pos = 0
+    }
+    if pos > n {
+        pos = n
+    }
+    var line: i64 = 1
+    var ls: i64 = 0
+    var i: i64 = 0
+    while i < pos {
+        if str_byte(src, i) == 10 {
+            line = line + 1
+            ls = i + 1
+        }
+        i = i + 1
+    }
+    var col: i64 = 1
+    var k: i64 = ls
+    while k < pos {
+        if (str_byte(src, k) & 0xC0) != 0x80 {
+            col = col + 1
+        }
+        k = k + 1
+    }
+    return (line, col)
+}
+
+// 出错上下文片段：pos 前后各 ~16/24 字节，UTF-8 边界不截断
+func fragment(src: string, pos: i64) -> string {
+    var n = len(src)
+    if pos < 0 {
+        pos = 0
+    }
+    if pos > n {
+        pos = n
+    }
+    var s = pos - 16
+    if s < 0 {
+        s = 0
+    }
+    var e = pos + 24
+    if e > n {
+        e = n
+    }
+    while s < e && (str_byte(src, s) & 0xC0) == 0x80 {
+        s = s + 1
+    }
+    while e > s && (str_byte(src, e - 1) & 0xC0) == 0x80 {
+        e = e - 1
+    }
+    return slice(src, s, e)
+}
+
+// 构造错误 XmlDoc（仅结构错误用；分词层错误由 xml.parse 处理）
+func err_here(errc: i64, pos: i64, src: string) -> XmlDoc {
+    var d: XmlDoc = XmlDoc()
+    d.ok = false
+    d.err_code = errc
+    var (ln, cl) = line_col(src, pos)
+    d.err_line = ln
+    d.err_col = cl
+    d.err_msg = err_text(errc)
+    d.err_frag = fragment(src, pos)
+    return d
+}
+
+// 字符串是否仅含空白字节（根外文本判据；O(段长)）
+func ws_only(s: string) -> bool {
+    var n = len(s)
+    var i: i64 = 0
+    while i < n {
+        var b = str_byte(s, i)
+        if b != 32 && b != 9 && b != 10 && b != 13 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// ============================================================================
+// 三、建树（token 流 → 平行表树；strict 配对/单根/未闭合校验）
+// ============================================================================
+
+// 消费 mltok token 流构建 XML 树（调用方须已用 strict 配置 scan 过）。
+// 返回 XmlDoc（ok=false 时携带结构化错误）。
+pub func build(src: string) -> XmlDoc {
+    xt_kind = table_new_i64()
+    xt_tag = table_new_string()
+    xt_fl = table_new_i64()
+    xt_lc = table_new_i64()
+    xt_sib = table_new_i64()
+    xt_cnum = table_new_i64()
+    xt_parent = table_new_i64()
+    xt_val = table_new_string()
+    xt_aoff = table_new_i64()
+    xt_acnt = table_new_i64()
+    xt_anames = table_new_string()
+    xt_avals = table_new_string()
+    xt_pos = table_new_i64()
+    // 根容器节点（tag=""）
+    var root = new_el("")
+    // 开栈（虚拟栈：逻辑槽位回写，sp 控制长度；root 恒在底部）
+    var st = table_new_i64()
+    table_push(st, root)
+    var sp: i64 = 1
+    var root_seen: i64 = 0
+    var tk = mltok.tok_count()
+    var ti: i64 = 0
+    while ti < tk {
+        var ty = mltok.tok_type(ti)
+        if ty == MTK_TEXT || ty == MTK_CDATA {
+            var txt = mltok.tok_text(ti)
+            if sp == 1 {
+                // 根容器下非空白文本 → 多根错误（注释/PI 合法，文本必须空白）
+                if !ws_only(txt) {
+                    return err_here(XEMULTIROOT, mltok.tok_pos(ti), src)
+                }
+            } else if len(txt) > 0 {
+                var leaf_kind: i64 = 1
+                if ty == MTK_CDATA {
+                    leaf_kind = 4
+                }
+                new_leaf(leaf_kind, txt, st[sp - 1], mltok.tok_pos(ti))
+            }
+        } else if ty == MTK_COMMENT {
+            new_leaf(2, mltok.tok_text(ti), st[sp - 1], mltok.tok_pos(ti))
+        } else if ty == MTK_PI {
+            new_leaf(3, mltok.tok_text(ti), st[sp - 1], mltok.tok_pos(ti))
+        } else if ty == MTK_OPEN || ty == MTK_SELF {
+            var nm = mltok.tok_name(ti)
+            // 单根校验：根容器下只能有一个元素根
+            if sp == 1 && root_seen == 1 {
+                return err_here(XEMULTIROOT, mltok.tok_pos(ti), src)
+            }
+            var nid = new_el(nm)
+            var ao = mltok.tok_aoff(ti)
+            var ac = mltok.tok_acnt(ti)
+            if ac > 0 {
+                copy_attrs(nid, ao, ac)
+            }
+            attach_child(st[sp - 1], nid)
+            xt_pos[nid] = mltok.tok_pos(ti)
+            if sp == 1 {
+                root_seen = 1
+            }
+            if ty == MTK_OPEN {
+                // 虚拟栈：逻辑槽位写入（pop 后的旧槽可复用，防读到过期值）
+                if sp == len(st) {
+                    table_push(st, nid)
+                } else {
+                    st[sp] = nid
+                }
+                sp = sp + 1
+            }
+        } else if ty == MTK_CLOSE {
+            var cn = mltok.tok_name(ti)
+            // 配对：闭标签名必须等于栈顶开标签名（大小写敏感）
+            if sp <= 1 {
+                return err_here(XENOMATCH, mltok.tok_pos(ti), src)
+            }
+            var top = st[sp - 1]
+            if xt_tag[top] != cn {
+                return err_here(XENOMATCH, mltok.tok_pos(ti), src)
+            }
+            sp = sp - 1
+        }
+        // MTK_DOCTYPE / MTK_RAW：不入树，跳过
+        ti = ti + 1
+    }
+    if sp > 1 {
+        // 未闭合：报告栈顶（最内层）未闭合元素
+        var top2 = st[sp - 1]
+        return err_here(XEUNCLOSED, xt_pos[top2], src)
+    }
+    if root_seen == 0 {
+        // 缺少根元素（空白/仅注释/PI 的文档非 well-formed）
+        return err_here(XEMULTIROOT, 0, src)
+    }
+    var d: XmlDoc = XmlDoc()
+    d.ok = true
+    d.root = root
+    d.count = len(xt_kind)
+    return d
+}
+
+// ============================================================================
+// 四、节点访问器（越界/非法节点返回安全值，不崩溃）
+// ============================================================================
+
+// 节点总数（含根容器）
+pub func node_count(d: XmlDoc) -> i64 {
+    return d.count
+}
+
+// 节点类型：0=元素 1=文本 2=注释 3=PI 4=CDATA；非法 id 返回 -1
+pub func kind(d: XmlDoc, nid: i64) -> i64 {
+    if nid < 0 || nid >= len(xt_kind) {
+        return -1
+    }
+    return xt_kind[nid]
+}
+
+// 元素完整标签名（大小写保留）；非元素/非法返回 ""
+pub func tag(d: XmlDoc, nid: i64) -> string {
+    if nid < 0 || nid >= len(xt_kind) {
+        return ""
+    }
+    return xt_tag[nid]
+}
+
+// 属性值（属性名大小写敏感精确匹配）；无该属性返回 ""
+pub func attr(d: XmlDoc, nid: i64, name: string) -> string {
+    if nid < 0 || nid >= len(xt_kind) {
+        return ""
+    }
+    if xt_kind[nid] != 0 {
+        return ""
+    }
+    var ac = xt_acnt[nid]
+    var ao = xt_aoff[nid]
+    if ac <= 0 || ao < 0 {
+        return ""
+    }
+    var k: i64 = 0
+    while k < ac {
+        if xt_anames[ao + k] == name {
+            return xt_avals[ao + k]
+        }
+        k = k + 1
+    }
+    return ""
+}
+
+// 孩子个数
+pub func child_count(d: XmlDoc, nid: i64) -> i64 {
+    if nid < 0 || nid >= len(xt_kind) {
+        return 0
+    }
+    return xt_cnum[nid]
+}
+
+// 第 k 个孩子 id（沿兄弟链走 k 步）；越界返回 -1
+pub func child(d: XmlDoc, nid: i64, k: i64) -> i64 {
+    if nid < 0 || nid >= len(xt_kind) {
+        return -1
+    }
+    var cc = xt_cnum[nid]
+    if k < 0 || k >= cc {
+        return -1
+    }
+    var cur = xt_fl[nid]
+    var stp: i64 = 0
+    while stp < k {
+        cur = xt_sib[cur]
+        stp = stp + 1
+    }
+    return cur
+}
+
+// 孩子 id 动态表（文档序）
+pub func children(d: XmlDoc, nid: i64) -> table<i64> {
+    var out = table_new_i64()
+    if nid < 0 || nid >= len(xt_kind) {
+        return out
+    }
+    var cur = xt_fl[nid]
+    while cur >= 0 {
+        table_push(out, cur)
+        cur = xt_sib[cur]
+    }
+    return out
+}
+
+// 父节点 id；根容器/非法返回 -1
+pub func parent(d: XmlDoc, nid: i64) -> i64 {
+    if nid < 0 || nid >= len(xt_kind) {
+        return -1
+    }
+    return xt_parent[nid]
+}
+
+// 节点内容：文本/注释/PI/CDATA 返回原始内容（实体已解码；CDATA 原样保留）；
+// 元素节点返回 ""（规定语义，与 ext/html/dom 对齐）
+pub func content(d: XmlDoc, nid: i64) -> string {
+    if nid < 0 || nid >= len(xt_kind) {
+        return ""
+    }
+    if xt_kind[nid] == 0 {
+        return ""
+    }
+    return xt_val[nid]
+}
+
+}   // namespace tree
