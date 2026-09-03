@@ -57,6 +57,29 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [feat] p.6.7.8 复杂形态常驻池（C-pool）（2026-09-04）
+
+- **运行时**（trm-lite/core/mnn/sched_ws.tie）：去「每轮 drain 重建/回收线程池」——
+  池**起于首次 drain、止于 ctx_shutdown**：新增 `g_pool_up` 常驻标记与 `g_shutdown`
+  停机标记；worker 主循环「无可取 && pending==0 && active==0」**不再 return**，改
+  cv_wait 限时继续存活（新一轮 spawn 经 cv_wake 唤醒），仅见 `g_shutdown==1` 退出；
+  后台回收器同改常驻循环（空闲窗口大批次 sweep，见停机退出）；`drain()` 等本轮排空
+  后不再 join_pool/重建（`reset_round` 只清段/计数、不动线程句柄表）；`shutdown()`
+  = 置停机标记 + 广播唤醒 + join 全部线程（真正的池销毁）；`set_workers` 在池启动后
+  拒绝改 P（段表与实际线程数失配防护）；新增观察量 `ctx_pool_threads()`。
+- **探针**：`c_pool_resident_probe`（3 轮 × 40 任务 → ctx_drain）ths=4 恒定（不随
+  轮数增长）、每轮 tid 去重 ≥2、共享表 len 逐轮累积 120 无重复 PASS×3；p.6.7 全套 +
+  m6_actor + ctx_ws/ctx_gc/combo/parity_chan 零回归。
+
+EN: p.6.7.8 complex-form resident pool (C-pool) (2026-09-04) — per-drain pool rebuild
+removed: pool starts at first drain, ends at ctx_shutdown. New g_pool_up/g_shutdown
+flags; worker idle branch no longer returns (cv_wait keeps living, woken by spawn;
+exits only on shutdown); background GC thread likewise resident; drain waits for round
+emptiness without join; shutdown = flag + broadcast + join (real pool teardown);
+set_workers rejected after pool start; new ctx_pool_threads() observation. Probe
+c_pool_resident_probe (3x40 tasks): ths=4 constant, per-round tid>=2, len=120 unique
+PASS x3; full p.6.7 suite + m6_actor + demos zero regression.
+
 ## [feat] p.6.7.7 简单形态窃取队列（S-deque）（2026-09-04）
 
 - **运行时**（trm-lite/core/mnn/sched.tie）：S-pool 单全局队列升级为 per-worker

@@ -1,0 +1,135 @@
+type tie<logic>
+// tests/_p67_probe/c_pool_resident_probe.tie —— p.6.7.8 验收：复杂形态常驻池（C-pool）。
+// import trm-lite 复杂形态汇总库：sched_ws 去「每轮 drain 重建/回收线程池」——
+// 池起于首次 drain、止于 ctx_shutdown；drain 只等本轮排空不回收池。
+// 断言：
+//   1) 连续 3 轮 ctx_spawn×N → ctx_drain：ctx_pool_threads() 恒定（== P，不随
+//      轮数增长）；每轮线程执行 tid 去重 ≥2（真并行）
+//   2) 每轮结果精确：共享表 len 逐轮累积（40→80→120）、元素无重复无丢失
+//   3) ctx_shutdown() 真正销毁线程池后进程正常退出 exit 0
+// 期望：ths=4 恒定 / tid≥2 / len=120 / dup=0 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_data: table<i64> = []     // 共享表（跨轮累积；每表锁）
+var g_tid: table<i64> = []      // 每任务执行线程 tid（独立槽位）
+
+unsafe extern fn GetCurrentThreadId() -> i64
+
+func tid_now() -> i64 {
+    unsafe {
+        return GetCurrentThreadId()
+    }
+}
+
+// 批次：spawn n 个任务（id 参数化：v = round*1000 + i），任务表 push + 记录 tid。
+func spawn_batch(round: i64, n: i64) {
+    var i: i64 = 0
+    while i < n {
+        var v = round * 1000 + i
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            // 拉长执行窗口（真并行证据概率化）
+            var w: i64 = v
+            var f: i64 = 0
+            while f < 80000 {
+                w = (w * 7 + f) % 1000000007
+                f = f + 1
+            }
+            table_push(g_data, v)
+            g_tid[v] = tid_now()
+            return w
+        })
+        i = i + 1
+    }
+}
+
+// tid 去重计数（前 n 个任务槽）
+func tid_dedup(n: i64) -> i64 {
+    var set: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var seen: i64 = 0
+        var j: i64 = 0
+        while j < i {
+            if g_tid[j] == g_tid[i] && g_tid[i] != 0 {
+                seen = 1
+            }
+            j = j + 1
+        }
+        if seen == 0 && g_tid[i] != 0 {
+            set = set + 1
+        }
+        i = i + 1
+    }
+    return set
+}
+
+func main() {
+    // 预分配 tid 槽（3 轮 × 40 = 120 任务，id 至多 2039 → 配 2100）
+    var k: i64 = 0
+    while k < 2100 {
+        table_push(g_tid, 0)
+        k = k + 1
+    }
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    var ok: i64 = 1
+    var round: i64 = 0
+    var prev_ths: i64 = -1
+    var ths_const: i64 = 1
+    var tid_min: i64 = 99
+    while round < 3 {
+        spawn_batch(round, 40)
+        var ran = tl_runtime_ctx.ctx_drain()
+        var ths = tl_runtime_ctx.ctx_pool_threads()
+        if prev_ths != -1 && ths != prev_ths {
+            ths_const = 0
+        }
+        prev_ths = ths
+        var td = tid_dedup(round * 1000 + 40)
+        if td < tid_min {
+            tid_min = td
+        }
+        if ran != 40 {
+            ok = 0
+        }
+        round = round + 1
+    }
+    // 共享表完整性：len 恰 120、区间合法、两两无重复
+    var L = len(g_data)
+    var bad: i64 = 0
+    var i: i64 = 0
+    while i < L {
+        var v = g_data[i]
+        var r2 = v / 1000
+        var s2 = v % 1000
+        if r2 < 0 || r2 >= 3 || s2 < 0 || s2 >= 40 {
+            bad = 1
+        }
+        i = i + 1
+    }
+    var dup: i64 = 0
+    i = 0
+    while i < L && dup == 0 {
+        var j = i + 1
+        while j < L {
+            if g_data[i] == g_data[j] {
+                dup = 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    println("ths=" + to_string(prev_ths) + " const=" + to_string(ths_const) + " tid_min=" + to_string(tid_min) + " len=" + to_string(L) + " dup=" + to_string(dup) + " bad=" + to_string(bad))
+    if ok == 0 || L != 120 || dup != 0 || bad != 0 || tid_min < 2 || ths_const == 0 || prev_ths != 4 {
+        ok = 0
+    } else {
+        ok = 1
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}
