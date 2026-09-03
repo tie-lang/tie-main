@@ -1,0 +1,202 @@
+type tie<class>
+// ============================================================================
+// xml.tie：ext/xml——XML 解析统一入口（命名空间 xml，纯 tie）p.6.6.5
+// Unified XML parsing entry point (namespace xml, pure-tie). p.6.6.5
+//
+// 数据平面分界（Boundary with httpc/sse byte plane）：
+//   本模块数据平面为 string（UTF-8 文本）。XML 文档一律先经 httpc.get_text 或文件
+//   读取，以 UTF-8 文本 string 进入解析器，不触碰字节表（table<i64>）。这是与
+//   httpc/sse 字节平面的分界——httpc.get_text 正向结果（body 转 string）即本模块的
+//   合法输入；反之，本模块输出的 string（属性值/文本/命名空间 URI）可经
+//   httpc.append_str 回写为字节表。本模块自身不做任何字节级 IO。
+//
+// 接口（Interface）：
+//   parse(src) -> XmlDoc          解析 XML 文档为树（well-formed，首个错误即返回）
+//   err_code/err_line/err_col/err_msg/err_frag  结构化错误访问器（ok=false 时有效）
+//   node_count / kind / tag / local / prefix / ns / attr / children / parent / content
+//                                 节点访问器（转发到 tree）
+//   query(d, tag)                 按完整标签名查询（大小写敏感），返回元素 id 表
+//   query_attr(d, tag, attr, value)  按 标签·属性 过滤（tag="" 任意标签；
+//                                 value="" 表示仅属性存在，否则精确匹配）
+//   query_ns(d, uri, local)       按命名空间 URI + 本地名查询（local="" 该命名空间
+//                                 任意本地名；uri="" 匹配无命名空间元素）
+//
+// 错误表（共享错误码，定义于 ext/html/token.tie 文件级常量；首错即返回）：
+//   XENONE 0       无错误
+//   XENAME 1       标签/属性名含非法字符（XML Name 规则）
+//   XEUNQUOTED 2   属性值未加引号（或无 '=' 无值）
+//   XELTEXT 3      文本内容出现孤立 '<'（非合法标记开头）
+//   XEBADMARK 4    标记结构非法（未知 '<!' 声明 / PI 未闭合 / 闭标签后多余字符）
+//   XENTUNK 5      未识别的实体引用（非最小集命名实体 / 畸形数字实体 / 裸 '&'）
+//   XENTCHAR 6     数字实体解码出非法 XML 码点（控制符/代理区/超出 Unicode）
+//   XENOMATCH 7    闭标签与最近开标签不配对（或栈空闭标签）
+//   XEMULTIROOT 8  文档缺少根元素、含多个根元素或根外非空白文本
+//   XEUNCLOSED 9   文档尾仍有未闭合标签
+//   错误均携带 err_line/err_col（1-based，列按 UTF-8 字符计数）与 err_frag（出错
+//   上下文片段，UTF-8 边界安全）。
+//
+// 限制（Limits）：
+//   - well-formed 子集：不实现 DTD 语义校验、外部实体、XInclude；DOCTYPE 内部子集
+//     整体跳过不解析；处理指令原样保留（含 <?xml?> 声明）；CDATA 原样保留。
+//   - 命名空间：前缀未绑定记为空串（不报错）；xmlns 声明可经 attr() 读取。
+//   - 查询为轻量线性扫描，不支持 XPath；标签名/属性名匹配一律大小写敏感。
+//   - 一次一文档：同一进程内再次 parse 会重置内部节点存储（与 ext/html/dom 一致）。
+// ============================================================================
+
+import "../html/token.tie" as mltok
+import "./tree.tie" as tree
+
+// ---- 默认分词配置（XML：大小写敏感 + 最小实体集 + strict 严格模式）----
+func xml_cfg() -> MtCfg {
+    var cfg = MtCfg()
+    cfg.fold_case = 0
+    cfg.entity_mode = 1
+    cfg.strict = 1
+    return cfg
+}
+
+namespace xml {
+
+// 解析 XML 文档为树（well-formed；首个结构错误即返回结构化错误）。
+pub func parse(src: string) -> XmlDoc {
+    var cfg = xml_cfg()
+    mltok.scan(src, cfg)
+    // 分词层错误（名称/引号/实体/声明等）→ 结构化 XmlDoc
+    var (ec, ep) = mltok.tok_err()
+    if ec != 0 {
+        return tree.err_doc(ec, ep, src)
+    }
+    // 树结构错误（多根/配对/未闭合）由 tree.build 检测
+    return tree.build(src)
+}
+
+// ---- 结构化错误访问器 ----
+pub func is_ok(d: XmlDoc) -> bool {
+    return d.ok
+}
+
+pub func err_code(d: XmlDoc) -> i64 {
+    return d.err_code
+}
+
+pub func err_line(d: XmlDoc) -> i64 {
+    return d.err_line
+}
+
+pub func err_col(d: XmlDoc) -> i64 {
+    return d.err_col
+}
+
+pub func err_msg(d: XmlDoc) -> string {
+    return d.err_msg
+}
+
+pub func err_frag(d: XmlDoc) -> string {
+    return d.err_frag
+}
+
+// ---- 节点访问器（转发到 tree；越界返回安全值）----
+pub func node_count(d: XmlDoc) -> i64 {
+    return tree.node_count(d)
+}
+
+pub func kind(d: XmlDoc, nid: i64) -> i64 {
+    return tree.kind(d, nid)
+}
+
+pub func tag(d: XmlDoc, nid: i64) -> string {
+    return tree.tag(d, nid)
+}
+
+pub func local(d: XmlDoc, nid: i64) -> string {
+    return tree.local(d, nid)
+}
+
+pub func prefix(d: XmlDoc, nid: i64) -> string {
+    return tree.prefix(d, nid)
+}
+
+pub func ns(d: XmlDoc, nid: i64) -> string {
+    return tree.ns(d, nid)
+}
+
+pub func attr(d: XmlDoc, nid: i64, name: string) -> string {
+    return tree.attr(d, nid, name)
+}
+
+pub func children(d: XmlDoc, nid: i64) -> table<i64> {
+    return tree.children(d, nid)
+}
+
+pub func parent(d: XmlDoc, nid: i64) -> i64 {
+    return tree.parent(d, nid)
+}
+
+pub func content(d: XmlDoc, nid: i64) -> string {
+    return tree.content(d, nid)
+}
+
+// ---- 轻量查询（线性扫描文档序；不支持 XPath）----
+
+// 按完整标签名查询（大小写敏感）；返回元素 id 表（不含根容器；空/未成功 → 空表）
+pub func query(d: XmlDoc, tg: string) -> table<i64> {
+    var out = table_new_i64()
+    if !d.ok {
+        return out
+    }
+    var i: i64 = 1
+    while i < d.count {
+        if tree.kind(d, i) == 0 && tree.tag(d, i) == tg {
+            table_push(out, i)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// 按 标签·属性 过滤查询：tg="" 任意标签；value="" 表示仅属性存在（值非空），
+// 否则属性值精确匹配（大小写敏感）
+pub func query_attr(d: XmlDoc, tg: string, an: string, av: string) -> table<i64> {
+    var out = table_new_i64()
+    if !d.ok {
+        return out
+    }
+    var i: i64 = 1
+    while i < d.count {
+        if tree.kind(d, i) == 0 {
+            if len(tg) == 0 || tree.tag(d, i) == tg {
+                var v = tree.attr(d, i, an)
+                if len(av) == 0 {
+                    if len(v) > 0 {
+                        table_push(out, i)
+                    }
+                } else if v == av {
+                    table_push(out, i)
+                }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// 按命名空间 URI + 本地名查询：uri="" 匹配无命名空间元素；local="" 匹配该命名
+// 空间下任意本地名
+pub func query_ns(d: XmlDoc, uri: string, loc: string) -> table<i64> {
+    var out = table_new_i64()
+    if !d.ok {
+        return out
+    }
+    var i: i64 = 1
+    while i < d.count {
+        if tree.kind(d, i) == 0 && tree.ns(d, i) == uri {
+            if len(loc) == 0 || tree.local(d, i) == loc {
+                table_push(out, i)
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+}   // namespace xml

@@ -22,6 +22,21 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/xml: public entry (xml.tie) — parse + structured-error accessors + lightweight tag/attr/ns queries (p.6.6.5) (2026-09-03)
+
+- ext/xml/xml.tie (new, namespace xml): parse(src) -> XmlDoc (strict tokenizer scan + tree build);
+  tokenizer-level and tree-level errors are both returned as a structured XmlDoc via tree.err_doc.
+- Error accessors is_ok/err_code/err_line/err_col/err_msg/err_frag; node accessors forward to tree
+  (node_count/kind/tag/local/prefix/ns/attr/children/parent/content).
+- Lightweight queries (linear document order, no XPath): query(d,tag) case-sensitive full tag;
+  query_attr(d,tag,attr,value) with tag="" any tag / value="" attribute presence; query_ns(d,uri,
+  local) with local="" any local name in the namespace.
+- Header documents the data-plane boundary (string in/out, no byte tables) and the full error-code
+  table (XENONE..XEUNCLOSED); tree.err_doc added as the public error-construction seam.
+- Verified with a one-shot api probe (tests/_p665, not committed): query/query_attr/query_ns,
+  tag/local/prefix/ns on namespaced elements, structured errors with line/col/frag, empty query
+  on failed docs.
+
 ## [feat] ext/xml/ns: namespace declaration collection + prefix→URI resolution + ns accessors (p.6.6.5) (2026-09-03)
 
 - ext/xml/tree.tie namespace columns (xt_prefix/xt_local/xt_ns) + resolution:

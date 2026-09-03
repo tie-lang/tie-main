@@ -307,6 +307,11 @@ func err_here(errc: i64, pos: i64, src: string) -> XmlDoc {
     return d
 }
 
+// 公共错误构造（xml.parse 用于把分词层错误转成结构化 XmlDoc；pos 为字节位置）
+pub func err_doc(errc: i64, pos: i64, src: string) -> XmlDoc {
+    return err_here(errc, pos, src)
+}
+
 // 字符串是否仅含空白字节（根外文本判据；O(段长)）
 func ws_only(s: string) -> bool {
     var n = len(s)
