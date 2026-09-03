@@ -950,10 +950,13 @@ func tig_yield_drain() {
 
 // ---------- p.6.7.6 S-pool：常驻 worker + 池启动发射 ----------
 // worker 函数 `tie_s_pool_worker(i64) -> i64`（每程序恰一份，模块生成开始急切
-// 生成，避免指令编号交错）：循环 pop_task 抢任务（出参 env/rc 槽）→ call_indirect
-// 执行（rc 0→i64 / 1→void）→ task_done；空队 → pool_idle_wait（CV 限时，防忙轮询）。
+// 生成，避免指令编号交错）：循环 pop_task(me, env_out, rc_out) 抢任务（出参
+// env/rc 槽）→ call_indirect 执行（rc 0→i64 / 1→void）→ task_done；空队 →
+// pool_idle_wait（CV 限时，防忙轮询）。
 // 线程由内置 spawn 侧 tig_s_pool_start 发 CreateThread 建（@tie_s_pool_worker
-// kind3 直引函数地址），池常驻不随 drain 终止。
+// kind3 直引函数地址，arg=worker 序号 0..P-1），池常驻不随 drain 终止。
+// p.6.7.7：worker 序号参数（ir.param_val(fid,0)）→ pop_task 的 me——per-worker
+// 段尾 LIFO / 窃取定位自己段。
 func gen_s_pool_worker_eager() {
     if g_s_pool_worker_gen == 1 {
         return
@@ -968,6 +971,7 @@ func gen_s_pool_worker_eager() {
     table_push(params, T64)
     var fid = ir.new_func(interner.intern("tie_s_pool_worker"), T64, params)
     g_cur_func = fid
+    var me = ir.param_val(fid, 0)
     var entry = ir.new_block(fid, interner.intern("spw.e"))
     g_cur_block = entry
     // pop_task 出参槽（env/rc）
@@ -983,9 +987,11 @@ func gen_s_pool_worker_eager() {
     var br0 = ir.new_inst(g_cur_block, 30, -1)  // br loop
     ir.add_operand(br0, loop, 1)
     g_cur_block = loop
-    // e = pop_task(ptrtoint(eop), ptrtoint(rop))
+    // e = pop_task(me, ptrtoint(eop), ptrtoint(rop))
     var eat: table<i64> = table_new_i64()
     var eav: table<i64> = table_new_i64()
+    table_push(eat, T64)
+    table_push(eav, me)
     table_push(eat, T64)
     var pe = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint eop
     ir.add_operand(pe, eop, 0)
@@ -1086,6 +1092,9 @@ func tig_s_pool_start() {
     ir.add_operand(blp, lp, 1)
     g_cur_block = lp
     var cv_load = s21_load(cnt_ap, T64)
+    var mep = ir.new_inst(g_cur_block, 25, TS)  // inttoptr worker 序号 → CreateThread arg
+    ir.add_operand(mep, cv_load, 0)
+    var mep_v = ir.get_value(mep)
     var islt = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp slt
     ir.add_operand(islt, cv_load, 0)
     ir.add_operand(islt, P, 0)
@@ -1095,12 +1104,14 @@ func tig_s_pool_start() {
     ir.add_operand(cbl, bd, 1)
     ir.add_operand(cbl, ex, 1)
     g_cur_block = bd
-    // CreateThread(null, 0, @tie_s_pool_worker, null, 0, null) —— op36 extern：
+    // CreateThread(null, 0, @tie_s_pool_worker, worker_idx, 0, null) —— op36 extern：
     // 返回类型用 ptr_of(i8)（declare ptr；TK_STR 会触发 FFI 补头，规避）。
     // 注意：所有值产生指令须在 add_operand 序列**之前**创建（防操作数段交错）：
     //   · 函数地址：op63（ptrtoint @tie_s_pool_worker → i64）+ inttoptr → ptr 值
     //     （函数符号不能登记 g_global_names，kind3 直引会落 %N 未定义）；
     //   · IMM 参数（i64/i32 0）直接传字面量 0，不传值 id（否则输出池 id 数字）。
+    //   · arg3 = worker 序号（0..P-1，p.6.7.7 per-worker 段定位）：inttoptr 后
+    //     作 LPARAM 直传，worker 函数以 i64 参数接收。
     var P8 = types.ptr_of(types.named(TK_I8))
     var n0p = ir.new_inst(g_cur_block, 25, TS)  // inttoptr i64 0 → ptr null
     ir.add_operand(n0p, z0, 0)
@@ -1120,9 +1131,9 @@ func tig_s_pool_start() {
     // arg2 ptr @tie_s_pool_worker（inttoptr 后的 ptr 值）
     ir.add_operand(ct, TS, 2)
     ir.add_operand(ct, ir.get_value(fap), 0)
-    // arg3 ptr null（worker arg 未用）
+    // arg3 ptr worker 序号（0..P-1；per-worker 段定位）
     ir.add_operand(ct, TS, 2)
-    ir.add_operand(ct, ir.get_value(n0p), 0)
+    ir.add_operand(ct, mep_v, 0)
     // arg4 i32 0（flags）
     ir.add_operand(ct, types.named(TK_I32), 2)
     ir.add_operand(ct, 0, 2)

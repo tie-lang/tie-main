@@ -57,20 +57,46 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [feat] p.6.7.7 简单形态窃取队列（S-deque）（2026-09-04）
+
+- **运行时**（trm-lite/core/mnn/sched.tie）：S-pool 单全局队列升级为 per-worker
+  双端队列——owner 段尾 LIFO 自取、他人段头 FIFO 窃取、段满溢出全局（复刻 sched_ws
+  算法独立实现）；任务寄存器表 + 轮转分发 + `stolen_count` 窃取观察量；worker 序号
+  经 **CreateThread arg3** 传入（`tig_s_pool_start` 传循环计数、`gen_s_pool_worker_eager`
+  以 `ir.param_val(fid,0)` 转发 → `pop_task(me, env_out, rc_out)`）；文件级全局改
+  `g_sdq_*` 唯一前缀（tiec 文件级 var 全局裸名导出，与复杂形态 sched_ws 内联的
+  g_items/g_h/g_t/g_spi 链接期 LNK2005 多重定义根治）；`pool_idle_wait` 改「无可取
+  才等」防空队忙轮询热循环。
+- **探针**：`s_deque_probe`（失衡负载：制造者任务内 spawn 600 异构子任务刺激窃取 +
+  主线程 300 池复用批次）stolen=272~368、tid_set=4、len=900 无重复，PASS×3；
+  p.6.7 全套 + m6_actor（含重编） + spawn_demo/parity_chan/combo/ctx_* 零回归。
+- **自举**：tiec74→tiec75 字节不动点一致（当前工作编译器升格为 tiec74）。
+
+EN: p.6.7.7 simple-form stealing deque (S-deque) (2026-09-04) — S-pool global queue
+upgraded to per-worker deques (owner tail LIFO / steal others' head FIFO / overflow
+global; sched_ws algorithm reimplemented independently); worker index now passes through
+CreateThread arg3 (tig_s_pool_start passes loop counter; gen_s_pool_worker_eager
+forwards ir.param_val(fid,0) → pop_task(me,...)); file-scope globals renamed to unique
+g_sdq_* prefix (fixes LNK2005 multi-def vs complex-form inlined sched_ws globals);
+pool_idle_wait waits only when nothing obtainable (no empty-queue hot spin). Probe
+s_deque_probe: unbalanced load stolen=272~368, tid_set=4, len=900 unique — PASS×3;
+full p.6.7 suite + m6_actor (rebuilt) + demos zero regression; bootstrap tiec74→tiec75
+byte fixpoint.
+
 ## [docs] tie p.6.7 并行开发规划定稿：双形态真并行 + 运行时全量并发安全（2026-09-03）
 
 - `docs/superpowers/specs/2026-09-03-trm-lite-p67-parallel-design.md`：p.6.7 执行 spec 定稿——
-  五阶段 14 子项：运行时并发安全地基（6.7.1-5）→ 双形态真并行（S-pool/C-pool/deque，
+  14 子项（p.6.7.1–6.7.14 编号）：运行时并发安全地基（6.7.1-5）→ 双形态真并行（S-pool/C-pool/deque，
   6.7.6-9）→ 抢占/WaitGroup（6.7.10-11）→ channel Go 语义（6.7.12）→ 验收发布（6.7.13-14）；
   附 race 指南（S1-S4 安全模式 / U1-U6 不安全模式）与生命周期确定性设计（§8）。当前进度：
   p.6.7.1-6.7.6 已实现（见上文实现条目）。
 
 EN: p.6.7 parallel-development planning finalized: dual-form true parallelism + full runtime
-concurrency safety (2026-09-03) — five-stage 14-item execution spec: concurrency-safety
-foundation (6.7.1-5) → dual-form true parallelism (S-pool/C-pool/deque, 6.7.6-9) → preemption/
-WaitGroup (6.7.10-11) → Go-style channels (6.7.12) → acceptance & release (6.7.13-14); with
-race guidance (S1-S4 safe / U1-U6 unsafe) and deterministic-lifetime design (§8). Current:
-p.6.7.1-6.7.6 implemented (see implementation entries above).
+concurrency safety (2026-09-03) — 14-item execution spec numbered p.6.7.1-6.7.14:
+concurrency-safety foundation (6.7.1-5) → dual-form true parallelism (S-pool/C-pool/deque,
+6.7.6-9) → preemption/WaitGroup (6.7.10-11) → Go-style channels (6.7.12) → acceptance &
+release (6.7.13-14); with race guidance (S1-S4 safe / U1-U6 unsafe) and deterministic-lifetime
+design (§8). Current: p.6.7.1-6.7.6 implemented (see implementation entries above).
 
 ## [feat] p.6.7.6 简单形态真并行：S-pool 常驻线程池（2026-09-03）
 
