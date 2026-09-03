@@ -4,26 +4,35 @@ type tie<class>
 // CSS-like query selectors (namespace slct, pure-tie). p.6.6.4
 //
 // 支持子集（尽力而为，数量级小即可）：
-//   *  tag 通配（"*" 与 "" 等价）           div / p / a
-//   *  class                                .foo
-//   *  id                                   #bar
-//   *  属性存在                             [data-x]
-//   *  属性值相等（可选引号）               [data-x=42] / [data-x="v"] / [a='1']
+//   *  tag / 通配（"*" 与 "" 等价）          div / p / *
+//   *  class / id                             .foo / #bar
+//   *  属性存在与值相等（可选引号）           [data-x] / [data-x=42] / [data-x="v"]
+//   *  属性前缀/后缀/包含                     [attr^=v] / [attr$=v] / [attr*=v]
 //   *  上述复合叠写（同一 simple：div#a.b[c=v]）
-//   *  空格分隔的**后代组合器**（descendant）：div p / body a.link
+//   *  组合器：空格后代 / '>' 子 / '+' 相邻 / '~' 后续兄弟（两侧可带空白）
+//   *  伪类：:not(单 simple)、:first-child、:last-child、:nth-child(n|odd|even)
 // 大小写：标签名与属性名不区分（内部折叠比较）；id/class/属性值区分大小写。
-// 未实现：子组合器 '>'、相邻 '~'/'+'、伪类/伪元素、属性部分匹配（^= $= *=）——
-// 非本子项范围；'<' 后的这些字符按未知字符跳过（best-effort，不崩溃）。
+// 未实现/容错：伪元素（::before 等）与未知伪类 → 该 step 永不命中（结果空表，
+// 不崩溃）；无 :nth-of-type/:hover 等其余伪类；'[' 内未闭合 → 读到 EOF 收口。
 //
-// 解析产物为 step 平行表（模块级全局，query 开头重置）：
+// 解析产物为 step 平行表（模块级全局，query 开头重置；下标即 step 序号）：
 //   ss_tag / ss_id            每步标签名（""=任意）/ id（""=无）
 //   ss_ncls / ss_coff         每步 class 数 / 在 ss_cls 的起点
 //   ss_nat / ss_ato           每步属性数 / 在 ss_atn.. 的起点
 //   ss_cls                    扁平 class 串
-//   ss_atn / ss_atv / ss_ath  扁平属性名（折叠）/ 值 / 模式（1=仅存在 0=值相等）
+//   ss_atn / ss_atv / ss_ath  扁平属性名（折叠）/ 值 / 模式
+//                             （1=存在 0=值等 2=^= 3=$= 4=*=）
+//   ss_combo                  该步与其前一步的组合器（0=后代 1='>' 2='+' 3='~'；
+//                             第 0 步为 0 占位）
+//   ss_ptype                  伪类：0=无 1=:not 2=:first-child 3=:last-child
+//                             4=:nth-child 5=永不命中（未知/伪元素）
+//   ss_pval                   :nth-child 参数：>0 为 n；-1=odd；-2=even
+//   ss_ntag / ss_nid / ss_ncls0 / ss_natn / ss_natv / ss_nath
+//                             :not 的单 simple 参数（tag/id/class/attr 取一）
 //
-// 匹配语义：末步命中目标节点，前序各步在**严格更高层**的祖先链中任一命中
-// （后代组合器语义）；链式查询总 O(节点数 × 深度 × 步数)，文档规模内足够。
+// 匹配语义：末步必须命中目标节点自身；其后按组合器逐级确立候选集（后代=祖先
+// 链任一、子=直接父、相邻=前一个兄弟、后续兄弟=之前任一同父兄弟）。链式查询
+// 总 O(节点数 × 深度 × 步数)，文档规模内足够。
 // 失败语义：选择器非法/为空 → query 返回空表，不崩溃。
 // ============================================================================
 
@@ -40,6 +49,15 @@ var ss_cls: table<string>;
 var ss_atn: table<string>;
 var ss_atv: table<string>;
 var ss_ath: table<i64>;
+var ss_combo: table<i64>;
+var ss_ptype: table<i64>;
+var ss_pval: table<i64>;
+var ss_ntag: table<string>;
+var ss_nid: table<string>;
+var ss_ncls0: table<string>;
+var ss_natn: table<string>;
+var ss_natv: table<string>;
+var ss_nath: table<i64>;
 
 namespace slct {
 
@@ -51,8 +69,9 @@ func ws_b(b: i64) -> bool {
     return b == 32 || b == 9 || b == 10 || b == 13
 }
 
-// 标识符字符：ASCII 字母数字 / - _ : 或任意非 ASCII 字节（多字节 UTF-8 原样）
-func ident_b(b: i64) -> bool {
+// 标识符核心字符：ASCII 字母数字 / - _ 或任意非 ASCII 字节（多字节 UTF-8 原样）
+// 不含 ':'（冒号留给伪类解析；命名空间标签 svg:rect 不在支持子集内）
+func ident_core(b: i64) -> bool {
     if b >= 48 && b <= 57 {
         return true
     }
@@ -62,7 +81,7 @@ func ident_b(b: i64) -> bool {
     if b >= 97 && b <= 122 {
         return true
     }
-    if b == 45 || b == 95 || b == 58 {
+    if b == 45 || b == 95 {
         return true
     }
     if b >= 0x80 {
@@ -119,6 +138,30 @@ func trim(sel: string) -> string {
 // 二、选择器解析（step 平行表；单遍字节游标）
 // ============================================================================
 
+// 新建一个 step 占位（sep = 该步与其前一步的组合器，写入前一步的槽）；返回下标
+func new_step(sep: i64) -> i64 {
+    // ss_combo[i] 语义：step[i] 与 step[i+1] 之间的组合器 → 本步的 sep 应写前一步
+    if len(ss_combo) > 0 {
+        ss_combo[len(ss_combo) - 1] = sep
+    }
+    table_push(ss_tag, "")
+    table_push(ss_id, "")
+    table_push(ss_ncls, 0)
+    table_push(ss_coff, len(ss_cls))
+    table_push(ss_nat, 0)
+    table_push(ss_ato, len(ss_atn))
+    table_push(ss_combo, 0)   // 本步占位（由后继步回写）
+    table_push(ss_ptype, 0)
+    table_push(ss_pval, 0)
+    table_push(ss_ntag, "")
+    table_push(ss_nid, "")
+    table_push(ss_ncls0, "")
+    table_push(ss_natn, "")
+    table_push(ss_natv, "")
+    table_push(ss_nath, 0)
+    return len(ss_tag) - 1
+}
+
 // 解析选择器串为 step 表；返回 step 数（空/非法 → 0）。
 func parse(sel: string) -> i64 {
     ss_tag = table_new_string()
@@ -131,8 +174,18 @@ func parse(sel: string) -> i64 {
     ss_atn = table_new_string()
     ss_atv = table_new_string()
     ss_ath = table_new_i64()
+    ss_combo = table_new_i64()
+    ss_ptype = table_new_i64()
+    ss_pval = table_new_i64()
+    ss_ntag = table_new_string()
+    ss_nid = table_new_string()
+    ss_ncls0 = table_new_string()
+    ss_natn = table_new_string()
+    ss_natv = table_new_string()
+    ss_nath = table_new_i64()
     var n = len(sel)
     var i: i64 = 0
+    var pending: i64 = 0   // 本步与其前一步的组合器
     while i < n {
         // 跳过空白
         while i < n && ws_b(str_byte(sel, i)) {
@@ -141,27 +194,41 @@ func parse(sel: string) -> i64 {
         if i >= n {
             break
         }
-        // 非法起始字符（'>' '~' 等未支持组合器）→ 跳过
+        // 组合器 '>' / '+' / '~'（可被空白包裹）
         var c0 = str_byte(sel, i)
-        if c0 != 35 && c0 != 46 && c0 != 91 && c0 != 42 && ident_b(c0) == false {
+        if c0 == 62 || c0 == 43 || c0 == 126 {
+            if c0 == 62 {
+                pending = 1   // 子
+            } else if c0 == 43 {
+                pending = 2   // 相邻
+            } else {
+                pending = 3   // 后续兄弟
+            }
+            i = i + 1
+            while i < n && ws_b(str_byte(sel, i)) {
+                i = i + 1
+            }
+            if i >= n {
+                break   // 尾部孤立组合器：忽略（以已有步收口）
+            }
+            c0 = str_byte(sel, i)
+        } else {
+            pending = 0
+        }
+        // 非法起始字符（未支持符号）→ 跳过
+        if c0 != 35 && c0 != 46 && c0 != 91 && c0 != 42 && c0 != 58 && ident_core(c0) == false {
             i = i + 1
             continue
         }
-        // 新 step 占位
-        table_push(ss_tag, "")
-        table_push(ss_id, "")
-        table_push(ss_ncls, 0)
-        table_push(ss_coff, len(ss_cls))
-        table_push(ss_nat, 0)
-        table_push(ss_ato, len(ss_atn))
-        var last = len(ss_tag) - 1
-        // 读复合 simple（无空白叠写：# / . / [ / 标签 可任意组合）
+        var last = new_step(pending)
+        pending = 0
+        // 读复合 simple（无空白叠写：# / . / [ / : / 标签 / * 可任意组合）
         while i < n && ws_b(str_byte(sel, i)) == false {
             var c = str_byte(sel, i)
             if c == 35 {   // '#'
                 i = i + 1
                 var s2 = i
-                while i < n && ident_b(str_byte(sel, i)) {
+                while i < n && ident_core(str_byte(sel, i)) {
                     i = i + 1
                 }
                 if i > s2 {
@@ -170,7 +237,7 @@ func parse(sel: string) -> i64 {
             } else if c == 46 {   // '.'
                 i = i + 1
                 var s3 = i
-                while i < n && ident_b(str_byte(sel, i)) {
+                while i < n && ident_core(str_byte(sel, i)) {
                     i = i + 1
                 }
                 if i > s3 {
@@ -181,18 +248,39 @@ func parse(sel: string) -> i64 {
                 i = i + 1
                 // 属性名
                 var s4 = i
-                while i < n && ident_b(str_byte(sel, i)) {
+                while i < n && ident_core(str_byte(sel, i)) {
                     i = i + 1
                 }
                 var an = take(sel, s4, i)
-                // 可能 '='（允许 [x = v] 空格）
+                // 跳过空白后检查 = ^= $= *=
                 while i < n && ws_b(str_byte(sel, i)) {
                     i = i + 1
                 }
                 var av = ""
-                var is_pres: i64 = 1
-                if i < n && str_byte(sel, i) == 61 {
-                    i = i + 1
+                var atm: i64 = 1   // 1=仅存在
+                if i < n {
+                    var b2 = str_byte(sel, i)
+                    if b2 == 61 {   // '='
+                        i = i + 1
+                        atm = 0
+                    } else if b2 == 94 || b2 == 36 || b2 == 42 {   // '^' '$' '*'
+                        var mark = b2
+                        i = i + 1
+                        if i < n && str_byte(sel, i) == 61 {
+                            i = i + 1
+                            if mark == 94 {
+                                atm = 2   // ^=
+                            } else if mark == 36 {
+                                atm = 3   // $=
+                            } else {
+                                atm = 4   // *=
+                            }
+                        } else {
+                            atm = 0   // 缺 '='：按 "attr=后文" 容错，仍读值
+                        }
+                    }
+                }
+                if atm != 1 {   // 有比较符：读值
                     while i < n && ws_b(str_byte(sel, i)) {
                         i = i + 1
                     }
@@ -215,7 +303,6 @@ func parse(sel: string) -> i64 {
                             }
                             av = trim(take(sel, vs2, i))
                         }
-                        is_pres = 0
                     }
                 }
                 // 跳过至 ']'
@@ -228,15 +315,168 @@ func parse(sel: string) -> i64 {
                 if len(an) > 0 {
                     table_push(ss_atn, fold(an))
                     table_push(ss_atv, av)
-                    table_push(ss_ath, is_pres)
+                    table_push(ss_ath, atm)
                     ss_nat[last] = ss_nat[last] + 1
                 }
             } else if c == 42 {   // '*'：任意标签（tag 保持 ""）
                 i = i + 1
+            } else if c == 58 {   // '：' 伪类/伪元素
+                i = i + 1
+                if i < n && str_byte(sel, i) == 58 {   // '::' 伪元素 → 永不命中
+                    ss_ptype[last] = 5
+                    i = i + 1
+                    while i < n && ident_core(str_byte(sel, i)) {
+                        i = i + 1
+                    }
+                } else {
+                    var s6 = i
+                    while i < n && ident_core(str_byte(sel, i)) {
+                        i = i + 1
+                    }
+                    var pc = take(sel, s6, i)
+                    if pc == "not" {
+                        // :not(单 simple) —— 至多取一个成分（tag / #id / .cls / [attr]）
+                        if i < n && str_byte(sel, i) == 40 {   // '('
+                            i = i + 1
+                            while i < n && ws_b(str_byte(sel, i)) {
+                                i = i + 1
+                            }
+                            if i < n {
+                                var nb = str_byte(sel, i)
+                                if nb == 46 {   // '.'
+                                    i = i + 1
+                                    var ns3 = i
+                                    while i < n && ident_core(str_byte(sel, i)) {
+                                        i = i + 1
+                                    }
+                                    ss_ncls0[last] = take(sel, ns3, i)
+                                } else if nb == 35 {   // '#'
+                                    i = i + 1
+                                    var ns2 = i
+                                    while i < n && ident_core(str_byte(sel, i)) {
+                                        i = i + 1
+                                    }
+                                    ss_nid[last] = take(sel, ns2, i)
+                                } else if nb == 91 {   // '['
+                                    i = i + 1
+                                    var ns4 = i
+                                    while i < n && ident_core(str_byte(sel, i)) {
+                                        i = i + 1
+                                    }
+                                    ss_natn[last] = fold(take(sel, ns4, i))
+                                    while i < n && ws_b(str_byte(sel, i)) {
+                                        i = i + 1
+                                    }
+                                    if i < n && str_byte(sel, i) == 61 {
+                                        i = i + 1
+                                        while i < n && ws_b(str_byte(sel, i)) {
+                                            i = i + 1
+                                        }
+                                        if i < n {
+                                            var nq = str_byte(sel, i)
+                                            if nq == 34 || nq == 39 {
+                                                i = i + 1
+                                                var nvs = i
+                                                while i < n && str_byte(sel, i) != nq {
+                                                    i = i + 1
+                                                }
+                                                ss_natv[last] = take(sel, nvs, i)
+                                                if i < n {
+                                                    i = i + 1
+                                                }
+                                            } else {
+                                                var nvs2 = i
+                                                while i < n && str_byte(sel, i) != 93 {
+                                                    i = i + 1
+                                                }
+                                                ss_natv[last] = trim(take(sel, nvs2, i))
+                                            }
+                                            ss_nath[last] = 2   // 值相等
+                                        }
+                                    } else {
+                                        ss_nath[last] = 1   // 仅存在
+                                    }
+                                    while i < n && str_byte(sel, i) != 93 {
+                                        i = i + 1
+                                    }
+                                    if i < n {
+                                        i = i + 1
+                                    }
+                                } else if ident_core(nb) {
+                                    var ns5 = i
+                                    while i < n && ident_core(str_byte(sel, i)) {
+                                        i = i + 1
+                                    }
+                                    ss_ntag[last] = fold(take(sel, ns5, i))
+                                }
+                            }
+                            while i < n && str_byte(sel, i) != 41 {   // ')'
+                                i = i + 1
+                            }
+                            if i < n {
+                                i = i + 1
+                            }
+                            ss_ptype[last] = 1
+                        } else {
+                            ss_ptype[last] = 5
+                        }
+                    } else if pc == "first-child" {
+                        ss_ptype[last] = 2
+                    } else if pc == "last-child" {
+                        ss_ptype[last] = 3
+                    } else if pc == "nth-child" {
+                        if i < n && str_byte(sel, i) == 40 {
+                            i = i + 1
+                            var s7 = i
+                            while i < n && str_byte(sel, i) != 41 {
+                                i = i + 1
+                            }
+                            var arg = trim(take(sel, s7, i))
+                            if i < n {
+                                i = i + 1
+                            }
+                            if arg == "odd" {
+                                ss_pval[last] = -1
+                                ss_ptype[last] = 4
+                            } else if arg == "even" {
+                                ss_pval[last] = -2
+                                ss_ptype[last] = 4
+                            } else {
+                                // 纯十进制非负整数
+                                var okd = true
+                                var v: i64 = 0
+                                if len(arg) == 0 {
+                                    okd = false
+                                }
+                                var kd: i64 = 0
+                                while kd < len(arg) {
+                                    var d = str_byte(arg, kd)
+                                    if d < 48 || d > 57 {
+                                        okd = false
+                                        break
+                                    }
+                                    v = v * 10 + (d - 48)
+                                    kd = kd + 1
+                                }
+                                if okd {
+                                    ss_pval[last] = v
+                                    ss_ptype[last] = 4
+                                } else {
+                                    ss_ptype[last] = 5
+                                }
+                            }
+                        } else {
+                            ss_ptype[last] = 5
+                        }
+                    } else {
+                        // 未知伪类（:hover 等）→ 该 step 永不命中
+                        ss_ptype[last] = 5
+                    }
+                }
             } else {
-                // 标签名（叠写末尾的标识符）
+                // 标签名
                 var s5 = i
-                while i < n && ident_b(str_byte(sel, i)) {
+                while i < n && ident_core(str_byte(sel, i)) {
                     i = i + 1
                 }
                 if i > s5 {
@@ -292,9 +532,145 @@ func class_has(d: HtmlDoc, nid: i64, cls: string) -> bool {
     return false
 }
 
-// 节点是否命中第 st 步 simple 选择器
+// 属性值 av 是否满足模式 atm（0=等值 2=^= 3=$= 4=*=）
+func attr_ok(av: string, atm: i64, want: string) -> bool {
+    if atm == 0 {
+        return av == want
+    }
+    if atm == 2 {
+        // 前缀（字节级）
+        var m = len(want)
+        if m > len(av) {
+            return false
+        }
+        var k: i64 = 0
+        while k < m {
+            if str_byte(av, k) != str_byte(want, k) {
+                return false
+            }
+            k = k + 1
+        }
+        return true
+    }
+    if atm == 3 {
+        var m3 = len(want)
+        var n3 = len(av)
+        if m3 > n3 {
+            return false
+        }
+        var k3: i64 = 0
+        while k3 < m3 {
+            if str_byte(av, n3 - m3 + k3) != str_byte(want, k3) {
+                return false
+            }
+            k3 = k3 + 1
+        }
+        return true
+    }
+    // atm == 4：包含
+    var m4 = len(want)
+    var n4 = len(av)
+    if m4 == 0 {
+        return true
+    }
+    var i4: i64 = 0
+    while i4 + m4 <= n4 {
+        var ok = true
+        var j4: i64 = 0
+        while j4 < m4 {
+            if str_byte(av, i4 + j4) != str_byte(want, j4) {
+                ok = false
+                break
+            }
+            j4 = j4 + 1
+        }
+        if ok {
+            return true
+        }
+        i4 = i4 + 1
+    }
+    return false
+}
+
+// :not 参数是否命中（至多取一个成分；无成分 → 不命中）
+func not_hit(d: HtmlDoc, nid: i64, st: i64) -> bool {
+    if len(ss_ntag[st]) > 0 {
+        return dom.tag(d, nid) == ss_ntag[st]
+    }
+    if len(ss_nid[st]) > 0 {
+        return dom.attr(d, nid, "id") == ss_nid[st]
+    }
+    if len(ss_ncls0[st]) > 0 {
+        return class_has(d, nid, ss_ncls0[st])
+    }
+    if len(ss_natn[st]) > 0 {
+        if ss_nath[st] == 1 {
+            return len(dom.attr(d, nid, ss_natn[st])) > 0
+        }
+        return dom.attr(d, nid, ss_natn[st]) == ss_natv[st]
+    }
+    return false
+}
+
+// 目标在父孩子列表中的位置（1-based）；无父/未找到返回 0
+func child_pos(d: HtmlDoc, nid: i64) -> i64 {
+    var p = dom.parent(d, nid)
+    if p < 0 {
+        return 0
+    }
+    var chs = dom.children(d, p)
+    var k: i64 = 0
+    while k < len(chs) {
+        if chs[k] == nid {
+            return k + 1
+        }
+        k = k + 1
+    }
+    return 0
+}
+
+// 伪类求值（并入 step_match；ptype==5 已前置短路）
+func pseudo_hit(d: HtmlDoc, nid: i64, st: i64) -> bool {
+    var pt = ss_ptype[st]
+    if pt == 1 {
+        return not_hit(d, nid, st) == false
+    }
+    if pt == 2 {   // :first-child
+        var pos = child_pos(d, nid)
+        return pos == 1
+    }
+    if pt == 3 {   // :last-child
+        var p = dom.parent(d, nid)
+        if p < 0 {
+            return false
+        }
+        var chs = dom.children(d, p)
+        if len(chs) == 0 {
+            return false
+        }
+        return chs[len(chs) - 1] == nid
+    }
+    // pt == 4：:nth-child
+    var pos2 = child_pos(d, nid)
+    if pos2 == 0 {
+        return false
+    }
+    var pv = ss_pval[st]
+    if pv == -1 {
+        return pos2 % 2 == 1
+    }
+    if pv == -2 {
+        return pos2 % 2 == 0
+    }
+    return pos2 == pv
+}
+
+// 节点是否命中第 st 步 simple 选择器（含伪类）
 func step_match(d: HtmlDoc, nid: i64, st: i64) -> bool {
     if dom.kind(d, nid) != 0 {
+        return false
+    }
+    if ss_ptype[st] == 5 {
         return false
     }
     var tg = ss_tag[st]
@@ -321,37 +697,118 @@ func step_match(d: HtmlDoc, nid: i64, st: i64) -> bool {
                 return false
             }
         } else {
-            if av != ss_atv[ai] {
+            if attr_ok(av, ss_ath[ai], ss_atv[ai]) == false {
                 return false
             }
         }
         j = j + 1
     }
+    if ss_ptype[st] > 0 {
+        if pseudo_hit(d, nid, st) == false {
+            return false
+        }
+    }
     return true
 }
 
-// 链式后代匹配：**末步必须命中目标节点自身**；前序各步在严格更高层祖先链中
-// 任一命中（后代组合器语义）。
-func chain_match(d: HtmlDoc, nid: i64, stn: i64) -> bool {
-    if step_match(d, nid, stn - 1) == false {
-        return false
+// 目标节点在父中的前一个兄弟；无返回 -1
+func prev_of(d: HtmlDoc, nid: i64) -> i64 {
+    var p = dom.parent(d, nid)
+    if p < 0 {
+        return -1
     }
-    var cur = dom.parent(d, nid)
-    var si = stn - 2
-    while si >= 0 {
-        var found = false
-        var c = cur
-        while c > 0 {   // 到根（id 0）为止
-            if step_match(d, c, si) {
-                found = true
-                break
+    var chs = dom.children(d, p)
+    var k: i64 = 0
+    while k < len(chs) {
+        if chs[k] == nid {
+            if k > 0 {
+                return chs[k - 1]
             }
-            c = dom.parent(d, c)
+            return -1
         }
-        if found == false {
+        k = k + 1
+    }
+    return -1
+}
+
+// 目标之前的全部同父兄弟（文档序）
+func prev_sibs(d: HtmlDoc, nid: i64) -> table<i64> {
+    var out = table_new_i64()
+    var p = dom.parent(d, nid)
+    if p < 0 {
+        return out
+    }
+    var chs = dom.children(d, p)
+    var k: i64 = 0
+    while k < len(chs) {
+        if chs[k] == nid {
+            break
+        }
+        table_push(out, chs[k])
+        k = k + 1
+    }
+    return out
+}
+
+// 链式匹配：末步命中目标自身；前序逐步按组合器确立候选集后任一命中。
+//   组合器 → 候选集：0 后代 = cur 及祖先链；1 子 = cur；2 相邻 = cur 前一兄弟；
+//   3 兄弟 = cur 之前任一兄弟。命中 got 后下一级锚点：
+//   0/1 → got 的父；2/3 → got 自身（留在兄弟层）。
+func chain_match(d: HtmlDoc, nid: i64, stn: i64) -> bool {
+    var cur = nid
+    var si = stn - 1
+    while si >= 0 {
+        var got: i64 = -1
+        if si == stn - 1 {
+            // 末步必须命中目标节点自身
+            if step_match(d, cur, si) {
+                got = cur
+            }
+        } else {
+            var cb = ss_combo[si]
+            if cb == 1 {   // '>': 候选 = cur
+                if step_match(d, cur, si) {
+                    got = cur
+                }
+            } else if cb == 0 {   // 后代：cur 及祖先链
+                var c = cur
+                while c > 0 {
+                    if step_match(d, c, si) {
+                        got = c
+                        break
+                    }
+                    c = dom.parent(d, c)
+                }
+            } else if cb == 2 {   // '+': cur 的前一兄弟
+                var pr = prev_of(d, cur)
+                if pr >= 0 && step_match(d, pr, si) {
+                    got = pr
+                }
+            } else {   // '~': cur 之前任一兄弟
+                var ps = prev_sibs(d, cur)
+                var m: i64 = 0
+                while m < len(ps) {
+                    if step_match(d, ps[m], si) {
+                        got = ps[m]
+                        break
+                    }
+                    m = m + 1
+                }
+            }
+        }
+        if got < 0 {
             return false
         }
-        cur = dom.parent(d, c)
+        if si == 0 {
+            return true
+        }
+        // 推导下一级锚点
+        var cb2 = ss_combo[si - 1]
+        if cb2 == 0 || cb2 == 1 {
+            cur = dom.parent(d, got)
+        } else {
+            cur = got
+        }
         si = si - 1
     }
     return true

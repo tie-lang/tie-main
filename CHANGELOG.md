@@ -22,6 +22,26 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/html/select: combinators > + ~, partial attrs ^= $= *=, pseudo-classes (p.6.6.4) (2026-09-03)
+
+- Selector upgrade in ext/html/select.tie (namespace slct), keeps p.6.6.4 probe compat:
+  - Combinators: '>' child, '+' adjacent sibling, '~' following sibling (whitespace-tolerant,
+    e.g. "div > p", "li + li", "p ~ span"); chain matching walks per-combinator candidate sets
+    (descendant = ancestor chain any-hit, child = direct parent, adjacent = previous sibling,
+    sibling = any prior same-parent sibling). '>' no longer degrades to descendant.
+  - Attribute partial matching: [attr^=v] / [attr$=v] / [attr*=v] in addition to presence and
+    exact equality (byte-level, values case-sensitive).
+  - Pseudo-classes: :not(single simple: tag / #id / .class / [attr] / [attr=value]),
+    :first-child, :last-child, :nth-child(n | odd | even); pseudo-elements (::*) and unknown
+    pseudo-classes (:hover etc.) make that step never match → empty result, no crash.
+  - Fixed combo-slot write bug: separator between step[i] and step[i+1] is written to ss_combo[i]
+    (was stored on the new step's own slot, so multi-step selectors silently dropped to
+    single-step last-tag semantics).
+- Probe tests/html_probe/html_probe.tie extended (+40 assertions): combinator chains incl.
+  negative cases (body > p = 0, a + c = 0, b ~ a = 0, div ~ span before-later = 0), partial
+  attr matches, first/last/nth-child on ul>li, :not tag/id/class/attr variants, unknown-pseudo
+  tolerance; 207KB big-sample query/link/text still PASS, sub-second.
+
 ## [feat] ext/html: HTML tokenizer/DOM/selector/links/plain-text extraction (p.6.6.4) (2026-09-03)
 
 - New ext/html package (pure tie; string/UTF-8 data plane, no byte tables — boundary with
