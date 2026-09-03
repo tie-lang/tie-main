@@ -429,6 +429,42 @@ func tst_closure() {
     chk_i64("cl_li3_desc", len(html.query(d6, "ul > li")), 3)
 }
 
+func tst_entities() {
+    // ---- HTML5 全量命名实体（entities.tie 二分查表）----
+    // 常见 + 多字节值 + 变长（二分命中首/中/尾区段）
+    var d1 = html.parse("<p>&copy;&mdash;&hellip;&frac34;&rarr;&ndash;&amp;&lt;&gt;</p>")
+    var k1 = html.children(d1, html.query(d1, "p")[0])
+    chk("e1_basic", html.content(d1, k1[0]), "©—…¾→–&<>")
+    // 长实体名（表尾部区段）+ 大小写敏感 + 希腊符
+    var d2 = html.parse("<p>&NotEqualTilde;&gammad;&CounterClockwiseContourIntegral;&Gamma;</p>")
+    var k2 = html.children(d2, html.query(d2, "p")[0])
+    chk("e2_long", html.content(d2, k2[0]), "≂̸ϝ∳Γ")
+    // 大小写敏感：&gamma; 与 &Gamma; 不同
+    var d2b = html.parse("<p>&gamma;&Gamma;</p>")
+    var k2b = html.children(d2b, html.query(d2b, "p")[0])
+    chk("e2_case", html.content(d2b, k2b[0]), "γΓ")
+    // 未命中实体：'&' 与后续文本原样输出（不吞内容）
+    var d3 = html.parse("<p>a&bogus;b &nope&amp;</p>")
+    var k3 = html.children(d3, html.query(d3, "p")[0])
+    chk("e3_miss", html.content(d3, k3[0]), "a&bogus;b &nope&")
+    // 属性值中的实体
+    var d4 = html.parse("<a title=\"a&copy;b&trade;\">x</a>")
+    var a4 = html.query(d4, "a")[0]
+    chk("e4_attr", html.attr(d4, a4, "title"), "a©b™")
+    // nbsp 由表提供（U+00A0），语义与最小集一致
+    var d5 = html.parse("<p>more&nbsp;x</p>")
+    var k5 = html.children(d5, html.query(d5, "p")[0])
+    chk("e5_nbsp", html.content(d5, k5[0]), "more" + str_from_code(160) + "x")
+    // 数字实体回归（不依赖命名表）
+    var d6 = html.parse("<p>&#65;&#x42;&#x221e;</p>")
+    var k6 = html.children(d6, html.query(d6, "p")[0])
+    chk("e6_num", html.content(d6, k6[0]), "AB∞")
+    // 命名实体的数字等价（GUMMY: &#x22;&#88; 等）——混合文本段
+    var d7 = html.parse("<p>&#x29;&gt;&#123;&#x7d;</p>")
+    var k7 = html.children(d7, html.query(d7, "p")[0])
+    chk("e7_mixed", html.content(d7, k7[0]), ")>{}")
+}
+
 func main() {
     tst_sample1()
     tst_sample2()
@@ -437,6 +473,7 @@ func main() {
     tst_plaintext()
     tst_base()
     tst_closure()
+    tst_entities()
     tst_big()
     println("html 探针全部通过 / html probe all PASS")
     exit(0)

@@ -8,7 +8,7 @@ type tie<class>
 // 上层（DOM 构建 / XML 树）消费后按各自语言语义组装树。本文件中 HTML 专属
 // 逻辑仅经由 MtCfg 进出的可配点，不硬化不可扩展逻辑：
 //   fold_case   0=保留大小写（XML 用）；1=ASCII 标签/属性名折叠小写（HTML 用）
-//   entity_mode 0=HTML 最小实体集（amp/lt/gt/quot/nbsp + 数字实体）；
+//   entity_mode 0=HTML 全量命名实体表（entities.tie）+ 数字实体；
 //               1=XML 最小实体集（amp/lt/gt/quot/apos + 数字实体）
 //   raw_tags    需按 raw text 原样读取内容的标签表（HTML：script/style）
 //
@@ -34,6 +34,8 @@ type tie<class>
 //   - 大小写折叠仅作用于 ASCII A-Z；其余字节原样拷贝。
 // 失败语义：scan 恒成功返回 token 数（>=0），无异常（与 httpc/sse 一致）。
 // ============================================================================
+
+import "./entities.tie" as entitytab
 
 // ---- token 类型常量（文件级全局；上层模块直接裸名引用）----
 const MTK_OPEN: i64 = 1;
@@ -218,24 +220,9 @@ func ent(name: string, mode: i64) -> (bool, string) {
         }
         return (false, "")
     }
-    // 命名实体（最小集）
-    if mode == 0 {   // HTML 最小集
-        if name == "amp" {
-            return (true, "&")
-        }
-        if name == "lt" {
-            return (true, "<")
-        }
-        if name == "gt" {
-            return (true, ">")
-        }
-        if name == "quot" {
-            return (true, "\"")
-        }
-        if name == "nbsp" {
-            return (true, str_from_code(160))
-        }
-        return (false, "")
+    // 命名实体：HTML 模式查全量表（entities.tie）；XML 模式保持最小集
+    if mode == 0 {   // HTML：HTML5 全量命名实体（懒构建常驻表，二分查找）
+        return entitytab.lookup(name)
     }
     // mode == 1：XML 最小集（含 &apos;）
     if name == "amp" {

@@ -22,6 +22,21 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/html/entities: HTML5 named-entity full table (p.6.6.4) (2026-09-03)
+
+- ext/html/entities.tie (new): WHATWG-derived HTML5 named-entity lookup table, generated from
+  the Python stdlib html.entities.html5 (2125 ';'-terminated entries, UTF-8 byte lexicographic
+  order, lazily built once per process; binary search, ~O(logN) short byte compares).
+  entitytab.lookup(name) -> (bool, string); one-shot generator script (stdlib
+  html.entities.html5) run then removed — the table is regenerable from the same source.
+- ext/html/token.tie: HTML entity mode (entity_mode=0) now decodes the full named-entity set
+  via the table instead of the minimal 5-entry set (amp/lt/gt/quot/nbsp); XML mode (1) still
+  uses the minimal set incl. &apos;. Unmatched names keep '&' verbatim; numeric entities
+  unchanged. html.tie header docs updated.
+- Probe tests/html_probe/html_probe.tie: +8 assertions (basic/multi-byte entities, long names
+  at the tail of the binary-search range, case sensitivity γ vs Γ, miss/verbatim passthrough,
+  entities in attribute values, nbsp via table, numeric-entity regression, mixed segment).
+
 ## [feat] ext/html/dom: extended implicit-closure rules (p.6.6.4) (2026-09-03)
 
 - ext/html/dom.tie tree assembly hardening (best-effort, WHATWG-inspired subset):
