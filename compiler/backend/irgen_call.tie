@@ -363,6 +363,13 @@ func tig_atomic_method(recv: i64, aty: i64, mname: string, id: i64) -> i64 {
         return -1
     }
     var slot = g_lookup_alloca
+    // p.6.7.3：地址操作数 kind 须随作用域——全局原子槽为 "@name" 池 id（kind 3，
+    // llvmgen 输出 @g_sum）；本地为 alloca 值（kind 0）。全局误传 kind 0 会把全局
+    // 地址池 id 当 `%N` 值引用 → LLVM「use of undefined value」（闭包内尤甚）。
+    var addr_kind: i64 = 0
+    if g_lookup_is_global != 0 {
+        addr_kind = 3
+    }
     var elem = types.table_elem(aty)
     // 实参求值（从 children[slot_off + 1] 起）
     var aoff = 1 + sstate.slot_off(id)
@@ -375,7 +382,7 @@ func tig_atomic_method(recv: i64, aty: i64, mname: string, id: i64) -> i64 {
             ord2 = atomic_order_imm(sstate.child(id, aoff))
         }
         var inst = ir.new_inst(g_cur_block, 66, elem)
-        ir.add_operand(inst, slot, 0)
+        ir.add_operand(inst, slot, addr_kind)
         ir.add_operand(inst, ord2, 2)  // SeqCst
         return ir.get_value(inst)
     }
@@ -399,7 +406,7 @@ func tig_atomic_method(recv: i64, aty: i64, mname: string, id: i64) -> i64 {
         }
         var inst = ir.new_inst(g_cur_block, 67, -1)
         ir.add_operand(inst, elem, 2)  // ① 值类型 IMM
-        ir.add_operand(inst, slot, 0)  // ② 地址
+        ir.add_operand(inst, slot, addr_kind)  // ② 地址
         ir.add_operand(inst, v, 0)     // ③ 值
         ir.add_operand(inst, order, 2) // ④ order
         return tig_int_lit(0)
@@ -429,7 +436,7 @@ func tig_atomic_method(recv: i64, aty: i64, mname: string, id: i64) -> i64 {
             opn = 4
         }
         var inst = ir.new_inst(g_cur_block, 68, elem)
-        ir.add_operand(inst, slot, 0)
+        ir.add_operand(inst, slot, addr_kind)
         ir.add_operand(inst, v, 0)
         ir.add_operand(inst, opn, 2)
         ir.add_operand(inst, order, 2)
@@ -445,7 +452,7 @@ func tig_atomic_method(recv: i64, aty: i64, mname: string, id: i64) -> i64 {
             return -1
         }
         var inst = ir.new_inst(g_cur_block, 69, elem)
-        ir.add_operand(inst, slot, 0)
+        ir.add_operand(inst, slot, addr_kind)
         ir.add_operand(inst, exp, 0)
         ir.add_operand(inst, newv, 0)
         ir.add_operand(inst, order, 2)

@@ -202,14 +202,18 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
     }
     // trm-lite 阶段1块2：程序用了轻量执行体内置（spawn/yield/collect）或表容器
     // （P2a：table<T> 运行时已迁 trm-lite tl_tbl）→ 链 trm_lite.a。
+    // p.6.7.2：若本模块已 import 复杂形态（tl_tbl 等桥符号已内联 define，含
+    // table 码生成的 extern 引用）→ 不追加 .a（避免多重定义：模块定义 + .a 重复）。
     if need_trmlite {
-        var tlib = find_trmlite_lib()
-        if str_len(tlib) == 0 {
-            tc_err_msg = "程序使用了 trm-lite 运行时（spawn/yield/collect 或表容器 table<T>），但未找到 trm-lite 静态库。" +
-                "请先构建 trm_lite.a（tiec core/runtime/tl_runtime.tie -o trm_lite.a），或设置环境变量 TIE_TRM_LITE_LIB"
-            return -1
+        if llvmgen.tbl_inlined_check() == 0 {
+            var tlib = find_trmlite_lib()
+            if str_len(tlib) == 0 {
+                tc_err_msg = "程序使用了 trm-lite 运行时（spawn/yield/collect 或表容器 table<T>），但未找到 trm-lite 静态库。" +
+                    "请先构建 trm_lite.a（tiec core/runtime/tl_runtime.tie -o trm_lite.a），或设置环境变量 TIE_TRM_LITE_LIB"
+                return -1
+            }
+            cmd = cmd + " " + tlib
         }
-        cmd = cmd + " " + tlib
     }
     // 批次 2：i128/u128 除法/取余生成 __divti3/__umodti3 等 compiler-rt 辅助
     // 调用——clang 默认不链接 builtins，缺符号（undefined symbol: __divti3）。

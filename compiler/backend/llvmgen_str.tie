@@ -617,7 +617,24 @@ func user_extern_decl(sym: string) -> string {
     return ""
 }
 
+// p.6.7.2：模块内是否已内联 trm-lite 表容器（tl_tbl$tbl_push define）——
+// toolchain 据此决定是否追加 trm_lite.a（内联了 → 桥符号模块自给，追加即
+// 与模块定义多重冲突）。与 emit_extern_decls 的豁免判定同源（ir 函数表）。
+pub func tbl_inlined_check() -> i64 {
+    var found: i64 = 0
+    var j: i64 = 0
+    while j < ir.func_count() {
+        if ns_replace(intern.lookup(ir.func_name(j))) == "tl_tbl$tbl_push" {
+            found = 1
+        }
+        j = j + 1
+    }
+    return found
+}
+
 // 输出 extern_call 收集到的 declare（模块头，无条件 declare 之后）。
+// p.6.7.2：若符号在本模块已有 define（含 import 内联的同库函数，如 trm_lite.a
+// 构建时 tl_tbl$* 与 sched/gc 的表桥声明同模块）→ 豁免 declare，防 redefinition。
 func emit_extern_decls() {
     var i: i64 = 0
     while i < len(ext_syms) {
@@ -625,6 +642,19 @@ func emit_extern_decls() {
         // 批次 7 catch_panic：longjmp/_setjmp/llvm.frameaddress 已在模块头
         // 无条件 declare（带 returns_twice/noreturn 属性），跳过二次 declare。
         if nm == "longjmp" || nm == "_setjmp" || nm == "llvm.frameaddress.p0" {
+            i = i + 1
+            continue
+        }
+        var has_def: i64 = 0
+        var j: i64 = 0
+        while j < ir.func_count() {
+            var fs = ns_replace(intern.lookup(ir.func_name(j)))
+            if fs == nm {
+                has_def = 1
+            }
+            j = j + 1
+        }
+        if has_def == 1 {
             i = i + 1
             continue
         }

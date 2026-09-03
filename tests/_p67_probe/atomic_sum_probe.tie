@@ -1,0 +1,79 @@
+type tie<logic>
+// tests/_p67_probe/atomic_sum_probe.tie —— p.6.7.3 验收：全局读写原子化。
+// 断言（对齐规划：fetch_add 并发求和 = N×M）：
+//   1) 全局 atomic<i64> g_sum：8 任务 × 1000 次 fetch_add(1, AcqRel) → == 8000
+//   2) CAS 语义：compare_exchange 在持有旧值时成功并换新值
+//   3) 独立槽位模式对照：每任务写自己的 g_slots[i]（无竞争求和分量）→ 终值 == 8000
+// 期望：sum=8000 slots=8000 cas=1 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_sum: atomic<i64> = 0      // 全局原子计数器（初值被 tie 丢弃，main 显式 store(0)）
+var g_slots: table<i64> = []    // 独立槽位模式：每任务一行，零跨线程写竞争
+
+func sum_task(idx: i64) -> fn() -> i64 {
+    return func() -> i64 {
+        var m: i64 = 0
+        while m < 1000 {
+            unsafe {
+                g_sum.fetch_add(1, AcqRel)
+            }
+            m = m + 1
+        }
+        g_slots[idx] = 1000      // 只写自己的槽位（表下标写经 tl_tbl 锁）
+        return idx
+    }
+}
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    unsafe {
+        g_sum.store(0, Release)  // LLVM store atomic 序 ∈ {monotonic/release/seq_cst}，relaxed 非法
+    }
+    var i: i64 = 0
+    while i < 8 {
+        table_push(g_slots, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(sum_task(i))
+        i = i + 1
+    }
+    var ran = tl_runtime_ctx.ctx_drain()
+    // 先读原子和（CAS 之前的期望值），再做 CAS 换值
+    var sum: i64 = 0
+    unsafe {
+        sum = g_sum.load(Acquire)
+    }
+    // 槽位对照：求和各任务自写分量（一个任务一行，无并发写同一格）
+    var slots_total: i64 = 0
+    i = 0
+    while i < 8 {
+        slots_total = slots_total + g_slots[i]
+        i = i + 1
+    }
+    // CAS：Base => 8000，成功换 12345
+    var cas: i64 = 0
+    unsafe {
+        if g_sum.compare_exchange(8000, 12345, SeqCst) {
+            cas = 1
+        }
+    }
+    var final_v: i64 = 0
+    unsafe {
+        final_v = g_sum.load(SeqCst)
+    }
+    println("ran=" + to_string(ran) + " sum=" + to_string(sum) + " slots=" + to_string(slots_total) + " cas=" + to_string(cas) + " final=" + to_string(final_v))
+    var ok: i64 = 1
+    if ran != 8 || sum != 8000 || slots_total != 8000 || cas != 1 || final_v != 12345 {
+        ok = 0
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

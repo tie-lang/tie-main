@@ -2451,19 +2451,23 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         table_push(ats, types.named(TK_I64)); table_push(avs, env_i)
         table_push(ats, types.named(TK_I64)); table_push(avs, rc)
         g_builtin_res = tig_trmlite_call("trm_lite_sched$spawn_task", ats, avs, types.named(TK_I64))
+        // p.6.7.6 S-pool：首个 spawn 置池闸后，发常驻 worker 线程（CreateThread × P）
+        // 并行抢执行；后续 spawn 闸=0 直接复用已建线程（常驻，不随 drain 终止）。
+        tig_s_pool_start()
         return 0
     }
     if nm == "yield" {
-        // yield() → 协作式让出：排空 trm-lite 就绪任务队列（每个轻量执行体经
-        // call_indirect 一次跑完；无栈迁移，任务体运行期不续跑）。返回哑值 0。
-        // 与 actor 等待循环共用 tig_yield_drain。
+        // yield() → p.6.7.6 重定义为**同步点**：等 S-pool 全部已入队任务完成
+        //（任务由常驻 worker 线程并行执行；yield 不再手动排空）。返回哑值 0。
+        // 与 actor 等待循环统一走 trm_lite_sched$yield_wait。
         g_used_trmlite = true
         if sstate.fn_def_node("trm_lite_sched::queued_count") >= 0 ||
             sstate.fn_def_node("tl_runtime_ctx::ctx_drain") >= 0 {
             sm_err_msg = "yield 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
             return -1
         }
-        tig_yield_drain()
+        var T64y = types.named(TK_I64)
+        tig_trmlite_call("trm_lite_sched$yield_wait", tig_empty_types(), tig_empty_vals(), T64y)
         g_builtin_res = tig_int_lit(0)
         return 0
     }

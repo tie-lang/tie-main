@@ -1,0 +1,39 @@
+type tie<logic>
+// tests/_p67_probe/mix_simple_probe.tie —— p.6.7.2 回归：简单形态内置组合链路。
+// 同程序使用表容器 + spawn + channel 三类内置（无 import，全部走 trm_lite.a）：
+//   · 表容器 → tl_runtime.o（tl_tbl$*，自持 CS extern，无 tl_sync）
+//   · spawn  → tl_runtime.o（trm_lite_sched$* / trm_lite_gc$*）
+//   · ch_*   → tl_chan_lib.o（trm_lite_chan$*，捆绑 tl_sync$*）
+// 需两个成员同时被提取且无符号冲突。断言：表长、chan 收发一致、任务已跑。
+// 末行 import 复杂形态汇总库仅用于 ctx_shutdown 清线程池——双形态同链不冲突。
+
+var g_box: table<i64> = []
+
+func mk(k: i64) -> fn() -> i64 {
+    return func() -> i64 {
+        table_push(g_box, k)
+        return k
+    }
+}
+
+func main() {
+    var ch = ch_open()
+    var t0 = spawn(mk(1))
+    var t1 = spawn(mk(2))
+    yield()
+    var s = ch_send(ch, 77)
+    var r = ch_recv(ch)
+    ch_close(ch)
+    var n = len(g_box)
+    println("spawn=" + to_string(t0) + "," + to_string(t1) + " ch=" + to_string(s) + "," + to_string(r) + " len=" + to_string(n))
+    var ok = 1
+    if n != 2 || s != 0 || r != 77 {   // ch_send：0=成功入队（1=关闭/满）
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

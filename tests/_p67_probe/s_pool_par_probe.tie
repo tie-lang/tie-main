@@ -1,0 +1,108 @@
+type tie<logic>
+// tests/_p67_probe/s_pool_par_probe.tie —— p.6.7.6 验收：简单形态真并行（S-pool）。
+// 无任何 import（纯内置）：spawn 投递 → 常驻线程池并行执行；yield = 同步点。
+// 断言：
+//   1) 8 任务 × 100 次 table_push 到共享表 → len == 800（无丢无重，每表锁）
+//   2) 元素完整：v = idx*1000 + seq 逐元素区间合法；两两无重复
+//   3) 真并行：8 任务记录的 tid 去重 ≥ 2（多线程执行）
+//   4) yield 同步点：返回后全部任务已跑完（len 恰 800）
+// 期望：tid_set≥2 len=800 dup=0 bad=0 / PASS / exit 0
+
+var g_push: table<i64> = []   // 共享表（跨线程并发 push 目标）
+var g_tid: table<i64> = []    // 每任务执行线程 id（独立槽位，p.6.7.3 S2 模式）
+
+unsafe extern fn GetCurrentThreadId() -> i64
+
+func tid_now() -> i64 {
+    unsafe {
+        return GetCurrentThreadId()
+    }
+}
+
+func make_task(idx: i64) -> fn() -> i64 {
+    return func() -> i64 {
+        // 拉长执行窗口（防轻任务被单 worker 抢光 → 真并行证据概率化）；
+        // filler 结果写私有槽防死代码消除
+        var w: i64 = idx
+        var f: i64 = 0
+        while f < 200000 {
+            w = (w * 7 + f) % 1000000007
+            f = f + 1
+        }
+        var j: i64 = 0
+        while j < 100 {
+            table_push(g_push, idx * 1000 + j)
+            j = j + 1
+        }
+        g_tid[idx] = tid_now()   // 执行线程 id 槽（w 防消除，仅作 filler 副作用）
+        return idx
+    }
+}
+
+func main() {
+    var i: i64 = 0
+    while i < 8 {
+        table_push(g_tid, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        spawn(make_task(i))
+        i = i + 1
+    }
+    yield()   // 同步点：等全部任务完成（S-pool 并行执行）
+    var n = len(g_push)
+    // 元素区间校验：v = idx*1000 + seq（idx∈[0,8)，seq∈[0,100)）
+    var bad: i64 = 0
+    i = 0
+    while i < n {
+        var v = g_push[i]
+        var t = v / 1000
+        var s2 = v % 1000
+        if t < 0 || t >= 8 || s2 < 0 || s2 >= 100 {
+            bad = 1
+        }
+        i = i + 1
+    }
+    // 两两去重（800²=640K 次，可接受）
+    var dup: i64 = 0
+    i = 0
+    while i < n && dup == 0 {
+        var j = i + 1
+        while j < n {
+            if g_push[i] == g_push[j] {
+                dup = 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    // tid 去重计数（真并行证据）
+    var tid_set: i64 = 0
+    i = 0
+    while i < 8 {
+        var seen: i64 = 0
+        var j2: i64 = 0
+        while j2 < i {
+            if g_tid[j2] == g_tid[i] {
+                seen = 1
+            }
+            j2 = j2 + 1
+        }
+        if seen == 0 {
+            tid_set = tid_set + 1
+        }
+        i = i + 1
+    }
+    println("tid_set=" + to_string(tid_set) + " len=" + to_string(n) + " dup=" + to_string(dup) + " bad=" + to_string(bad))
+    var ok: i64 = 1
+    if n != 800 || dup != 0 || bad != 0 || tid_set < 2 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

@@ -770,6 +770,13 @@ func gen_inst(inst_id: i64) {
         line("store i8 0, ptr " + endp)
         // 返回数据指针（ptrtoint i64 指针整数，{ptr,len} 的 ptr 位）
         line(reg + " = ptrtoint ptr " + d0 + " to i64")
+        // p.6.7.5 生命周期确定性：链式临时释放——操作数若是前一 str_cat 的
+        // 结果值（op56 def）且全函数仅本次拼接一处使用（SSA 纯表达式临时，
+        // 无其它 load/store/传参引用），则结果就绪后按长度释放其堆缓冲。
+        // 计数含本指令自身（lv==rv 同一值两处消费 → uses>1 不释）与其它
+        // 后续引用（存入槽/传参 → uses>1 不释——防 use-after-free）。
+        str_temp_free_pass(inst_id, lv, n1)
+        str_temp_free_pass(inst_id, rv, n2)
         return
     }
     if op == 30 {
@@ -1041,6 +1048,47 @@ func reg_gep(base: string, off: string) -> string {
     var r = "%sc" + to_string(g_str_reg_cnt)
     line(r + " = getelementptr i8, ptr " + base + ", i64 " + off)
     return r
+}
+
+// p.6.7.5：str_cat 链式临时释放判定（见 op56）——值 v 须为 op56 定义，且除**本次
+// 拼接指令自身**外再无可达引用（纯 SSA 链上中间体：仅被下一段拼接消费，从未
+// store 进槽、从未传参/返回），才在结果就绪后调 @tie_str_free_if_heap 释放。
+// store 进槽/传参/返回值即使只被用一次也不可释（槽/调用方仍持有指针 → UAF）。
+func str_temp_free_pass(inst_id: i64, v: i64, length_ref: string) {
+    if v < 0 {
+        return
+    }
+    var def = value_def(v)
+    if def < 0 {
+        return
+    }
+    if ir.ins_op(def) != 56 {
+        return   // 仅处理链上 str_cat 临时（load/常量/参数不动）
+    }
+    var lo = g_fn_inst_lo[g_pfid]
+    var hi = g_fn_inst_hi[g_pfid]
+    var uses_out: i64 = 0
+    var j: i64 = lo
+    while j < hi {
+        if j == inst_id {
+            j = j + 1   // 本拼接自身（def 亦可能在此区间）不计——两操作数同值
+            continue    // 时本指令内即 2 处消费，但两者都只发生在拼接内
+        }
+        var oc = ir.ins_ops_cnt(j)
+        var k: i64 = 0
+        while k < oc {
+            if ir.ins_opnd(j, k) == v && ir.ins_opnd_kind(j, k) == 0 {
+                uses_out = uses_out + 1
+            }
+            k = k + 1
+        }
+        j = j + 1
+    }
+    if uses_out != 0 {
+        return   // 还有本拼接之外的引用（store/传参/返回/其它拼接）→ 不可释放
+    }
+    // void call：不带结果寄存器（LLVM 禁止命名 void 指令）
+    line("call void @tie_str_free_if_heap(i64 %" + to_string(v) + ", i64 " + length_ref + ")")
 }
 
 // 批次5 任务13/14：extern 返回 char* → 自动扫描。无分支方案：NULL 校验后

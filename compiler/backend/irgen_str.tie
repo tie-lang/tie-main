@@ -696,20 +696,14 @@ func s21_table_len(t: i64) -> i64 {
     return s21_load(s21_gep(t, 8, true), types.named(TK_I64))
 }
 
-// 表追加：len=tbl_len → need=len+1 → data=tbl_ensure → 地址=data+len*esz →
-// 类型化 store → tbl_set_len。esz 编译期计算（与 tbl_new 传入一致）。
+// 表追加：p.6.7.2 起委托 tl_tbl$tbl_push 单步原子 append（锁内完成
+// len/ensure/memcpy/set_len，多线程并发 push 正确）。值先落临时槽再传地址。
 func s21_table_push(t: i64, elem_llvm_ty: i64, v: i64) {
     g_used_trmlite = true
-    var T64 = types.named(TK_I64)
-    var t_i = t21_ptri(t)
-    var len = tl_i64_1("tl_tbl$tbl_len", t_i)
-    var need = s21_bin(0, len, tig_int_lit(1))
-    var data = tl_i64_2("tl_tbl$tbl_ensure", t_i, need)
-    var esz = type_byte_size(elem_llvm_ty)
-    var off = s21_bin(2, len, tig_int_lit_ty(esz, T64))
-    var addr = s21_bin(0, data, off)
-    s21_store(t21_intp(addr), v, elem_llvm_ty)
-    tl_void_2("tl_tbl$tbl_set_len", t_i, need)
+    var slot = ir.new_inst(g_cur_block, 20, elem_llvm_ty)  // 值临时槽
+    ir.add_operand(slot, elem_llvm_ty, 2)
+    s21_store(ir.get_value(slot), v, elem_llvm_ty)
+    tl_void_2("tl_tbl$tbl_push", t21_ptri(t), t21_ptri(ir.get_value(slot)))
 }
 
 // 表下标读：tl_tbl$tbl_at(t, i, out) 越界写零 + 返回 ok；结果槽 load 返回。

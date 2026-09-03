@@ -125,6 +125,8 @@ var g_lookup_ty: i64 = 0;
 var g_actor_task_gen: i64 = 0;
 // 一期并发 A4：actor dispatch/handler 函数急切生成标记（每模块仅一次）
 var g_actor_disp_gen: i64 = 0;
+// p.6.7.6：S-pool 常驻 worker（@tie_s_pool_worker）急切生成标记（每模块仅一次）
+var g_s_pool_worker_gen: i64 = 0;
 // 阶段 A：变量命中形态（0=本地/1=全局标量/2=全局表，scope_get_global 置位）
 var g_lookup_is_global: i64 = 0;
 // 内置调用结果全局槽（builtin_expr 置位；tie 无引用返回）

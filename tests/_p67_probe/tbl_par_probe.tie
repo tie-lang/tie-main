@@ -1,0 +1,74 @@
+type tie<logic>
+// tests/_p67_probe/tbl_par_probe.tie —— p.6.7.2 验收：共享表并发安全（每表锁）
+// 断言：
+//   1) P=4 轮 8 任务 × 100 次并发 table_push 到同一全局共享表：
+//      len == 800（无丢元素/无重复提交）
+//   2) 元素完整：每个值为 任务id*100000 + 序号 编码，逐元素区间合法
+//   3) 无重复：两两比对（并发 push 无覆盖/错位 → 无重复无丢失）
+// 期望：ran=8 / len=800 / dup=0 / bad=0 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_push: table<i64> = []   // 共享表（多线程并发 push 目标）
+
+func make_task(idx: i64) -> fn() -> i64 {
+    return func() -> i64 {
+        var j: i64 = 0
+        while j < 100 {
+            table_push(g_push, idx * 100000 + j)
+            j = j + 1
+        }
+        return idx
+    }
+}
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    var i: i64 = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(make_task(i))
+        i = i + 1
+    }
+    var ran = tl_runtime_ctx.ctx_drain()
+    var n = len(g_push)
+    // 逐元素区间校验：v = tid*100000 + seq（tid∈[0,8)，seq∈[0,100)）
+    var bad: i64 = 0
+    i = 0
+    while i < n {
+        var v = g_push[i]
+        var t = v / 100000
+        var s2 = v % 100000
+        if t < 0 || t >= 8 || s2 < 0 || s2 >= 100 {
+            bad = 1
+        }
+        i = i + 1
+    }
+    // 两两去重校验（800² = 640K 次，可接受）
+    var dup: i64 = 0
+    i = 0
+    while i < n && dup == 0 {
+        var j = i + 1
+        while j < n {
+            if g_push[i] == g_push[j] {
+                dup = 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    println("ran=" + to_string(ran) + " len=" + to_string(n) + " dup=" + to_string(dup) + " bad=" + to_string(bad))
+    var ok: i64 = 1
+    if ran != 8 || n != 800 {
+        ok = 0
+    }
+    if dup != 0 || bad != 0 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    println("done")
+}

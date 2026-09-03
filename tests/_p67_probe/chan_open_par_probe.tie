@@ -1,0 +1,89 @@
+type tie<logic>
+// tests/_p67_probe/chan_open_par_probe.tie —— p.6.7.3 验收：通道句柄分配并发安全。
+// 前置：ch_open 裸 `g_ch_next++` + 平行数组追加为复合临界区，并发打开会丢句柄/
+// 平行数组错位（竞态）。修复后全程持全局分配锁 g_alloc_cs。
+// 断言：
+//   1) 8 任务并发各开 1 通道（ctx_ch_open）→ 句柄恰为 1..8 各一次（无丢无重）
+//   2) 每任务在**自己的通道**上 send 自编码值并 recv 收回 → 逐字节一致
+//   3) 通道互不串扰：任务 i 只经 handle=1+i 收发
+// 期望：uniq=8 bad=0 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_my_ch: table<i64> = []    // 每任务持有的通道句柄（槽位各自写，无竞争）
+
+func open_task(idx: i64) -> fn() -> i64 {
+    return func() -> i64 {
+        var ch = tl_runtime_ctx.ctx_ch_open()
+        g_my_ch[idx] = ch
+        var self_v = 1000 + idx
+        var s = tl_runtime_ctx.ctx_ch_send(ch, self_v)
+        var r = tl_runtime_ctx.ctx_ch_recv(ch)
+        if s != 0 || r != self_v {
+            return -1   // 收发不一致（误用他人通道/权标错乱）
+        }
+        tl_runtime_ctx.ctx_ch_close(ch)
+        return idx
+    }
+}
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    var i: i64 = 0
+    while i < 8 {
+        table_push(g_my_ch, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(open_task(i))
+        i = i + 1
+    }
+    var ran = tl_runtime_ctx.ctx_drain()
+    // 调试分布
+    var dbg: string = "h="
+    i = 0
+    while i < 8 {
+        dbg = dbg + to_string(g_my_ch[i]) + ","
+        i = i + 1
+    }
+    println(dbg)
+    // 校验 1：句柄恰为 1..8（每值只见一次）
+    var uniq: i64 = 0
+    i = 1
+    while i <= 8 {
+        var seen: i64 = 0
+        var j: i64 = 0
+        while j < 8 {
+            if g_my_ch[j] == i {
+                seen = 1
+            }
+            j = j + 1
+        }
+        if seen == 1 {
+            uniq = uniq + 1
+        }
+        i = i + 1
+    }
+    // 校验 2：无越界/重复句柄（>8 或 0 均非法）
+    var bad: i64 = 0
+    i = 0
+    while i < 8 {
+        if g_my_ch[i] < 1 || g_my_ch[i] > 8 {
+            bad = 1
+        }
+        i = i + 1
+    }
+    println("ran=" + to_string(ran) + " uniq=" + to_string(uniq) + " bad=" + to_string(bad))
+    var ok: i64 = 1
+    if ran != 8 || uniq != 8 || bad != 0 {
+        ok = 0
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

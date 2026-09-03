@@ -948,13 +948,210 @@ func tig_yield_drain() {
     g_cur_block = exit
 }
 
-// actor 等待循环（阶段1块2）：单线程调度模型下，调用方在「等 pending 空闲 /
-// 等 done=1」时以 yield 驱动调度器（排空队列即推进消息任务）。cond_eq=true 退出
-// 条件为 load(ptr)==0（等 pending 空闲）；false 为 load(ptr)!=0（等 done=1）。
+// ---------- p.6.7.6 S-pool：常驻 worker + 池启动发射 ----------
+// worker 函数 `tie_s_pool_worker(i64) -> i64`（每程序恰一份，模块生成开始急切
+// 生成，避免指令编号交错）：循环 pop_task 抢任务（出参 env/rc 槽）→ call_indirect
+// 执行（rc 0→i64 / 1→void）→ task_done；空队 → pool_idle_wait（CV 限时，防忙轮询）。
+// 线程由内置 spawn 侧 tig_s_pool_start 发 CreateThread 建（@tie_s_pool_worker
+// kind3 直引函数地址），池常驻不随 drain 终止。
+func gen_s_pool_worker_eager() {
+    if g_s_pool_worker_gen == 1 {
+        return
+    }
+    g_s_pool_worker_gen = 1
+    g_used_trmlite = true
+    var T64 = types.named(TK_I64)
+    var TS = types.named(TK_STR)
+    var saved_func = g_cur_func
+    var saved_block = g_cur_block
+    var params: table<i64> = table_new_i64()
+    table_push(params, T64)
+    var fid = ir.new_func(interner.intern("tie_s_pool_worker"), T64, params)
+    g_cur_func = fid
+    var entry = ir.new_block(fid, interner.intern("spw.e"))
+    g_cur_block = entry
+    // pop_task 出参槽（env/rc）
+    var eo = ir.new_inst(g_cur_block, 20, T64)
+    ir.add_operand(eo, T64, 2)
+    var eop = ir.get_value(eo)
+    var ro = ir.new_inst(g_cur_block, 20, T64)
+    ir.add_operand(ro, T64, 2)
+    var rop = ir.get_value(ro)
+    var loop = ir.new_block(fid, interner.intern("spw.l"))
+    var body = ir.new_block(fid, interner.intern("spw.b"))
+    var idle = ir.new_block(fid, interner.intern("spw.i"))
+    var br0 = ir.new_inst(g_cur_block, 30, -1)  // br loop
+    ir.add_operand(br0, loop, 1)
+    g_cur_block = loop
+    // e = pop_task(ptrtoint(eop), ptrtoint(rop))
+    var eat: table<i64> = table_new_i64()
+    var eav: table<i64> = table_new_i64()
+    table_push(eat, T64)
+    var pe = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint eop
+    ir.add_operand(pe, eop, 0)
+    table_push(eav, ir.get_value(pe))
+    table_push(eat, T64)
+    var pr2 = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint rop
+    ir.add_operand(pr2, rop, 0)
+    table_push(eav, ir.get_value(pr2))
+    var e = tig_trmlite_call("trm_lite_sched$pop_task", eat, eav, T64)
+    var z0 = tig_int_lit_ty(0, T64)
+    var cnd = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp ne
+    ir.add_operand(cnd, e, 0)
+    ir.add_operand(cnd, z0, 0)
+    ir.add_operand(cnd, 1, 2)
+    var cb = ir.new_inst(g_cur_block, 31, -1)  // cond_br
+    ir.add_operand(cb, ir.get_value(cnd), 0)
+    ir.add_operand(cb, body, 1)
+    ir.add_operand(cb, idle, 1)
+    g_cur_block = idle
+    tig_trmlite_call("trm_lite_sched$pool_idle_wait", tig_empty_types(), tig_empty_vals(), -1)
+    var bw = ir.new_inst(g_cur_block, 30, -1)  // br loop
+    ir.add_operand(bw, loop, 1)
+    g_cur_block = body
+    var envv = s21_load(eop, T64)
+    var rcv = s21_load(rop, T64)
+    var en_p = ir.new_inst(g_cur_block, 25, TS)  // inttoptr entry
+    ir.add_operand(en_p, e, 0)
+    var en_ptr = ir.get_value(en_p)
+    var ev_p = ir.new_inst(g_cur_block, 25, TS)  // inttoptr env
+    ir.add_operand(ev_p, envv, 0)
+    var ev_ptr = ir.get_value(ev_p)
+    var is_i64 = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp eq(rcv,0)
+    ir.add_operand(is_i64, rcv, 0)
+    ir.add_operand(is_i64, z0, 0)
+    ir.add_operand(is_i64, 0, 2)
+    var b_i64 = ir.new_block(fid, interner.intern("spw.i64"))
+    var b_void = ir.new_block(fid, interner.intern("spw.v"))
+    var b_join = ir.new_block(fid, interner.intern("spw.j"))
+    var cb2 = ir.new_inst(g_cur_block, 31, -1)
+    ir.add_operand(cb2, ir.get_value(is_i64), 0)
+    ir.add_operand(cb2, b_i64, 1)
+    ir.add_operand(cb2, b_void, 1)
+    g_cur_block = b_i64
+    var ci1 = ir.new_inst(g_cur_block, 70, T64)  // call_indirect
+    ir.add_operand(ci1, en_ptr, 0)
+    ir.add_operand(ci1, T64, 2)
+    ir.add_operand(ci1, ev_ptr, 0)
+    var br1 = ir.new_inst(g_cur_block, 30, -1)  // br join
+    ir.add_operand(br1, b_join, 1)
+    g_cur_block = b_void
+    var ci2 = ir.new_inst(g_cur_block, 70, -1)  // call_indirect（void）
+    ir.add_operand(ci2, en_ptr, 0)
+    ir.add_operand(ci2, types.named(TK_VOID), 2)
+    ir.add_operand(ci2, ev_ptr, 0)
+    var br2 = ir.new_inst(g_cur_block, 30, -1)  // br join
+    ir.add_operand(br2, b_join, 1)
+    g_cur_block = b_join
+    tig_trmlite_call("trm_lite_sched$task_done", tig_empty_types(), tig_empty_vals(), -1)
+    var bw2 = ir.new_inst(g_cur_block, 30, -1)  // br loop
+    ir.add_operand(bw2, loop, 1)
+    g_cur_func = saved_func
+    g_cur_block = saved_block
+}
+
+// S-pool 池启动（内置 spawn 调用）：pool_try_start 闸=1（首个 spawn）→ 读池大小 P
+// → 循环 CreateThread(null,0,@tie_s_pool_worker,null,0,null) × P 建常驻 worker。
+// 后续 spawn 闸=0 → 直接落到 join，线程已常驻复用。
+func tig_s_pool_start() {
+    g_used_trmlite = true
+    // 惰性生成常驻 worker 函数（仅含 spawn 内置的程序需要；模块中途 append，
+    // 指令区间连续 + llvmgen 按 block_func 过滤，安全；不含 spawn 的程序与 .a
+    // 库自身不产生 @tie_s_pool_worker，防链接期重复定义）
+    gen_s_pool_worker_eager()
+    var T64 = types.named(TK_I64)
+    var TS = types.named(TK_STR)
+    var started = tig_trmlite_call("trm_lite_sched$pool_try_start", tig_empty_types(), tig_empty_vals(), T64)
+    var z0 = tig_int_lit_ty(0, T64)
+    var is1 = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp ne
+    ir.add_operand(is1, started, 0)
+    ir.add_operand(is1, z0, 0)
+    ir.add_operand(is1, 1, 2)
+    var b_st = ir.new_block(g_cur_func, interner.intern("sps.s"))
+    var b_jn = ir.new_block(g_cur_func, interner.intern("sps.j"))
+    var cb = ir.new_inst(g_cur_block, 31, -1)
+    ir.add_operand(cb, ir.get_value(is1), 0)
+    ir.add_operand(cb, b_st, 1)
+    ir.add_operand(cb, b_jn, 1)
+    g_cur_block = b_st
+    var P = tig_trmlite_call("trm_lite_sched$pool_workers", tig_empty_types(), tig_empty_vals(), T64)
+    var cnt_al = ir.new_inst(g_cur_block, 20, T64)
+    ir.add_operand(cnt_al, T64, 2)
+    var cnt_ap = ir.get_value(cnt_al)
+    s21_store(cnt_ap, tig_int_lit_ty(0, T64), T64)
+    var lp = ir.new_block(g_cur_func, interner.intern("sps.l"))
+    var bd = ir.new_block(g_cur_func, interner.intern("sps.b"))
+    var ex = ir.new_block(g_cur_func, interner.intern("sps.x"))
+    var blp = ir.new_inst(g_cur_block, 30, -1)  // br lp
+    ir.add_operand(blp, lp, 1)
+    g_cur_block = lp
+    var cv_load = s21_load(cnt_ap, T64)
+    var islt = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp slt
+    ir.add_operand(islt, cv_load, 0)
+    ir.add_operand(islt, P, 0)
+    ir.add_operand(islt, 2, 2)
+    var cbl = ir.new_inst(g_cur_block, 31, -1)
+    ir.add_operand(cbl, ir.get_value(islt), 0)
+    ir.add_operand(cbl, bd, 1)
+    ir.add_operand(cbl, ex, 1)
+    g_cur_block = bd
+    // CreateThread(null, 0, @tie_s_pool_worker, null, 0, null) —— op36 extern：
+    // 返回类型用 ptr_of(i8)（declare ptr；TK_STR 会触发 FFI 补头，规避）。
+    // 注意：所有值产生指令须在 add_operand 序列**之前**创建（防操作数段交错）：
+    //   · 函数地址：op63（ptrtoint @tie_s_pool_worker → i64）+ inttoptr → ptr 值
+    //     （函数符号不能登记 g_global_names，kind3 直引会落 %N 未定义）；
+    //   · IMM 参数（i64/i32 0）直接传字面量 0，不传值 id（否则输出池 id 数字）。
+    var P8 = types.ptr_of(types.named(TK_I8))
+    var n0p = ir.new_inst(g_cur_block, 25, TS)  // inttoptr i64 0 → ptr null
+    ir.add_operand(n0p, z0, 0)
+    var fa = ir.new_inst(g_cur_block, 63, T64)  // const_global 函数地址
+    ir.add_operand(fa, interner.intern("tie_s_pool_worker"), 0)
+    var fap = ir.new_inst(g_cur_block, 25, TS)  // inttoptr → ptr
+    ir.add_operand(fap, ir.get_value(fa), 0)
+    var ct = ir.new_inst(g_cur_block, 36, P8)
+    ir.add_operand(ct, interner.intern("CreateThread"), 0)
+    ir.add_operand(ct, P8, 2)
+    // arg0 ptr null
+    ir.add_operand(ct, TS, 2)
+    ir.add_operand(ct, ir.get_value(n0p), 0)
+    // arg1 i64 0（栈大小）
+    ir.add_operand(ct, T64, 2)
+    ir.add_operand(ct, 0, 2)
+    // arg2 ptr @tie_s_pool_worker（inttoptr 后的 ptr 值）
+    ir.add_operand(ct, TS, 2)
+    ir.add_operand(ct, ir.get_value(fap), 0)
+    // arg3 ptr null（worker arg 未用）
+    ir.add_operand(ct, TS, 2)
+    ir.add_operand(ct, ir.get_value(n0p), 0)
+    // arg4 i32 0（flags）
+    ir.add_operand(ct, types.named(TK_I32), 2)
+    ir.add_operand(ct, 0, 2)
+    // arg5 ptr null（tid out 未用）
+    ir.add_operand(ct, TS, 2)
+    ir.add_operand(ct, ir.get_value(n0p), 0)
+    // i++ → br lp
+    var one = tig_int_lit_ty(1, T64)
+    var cv2 = s21_load(cnt_ap, T64)
+    var nv2 = ir.new_inst(g_cur_block, 0, T64)  // add
+    ir.add_operand(nv2, cv2, 0)
+    ir.add_operand(nv2, one, 0)
+    s21_store(cnt_ap, ir.get_value(nv2), T64)
+    var blp2 = ir.new_inst(g_cur_block, 30, -1)  // br lp
+    ir.add_operand(blp2, lp, 1)
+    g_cur_block = ex
+    var bjx = ir.new_inst(g_cur_block, 30, -1)  // br join
+    ir.add_operand(bjx, b_jn, 1)
+    g_cur_block = b_jn
+}
+
+// actor 等待循环（阶段1块2；p.6.7.6 改池同步点）：actor 消息任务经 S-pool
+// 常驻线程并行执行，等待 = 等队列排空（yield_wait）+ 重查谓词 + 空转限时。
+// cond_eq=true 退出条件为 load(ptr)==0（等 pending 空闲）；false 为 !=0（等 done=1）。
 func tig_actor_wait(ptr: i64, cond_eq: bool) {
     var T64 = types.named(TK_I64)
     var loop = ir.new_block(g_cur_func, interner.intern("aw.l"))
-    var drainb = ir.new_block(g_cur_func, interner.intern("aw.d"))
+    var chk = ir.new_block(g_cur_func, interner.intern("aw.c"))
+    var idle = ir.new_block(g_cur_func, interner.intern("aw.i"))
     var exit = ir.new_block(g_cur_func, interner.intern("aw.x"))
     var br0 = ir.new_inst(g_cur_block, 30, -1)  // br loop
     ir.add_operand(br0, loop, 1)
@@ -972,9 +1169,22 @@ func tig_actor_wait(ptr: i64, cond_eq: bool) {
     var cb = ir.new_inst(g_cur_block, 31, -1)  // cond_br
     ir.add_operand(cb, ir.get_value(ic), 0)
     ir.add_operand(cb, exit, 1)
-    ir.add_operand(cb, drainb, 1)
-    g_cur_block = drainb
-    tig_yield_drain()  // 排空队列（消息任务跑完）；g_cur_block 推进到 drain exit
+    ir.add_operand(cb, chk, 1)
+    // 同步点：等队列排空（池执行完当前批次消息任务）
+    g_cur_block = chk
+    tig_trmlite_call("trm_lite_sched$yield_wait", tig_empty_types(), tig_empty_vals(), T64)
+    var v2 = s21_load(ptr, T64)
+    var ic2 = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))
+    ir.add_operand(ic2, v2, 0)
+    ir.add_operand(ic2, z, 0)
+    ir.add_operand(ic2, pred, 2)
+    var cb2 = ir.new_inst(g_cur_block, 31, -1)
+    ir.add_operand(cb2, ir.get_value(ic2), 0)
+    ir.add_operand(cb2, exit, 1)
+    ir.add_operand(cb2, idle, 1)
+    // 条件未满足（如等 done 但新消息未到）→ 空转限时后重查
+    g_cur_block = idle
+    tig_trmlite_call("trm_lite_sched$pool_idle_wait", tig_empty_types(), tig_empty_vals(), -1)
     var bw = ir.new_inst(g_cur_block, 30, -1)  // br loop
     ir.add_operand(bw, loop, 1)
     g_cur_block = exit
@@ -1036,6 +1246,10 @@ func gen_actor_sync_call(rech: i64, mi: i64, args: table<i64>, ret_ty: i64, is_a
     table_push(ats, T64); table_push(avs, ir.get_value(rec_i))
     table_push(ats, T64); table_push(avs, tig_int_lit_ty(0, T64))  // retcode=0（i64）
     tig_trmlite_call("trm_lite_sched$spawn_task", ats, avs, T64)
+    // p.6.7.6 根治：actor 消息任务经 S-pool 执行——此处与内置 spawn 同等必须
+    // 启动常驻线程池（此前缺此调用 → 池未起、yield_wait 等 pend 永不为 0 →
+    // sync RPC / async 消息全部挂起死锁）。gate=1 后幂等（不重复建线程）。
+    tig_s_pool_start()
     // async：投递即返回（fire-and-forget，不阻塞等 done）
     if is_async {
         return tig_int_lit_ty(0, T64)

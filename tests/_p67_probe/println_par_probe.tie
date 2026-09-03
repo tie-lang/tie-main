@@ -1,0 +1,34 @@
+type tie<logic>
+// tests/_p67_probe/println_par_probe.tie —— p.6.7.4 验收：并发 println 行不撕裂。
+// println 每次 = 单次 vararg printf（CRT 逐调用内部加锁）→ 行级原子。
+// 8 任务 × 50 行，每行 "T{k}:{100+j}:XXXXXXXX…"（40 个 'X'，定长 47）。
+// 输出重定向到 println_out.txt，由 println_checker.tie 逐行校验：
+//   1) 总行数 = 400（无丢失/重复）  2) 每行长度 47、前缀合法、负载全 'X'
+// 期望：lines=400 per_line_ok=400 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+func line_task(idx: i64) -> fn() -> i64 {
+    return func() -> i64 {
+        var j: i64 = 0
+        while j < 50 {
+            // 单字符串 + 单 println → 单次 printf（整行一次写入）
+            println("T" + to_string(idx) + ":" + to_string(100 + j) + ":" + "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+            j = j + 1
+        }
+        return idx
+    }
+}
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    var i: i64 = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(line_task(i))
+        i = i + 1
+    }
+    var ran = tl_runtime_ctx.ctx_drain()
+    tl_runtime_ctx.ctx_shutdown()
+    println("ran=" + to_string(ran))
+    println("done")
+}

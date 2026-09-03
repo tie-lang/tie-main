@@ -392,6 +392,21 @@ func emit_sso_globals() {
         line("  %m = call ptr @malloc(i64 %need)")
         line("  ret ptr %m")
         line("}")
+        // p.6.7.5 生命周期确定性：链式临时串释放 helper——str_cat 拼接链
+        // （a+b+c 等纯表达式临时，op56 操作数直引前一 str_cat 结果且全函数
+        // 仅此一处使用）在结果就绪后调用本函数：数据长 > 31（池外，malloc
+        // 回退）→ free(块基址 = 数据指针 - 8)；否则池内短串只读不释放。
+        line("define private void @tie_str_free_if_heap(i64 %dp, i64 %len) {")
+        line("  %heap = icmp sgt i64 %len, 31")
+        line("  br i1 %heap, label %sf.h, label %sf.d")
+        line("sf.h:")
+        line("  %p = inttoptr i64 %dp to ptr")
+        line("  %b = getelementptr i8, ptr %p, i64 -8")
+        line("  call void @free(ptr %b)")
+        line("  ret void")
+        line("sf.d:")
+        line("  ret void")
+        line("}")
         line("")
     }
     // 可捕获 panic 全局（仅 g_catch_enabled）：jmp_buf（256B，对齐 clang
