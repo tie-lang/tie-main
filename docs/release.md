@@ -22,6 +22,33 @@ EN: **Year**: the release year (4 digits), e.g. `2026`.
 EN: **Revision**: the release ordinal within that year, incrementing from 1 (`2026.1` → `2026.2` → …).
 EN: The version matches the git tag exactly: `2026.1` (a bare version without a `v` prefix).
 
+### 1.1 两段式开发：预发布 → 正式版
+*EN: Two-stage development: preview → stable*
+
+每个正式发行版内采用「预发布 → 正式版」两段式开发：
+
+EN: Each official release develops in two stages:
+
+- **预发布段（preview.N）**：全部新功能在开发模块完成，开发号 **P.x.y.z**
+  （CHANGELOG 中写作 `p.x.y.z`）；CHANGELOG 版本段标题
+  `## Harbor-2026.1-preview.N（YYYY-MM-DD）`。
+  EN: **preview stage (preview.N)**: all new features land in development modules,
+  numbered **P.x.y.z** (`p.x.y.z` in the CHANGELOG); CHANGELOG heading
+  `## Harbor-2026.1-preview.N（YYYY-MM-DD）`.
+- **正式版段（2026.1）**：preview.N 发布后启动，**基于 preview.N** 开发——**不引入任何
+  新功能**，只做优化与稳定性；开发号 **R.x.y.z**。正式版与预发布是**双轨**（两个独立
+  轨道）：预发布轨 **P.x.y.z** 做新功能，正式版轨 **R.x.y.z** 只做优化与稳定性，两轨
+  共用 x.y.z 格式但**各自独立编号、不互相延续**；CHANGELOG 版本段标题
+  `## 2026.1（正式版，开发中）`。
+  EN: **stable stage (2026.1)**: starts after preview.N ships, **based on preview.N**,
+  introducing **no new features** — only optimization and stability; dev numbers
+  **R.x.y.z**. The stable and preview are **dual-track** (two independent tracks): the
+  preview track (**P.x.y.z**) does new features, the stable track (**R.x.y.z**) only does
+  optimization/stability; both share the x.y.z format but **number independently and
+  neither continues the other**; CHANGELOG heading `## 2026.1（stable, in development）`.
+- 正式版发布即发行版（版本号 `年份.修订号`，git tag 裸版本号 `2026.1`）。
+  EN: the stable release is the official release (version `year.revision`, bare git tag `2026.1`).
+
 ## 2. 内部代号（架构代号）
 *EN: Internal Codenames (architecture codenames)*
 
