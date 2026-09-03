@@ -11,6 +11,15 @@ type tie<class>
 //   entity_mode 0=HTML 全量命名实体表（entities.tie）+ 数字实体；
 //               1=XML 最小实体集（amp/lt/gt/quot/apos + 数字实体）
 //   raw_tags    需按 raw text 原样读取内容的标签表（HTML：script/style）
+//   strict      0=HTML 容错（缺省）；1=XML 严格（well-formed 子集）：
+//               名称按 XML Name 规则校验、属性值必须引号、孤立 '<' 与未知 '<!'
+//               声明按错误上报、实体严格（未识别/非法码点报错）、doctype 内部
+//               子集 [..] 括号感知扫描、处理指令输出 MTK_PI token、每 token 记录
+//               起始字节位置、首个结构错误记录到 tk_errcode/tk_errpos 后停止。
+//
+// 失败语义：scan 在 strict=0 时恒成功返回 token 数（>=0），无异常（与 httpc/sse
+// 一致）；strict=1 时遇到首个结构错误即停止扫描，错误码/位置写入模块级
+// tk_errcode/tk_errpos（0/-1 表示无错误），由上层（ext/xml）转成结构化错误返回。
 //
 // 数据平面（Data plane）：输入/输出均为 string（UTF-8 文本，经 httpc.get_text
 // 或文件读取获得，不触碰字节表——与 httpc/sse 的字节平面分界见 html.tie 头）。
@@ -46,21 +55,40 @@ const MTK_COMMENT: i64 = 5;
 const MTK_DOCTYPE: i64 = 6;
 const MTK_RAW: i64 = 7;
 const MTK_CDATA: i64 = 8;
+const MTK_PI: i64 = 9;   // 处理指令（strict=1 输出；HTML 路径不产生）
+
+// ---- 结构错误码（strict=1 记录到 tk_errcode；ext/xml 头注释给完整错误表）----
+const XENONE: i64 = 0;       // 无错误
+const XENAME: i64 = 1;       // 标签/属性名含非法字符（XML Name 规则）
+const XEUNQUOTED: i64 = 2;   // 属性值未加引号（或无 '=' 无值）
+const XELTEXT: i64 = 3;      // 文本内容出现孤立 '<'（非合法标记开头）
+const XEBADMARK: i64 = 4;    // 标记结构非法（未知 '<!' 声明 / PI 未闭合 / 闭标签后多余字符）
+const XENTUNK: i64 = 5;      // 未识别的实体引用（非最小集命名实体 / 畸形数字实体 / 裸 '&'）
+const XENTCHAR: i64 = 6;     // 数字实体解码出非法 XML 码点
+const XENOMATCH: i64 = 7;    // 闭标签与最近开标签不配对（或栈空闭标签）——上层判定
+const XEMULTIROOT: i64 = 8;  // 文档含多个根元素或根外非空白文本——上层判定
+const XEUNCLOSED: i64 = 9;   // 文档尾仍有未闭合标签——上层判定
 
 // ---- token 流（模块级全局；scan 开头重置；参考 std/json 的节点存储风格）----
 var tk_ty: table<i64>;         // token 类型（MTK_* 常量）
 var tk_name: table<string>;    // 标签名（开/闭/自闭合）
-var tk_txt: table<string>;     // 内容（文本/注释/doctype/raw/cdata）
+var tk_txt: table<string>;     // 内容（文本/注释/doctype/raw/cdata/pi）
 var tk_aoff: table<i64>;       // 属性扁平区间起点；-1=无属性
 var tk_acnt: table<i64>;       // 属性个数
 var tk_anames: table<string>;  // 扁平属性名（按 fold_case 折叠）
 var tk_avals: table<string>;   // 扁平属性值（实体解码 + 去头尾空白）
+var tk_pos: table<i64>;        // 每 token 起始字节位置（strict 与上层调试用）
+
+// ---- 首个结构错误（strict=1；0/-1 表示无错误）----
+var tk_errcode: i64 = 0;
+var tk_errpos: i64 = -1;
 
 // ---- 分词配置 ----
 struct MtCfg {
     var fold_case: i64 = 1          // 1=ASCII 标签/属性名折叠小写（HTML 缺省）
     var entity_mode: i64 = 0        // 0=HTML 实体集（缺省）；1=XML 实体集
     var raw_tags: table<string> = table_new_string()   // raw text 标签表
+    var strict: i64 = 0             // 0=HTML 容错（缺省）；1=XML 严格（见文件头）
 }
 
 namespace mltok {
@@ -166,8 +194,26 @@ func trim_ws(s: string) -> string {
 // 二、实体解码（最小集；含数字实体；无 '&' 时零拷贝快路径）
 // ============================================================================
 
-// 命名/数字实体求值：found=false 表示未命中（原样输出 '&'）
-func ent(name: string, mode: i64) -> (bool, string) {
+// 码点是否为合法 XML 字符（XML 1.0：9/10/13、0x20-0xD7FF、0xE000-0xFFFD、0x10000-0x10FFFF）
+func xml_char_ok(v: i64) -> bool {
+    if v == 9 || v == 10 || v == 13 {
+        return true
+    }
+    if v >= 0x20 && v <= 0xD7FF {
+        return true
+    }
+    if v >= 0xE000 && v <= 0xFFFD {
+        return true
+    }
+    if v >= 0x10000 && v <= 0x10FFFF {
+        return true
+    }
+    return false
+}
+
+// 命名/数字实体求值：返回 (status, rep)——
+//   status 0=命中（rep=替换值）；1=未命中/畸形；2=非法码点（仅 strict 有意义）
+func ent(name: string, mode: i64, strict: i64) -> (i64, string) {
     // 数字实体：&#NN;（十进制） / &#xHH;（十六进制）
     if len(name) >= 2 && str_byte(name, 0) == 35 {   // 35 = '#'
         var b1 = str_byte(name, 1)
@@ -193,11 +239,14 @@ func ent(name: string, mode: i64) -> (bool, string) {
             }
             if ok && k >= 3 {
                 if val > 0x10FFFF {
-                    return (false, "")
+                    return (2, "")
                 }
-                return (true, str_from_code(val))
+                if strict == 1 && !xml_char_ok(val) {
+                    return (2, "")
+                }
+                return (0, str_from_code(val))
             }
-            return (false, "")
+            return (1, "")
         }
         // 十进制
         var ok2 = true
@@ -214,38 +263,46 @@ func ent(name: string, mode: i64) -> (bool, string) {
         }
         if ok2 && k2 >= 2 {
             if val2 > 0x10FFFF {
-                return (false, "")
+                return (2, "")
             }
-            return (true, str_from_code(val2))
+            if strict == 1 && !xml_char_ok(val2) {
+                return (2, "")
+            }
+            return (0, str_from_code(val2))
         }
-        return (false, "")
+        return (1, "")
     }
     // 命名实体：HTML 模式查全量表（entities.tie）；XML 模式保持最小集
     if mode == 0 {   // HTML：HTML5 全量命名实体（懒构建常驻表，二分查找）
-        return entitytab.lookup(name)
+        var (f, r) = entitytab.lookup(name)
+        if f {
+            return (0, r)
+        }
+        return (1, "")
     }
     // mode == 1：XML 最小集（含 &apos;）
     if name == "amp" {
-        return (true, "&")
+        return (0, "&")
     }
     if name == "lt" {
-        return (true, "<")
+        return (0, "<")
     }
     if name == "gt" {
-        return (true, ">")
+        return (0, ">")
     }
     if name == "quot" {
-        return (true, "\"")
+        return (0, "\"")
     }
     if name == "apos" {
-        return (true, "'")
+        return (0, "'")
     }
-    return (false, "")
+    return (1, "")
 }
 
 // 解码段内实体（文本与属性值用；raw/comment/cdata 不解码）。
 // 无 '&' 时直接返回原段（零拷贝）；含 '&' 时单遍构建（O(段长)）。
-func decode_entities(seg: string, mode: i64) -> string {
+// strict=1 时未识别/畸形/非法码点实体记录首个错误（tk_errpos = base + '&' 偏移）。
+func decode_entities(seg: string, mode: i64, strict: i64, base: i64) -> string {
     var n = len(seg)
     if find_b(seg, 0, n, 38) < 0 {   // 38 = '&'
         return seg
@@ -262,12 +319,24 @@ func decode_entities(seg: string, mode: i64) -> string {
             var semi = find_b(seg, i + 1, bound, 59)   // 59 = ';'
             if semi >= 0 {
                 var nm = take_seg(seg, i + 1, semi)
-                var (found, rep) = ent(nm, mode)
-                if found {
+                var (st, rep) = ent(nm, mode, strict)
+                if st == 0 {
                     sb_append(sb, rep)
                     i = semi + 1
                     continue
                 }
+                // 未命中/畸形（1）或非法码点（2）：strict 下记首个错误后按原样推进
+                if strict == 1 {
+                    tk_errcode = XENTUNK
+                    if st == 2 {
+                        tk_errcode = XENTCHAR
+                    }
+                    tk_errpos = base + i
+                }
+            } else if strict == 1 {
+                // 无 ';'：strict 下裸 '&' 视为未识别实体引用
+                tk_errcode = XENTUNK
+                tk_errpos = base + i
             }
         }
         sb_append_byte(sb, str_byte(seg, i))
@@ -277,11 +346,61 @@ func decode_entities(seg: string, mode: i64) -> string {
 }
 
 // ============================================================================
-// 三、属性扫描（开/自闭合标签共用；尽力而为）
+// 三、属性扫描（开/自闭合标签共用；容错 / strict 双路径）
 // ============================================================================
+
+// XML Name 首字符（ASCII 子集 + '_' ':' + 非 ASCII；UTF-8 首字节 >= 0x80 放行）
+func name_start(b: i64) -> bool {
+    if b >= 65 && b <= 90 {
+        return true
+    }
+    if b >= 97 && b <= 122 {
+        return true
+    }
+    if b == 95 || b == 58 {
+        return true
+    }
+    if b >= 0x80 {
+        return true
+    }
+    return false
+}
+
+// XML Name 字符（首字符集 + 数字 + '-' '.'）
+func name_char(b: i64) -> bool {
+    if name_start(b) {
+        return true
+    }
+    if b >= 48 && b <= 57 {
+        return true
+    }
+    if b == 45 || b == 46 {
+        return true
+    }
+    return false
+}
+
+// 字节段 [s,e) 是否为合法 XML Name（strict 名称校验；O(段长)）
+func name_ok(src: string, s: i64, e: i64) -> bool {
+    if e <= s {
+        return false
+    }
+    if !name_start(str_byte(src, s)) {
+        return false
+    }
+    var k: i64 = s + 1
+    while k < e {
+        if !name_char(str_byte(src, k)) {
+            return false
+        }
+        k = k + 1
+    }
+    return true
+}
 
 // 从 name 之后扫属性区，填扁平表；返回 [ao, ac, i, self]：
 //   ao=扁平表起点, ac=属性个数, i='>'/"/>' 之后位置, self=1 表示 '/>' 自闭合
+// strict=1 时属性必须 `name="quoted"`；违例即记首个错误并停止扫描。
 func scan_attrs(src: string, pos: i64, fold: i64, cfg: MtCfg) -> table<i64> {
     var out = table_new_i64()
     var n = len(src)
@@ -289,6 +408,7 @@ func scan_attrs(src: string, pos: i64, fold: i64, cfg: MtCfg) -> table<i64> {
     var ac: i64 = 0
     var i: i64 = pos
     var self: i64 = 0
+    var strict = cfg.strict
     while i < n {
         // 跳过空白
         while i < n && ws_b(str_byte(src, i)) {
@@ -307,7 +427,12 @@ func scan_attrs(src: string, pos: i64, fold: i64, cfg: MtCfg) -> table<i64> {
             self = 1
             break
         }
-        if c == 47 {   // '/' 但非 "/>"：尽力而为跳过
+        if c == 47 {   // '/' 但非 "/>"：容错跳过；strict 视为属性区非法字符
+            if strict == 1 {
+                tk_errcode = XENAME
+                tk_errpos = i
+                break
+            }
             i = i + 1
             continue
         }
@@ -323,6 +448,11 @@ func scan_attrs(src: string, pos: i64, fold: i64, cfg: MtCfg) -> table<i64> {
         if i == ns {   // 无进展字符：推进防死循环
             i = i + 1
             continue
+        }
+        if strict == 1 && !name_ok(src, ns, i) {   // strict：XML Name 校验
+            tk_errcode = XENAME
+            tk_errpos = ns
+            break
         }
         var an = ""
         if fold == 1 {
@@ -353,21 +483,43 @@ func scan_attrs(src: string, pos: i64, fold: i64, cfg: MtCfg) -> table<i64> {
                     if i < n {
                         i = i + 1
                     }
+                    if strict == 1 {
+                        av = decode_entities(av, cfg.entity_mode, strict, vs)   // XML 不 trim
+                    } else {
+                        av = trim_ws(av)
+                        if cfg.entity_mode >= 0 {
+                            av = decode_entities(av, cfg.entity_mode, strict, 0)
+                        }
+                    }
                 } else {
+                    // 非引号值：容错读裸值；strict 下属性值未加引号
+                    if strict == 1 {
+                        tk_errcode = XEUNQUOTED
+                        tk_errpos = i
+                        break
+                    }
                     var vs2 = i
                     while i < n && ws_b(str_byte(src, i)) == false && str_byte(src, i) != 62 {
                         i = i + 1
                     }
                     av = take_seg(src, vs2, i)
+                    av = trim_ws(av)
+                    if cfg.entity_mode >= 0 {
+                        av = decode_entities(av, cfg.entity_mode, strict, 0)
+                    }
                 }
             }
-        }
-        av = trim_ws(av)
-        if cfg.entity_mode >= 0 {
-            av = decode_entities(av, cfg.entity_mode)
+        } else if strict == 1 {
+            // 无 '='：容错为布尔属性；strict 下属性缺 '=' 与引号值
+            tk_errcode = XEUNQUOTED
+            tk_errpos = i
+            break
         }
         table_push(tk_avals, av)
         ac = ac + 1
+        if strict == 1 && tk_errcode != 0 {
+            break
+        }
     }
     table_push(out, ao)
     table_push(out, ac)
@@ -433,21 +585,59 @@ func find_raw_close(src: string, off: i64, name: string) -> i64 {
 // 五、标记扫描（'<' 处理；返回推进后的字节位置）
 // ============================================================================
 
-// 压入一个 token（五槽对齐）
-func push_tok(ty: i64, name: string, txt: string) {
+// 压入一个 token（六槽对齐，含起始字节位置）
+func push_tok(ty: i64, name: string, txt: string, pos: i64) {
     table_push(tk_ty, ty)
     table_push(tk_name, name)
     table_push(tk_txt, txt)
     table_push(tk_aoff, -1)
     table_push(tk_acnt, 0)
+    table_push(tk_pos, pos)
+}
+
+// strict 下 doctype 的 '>' 定位：内部子集 [..] 括号感知（引号内 '>' 不终止，
+// ']' 收缩深度）；返回 '>' 位置；未找到返回 -1。容错路径不走本函数。
+func doctype_end(src: string, from: i64, n: i64) -> i64 {
+    var dep: i64 = 0
+    var q: i64 = 0
+    var k: i64 = from
+    while k < n {
+        var b = str_byte(src, k)
+        if q != 0 {
+            if b == q {
+                q = 0
+            }
+        } else {
+            if b == 34 || b == 39 {   // '"' 或 '\''
+                q = b
+            } else if b == 91 {       // '['
+                dep = dep + 1
+            } else if b == 93 {       // ']'
+                if dep > 0 {
+                    dep = dep - 1
+                }
+            } else if b == 62 && dep == 0 {   // '>'
+                return k
+            }
+        }
+        k = k + 1
+    }
+    return -1
 }
 
 // 处理位置 i（src[i]=='<'）处的标记；产生 0..N 个 token；返回推进后位置。
-// 非标签首字符（"<3"、孤立 '<' 等）按文本原样输出（不吞内容）。
+// 容错路径：非标签首字符（"<3"、孤立 '<' 等）按文本原样输出（不吞内容）。
+// strict 路径：名称/引号/实体/声明等结构违例记首个错误并停止。
 func scan_markup(src: string, i: i64, cfg: MtCfg) -> i64 {
     var n = len(src)
+    var strict = cfg.strict
     if i + 1 >= n {
-        push_tok(MTK_TEXT, "", "<")
+        if strict == 1 {
+            tk_errcode = XELTEXT
+            tk_errpos = i
+            return n
+        }
+        push_tok(MTK_TEXT, "", "<", i)
         return n
     }
     var b1 = str_byte(src, i + 1)
@@ -456,32 +646,59 @@ func scan_markup(src: string, i: i64, cfg: MtCfg) -> i64 {
         if find_seq(src, i, "<!--") == i {
             var ce = find_seq(src, i + 4, "-->")
             if ce >= 0 {
-                push_tok(MTK_COMMENT, "", take_seg(src, i + 4, ce))
+                push_tok(MTK_COMMENT, "", take_seg(src, i + 4, ce), i)
                 return ce + 3
             }
-            push_tok(MTK_COMMENT, "", take_seg(src, i + 4, n))
+            push_tok(MTK_COMMENT, "", take_seg(src, i + 4, n), i)
             return n
         }
         if find_seq(src, i, "<![CDATA[") == i {
             var de = find_seq(src, i + 9, "]]>")
             if de >= 0 {
-                push_tok(MTK_CDATA, "", take_seg(src, i + 9, de))
+                push_tok(MTK_CDATA, "", take_seg(src, i + 9, de), i)
                 return de + 3
             }
-            push_tok(MTK_CDATA, "", take_seg(src, i + 9, n))
+            push_tok(MTK_CDATA, "", take_seg(src, i + 9, n), i)
             return n
         }
-        // doctype（尽力而为：读到 '>'）
+        if strict == 1 {
+            // XML：仅接受 <!DOCTYPE ...>（内部子集括号感知）；其余声明视为非法标记
+            if find_seq(src, i, "<!DOCTYPE") == i {
+                var gt = doctype_end(src, i + 1, n)
+                if gt >= 0 {
+                    push_tok(MTK_DOCTYPE, "", take_seg(src, i + 1, gt), i)
+                    return gt + 1
+                }
+                push_tok(MTK_DOCTYPE, "", take_seg(src, i + 1, n), i)
+                return n
+            }
+            tk_errcode = XEBADMARK
+            tk_errpos = i
+            return n
+        }
+        // 容错 doctype（尽力而为：读到 '>'；HTML 行为）
         var gt = find_b(src, i + 1, n, 62)
         if gt >= 0 {
-            push_tok(MTK_DOCTYPE, "", take_seg(src, i + 1, gt))
+            push_tok(MTK_DOCTYPE, "", take_seg(src, i + 1, gt), i)
             return gt + 1
         }
-        push_tok(MTK_DOCTYPE, "", take_seg(src, i + 1, n))
+        push_tok(MTK_DOCTYPE, "", take_seg(src, i + 1, n), i)
         return n
     }
-    // ---- 处理指令（'?' 分支；XML 专用，HTML 中罕见——读 '>' 跳过）----
+    // ---- 处理指令（'?' 分支）----
     if b1 == 63 {
+        if strict == 1 {
+            // XML：读 '?>'，内容含目标与数据；未闭合记 XEBADMARK
+            var pe = find_seq(src, i + 2, "?>")
+            if pe >= 0 {
+                push_tok(MTK_PI, "", take_seg(src, i + 2, pe), i)
+                return pe + 2
+            }
+            tk_errcode = XEBADMARK
+            tk_errpos = i
+            return n
+        }
+        // HTML：罕见，读 '>' 跳过（既有行为）
         var gt2 = find_b(src, i + 1, n, 62)
         if gt2 >= 0 {
             return gt2 + 1
@@ -491,7 +708,7 @@ func scan_markup(src: string, i: i64, cfg: MtCfg) -> i64 {
     // ---- 闭标签（'/' 分支）----
     if b1 == 47 {
         var ns = i + 2
-        if ns < n && alpha_b(str_byte(src, ns)) {
+        if ns < n && (strict == 1 ? name_start(str_byte(src, ns)) : alpha_b(str_byte(src, ns))) {
             var ne = ns
             while ne < n {
                 var bb = str_byte(src, ne)
@@ -500,28 +717,50 @@ func scan_markup(src: string, i: i64, cfg: MtCfg) -> i64 {
                 }
                 ne = ne + 1
             }
+            if strict == 1 && !name_ok(src, ns, ne) {
+                tk_errcode = XENAME
+                tk_errpos = ns
+                return n
+            }
             var nm = ""
             if cfg.fold_case == 1 {
                 nm = fold_seg(src, ns, ne)
             } else {
                 nm = take_seg(src, ns, ne)
             }
-            push_tok(MTK_CLOSE, nm, "")
+            push_tok(MTK_CLOSE, nm, "", i)
             var g = ne
             while g < n && str_byte(src, g) != 62 {
                 g = g + 1
+            }
+            if strict == 1 {
+                // 闭标签名后仅允许空白与 '>'；多余字符视为标记结构非法
+                var h = ne
+                while h < g && ws_b(str_byte(src, h)) {
+                    h = h + 1
+                }
+                if h != g {
+                    tk_errcode = XEBADMARK
+                    tk_errpos = h
+                    return n
+                }
             }
             if g < n {
                 return g + 1
             }
             return n
         }
-        // "</" 后非字母：按文本原样输出
-        push_tok(MTK_TEXT, "", "<")
+        // "</" 后非合法名首字符：容错按文本输出；strict 下视为孤立 '<'
+        if strict == 1 {
+            tk_errcode = XELTEXT
+            tk_errpos = i
+            return n
+        }
+        push_tok(MTK_TEXT, "", "<", i)
         return i + 1
     }
     // ---- 开标签 ----
-    if alpha_b(b1) {
+    if strict == 1 ? name_start(b1) : alpha_b(b1) {
         var ns2 = i + 1
         var ne2 = ns2
         while ne2 < n {
@@ -538,23 +777,36 @@ func scan_markup(src: string, i: i64, cfg: MtCfg) -> i64 {
             nm2 = take_seg(src, ns2, ne2)
         }
         if len(nm2) == 0 {
-            push_tok(MTK_TEXT, "", "<")
+            if strict == 1 {
+                tk_errcode = XELTEXT
+                tk_errpos = i
+                return n
+            }
+            push_tok(MTK_TEXT, "", "<", i)
             return i + 1
+        }
+        if strict == 1 && !name_ok(src, ns2, ne2) {
+            tk_errcode = XENAME
+            tk_errpos = ns2
+            return n
         }
         // raw text 标签：开标签 + 内容（raw）+（若有）闭标签
         if is_raw_tag(nm2, cfg) {
-            push_tok(MTK_OPEN, nm2, "")
+            push_tok(MTK_OPEN, nm2, "", i)
             var ra = scan_attrs(src, ne2, cfg.fold_case, cfg)
             tk_aoff[len(tk_aoff) - 1] = ra[0]
             tk_acnt[len(tk_acnt) - 1] = ra[1]
+            if strict == 1 && tk_errcode != 0 {
+                return n
+            }
             if ra[3] == 1 {   // 自闭合（<script/>，尽力而为语义）：无内容
                 tk_ty[len(tk_ty) - 1] = MTK_SELF
                 return ra[2]
             }
             var rp = find_raw_close(src, ra[2], nm2)
             if rp >= 0 {
-                push_tok(MTK_RAW, "", take_seg(src, ra[2], rp))
-                push_tok(MTK_CLOSE, nm2, "")
+                push_tok(MTK_RAW, "", take_seg(src, ra[2], rp), i)
+                push_tok(MTK_CLOSE, nm2, "", i)
                 var g2 = rp
                 while g2 < n && str_byte(src, g2) != 62 {
                     g2 = g2 + 1
@@ -564,21 +816,29 @@ func scan_markup(src: string, i: i64, cfg: MtCfg) -> i64 {
                 }
                 return n
             }
-            push_tok(MTK_RAW, "", take_seg(src, ra[2], n))
+            push_tok(MTK_RAW, "", take_seg(src, ra[2], n), i)
             return n
         }
         // 普通标签
-        push_tok(MTK_OPEN, nm2, "")
+        push_tok(MTK_OPEN, nm2, "", i)
         var ra2 = scan_attrs(src, ne2, cfg.fold_case, cfg)
         tk_aoff[len(tk_aoff) - 1] = ra2[0]
         tk_acnt[len(tk_acnt) - 1] = ra2[1]
+        if strict == 1 && tk_errcode != 0 {
+            return n
+        }
         if ra2[3] == 1 {
             tk_ty[len(tk_ty) - 1] = MTK_SELF
         }
         return ra2[2]
     }
-    // ---- 其余（"<3"、孤立的 '<' 等）：按文本输出 ----
-    push_tok(MTK_TEXT, "", "<")
+    // ---- 其余（"<3"、孤立的 '<' 等）：容错按文本输出；strict 下报孤立 '<' ----
+    if strict == 1 {
+        tk_errcode = XELTEXT
+        tk_errpos = i
+        return n
+    }
+    push_tok(MTK_TEXT, "", "<", i)
     return i + 1
 }
 
@@ -587,7 +847,8 @@ func scan_markup(src: string, i: i64, cfg: MtCfg) -> i64 {
 // ============================================================================
 
 // 扫描整个文档为 token 流（重置 token 存储）。返回 token 数（>=0）。
-// 失败语义：尽力而为，恒成功，无异常；细节容错见文件头。
+// 失败语义：strict=0 恒成功，无异常（细节容错见文件头）；strict=1 遇首个
+// 结构错误即停止，错误码/位置见 tok_err()，此时 token 流为已扫部分（可用）。
 pub func scan(src: string, cfg: MtCfg) -> i64 {
     tk_ty = table_new_i64()
     tk_name = table_new_string()
@@ -596,9 +857,12 @@ pub func scan(src: string, cfg: MtCfg) -> i64 {
     tk_acnt = table_new_i64()
     tk_anames = table_new_string()
     tk_avals = table_new_string()
+    tk_pos = table_new_i64()
+    tk_errcode = 0
+    tk_errpos = -1
     var n = len(src)
     var i: i64 = 0
-    while i < n {
+    while i < n && tk_errcode == 0 {
         if str_byte(src, i) == 60 {   // '<'
             i = scan_markup(src, i, cfg)
         } else {
@@ -608,9 +872,9 @@ pub func scan(src: string, cfg: MtCfg) -> i64 {
             }
             var seg = take_seg(src, i, k)
             if cfg.entity_mode >= 0 {
-                seg = decode_entities(seg, cfg.entity_mode)
+                seg = decode_entities(seg, cfg.entity_mode, cfg.strict, i)
             }
-            push_tok(MTK_TEXT, "", seg)
+            push_tok(MTK_TEXT, "", seg, i)
             i = k
         }
     }
@@ -620,6 +884,19 @@ pub func scan(src: string, cfg: MtCfg) -> i64 {
 // ---- 访问器（越界返回安全值，不崩溃）----
 pub func tok_count() -> i64 {
     return len(tk_ty)
+}
+
+// 首个结构错误：(错误码, 字节位置)；0/-1 表示无错误
+pub func tok_err() -> (i64, i64) {
+    return (tk_errcode, tk_errpos)
+}
+
+// token 起始字节位置（越界返回 -1）
+pub func tok_pos(k: i64) -> i64 {
+    if k < 0 || k >= len(tk_pos) {
+        return -1
+    }
+    return tk_pos[k]
 }
 
 pub func tok_type(k: i64) -> i64 {

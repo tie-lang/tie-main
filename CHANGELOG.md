@@ -22,6 +22,23 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/html/token: XML strict mode — name checks / quoted attrs / strict entities / PI+doctype tokens / first-error recording (p.6.6.5) (2026-09-03)
+
+- ext/html/token.tie shared base: new MtCfg.strict configurable point (0=HTML tolerant default,
+  1=XML strict); old-value path behavior unchanged (html probe 207KB regression all PASS).
+- XML Name validation for tag/attr/close names (ASCII + `_ : - .` + non-ASCII UTF-8); malformed
+  names → XENAME. Attribute values must be quoted (single/double); bare attrs / unquoted values →
+  XEUNQUOTED; XML attr values are no longer whitespace-trimmed (raw value kept).
+- Lone '<' / "<3" / unclosed '<' in content → XELTEXT; unknown '<!' declarations → XEBADMARK.
+- Strict entity decoding: unknown named refs / bare '&' → XENTUNK; numeric refs decoding to illegal
+  XML codepoints (control / surrogate / out-of-range, xml_char_ok per XML 1.0) → XENTCHAR.
+- Processing instructions `<?...?>` emit MTK_PI token (content = target + data, `?>` terminator);
+  doctype scans internal subsets `[..]` bracket-aware (quoted '>' is not a terminator).
+- Per-token start byte position table (tk_pos) + first-error recording (tk_errcode/tk_errpos,
+  shared XENONE..XEUNCLOSED error-code table); new tok_err()/tok_pos() accessors.
+- Verified with a one-shot token probe (tests/_p665, not committed): PI/CDATA/entity/doctype token
+  output, UTF-8 中文 tag/attr preservation, and all tokenizer-level error codes.
+
 ## [feat] ext/html/entities: HTML5 named-entity full table (p.6.6.4) (2026-09-03)
 
 - ext/html/entities.tie (new): WHATWG-derived HTML5 named-entity lookup table, generated from
