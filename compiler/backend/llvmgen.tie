@@ -358,39 +358,37 @@ pub func catch_enable() {
 
 // 输出 SSO 短串池全局段（emit_globals 之后）：仅 g_sso_enabled 时输出。
 //   @s21_sso_pool      = 256KB 静态线性池（.bss，零运行时初始化）
-//   @s21_sso_off       = 当前 bump 偏移
+//   @s21_sso_off       = 当前 bump 偏移（p.6.7.1 起 atomicrmw 单调推进）
 //   @s21_sso_malloc_cnt = 池满回退 malloc 的累计次数（验收探针断言 = 0）
 // 并定义短串池分配 helper @tie_sso_alloc(i64 %n) -> ptr：
 //   参数 n = 数据长度（UTF-8 字节）；返回块基址（头位置，调用方写头后取数据）。
 //   块 = n + 41（8 头 + 数据 + \0 + 32 尾部填充，漏洞 B 安全余量不变）。
-//   短串（n ≤ 31 且池剩余 ≥ n+41）→ 池 bump（零 malloc）；否则回退 malloc 计数。
+//   p.6.7.1 并发安全：bump 改 atomicrmw（off = fetch_add(need)）——各线程拿到
+//   唯一不重叠块偏移（旧值）；本块落池判定用块尾 noff = off+need ≤ CAP。
+//   短串（n ≤ 31 且块尾 ≤ 池容量）→ 池 bump（零 malloc）；否则回退 malloc 计数。
 //   供 llvmgen op56（str_cat）与 gen_ext_str_scan（FFI 收方向）内联调用——
 //   与 irgen s21_sso_alloc 逻辑同构（共用 @s21_sso_off / @s21_sso_malloc_cnt）。
 func emit_sso_globals() {
     // SSO 短串池段（仅 g_sso_enabled）
     if g_sso_enabled == 1 {
-        line("@s21_sso_pool = private global [262144 x i8] zeroinitializer")
-        line("@s21_sso_off = private global i64 0")
-        line("@s21_sso_malloc_cnt = private global i64 0")
+        line("@s21_sso_pool = private global [262144 x i8] zeroinitializer, align 8")
+        line("@s21_sso_off = private global i64 0, align 8")
+        line("@s21_sso_malloc_cnt = private global i64 0, align 8")
         line("define private ptr @tie_sso_alloc(i64 %n) {")
         line("  %short = icmp sle i64 %n, 31")
         line("  %need = add i64 %n, 41")
-        line("  %off = load i64, ptr @s21_sso_off")
-        line("  %remain = sub i64 262144, %off")
-        line("  %space = icmp sle i64 %need, %remain")
+        line("  %off = atomicrmw add ptr @s21_sso_off, i64 %need seq_cst")
+        line("  %noff = add i64 %off, %need")
+        line("  %space = icmp sle i64 %noff, 262144")
         line("  %ok = and i1 %short, %space")
         line("  br i1 %ok, label %sso.pool, label %sso.heap")
         line("sso.pool:")
         line("  %pb = ptrtoint ptr @s21_sso_pool to i64")
         line("  %p = add i64 %pb, %off")
-        line("  %noff = add i64 %off, %need")
-        line("  store i64 %noff, ptr @s21_sso_off")
         line("  %pp = inttoptr i64 %p to ptr")
         line("  ret ptr %pp")
         line("sso.heap:")
-        line("  %cnt = load i64, ptr @s21_sso_malloc_cnt")
-        line("  %ncnt = add i64 %cnt, 1")
-        line("  store i64 %ncnt, ptr @s21_sso_malloc_cnt")
+        line("  %cnt = atomicrmw add ptr @s21_sso_malloc_cnt, i64 1 seq_cst")
         line("  %m = call ptr @malloc(i64 %need)")
         line("  ret ptr %m")
         line("}")

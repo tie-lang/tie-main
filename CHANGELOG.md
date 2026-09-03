@@ -22,6 +22,23 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] p.6.7.1 SSO 短串池原子 bump：分配器并发安全（2026-09-03）
+
+- `s21_sso_alloc`（irgen_str.tie）分配序列从 load→add→store 改为 atomicrmw fetch_add（seq_cst）：
+  各线程拿到唯一不重叠块偏移，无锁零争用；越界判定改为块尾 noff=off+need ≤ CAP。
+- `@tie_sso_alloc` helper（llvmgen.tie）同构改为 atomicrmw（op56 str_cat 路径同步保护）。
+- 回退计数 `@s21_sso_malloc_cnt` 同时改为 atomicrmw（探针读侧 load 不变）。
+- 验收：`sso_par_probe`（P=4 并发 8 任务 × 8 次拼接，fails=0 / dist_tid=4 / malloc=0）。
+
+EN: p.6.7.1 SSO short-string pool atomic bump: allocator concurrency safety (2026-09-03)
+
+- s21_sso_alloc (irgen_str.tie): changed from load→add→store to atomicrmw fetch_add (seq_cst);
+  each thread gets a unique non-overlapping block offset, lock-free zero contention;
+  pool-capacity check uses noff=off+need ≤ CAP.
+- @tie_sso_alloc helper (llvmgen.tie) same change (op56 str_cat path protection).
+- Fallback counter @s21_sso_malloc_cnt also changed to atomicrmw (reader side load unchanged).
+- Verified: sso_par_probe (P=4, 8 tasks × 8 concats, fails=0 / dist_tid=4 / malloc=0).
+
 ## [feat] ext/xml: full probe tests/xml_probe/xml_probe.tie + xml.child_count forward (p.6.6.5) (2026-09-03)
 
 - tests/xml_probe/xml_probe.tie (new): end-to-end XML probe covering well-formed tree (nested /

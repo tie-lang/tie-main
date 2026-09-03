@@ -141,25 +141,43 @@ func s21_raw_alloc_str(n: i64) -> i64 {
 //（头位置，与 s21_raw_alloc_str 语义一致：调用方写头后返回数据指针）。
 // 短串（n ≤ 31 且池剩余 ≥ n+41）→ 静态线性池 bump 分配（零 malloc）；
 // 否则回退 malloc（s21_raw_alloc_str）并累计回退计数（验收探针断言 = 0）。
-// 池不回收（单线程递增分配；进程退出回收——与字符串不可变共享语义一致）。
+// 池不回收（原子单调递增分配；进程退出回收——与字符串不可变共享语义一致）。
+// p.6.7.1 并发安全：off 改原子 bump（atomicrmw add @s21_sso_off, need, seq_cst）——
+// 各线程拿到唯一不重叠块偏移（旧值），无锁零争用；本块落池判定用块尾 noff = off+need。
 func s21_sso_alloc(n: i64) -> i64 {
     llvmgen.sso_enable()  // 置位：llvmgen 据此输出池全局
     var T64 = types.named(TK_I64)
     var CAP = tig_int_lit(262144)  // 256KB 静态池
+    // p.6.7.1 原子 bump 操作数常量：声明/求值必须发生在一切 new_inst 之前——
+    // tie 的变量初始化与字面量实参会生成常量指令，落在 add_operand 段中间即交错。
+    var oc_add: i64 = 0   // atomicrmw op：add
+    var os_seq: i64 = 4   // memory order：seq_cst
+    var one = tig_int_lit(1)  // 回退计数增量（+1）
     // 结果槽（alloca 提升到 entry 由 llvmgen 统一处理）
     var slot = ir.new_inst(g_cur_block, 20, T64)
     ir.add_operand(slot, T64, 2)
     var sv = ir.get_value(slot)
-    // need = n + 41（块总大小）；off = load @s21_sso_off
+    // need = n + 41（块总大小）
     var need = s21_bin(0, n, tig_int_lit(41))  // add
-    var off_id = interner.intern("@s21_sso_off")
-    var ldo = ir.new_inst(g_cur_block, 21, T64)  // load
-    ir.add_operand(ldo, off_id, 3)  // OK_GLOBAL → @s21_sso_off
-    var off = ir.get_value(ldo)
-    // remain = CAP - off；short_c = n ≤ 31；space_c = need ≤ remain
-    var remain = s21_bin(1, CAP, off)  // sub
+    // 原子 bump：off = atomicrmw add @s21_sso_off, need, seq_cst（返回旧值）。
+    // 地址须为普通值引用（kind 0，atomic 模板惯例）：const_global + inttoptr。
+    // const_global 操作数要**裸名**（llvmgen 自动加 @，传 @ 前缀会变 @@）。
+    var off_nm = interner.intern("s21_sso_off")
+    var gi1 = ir.new_inst(g_cur_block, 63, T64)  // const_global → ptrtoint @s21_sso_off
+    ir.add_operand(gi1, off_nm, 3)
+    var ap1 = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr → ptr
+    ir.add_operand(ap1, ir.get_value(gi1), 0)
+    var rmw = ir.new_inst(g_cur_block, 68, T64)  // atomicrmw
+    ir.add_operand(rmw, ir.get_value(ap1), 0)    // ① 地址（ptr 值）
+    ir.add_operand(rmw, need, 0)                 // ② 值（增量）
+    ir.add_operand(rmw, oc_add, 2)               // ③ op：add
+    ir.add_operand(rmw, os_seq, 2)               // ④ order：seq_cst
+    var off = ir.get_value(rmw)
+    // noff = off + need（块尾；越界判定基准）
+    var noff = s21_bin(0, off, need)  // add
+    // short_c = n ≤ 31；space_c = noff ≤ CAP（本块整体落池内，防 bump 越过池尾）
     var short_c = tig_icmp_c(n, tig_int_lit(31), 4)  // sle
-    var space_c = tig_icmp_c(need, remain, 4)  // sle
+    var space_c = tig_icmp_c(noff, CAP, 4)           // sle
     var cond = tig_and_i1(short_c, space_c)
     // 分支：then（池路径）/ else（malloc 回退）/ merge
     var bt = ir.new_block(g_cur_func, interner.intern("sso.t"))
@@ -169,7 +187,7 @@ func s21_sso_alloc(n: i64) -> i64 {
     ir.add_operand(cb, cond, 0)
     ir.add_operand(cb, bt, 1)
     ir.add_operand(cb, be, 1)
-    // then：p = pool_base + off；store @s21_sso_off = off + need
+    // then：p = pool_base + off（旧偏移，唯一不重叠）；bump 已由 atomicrmw 推进
     g_cur_block = bt
     var pool_id = interner.intern("@s21_sso_pool")
     var pi = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint @s21_sso_pool → i64
@@ -177,24 +195,20 @@ func s21_sso_alloc(n: i64) -> i64 {
     var pbase = ir.get_value(pi)
     var p = s21_bin(0, pbase, off)  // add：池块基址
     s21_store(sv, p, T64)
-    var noff = s21_bin(0, off, need)  // add：新偏移
-    var st1 = ir.new_inst(g_cur_block, 22, -1)  // store
-    ir.add_operand(st1, T64, 2)
-    ir.add_operand(st1, noff, 0)
-    ir.add_operand(st1, off_id, 3)  // OK_GLOBAL → @s21_sso_off
     var br1 = ir.new_inst(g_cur_block, 30, -1)  // br merge
     ir.add_operand(br1, merge, 1)
-    // else：回退计数 +1；m = s21_raw_alloc_str(need)（malloc need 字节）
+    // else：回退计数 +1（原子）；m = s21_raw_alloc_str(need)（malloc need 字节）
     g_cur_block = be
-    var cnt_id = interner.intern("@s21_sso_malloc_cnt")
-    var ldc = ir.new_inst(g_cur_block, 21, T64)  // load
-    ir.add_operand(ldc, cnt_id, 3)  // OK_GLOBAL → @s21_sso_malloc_cnt
-    var cnt = ir.get_value(ldc)
-    var ncnt = s21_bin(0, cnt, tig_int_lit(1))  // add
-    var st2 = ir.new_inst(g_cur_block, 22, -1)  // store
-    ir.add_operand(st2, T64, 2)
-    ir.add_operand(st2, ncnt, 0)
-    ir.add_operand(st2, cnt_id, 3)  // OK_GLOBAL → @s21_sso_malloc_cnt
+    var cnt_nm = interner.intern("s21_sso_malloc_cnt")
+    var gi2 = ir.new_inst(g_cur_block, 63, T64)  // const_global → ptrtoint @s21_sso_malloc_cnt
+    ir.add_operand(gi2, cnt_nm, 3)
+    var ap2 = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr → ptr
+    ir.add_operand(ap2, ir.get_value(gi2), 0)
+    var rmw2 = ir.new_inst(g_cur_block, 68, T64)  // atomicrmw
+    ir.add_operand(rmw2, ir.get_value(ap2), 0)    // ① 地址（ptr 值）
+    ir.add_operand(rmw2, one, 0)                  // ② 值（+1，常量已在函数顶部求值）
+    ir.add_operand(rmw2, oc_add, 2)               // ③ op：add
+    ir.add_operand(rmw2, os_seq, 2)               // ④ order：seq_cst
     var m = s21_raw_alloc_str(need)
     // m 是 TK_STR（ptr）值；槽存 i64 块基址整数——先 ptrtoint
     var mi = ir.new_inst(g_cur_block, 24, T64)  // ptrtoint m → i64

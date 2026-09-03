@@ -1,0 +1,142 @@
+type tie<logic>
+// tests/_p67_probe/sso_par_probe.tie —— p.6.7.1 验收：SSO 短串池并发安全（原子 bump）
+// 断言：
+//   1) 正确性：P=4 轮 8 任务 × K 次并发字符串拼接（内联 s21_sso_alloc 路径 +
+//      复合 str_cat helper 路径），各任务拼接结果 == 期望串（多线程同时 bump
+//      @s21_sso_off：非原子会重叠分配 → 内容错乱 → fail 槽非 0）
+//   2) 池内完成：sso_malloc_count() == 0（任务总量 < 256KB，未触发 malloc 回退）
+//   3) 真并行：记录的任务执行 tid 去重 ≥ 2
+// 期望：ran=8 / fails=0 / malloc=0 / dist_tid>=2 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_res: table<i64> = []   // 各任务结果槽（0=ok 1=fail；独立下标写，无读改写竞态）
+var g_tid: table<i64> = []   // 任务执行线程 id 槽（并行真实性证据）
+
+unsafe extern fn GetCurrentThreadId() -> i64
+
+func tid_now() -> i64 {
+    unsafe {
+        return GetCurrentThreadId()
+    }
+}
+
+// 期望串："T<i>:<j>@<n>e"（ASCII ≤ 31 字节，SSO 池短串路径）
+func expect_str(i: i64, j: i64, n: i64) -> string {
+    var s = "T" + to_string(i)
+    s = s + ":"
+    s = s + to_string(j)
+    s = s + "@"
+    s = s + to_string(n)
+    s = s + "e"
+    return s
+}
+
+// 逐字节校验（长度 + 每位字符；避免 == 掩盖中间问题）
+func str_eq(a: string, b: string) -> bool {
+    var la = str_len(a)
+    var lb = str_len(b)
+    if la != lb {
+        return false
+    }
+    var k: i64 = 0
+    while k < la {
+        if str_char(a, k) != str_char(b, k) {
+            return false
+        }
+        k = k + 1
+    }
+    return true
+}
+
+// 任务工厂：捕获 idx；每任务 8 次拼接（总量 ≈ 8×8×7×50B ≈ 22KB < 256KB 池，
+// 保证全部走池路径、回退计数恒 0；n 混入内容防常量折叠）
+func make_task(idx: i64, n: i64) -> fn() -> i64 {
+    return func() -> i64 {
+        var j: i64 = 0
+        while j < 8 {
+            // 内联 s21_sso_alloc 路径：逐 += 拼接
+            var s = "T" + to_string(idx)
+            s = s + ":"
+            s = s + to_string(j)
+            s = s + "@"
+            s = s + to_string(n)
+            s = s + "e"
+            if !str_eq(s, expect_str(idx, j, n)) {
+                g_res[idx] = 1
+            }
+            // 复合 str_cat（op56 → @tie_sso_alloc helper 路径）
+            var big = "T" + to_string(idx) + ":" + to_string(j) + "@" + to_string(n) + "e"
+            if !str_eq(big, expect_str(idx, j, n)) {
+                g_res[idx] = 1
+            }
+            j = j + 1
+        }
+        g_tid[idx] = tid_now()
+        return n
+    }
+}
+
+func distinct_tid() -> i64 {
+    var ids: table<i64> = []
+    var i: i64 = 0
+    while i < 8 {
+        var t = g_tid[i]
+        var dup: i64 = 0
+        var j: i64 = 0
+        while j < len(ids) {
+            if ids[j] == t {
+                dup = 1
+            }
+            j = j + 1
+        }
+        if dup == 0 {
+            table_push(ids, t)
+        }
+        i = i + 1
+    }
+    return len(ids)
+}
+
+func main() {
+    var i: i64 = 0
+    while i < 8 {
+        table_push(g_res, 0)
+        table_push(g_tid, 0)
+        i = i + 1
+    }
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    var n: i64 = 1000000
+    i = 0
+    while i < 8 {
+        tl_runtime_ctx.ctx_spawn(make_task(i, n))
+        i = i + 1
+    }
+    var ran = tl_runtime_ctx.ctx_drain()
+    var fails: i64 = 0
+    i = 0
+    while i < 8 {
+        fails = fails + g_res[i]
+        i = i + 1
+    }
+    var dist = distinct_tid()
+    var malloc_cnt = sso_malloc_count()
+    println("ran=" + to_string(ran) + " fails=" + to_string(fails) + " dist_tid=" + to_string(dist) + " malloc=" + to_string(malloc_cnt))
+    var ok: i64 = 1
+    if ran != 8 || fails != 0 {
+        ok = 0
+    }
+    if malloc_cnt != 0 {
+        ok = 0
+    }
+    if dist < 2 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    println("done")
+}
