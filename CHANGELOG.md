@@ -22,6 +22,16 @@
 
 ## 2026.1（正式版，进行中）
 
+## [fix] TLS 1.3 CertificateVerify 实况验签根治（2026-09-03）（p.6.6.1 收尾）
+
+- 根因三叠加：content 遗漏上下文串+NUL（RFC 8446 §4.4.3，对照 OpenSSL 源码）、
+  转录本哈希按套件（0x1301=SHA-256）、x509_parse_spki 中 EC OID 常量笔误
+  （2a864886ce3d0201 → 2a8648ce3d0201）。
+- 附加：verify_ecdsa 兼容 DER 编码 ECDSA 签名（OpenSSL s_server 实况 70-72B DER，
+  规范为裸 r||s）。
+- 验证：RSA-PSS 与 EC(ECDSA DER) 双套件实况握手 CVer 验签 PASS；TLS 1.2/链/字节
+  网络/GCM/DER/ChaCha-Poly 全回归 PASS；探针 CVer 由 WARN 提升为 fail。
+
 ## [fix] 编译器移位计数定界：≥ 位宽不再 LLVM 毒值/挂起（2026-09-02）（p.6.6.1 收尾）
 
 - 根因：`>>`/`<<` 移位数 ≥ 64（含大数 i128 路径）直接发射 `lshr/ashr/shl`，LLVM 毒值 → 生成程序挂起/值损坏（探针 `1>>88` 复现）。

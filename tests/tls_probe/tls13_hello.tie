@@ -267,14 +267,13 @@ func main() {
                     }
                     var cver_sig = tbt.sub(mbody, 4, sig_len)
                     // msg = transcript（此时已含 CH||SH||EE||Certificate）
-                    // verify_cver 内部按 RFC 8446 封装 content = 0x20*64 || Hash(transcript)
-                    // 实测对本地 Strawberry s_server 的实况握手 WARN（见
-                    // docs/bugreports/2026-09-02-cver-live-mismatch.md），持续为诊断项。
+                    // verify_cver 内部按 RFC 8446 §4.4.3 封装：
+                    // content = 0x20*64 || "TLS 1.3, server CertificateVerify\0" || TH
                     if chn.verify_cver(server_spki, cver_algo, transcript, cver_sig) {
                         println("PASS server CertificateVerify signature (algo=" +
                             to_string(cver_algo) + " len=" + to_string(sig_len) + ")")
                     } else {
-                        println("WARN CVer mismatch (continuing to check Finished)")
+                        fail("server CertificateVerify signature mismatch")
                     }
                 } else {
                     fail("unexpected handshake msg type " + to_string(mtype))

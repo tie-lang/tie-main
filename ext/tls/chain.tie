@@ -275,12 +275,64 @@ func ec_blob_hex(point: table<i64>) -> string {
     return tbt.bytes_to_hex(blob)
 }
 
+// ECDSA 签名归一化：DER（0x30…，72B，OpenSSL 实况）→ 原始 r||s（64B）。
+// 失败（结构不符）返回空表——调用方按原始 64B 处理。
+func ecdsa_der_to_raw(cv: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    if len(cv) < 8 || cv[0] != 0x30 {
+        return out
+    }
+    var p: i64 = 2
+    var i: i64 = 0
+    while i < 2 {
+        if p + 2 > len(cv) || cv[p] != 0x02 {
+            return table_new_i64()
+        }
+        var vlen: i64 = cv[p + 1]
+        if vlen < 1 || vlen > 33 || p + 2 + vlen > len(cv) {
+            return table_new_i64()
+        }
+        var j: i64 = p + 2
+        var vend: i64 = p + 2 + vlen
+        // 去前导 0x00（正整数符号位约定）
+        if vlen > 1 && cv[j] == 0 {
+            j = j + 1
+        }
+        // 补零到 32 字节（r/s 值可能 < 2^248）
+        var pad: i64 = 32 - (vend - j)
+        var z: i64 = 0
+        while z < pad {
+            table_push(out, 0)
+            z = z + 1
+        }
+        while j < vend {
+            table_push(out, cv[j])
+            j = j + 1
+        }
+        p = vend
+        i = i + 1
+    }
+    if len(out) != 64 {
+        return table_new_i64()
+    }
+    return out
+}
+
 func verify_ecdsa(point: table<i64>, sig: table<i64>, digest: table<i64>) -> bool {
-    if len(point) != 65 || point[0] != 0x04 || len(sig) != 64 || len(digest) != 32 {
+    if len(point) != 65 || point[0] != 0x04 || len(digest) != 32 {
         return false
     }
+    var raw = sig
+    // 宽容 DER：TLS 规范为 64B 原始 r||s，实况 OpenSSL s_server 曾发 72B DER
+    if len(sig) != 64 {
+        var rr = ecdsa_der_to_raw(sig)
+        if len(rr) != 64 {
+            return false
+        }
+        raw = rr
+    }
     var kb = ec_blob_hex(point)
-    return ecdsa.verify(kb, tbt.bytes_to_hex(digest), tbt.bytes_to_hex(sig)) == 1
+    return ecdsa.verify(kb, tbt.bytes_to_hex(digest), tbt.bytes_to_hex(raw)) == 1
 }
 
 // ---- SPKI 解析 ----
@@ -313,7 +365,7 @@ func x509_parse_spki(spki_der: table<i64>) -> (bool, bool, table<i64>, table<i64
                 e = der.value_at(eid)
             }
         }
-    } else if tbt.eq(ob, tbt.hex_to_bytes("2a864886ce3d0201")) && ek >= 0 {
+    } else if tbt.eq(ob, tbt.hex_to_bytes("2a8648ce3d0201")) && ek >= 0 {
         ecF = true
         var bb = der.value_at(ek)
         if len(bb) == 66 && bb[1] == 0x04 {
@@ -500,15 +552,27 @@ pub func verify(ch: table<any>, roots: table<any>, host: string) -> bool {
 // 供 tls1_3 验证 CertificateVerify。spki_der 为服务器证书 SPKI，sig_algo_id 为
 // TLS 签名算法（0x0804 rsa_pss_rsae_sha256 / 0x0401 rsa_pkcs1_sha256 / 0x0403 ecdsa）。
 // msg = 握手 transcript 原始字节；sig = 原始签名字节。
-// RFC 8446 §4.4.3：CertificateVerify.signature 覆盖 content = 0x20*64 || Transcript-Hash；
-// 各签名算法的 mHash/digest 即 Hash(content)。本函数在内部做好该封装。
+// RFC 8446 §4.4.3：content = 0x20*64 || context || Transcript-Hash，其中 context
+// 为 "TLS 1.3, server CertificateVerify\0"（OpenSSL get_cert_verify_tbs_data 同源；
+// 2026-09-03 实测缺 context 即验签失败）；Transcript-Hash 用套件哈希。各签名
+// 算法的 mHash/digest 即 Hash(content)。本函数内部做好该封装。
 pub func verify_cver(spki_der: table<i64>, sig_algo_id: i64, msg: table<i64>, sig: table<i64>) -> bool {
-    // mRNA content = 0x20*64 || SHA256(msg)
+    // content = 0x20*64 || "TLS 1.3, server CertificateVerify\0" || SHA-256(msg)
+    // 注：当前探针套件为 0x1301（AES-128-GCM-SHA256）→ 转录本哈希 SHA-256；
+    // 支持 0x1302/0x1303（SHA-384）时改用 thash.sha384（套件哈希）。
     var th = thash.sha256(msg)
     var content = table_new_i64()
     var qi: i64 = 0
     while qi < 64 {
         table_push(content, 0x20)
+        qi = qi + 1
+    }
+    // context 串 + NUL：54 4c 53 20 31 2e 33 2c 20 73 65 72 76 65 72 20
+    // 43 65 72 74 69 66 69 63 61 74 65 56 65 72 69 66 79 00
+    var ctx = tbt.hex_to_bytes("544c5320312e332c2073657276657220436572746966696361746556657269667900")
+    qi = 0
+    while qi < len(ctx) {
+        table_push(content, ctx[qi])
         qi = qi + 1
     }
     qi = 0
