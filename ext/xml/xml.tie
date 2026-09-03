@@ -128,6 +128,10 @@ pub func children(d: XmlDoc, nid: i64) -> table<i64> {
     return tree.children(d, nid)
 }
 
+pub func child_count(d: XmlDoc, nid: i64) -> i64 {
+    return tree.child_count(d, nid)
+}
+
 pub func parent(d: XmlDoc, nid: i64) -> i64 {
     return tree.parent(d, nid)
 }

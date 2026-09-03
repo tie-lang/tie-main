@@ -22,6 +22,17 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/xml: full probe tests/xml_probe/xml_probe.tie + xml.child_count forward (p.6.6.5) (2026-09-03)
+
+- tests/xml_probe/xml_probe.tie (new): end-to-end XML probe covering well-formed tree (nested /
+  self-close / CDATA / comment / PI / entity / 中文), namespace mapping (default inherit /
+  override / reset, prefix via ancestor, query_ns, xmlns attr readable), per-code error
+  assertions (unpaired / multi-root / unquoted-attr / lone '<' / illegal-codepoint /
+  unknown-entity / bare-'&' / bad-name / bad-decl / unclosed / missing-root / case mismatch)
+  with line/col/frag, token-layer PI/CDATA/doctype-internal-subset output, and a >200KB
+  big-sample second-level parse + query assertion (204KB, parse_ms=0).
+- ext/xml/xml.tie: forward child_count (completes the node accessor set; used by the probe).
+
 ## [feat] ext/xml: public entry (xml.tie) — parse + structured-error accessors + lightweight tag/attr/ns queries (p.6.6.5) (2026-09-03)
 
 - ext/xml/xml.tie (new, namespace xml): parse(src) -> XmlDoc (strict tokenizer scan + tree build);

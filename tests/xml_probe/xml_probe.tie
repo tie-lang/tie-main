@@ -1,0 +1,288 @@
+type tie<logic>
+// ============================================================================
+// xml_probe.tie：ext/xml XML 解析探针（p.6.6.5）。
+// XML parsing probe (p.6.6.5).
+//
+// 覆盖（Coverage）：
+//   - 样本① well-formed 树：嵌套/自闭合/CDATA/注释/PI/实体/中文 —— 节点访问器
+//     （tag/attr/children/parent/content/kind）、实体解码、CDATA 原样、中文保真、
+//     PI 与注释入树、query/query_attr 轻量查询；
+//   - 样本② 命名空间：默认继承/覆盖/复位、前缀祖先声明、同名不同命名空间区分、
+//     query_ns、xmlns 属性可读；
+//   - 样本③ 错误逐码：未配对（XENOMATCH）/ 多根（XEMULTIROOT）/ 属性未引号
+//     （XEUNQUOTED）/ 孤立 <（XELTEXT）/ 非法实体码点（XENTCHAR）＋ 栈空闭 /
+//     未闭合 / 大小写不配 / 缺根 / 未知实体 / 裸 & / 坏名 / 未知声明；行/列/片段；
+//   - 样本④ token 层：PI / CDATA / doctype 内部子集 token 输出（直接 mltok）；
+//   - 大样本 >200KB：单遍解析 + 查询，秒级完成（防 O(n^2)）。
+// 数据平面：全 string（UTF-8）；无字节表。夹具全部内联（不入库）。
+// 编译运行：compiler\tiec.exe tests\xml_probe\xml_probe.tie（勿用根旧 tiec3.exe）
+// ============================================================================
+import "../../ext/xml/xml.tie" as xml
+import "../../ext/html/token.tie" as mltok
+import "../../std/string.tie" as str
+import "../../std/time.tie" as time
+
+// ---- 断言工具 ----
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=[" + got + "] want=[" + want + "]")
+        exit(1)
+    }
+}
+
+func chk_i64(name: string, got: i64, want: i64) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func chk_true(name: string, v: bool) {
+    if v {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " want true")
+        exit(1)
+    }
+}
+
+// ---- 样本①：well-formed 树（嵌套/自闭合/CDATA/注释/PI/实体/中文）----
+func sample1() -> string {
+    return "<?xml version=\"1.0\"?>\n" +
+        "<config name=\"app\" debug=\"true\">\n" +
+        "  <!-- 配置注释 -->\n" +
+        "  <servers>\n" +
+        "    <server host=\"a.example.com\" port=\"8080\"/>\n" +
+        "    <server host=\"b.example.com\" port=\"9090\">主&#160;站</server>\n" +
+        "  </servers>\n" +
+        "  <rules>\n" +
+        "    <rule id=\"r1\">允许 &lt;b&gt; 加粗 &amp; 斜体</rule>\n" +
+        "  </rules>\n" +
+        "  <script><![CDATA[if (a < b && c > d) { x = \"&amp;\"; }]]></script>\n" +
+        "  <?xml-stylesheet href=\"a.css\" type=\"text/css\"?>\n" +
+        "  <中文 键=\"值\">UTF-8 多字节保真</中文>\n" +
+        "</config>"
+}
+
+// ---- 样本②：命名空间 ----
+func sample2() -> string {
+    return "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n" +
+        "  <rect width=\"10\"/>\n" +
+        "  <g xmlns=\"\"><text>plain</text></g>\n" +
+        "  <use xlink:href=\"#a\"/>\n" +
+        "</svg>"
+}
+
+func tst_wellformed() {
+    var d = xml.parse(sample1())
+    chk_true("s1_ok", xml.is_ok(d))
+    // 根元素与属性
+    var cfgs = xml.query(d, "config")
+    chk_i64("s1_config", len(cfgs), 1)
+    var cfg = cfgs[0]
+    chk("s1_cfg_name", xml.attr(d, cfg, "name"), "app")
+    chk("s1_cfg_debug", xml.attr(d, cfg, "debug"), "true")
+    chk("s1_cfg_missing", xml.attr(d, cfg, "nope"), "")
+    // query_attr：自闭合 server + 带内容 server
+    var port8080 = xml.query_attr(d, "server", "port", "8080")
+    chk_i64("s1_server_port", len(port8080), 1)
+    chk_i64("s1_server_self", xml.child_count(d, port8080[0]), 0)   // 自闭合无孩子
+    var sers = xml.query(d, "server")
+    chk_i64("s1_servers", len(sers), 2)
+    chk("s1_s0_host", xml.attr(d, sers[0], "host"), "a.example.com")
+    chk("s1_s1_host", xml.attr(d, sers[1], "host"), "b.example.com")
+    // 实体解码（命名 + 数字 + 属性）
+    var r1 = xml.query_attr(d, "rule", "id", "r1")[0]
+    var rk = xml.children(d, r1)
+    chk("s1_rule_text", xml.content(d, rk[0]), "允许 <b> 加粗 & 斜体")
+    var s1k = xml.children(d, sers[1])
+    chk("s1_nbsp", xml.content(d, s1k[0]), "主" + str_from_code(160) + "站")
+    // CDATA 原样保留（含 '<' '&' 不解码）
+    var scrs = xml.query(d, "script")
+    chk_i64("s1_script", len(scrs), 1)
+    var sck = xml.children(d, scrs[0])
+    chk_i64("s1_cdata_kind", xml.kind(d, sck[0]), 4)
+    chk("s1_cdata_raw", xml.content(d, sck[0]), "if (a < b && c > d) { x = \"&amp;\"; }")
+    // 注释与 PI 入树（根元素下子节点）
+    var cfgkids = xml.children(d, cfg)
+    chk("s1_has_comment", xml.content(d, cfgkids[1]), " 配置注释 ")
+    chk_i64("s1_comment_kind", xml.kind(d, cfgkids[1]), 2)
+    // PI 目标：内容以目标开头
+    var pi_node: i64 = -1
+    var ci: i64 = 0
+    while ci < len(cfgkids) {
+        if xml.kind(d, cfgkids[ci]) == 3 {
+            pi_node = cfgkids[ci]
+        }
+        ci = ci + 1
+    }
+    chk_i64("s1_pi_found", pi_node >= 0 ? 1 : 0, 1)
+    chk("s1_pi_content", xml.content(d, pi_node), "xml-stylesheet href=\"a.css\" type=\"text/css\"")
+    // 中文标签/属性/文本保真
+    var cns = xml.query(d, "中文")
+    chk_i64("s1_cn_tag", len(cns), 1)
+    chk("s1_cn_attr", xml.attr(d, cns[0], "键"), "值")
+    var cnk = xml.children(d, cns[0])
+    chk("s1_cn_text", xml.content(d, cnk[0]), "UTF-8 多字节保真")
+    // 树关系：parent/children
+    chk_i64("s1_parent_server", xml.parent(d, sers[0]), xml.parent(d, sers[1]))
+    chk_i64("s1_parent_servers", xml.parent(d, sers[0]), xml.query(d, "servers")[0])
+    chk_i64("s1_parent_cfg", xml.parent(d, cfg), d.root)
+    // 大小写敏感查询
+    chk_i64("s1_case_upper", len(xml.query(d, "CONFIG")), 0)
+}
+
+func tst_namespace() {
+    var d = xml.parse(sample2())
+    chk_true("s2_ok", xml.is_ok(d))
+    var svg = xml.query(d, "svg")[0]
+    chk("s2_svg_ns", xml.ns(d, svg), "http://www.w3.org/2000/svg")
+    chk("s2_svg_loc", xml.local(d, svg), "svg")
+    chk("s2_svg_pfx", xml.prefix(d, svg), "")
+    // 默认命名空间继承
+    var rect = xml.query(d, "rect")[0]
+    chk("s2_rect_ns", xml.ns(d, rect), "http://www.w3.org/2000/svg")
+    chk("s2_rect_attr", xml.attr(d, rect, "width"), "10")
+    // g 默认复位为 ""，其子树继承 ""
+    var txt = xml.query(d, "text")[0]
+    chk("s2_text_ns", xml.ns(d, txt), "")
+    // use 无前缀 → svg 默认；xlink 属性值来自祖先声明（属性名原样保留）
+    var use = xml.query(d, "use")[0]
+    chk("s2_use_ns", xml.ns(d, use), "http://www.w3.org/2000/svg")
+    chk("s2_use_href", xml.attr(d, use, "xlink:href"), "#a")
+    // query_ns
+    var svg_uri = "http://www.w3.org/2000/svg"
+    var svgs = xml.query_ns(d, svg_uri, "")
+    chk_i64("s2_qns_svg", len(svgs), 3)   // svg + rect + use
+    var rects = xml.query_ns(d, svg_uri, "rect")
+    chk_i64("s2_qns_rect", len(rects), 1)
+    var plain = xml.query_ns(d, "", "text")
+    chk_i64("s2_qns_empty_text", len(plain), 1)
+    var nohit = xml.query_ns(d, "urn:zzz", "")
+    chk_i64("s2_qns_none", len(nohit), 0)
+    // xmlns 声明经 attr 可读
+    chk("s2_attr_xmlns", xml.attr(d, svg, "xmlns"), svg_uri)
+    chk("s2_attr_xmlns_xlink", xml.attr(d, svg, "xmlns:xlink"), "http://www.w3.org/1999/xlink")
+    // 同名不同命名空间可区分（svgs 含多个不同 local 但同 ns）
+    chk("s2_local_rect", xml.local(d, rects[0]), "rect")
+}
+
+func err_code_of(src: string) -> i64 {
+    var d = xml.parse(src)
+    if d.ok {
+        return XENONE
+    }
+    return d.err_code
+}
+
+func tst_errors() {
+    // 未配对 / 栈空闭 / 大小写不配
+    chk_i64("e_nomatch", err_code_of("<a><b></a>"), XENOMATCH)
+    chk_i64("e_close_empty", err_code_of("<a></a></b>"), XENOMATCH)
+    chk_i64("e_case", err_code_of("<a></A>"), XENOMATCH)
+    // 多根 / 根外文本 / 缺根
+    chk_i64("e_multi", err_code_of("<a/><b/>"), XEMULTIROOT)
+    chk_i64("e_toptext", err_code_of("<a/>junk"), XEMULTIROOT)
+    chk_i64("e_noroot", err_code_of("   "), XEMULTIROOT)
+    // 未闭合
+    chk_i64("e_unclosed", err_code_of("<a><b>"), XEUNCLOSED)
+    // 属性未引号
+    chk_i64("e_unquoted_val", err_code_of("<a b=1>"), XEUNQUOTED)
+    chk_i64("e_unquoted_bool", err_code_of("<a b>"), XEUNQUOTED)
+    // 孤立 <
+    chk_i64("e_lt3", err_code_of("<3 love"), XELTEXT)
+    chk_i64("e_lt_space", err_code_of("a < b"), XELTEXT)
+    // 非法实体码点（控制符 / 代理区）
+    chk_i64("e_ent_ctl", err_code_of("<p>&#x0;</p>"), XENTCHAR)
+    chk_i64("e_ent_surr", err_code_of("<p>&#xD800;</p>"), XENTCHAR)
+    chk_i64("e_ent_oor", err_code_of("<p>&#x110000;</p>"), XENTCHAR)
+    // 未知实体 / 裸 &
+    chk_i64("e_ent_unk", err_code_of("<p>&bogus;</p>"), XENTUNK)
+    chk_i64("e_bare_amp", err_code_of("<p>a & b</p>"), XENTUNK)
+    // 坏名 / 未知声明 / PI 未闭合
+    chk_i64("e_bad_name", err_code_of("<a!b>"), XENAME)
+    chk_i64("e_bad_decl", err_code_of("<!foo>"), XEBADMARK)
+    chk_i64("e_pi_unclosed", err_code_of("<?pi x"), XEBADMARK)
+    // 结构化错误：行/列/片段/消息
+    var d1 = xml.parse("<a>\n  <b>\n</a>")
+    chk_i64("e1_code", xml.err_code(d1), XENOMATCH)
+    chk_i64("e1_line", xml.err_line(d1), 3)
+    chk_i64("e1_col", xml.err_col(d1), 1)
+    chk("e1_frag", xml.err_frag(d1), "<a>\n  <b>\n</a>")
+    var d2 = xml.parse("<a b=1>")
+    chk_i64("e2_code", xml.err_code(d2), XEUNQUOTED)
+    chk_i64("e2_col", xml.err_col(d2), 6)
+    chk("e2_msg", xml.err_msg(d2), "属性值未加引号（或无 '=' 无值）")
+    // 错误文档上查询 → 空表
+    chk_i64("e_query_empty", len(xml.query(d2, "a")), 0)
+}
+
+func probe_cfg() -> MtCfg {
+    var cfg = MtCfg()
+    cfg.fold_case = 0
+    cfg.entity_mode = 1
+    cfg.strict = 1
+    return cfg
+}
+
+func tst_tokens() {
+    // token 层（直接 mltok）：PI / CDATA / doctype 内部子集 / 大小写保留
+    var src = "<?xml version=\"1.0\"?><Root A=\"1\"><![CDATA[<raw>&]]></Root>"
+    var n = mltok.scan(src, probe_cfg())
+    chk_i64("tk_count", n, 4)
+    chk_i64("tk0_pi", mltok.tok_type(0), MTK_PI)
+    chk("tk0_txt", mltok.tok_text(0), "xml version=\"1.0\"")
+    chk_i64("tk1_open", mltok.tok_type(1), MTK_OPEN)
+    chk("tk1_name", mltok.tok_name(1), "Root")
+    chk("tk1_attr", mltok.tok_aname(mltok.tok_aoff(1) + 0), "A")
+    chk_i64("tk2_cdata", mltok.tok_type(2), MTK_CDATA)
+    chk("tk2_txt", mltok.tok_text(2), "<raw>&")
+    chk_i64("tk3_close", mltok.tok_type(3), MTK_CLOSE)
+    chk("tk3_name", mltok.tok_name(3), "Root")
+    // doctype 内部子集（含 '>' 不提前截断）
+    var dt = "<!DOCTYPE svg [ <!ENTITY foo \"a>b\"> ]><svg/>"
+    var n2 = mltok.scan(dt, probe_cfg())
+    chk_i64("tk_dt_n", n2, 2)
+    chk_i64("tk_dt_ty", mltok.tok_type(0), MTK_DOCTYPE)
+    chk("tk_dt_txt", mltok.tok_text(0), "!DOCTYPE svg [ <!ENTITY foo \"a>b\"> ]")
+    chk_i64("tk_dt_self", mltok.tok_type(1), MTK_SELF)
+    chk("tk_dt_name", mltok.tok_name(1), "svg")
+    // 中文标签大小写保留
+    var cn = "<中文>好</中文>"
+    mltok.scan(cn, probe_cfg())
+    chk("tk_cn_open", mltok.tok_name(0), "中文")
+    chk("tk_cn_close", mltok.tok_name(2), "中文")
+}
+
+func tst_big() {
+    // 大样本 >200KB：单遍解析 + 命名空间查询，秒级完成（防 O(n^2)）
+    var chunk = "<item id=\"x\" ns=\"urn:big\"><b>bold 你好</b><c a=\"1\"/></item>\n"
+    var body = str.repeat(chunk, 3300)
+    var big = "<root xmlns=\"urn:big\">" + body + "</root>"
+    var byte_len = len(big)
+    chk_i64("big_size_gt_200k", byte_len > 200000 ? 1 : 0, 1)
+    time.tick_start()
+    var d = xml.parse(big)
+    var parse_ms = time.tick_ms()
+    chk_true("big_ok", xml.is_ok(d))
+    chk_i64("big_node_count", xml.node_count(d) > 10000 ? 1 : 0, 1)
+    chk_i64("big_query_item", len(xml.query(d, "item")), 3300)
+    chk_i64("big_query_ns", len(xml.query_ns(d, "urn:big", "item")), 3300)
+    chk_i64("big_query_attr", len(xml.query_attr(d, "c", "a", "1")), 3300)
+    chk_i64("big_parse_sub_3s", parse_ms < 3000 ? 1 : 0, 1)
+    println("INFO big_bytes=" + to_string(byte_len) + " parse_ms=" + to_string(parse_ms))
+}
+
+func main() {
+    tst_wellformed()
+    tst_namespace()
+    tst_errors()
+    tst_tokens()
+    tst_big()
+    println("xml 探针全部通过 / xml probe all PASS")
+    exit(0)
+}
