@@ -1,0 +1,687 @@
+type tie<class>
+// ============================================================================
+// token.tie：ext/html——标记语言分词底座（命名空间 mltok，纯 tie）p.6.6.4
+// Markup-language tokenizer base (namespace mltok, pure-tie). p.6.6.4
+//
+// 定位（Positioning）：HTML（p.6.6.4）与 XML（p.6.6.5）共享的分词层。面向
+// 标记文档产生**语言无关**的 token 流（平行表存储，对齐 std/json 节点风格），
+// 上层（DOM 构建 / XML 树）消费后按各自语言语义组装树。本文件中 HTML 专属
+// 逻辑仅经由 MtCfg 进出的可配点，不硬化不可扩展逻辑：
+//   fold_case   0=保留大小写（XML 用）；1=ASCII 标签/属性名折叠小写（HTML 用）
+//   entity_mode 0=HTML 最小实体集（amp/lt/gt/quot/nbsp + 数字实体）；
+//               1=XML 最小实体集（amp/lt/gt/quot/apos + 数字实体）
+//   raw_tags    需按 raw text 原样读取内容的标签表（HTML：script/style）
+//
+// 数据平面（Data plane）：输入/输出均为 string（UTF-8 文本，经 httpc.get_text
+// 或文件读取获得，不触碰字节表——与 httpc/sse 的字节平面分界见 html.tie 头）。
+// 模块内全部按**字节级**游标推进：str_byte 为 O(1) 随机字节读（gep+load），
+// 段输出用 string_builder 逐字节拷贝（总 O(n)），不做码点级 str_char 全串
+// 扫描、不做逐字符字符串拼接——中文等多字节文本原样保真，单遍 O(n)。
+//
+// Token 流（平行表，下标即 token 序号；带属性的 token 用扁平登记表+区间）：
+//   tk_ty     类型：1=开标签 2=闭标签 3=自闭合标签 4=文本 5=注释
+//              6=doctype 7=raw text 内容 8=CDATA（常量 MTK_*，跨文件裸名共享）
+//   tk_name   标签名（开/闭/自闭合；已按 fold_case 折叠；其余 token 为 ""）
+//   tk_txt    内容（文本/注释/doctype/raw/cdata；文本与属性值已做实体解码）
+//   tk_aoff / tk_acnt  该 token 属性在扁平表 [tk_anames, tk_avals] 中的区间
+//   tk_anames / tk_avals  扁平属性名（按 fold_case 折叠）/属性值（解码、去头尾空白）
+//
+// 容错（Tolerance，尽力而为子集）：
+//   - "<3"、孤立 '<' 等首字节非 ASCII 字母的输入一律按**文本**原样输出
+//     （不吞内容、不产生伪标签）；注释/doctype 缺失终结符读至文档尾收口；
+//     属性结构损坏就地跳过，不崩溃；
+//   - raw text 的闭标签按 `</name`（ASCII 大小写不敏感）+ 空白或 '/''>' 判定；
+//   - 大小写折叠仅作用于 ASCII A-Z；其余字节原样拷贝。
+// 失败语义：scan 恒成功返回 token 数（>=0），无异常（与 httpc/sse 一致）。
+// ============================================================================
+
+// ---- token 类型常量（文件级全局；上层模块直接裸名引用）----
+const MTK_OPEN: i64 = 1;
+const MTK_CLOSE: i64 = 2;
+const MTK_SELF: i64 = 3;
+const MTK_TEXT: i64 = 4;
+const MTK_COMMENT: i64 = 5;
+const MTK_DOCTYPE: i64 = 6;
+const MTK_RAW: i64 = 7;
+const MTK_CDATA: i64 = 8;
+
+// ---- token 流（模块级全局；scan 开头重置；参考 std/json 的节点存储风格）----
+var tk_ty: table<i64>;         // token 类型（MTK_* 常量）
+var tk_name: table<string>;    // 标签名（开/闭/自闭合）
+var tk_txt: table<string>;     // 内容（文本/注释/doctype/raw/cdata）
+var tk_aoff: table<i64>;       // 属性扁平区间起点；-1=无属性
+var tk_acnt: table<i64>;       // 属性个数
+var tk_anames: table<string>;  // 扁平属性名（按 fold_case 折叠）
+var tk_avals: table<string>;   // 扁平属性值（实体解码 + 去头尾空白）
+
+// ---- 分词配置 ----
+struct MtCfg {
+    var fold_case: i64 = 1          // 1=ASCII 标签/属性名折叠小写（HTML 缺省）
+    var entity_mode: i64 = 0        // 0=HTML 实体集（缺省）；1=XML 实体集
+    var raw_tags: table<string> = table_new_string()   // raw text 标签表
+}
+
+namespace mltok {
+
+// ============================================================================
+// 一、字节级小工具（全部 O(1)/O(段长)；UTF-8 安全）
+// ============================================================================
+
+// 字节是否为标记空白（空格/制表/换行/回车）
+func ws_b(b: i64) -> bool {
+    return b == 32 || b == 9 || b == 10 || b == 13
+}
+
+// ASCII 大写字母折叠为小写；其余字节原样返回
+func fold_b(b: i64) -> i64 {
+    if b >= 65 && b <= 90 {
+        return b + 32
+    }
+    return b
+}
+
+// 字节是否为 ASCII 字母（标签名首字符判定："<3" 按文本的依据）
+func alpha_b(b: i64) -> bool {
+    return (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+}
+
+// 字节段 [s,e) 原样构造 string（逐字节拷贝，UTF-8 安全；总 O(e-s)）
+func take_seg(src: string, s: i64, e: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = s
+    while i < e {
+        sb_append_byte(sb, str_byte(src, i))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 字节段 [s,e) 构造折叠字符串（ASCII A-Z → 小写；非 ASCII 原样）
+func fold_seg(src: string, s: i64, e: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = s
+    while i < e {
+        var b: i64 = fold_b(str_byte(src, i))
+        sb_append_byte(sb, b)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 在 src 的 [off, end) 内查找单字节 c；未找到返回 -1
+func find_b(src: string, off: i64, end: i64, c: i64) -> i64 {
+    var i: i64 = off
+    while i < end {
+        if str_byte(src, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 在 src 的 [off, n) 内查找 ASCII 串 pat（首字节失配即早退）；未找到返回 -1
+func find_seq(src: string, off: i64, pat: string) -> i64 {
+    var n = len(src)
+    var m = len(pat)
+    var i: i64 = off
+    while i + m <= n {
+        var ok = true
+        var j: i64 = 0
+        while j < m {
+            if str_byte(src, i + j) != str_byte(pat, j) {
+                ok = false
+                break
+            }
+            j = j + 1
+        }
+        if ok {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 字符串 s 去头部/尾部空白字节（仅剥 ASCII 空白，UTF-8 边界安全）
+func trim_ws(s: string) -> string {
+    var n = len(s)
+    var lo: i64 = 0
+    while lo < n && ws_b(str_byte(s, lo)) {
+        lo = lo + 1
+    }
+    var hi: i64 = n
+    while hi > lo && ws_b(str_byte(s, hi - 1)) {
+        hi = hi - 1
+    }
+    if lo == 0 && hi == n {
+        return s
+    }
+    return take_seg(s, lo, hi)
+}
+
+// ============================================================================
+// 二、实体解码（最小集；含数字实体；无 '&' 时零拷贝快路径）
+// ============================================================================
+
+// 命名/数字实体求值：found=false 表示未命中（原样输出 '&'）
+func ent(name: string, mode: i64) -> (bool, string) {
+    // 数字实体：&#NN;（十进制） / &#xHH;（十六进制）
+    if len(name) >= 2 && str_byte(name, 0) == 35 {   // 35 = '#'
+        var b1 = str_byte(name, 1)
+        if b1 == 120 || b1 == 88 {   // 'x' / 'X'
+            var ok = true
+            var val: i64 = 0
+            var k: i64 = 2
+            while k < len(name) {
+                var c = str_byte(name, k)
+                var d: i64 = -1
+                if c >= 48 && c <= 57 {
+                    d = c - 48
+                } else if c >= 97 && c <= 102 {
+                    d = c - 97 + 10
+                } else if c >= 65 && c <= 70 {
+                    d = c - 65 + 10
+                } else {
+                    ok = false
+                    break
+                }
+                val = val * 16 + d
+                k = k + 1
+            }
+            if ok && k >= 3 {
+                if val > 0x10FFFF {
+                    return (false, "")
+                }
+                return (true, str_from_code(val))
+            }
+            return (false, "")
+        }
+        // 十进制
+        var ok2 = true
+        var val2: i64 = 0
+        var k2: i64 = 1
+        while k2 < len(name) {
+            var c2 = str_byte(name, k2)
+            if c2 < 48 || c2 > 57 {
+                ok2 = false
+                break
+            }
+            val2 = val2 * 10 + (c2 - 48)
+            k2 = k2 + 1
+        }
+        if ok2 && k2 >= 2 {
+            if val2 > 0x10FFFF {
+                return (false, "")
+            }
+            return (true, str_from_code(val2))
+        }
+        return (false, "")
+    }
+    // 命名实体（最小集）
+    if mode == 0 {   // HTML 最小集
+        if name == "amp" {
+            return (true, "&")
+        }
+        if name == "lt" {
+            return (true, "<")
+        }
+        if name == "gt" {
+            return (true, ">")
+        }
+        if name == "quot" {
+            return (true, "\"")
+        }
+        if name == "nbsp" {
+            return (true, str_from_code(160))
+        }
+        return (false, "")
+    }
+    // mode == 1：XML 最小集（含 &apos;）
+    if name == "amp" {
+        return (true, "&")
+    }
+    if name == "lt" {
+        return (true, "<")
+    }
+    if name == "gt" {
+        return (true, ">")
+    }
+    if name == "quot" {
+        return (true, "\"")
+    }
+    if name == "apos" {
+        return (true, "'")
+    }
+    return (false, "")
+}
+
+// 解码段内实体（文本与属性值用；raw/comment/cdata 不解码）。
+// 无 '&' 时直接返回原段（零拷贝）；含 '&' 时单遍构建（O(段长)）。
+func decode_entities(seg: string, mode: i64) -> string {
+    var n = len(seg)
+    if find_b(seg, 0, n, 38) < 0 {   // 38 = '&'
+        return seg
+    }
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        if str_byte(seg, i) == 38 {
+            // 尝试实体：';' 须在 40 字节内（避免长串误扫）
+            var bound = i + 40
+            if bound > n {
+                bound = n
+            }
+            var semi = find_b(seg, i + 1, bound, 59)   // 59 = ';'
+            if semi >= 0 {
+                var nm = take_seg(seg, i + 1, semi)
+                var (found, rep) = ent(nm, mode)
+                if found {
+                    sb_append(sb, rep)
+                    i = semi + 1
+                    continue
+                }
+            }
+        }
+        sb_append_byte(sb, str_byte(seg, i))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// ============================================================================
+// 三、属性扫描（开/自闭合标签共用；尽力而为）
+// ============================================================================
+
+// 从 name 之后扫属性区，填扁平表；返回 [ao, ac, i, self]：
+//   ao=扁平表起点, ac=属性个数, i='>'/"/>' 之后位置, self=1 表示 '/>' 自闭合
+func scan_attrs(src: string, pos: i64, fold: i64, cfg: MtCfg) -> table<i64> {
+    var out = table_new_i64()
+    var n = len(src)
+    var ao = len(tk_anames)
+    var ac: i64 = 0
+    var i: i64 = pos
+    var self: i64 = 0
+    while i < n {
+        // 跳过空白
+        while i < n && ws_b(str_byte(src, i)) {
+            i = i + 1
+        }
+        if i >= n {
+            break
+        }
+        var c = str_byte(src, i)
+        if c == 62 {   // '>'
+            i = i + 1
+            break
+        }
+        if c == 47 && i + 1 < n && str_byte(src, i + 1) == 62 {   // '/>'
+            i = i + 2
+            self = 1
+            break
+        }
+        if c == 47 {   // '/' 但非 "/>"：尽力而为跳过
+            i = i + 1
+            continue
+        }
+        // 读属性名
+        var ns = i
+        while i < n {
+            var b = str_byte(src, i)
+            if ws_b(b) || b == 61 || b == 47 || b == 62 {   // '=' '/' '>'
+                break
+            }
+            i = i + 1
+        }
+        if i == ns {   // 无进展字符：推进防死循环
+            i = i + 1
+            continue
+        }
+        var an = ""
+        if fold == 1 {
+            an = fold_seg(src, ns, i)
+        } else {
+            an = take_seg(src, ns, i)
+        }
+        table_push(tk_anames, an)
+        // 跳过空白后检查 '='
+        while i < n && ws_b(str_byte(src, i)) {
+            i = i + 1
+        }
+        var av = ""
+        if i < n && str_byte(src, i) == 61 {
+            i = i + 1
+            while i < n && ws_b(str_byte(src, i)) {
+                i = i + 1
+            }
+            if i < n {
+                var q = str_byte(src, i)
+                if q == 34 || q == 39 {   // '"' 或 '\''
+                    i = i + 1
+                    var vs = i
+                    while i < n && str_byte(src, i) != q {
+                        i = i + 1
+                    }
+                    av = take_seg(src, vs, i)
+                    if i < n {
+                        i = i + 1
+                    }
+                } else {
+                    var vs2 = i
+                    while i < n && ws_b(str_byte(src, i)) == false && str_byte(src, i) != 62 {
+                        i = i + 1
+                    }
+                    av = take_seg(src, vs2, i)
+                }
+            }
+        }
+        av = trim_ws(av)
+        if cfg.entity_mode >= 0 {
+            av = decode_entities(av, cfg.entity_mode)
+        }
+        table_push(tk_avals, av)
+        ac = ac + 1
+    }
+    table_push(out, ao)
+    table_push(out, ac)
+    table_push(out, i)
+    table_push(out, self)
+    return out
+}
+
+// name 是否在 cfg.raw_tags 中
+func is_raw_tag(name: string, cfg: MtCfg) -> bool {
+    var tg = cfg.raw_tags   // 表字段（共享引用，只读扫描）
+    var k: i64 = 0
+    while k < len(tg) {
+        if tg[k] == name {
+            return true
+        }
+        k = k + 1
+    }
+    return false
+}
+
+// ============================================================================
+// 四、raw text（script/style）闭标签查找
+// ============================================================================
+
+// 在 [off, n) 中找 `</name`（ASCII 大小写不敏感），name 后须跟空白 / '/' / '>'
+// 或文档尾；返回 '<' 的字节位置；未找到返回 -1。只在 '<' 命中时逐字节比对，
+// 整体 O(n)（初字节早退）。
+func find_raw_close(src: string, off: i64, name: string) -> i64 {
+    var n = len(src)
+    var m = len(name)
+    var i: i64 = off
+    while i + 2 + m <= n {
+        if str_byte(src, i) == 60 && i + 1 < n && str_byte(src, i + 1) == 47 {   // "</"
+            var ok = true
+            var j: i64 = 0
+            while j < m {
+                var b1 = fold_b(str_byte(src, i + 2 + j))
+                var b2 = fold_b(str_byte(name, j))
+                if b1 != b2 {
+                    ok = false
+                    break
+                }
+                j = j + 1
+            }
+            if ok {
+                var d = i + 2 + m
+                if d >= n {
+                    return i   // 文档尾收口（无闭标签）
+                }
+                var dc = str_byte(src, d)
+                if ws_b(dc) || dc == 47 || dc == 62 {
+                    return i
+                }
+            }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// ============================================================================
+// 五、标记扫描（'<' 处理；返回推进后的字节位置）
+// ============================================================================
+
+// 压入一个 token（五槽对齐）
+func push_tok(ty: i64, name: string, txt: string) {
+    table_push(tk_ty, ty)
+    table_push(tk_name, name)
+    table_push(tk_txt, txt)
+    table_push(tk_aoff, -1)
+    table_push(tk_acnt, 0)
+}
+
+// 处理位置 i（src[i]=='<'）处的标记；产生 0..N 个 token；返回推进后位置。
+// 非标签首字符（"<3"、孤立 '<' 等）按文本原样输出（不吞内容）。
+func scan_markup(src: string, i: i64, cfg: MtCfg) -> i64 {
+    var n = len(src)
+    if i + 1 >= n {
+        push_tok(MTK_TEXT, "", "<")
+        return n
+    }
+    var b1 = str_byte(src, i + 1)
+    // ---- 注释 / CDATA / doctype（'!' 分支）----
+    if b1 == 33 {   // '!'
+        if find_seq(src, i, "<!--") == i {
+            var ce = find_seq(src, i + 4, "-->")
+            if ce >= 0 {
+                push_tok(MTK_COMMENT, "", take_seg(src, i + 4, ce))
+                return ce + 3
+            }
+            push_tok(MTK_COMMENT, "", take_seg(src, i + 4, n))
+            return n
+        }
+        if find_seq(src, i, "<![CDATA[") == i {
+            var de = find_seq(src, i + 9, "]]>")
+            if de >= 0 {
+                push_tok(MTK_CDATA, "", take_seg(src, i + 9, de))
+                return de + 3
+            }
+            push_tok(MTK_CDATA, "", take_seg(src, i + 9, n))
+            return n
+        }
+        // doctype（尽力而为：读到 '>'）
+        var gt = find_b(src, i + 1, n, 62)
+        if gt >= 0 {
+            push_tok(MTK_DOCTYPE, "", take_seg(src, i + 1, gt))
+            return gt + 1
+        }
+        push_tok(MTK_DOCTYPE, "", take_seg(src, i + 1, n))
+        return n
+    }
+    // ---- 处理指令（'?' 分支；XML 专用，HTML 中罕见——读 '>' 跳过）----
+    if b1 == 63 {
+        var gt2 = find_b(src, i + 1, n, 62)
+        if gt2 >= 0 {
+            return gt2 + 1
+        }
+        return n
+    }
+    // ---- 闭标签（'/' 分支）----
+    if b1 == 47 {
+        var ns = i + 2
+        if ns < n && alpha_b(str_byte(src, ns)) {
+            var ne = ns
+            while ne < n {
+                var bb = str_byte(src, ne)
+                if ws_b(bb) || bb == 62 || bb == 47 {
+                    break
+                }
+                ne = ne + 1
+            }
+            var nm = ""
+            if cfg.fold_case == 1 {
+                nm = fold_seg(src, ns, ne)
+            } else {
+                nm = take_seg(src, ns, ne)
+            }
+            push_tok(MTK_CLOSE, nm, "")
+            var g = ne
+            while g < n && str_byte(src, g) != 62 {
+                g = g + 1
+            }
+            if g < n {
+                return g + 1
+            }
+            return n
+        }
+        // "</" 后非字母：按文本原样输出
+        push_tok(MTK_TEXT, "", "<")
+        return i + 1
+    }
+    // ---- 开标签 ----
+    if alpha_b(b1) {
+        var ns2 = i + 1
+        var ne2 = ns2
+        while ne2 < n {
+            var bc = str_byte(src, ne2)
+            if ws_b(bc) || bc == 62 || bc == 47 {
+                break
+            }
+            ne2 = ne2 + 1
+        }
+        var nm2 = ""
+        if cfg.fold_case == 1 {
+            nm2 = fold_seg(src, ns2, ne2)
+        } else {
+            nm2 = take_seg(src, ns2, ne2)
+        }
+        if len(nm2) == 0 {
+            push_tok(MTK_TEXT, "", "<")
+            return i + 1
+        }
+        // raw text 标签：开标签 + 内容（raw）+（若有）闭标签
+        if is_raw_tag(nm2, cfg) {
+            push_tok(MTK_OPEN, nm2, "")
+            var ra = scan_attrs(src, ne2, cfg.fold_case, cfg)
+            tk_aoff[len(tk_aoff) - 1] = ra[0]
+            tk_acnt[len(tk_acnt) - 1] = ra[1]
+            if ra[3] == 1 {   // 自闭合（<script/>，尽力而为语义）：无内容
+                tk_ty[len(tk_ty) - 1] = MTK_SELF
+                return ra[2]
+            }
+            var rp = find_raw_close(src, ra[2], nm2)
+            if rp >= 0 {
+                push_tok(MTK_RAW, "", take_seg(src, ra[2], rp))
+                push_tok(MTK_CLOSE, nm2, "")
+                var g2 = rp
+                while g2 < n && str_byte(src, g2) != 62 {
+                    g2 = g2 + 1
+                }
+                if g2 < n {
+                    return g2 + 1
+                }
+                return n
+            }
+            push_tok(MTK_RAW, "", take_seg(src, ra[2], n))
+            return n
+        }
+        // 普通标签
+        push_tok(MTK_OPEN, nm2, "")
+        var ra2 = scan_attrs(src, ne2, cfg.fold_case, cfg)
+        tk_aoff[len(tk_aoff) - 1] = ra2[0]
+        tk_acnt[len(tk_acnt) - 1] = ra2[1]
+        if ra2[3] == 1 {
+            tk_ty[len(tk_ty) - 1] = MTK_SELF
+        }
+        return ra2[2]
+    }
+    // ---- 其余（"<3"、孤立的 '<' 等）：按文本输出 ----
+    push_tok(MTK_TEXT, "", "<")
+    return i + 1
+}
+
+// ============================================================================
+// 六、扫描入口与 token 访问器
+// ============================================================================
+
+// 扫描整个文档为 token 流（重置 token 存储）。返回 token 数（>=0）。
+// 失败语义：尽力而为，恒成功，无异常；细节容错见文件头。
+pub func scan(src: string, cfg: MtCfg) -> i64 {
+    tk_ty = table_new_i64()
+    tk_name = table_new_string()
+    tk_txt = table_new_string()
+    tk_aoff = table_new_i64()
+    tk_acnt = table_new_i64()
+    tk_anames = table_new_string()
+    tk_avals = table_new_string()
+    var n = len(src)
+    var i: i64 = 0
+    while i < n {
+        if str_byte(src, i) == 60 {   // '<'
+            i = scan_markup(src, i, cfg)
+        } else {
+            var k = i
+            while k < n && str_byte(src, k) != 60 {
+                k = k + 1
+            }
+            var seg = take_seg(src, i, k)
+            if cfg.entity_mode >= 0 {
+                seg = decode_entities(seg, cfg.entity_mode)
+            }
+            push_tok(MTK_TEXT, "", seg)
+            i = k
+        }
+    }
+    return len(tk_ty)
+}
+
+// ---- 访问器（越界返回安全值，不崩溃）----
+pub func tok_count() -> i64 {
+    return len(tk_ty)
+}
+
+pub func tok_type(k: i64) -> i64 {
+    if k < 0 || k >= len(tk_ty) {
+        return 0
+    }
+    return tk_ty[k]
+}
+
+pub func tok_name(k: i64) -> string {
+    if k < 0 || k >= len(tk_name) {
+        return ""
+    }
+    return tk_name[k]
+}
+
+pub func tok_text(k: i64) -> string {
+    if k < 0 || k >= len(tk_txt) {
+        return ""
+    }
+    return tk_txt[k]
+}
+
+pub func tok_aoff(k: i64) -> i64 {
+    if k < 0 || k >= len(tk_aoff) {
+        return -1
+    }
+    return tk_aoff[k]
+}
+
+pub func tok_acnt(k: i64) -> i64 {
+    if k < 0 || k >= len(tk_acnt) {
+        return 0
+    }
+    return tk_acnt[k]
+}
+
+pub func tok_aname(j: i64) -> string {
+    if j < 0 || j >= len(tk_anames) {
+        return ""
+    }
+    return tk_anames[j]
+}
+
+pub func tok_aval(j: i64) -> string {
+    if j < 0 || j >= len(tk_avals) {
+        return ""
+    }
+    return tk_avals[j]
+}
+
+}   // namespace mltok

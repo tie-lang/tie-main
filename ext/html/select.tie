@@ -1,0 +1,382 @@
+type tie<class>
+// ============================================================================
+// select.tie：ext/html——选择器（命名空间 slct，纯 tie）p.6.6.4
+// CSS-like query selectors (namespace slct, pure-tie). p.6.6.4
+//
+// 支持子集（尽力而为，数量级小即可）：
+//   *  tag 通配（"*" 与 "" 等价）           div / p / a
+//   *  class                                .foo
+//   *  id                                   #bar
+//   *  属性存在                             [data-x]
+//   *  属性值相等（可选引号）               [data-x=42] / [data-x="v"] / [a='1']
+//   *  上述复合叠写（同一 simple：div#a.b[c=v]）
+//   *  空格分隔的**后代组合器**（descendant）：div p / body a.link
+// 大小写：标签名与属性名不区分（内部折叠比较）；id/class/属性值区分大小写。
+// 未实现：子组合器 '>'、相邻 '~'/'+'、伪类/伪元素、属性部分匹配（^= $= *=）——
+// 非本子项范围；'<' 后的这些字符按未知字符跳过（best-effort，不崩溃）。
+//
+// 解析产物为 step 平行表（模块级全局，query 开头重置）：
+//   ss_tag / ss_id            每步标签名（""=任意）/ id（""=无）
+//   ss_ncls / ss_coff         每步 class 数 / 在 ss_cls 的起点
+//   ss_nat / ss_ato           每步属性数 / 在 ss_atn.. 的起点
+//   ss_cls                    扁平 class 串
+//   ss_atn / ss_atv / ss_ath  扁平属性名（折叠）/ 值 / 模式（1=仅存在 0=值相等）
+//
+// 匹配语义：末步命中目标节点，前序各步在**严格更高层**的祖先链中任一命中
+// （后代组合器语义）；链式查询总 O(节点数 × 深度 × 步数)，文档规模内足够。
+// 失败语义：选择器非法/为空 → query 返回空表，不崩溃。
+// ============================================================================
+
+import "./dom.tie" as dom
+
+// ---- 选择器 step 存储（模块级全局；query 开头重置）----
+var ss_tag: table<string>;
+var ss_id: table<string>;
+var ss_ncls: table<i64>;
+var ss_coff: table<i64>;
+var ss_nat: table<i64>;
+var ss_ato: table<i64>;
+var ss_cls: table<string>;
+var ss_atn: table<string>;
+var ss_atv: table<string>;
+var ss_ath: table<i64>;
+
+namespace slct {
+
+// ============================================================================
+// 一、字节级小工具
+// ============================================================================
+
+func ws_b(b: i64) -> bool {
+    return b == 32 || b == 9 || b == 10 || b == 13
+}
+
+// 标识符字符：ASCII 字母数字 / - _ : 或任意非 ASCII 字节（多字节 UTF-8 原样）
+func ident_b(b: i64) -> bool {
+    if b >= 48 && b <= 57 {
+        return true
+    }
+    if b >= 65 && b <= 90 {
+        return true
+    }
+    if b >= 97 && b <= 122 {
+        return true
+    }
+    if b == 45 || b == 95 || b == 58 {
+        return true
+    }
+    if b >= 0x80 {
+        return true
+    }
+    return false
+}
+
+// 字节段 [s,e) → string（UTF-8 安全）
+func take(sel: string, s: i64, e: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = s
+    while i < e {
+        sb_append_byte(sb, str_byte(sel, i))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// ASCII 折叠（标签/属性名）
+func fold(sel: string) -> string {
+    var sb = string_builder()
+    var n = len(sel)
+    var i: i64 = 0
+    while i < n {
+        var b = str_byte(sel, i)
+        if b >= 65 && b <= 90 {
+            b = b + 32
+        }
+        sb_append_byte(sb, b)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 字符串去头尾空白
+func trim(sel: string) -> string {
+    var n = len(sel)
+    var lo: i64 = 0
+    while lo < n && ws_b(str_byte(sel, lo)) {
+        lo = lo + 1
+    }
+    var hi: i64 = n
+    while hi > lo && ws_b(str_byte(sel, hi - 1)) {
+        hi = hi - 1
+    }
+    if lo == 0 && hi == n {
+        return sel
+    }
+    return take(sel, lo, hi)
+}
+
+// ============================================================================
+// 二、选择器解析（step 平行表；单遍字节游标）
+// ============================================================================
+
+// 解析选择器串为 step 表；返回 step 数（空/非法 → 0）。
+func parse(sel: string) -> i64 {
+    ss_tag = table_new_string()
+    ss_id = table_new_string()
+    ss_ncls = table_new_i64()
+    ss_coff = table_new_i64()
+    ss_nat = table_new_i64()
+    ss_ato = table_new_i64()
+    ss_cls = table_new_string()
+    ss_atn = table_new_string()
+    ss_atv = table_new_string()
+    ss_ath = table_new_i64()
+    var n = len(sel)
+    var i: i64 = 0
+    while i < n {
+        // 跳过空白
+        while i < n && ws_b(str_byte(sel, i)) {
+            i = i + 1
+        }
+        if i >= n {
+            break
+        }
+        // 非法起始字符（'>' '~' 等未支持组合器）→ 跳过
+        var c0 = str_byte(sel, i)
+        if c0 != 35 && c0 != 46 && c0 != 91 && c0 != 42 && ident_b(c0) == false {
+            i = i + 1
+            continue
+        }
+        // 新 step 占位
+        table_push(ss_tag, "")
+        table_push(ss_id, "")
+        table_push(ss_ncls, 0)
+        table_push(ss_coff, len(ss_cls))
+        table_push(ss_nat, 0)
+        table_push(ss_ato, len(ss_atn))
+        var last = len(ss_tag) - 1
+        // 读复合 simple（无空白叠写：# / . / [ / 标签 可任意组合）
+        while i < n && ws_b(str_byte(sel, i)) == false {
+            var c = str_byte(sel, i)
+            if c == 35 {   // '#'
+                i = i + 1
+                var s2 = i
+                while i < n && ident_b(str_byte(sel, i)) {
+                    i = i + 1
+                }
+                if i > s2 {
+                    ss_id[last] = take(sel, s2, i)
+                }
+            } else if c == 46 {   // '.'
+                i = i + 1
+                var s3 = i
+                while i < n && ident_b(str_byte(sel, i)) {
+                    i = i + 1
+                }
+                if i > s3 {
+                    table_push(ss_cls, take(sel, s3, i))
+                    ss_ncls[last] = ss_ncls[last] + 1
+                }
+            } else if c == 91 {   // '['
+                i = i + 1
+                // 属性名
+                var s4 = i
+                while i < n && ident_b(str_byte(sel, i)) {
+                    i = i + 1
+                }
+                var an = take(sel, s4, i)
+                // 可能 '='（允许 [x = v] 空格）
+                while i < n && ws_b(str_byte(sel, i)) {
+                    i = i + 1
+                }
+                var av = ""
+                var is_pres: i64 = 1
+                if i < n && str_byte(sel, i) == 61 {
+                    i = i + 1
+                    while i < n && ws_b(str_byte(sel, i)) {
+                        i = i + 1
+                    }
+                    if i < n {
+                        var q = str_byte(sel, i)
+                        if q == 34 || q == 39 {   // '"' 或 '\''
+                            i = i + 1
+                            var vs = i
+                            while i < n && str_byte(sel, i) != q {
+                                i = i + 1
+                            }
+                            av = take(sel, vs, i)
+                            if i < n {
+                                i = i + 1
+                            }
+                        } else {
+                            var vs2 = i
+                            while i < n && str_byte(sel, i) != 93 {   // ']'
+                                i = i + 1
+                            }
+                            av = trim(take(sel, vs2, i))
+                        }
+                        is_pres = 0
+                    }
+                }
+                // 跳过至 ']'
+                while i < n && str_byte(sel, i) != 93 {
+                    i = i + 1
+                }
+                if i < n {
+                    i = i + 1
+                }
+                if len(an) > 0 {
+                    table_push(ss_atn, fold(an))
+                    table_push(ss_atv, av)
+                    table_push(ss_ath, is_pres)
+                    ss_nat[last] = ss_nat[last] + 1
+                }
+            } else if c == 42 {   // '*'：任意标签（tag 保持 ""）
+                i = i + 1
+            } else {
+                // 标签名（叠写末尾的标识符）
+                var s5 = i
+                while i < n && ident_b(str_byte(sel, i)) {
+                    i = i + 1
+                }
+                if i > s5 {
+                    ss_tag[last] = fold(take(sel, s5, i))
+                } else {
+                    // 未知字符：跳过防死循环
+                    i = i + 1
+                }
+            }
+        }
+    }
+    return len(ss_tag)
+}
+
+// ============================================================================
+// 三、匹配
+// ============================================================================
+
+// class 属性中是否含令牌 cls（空白分隔，字节级单遍）
+func class_has(d: HtmlDoc, nid: i64, cls: string) -> bool {
+    var cv = dom.attr(d, nid, "class")
+    var n = len(cv)
+    var m = len(cls)
+    var i: i64 = 0
+    while i < n {
+        // 找令牌起点
+        while i < n && ws_b(str_byte(cv, i)) {
+            i = i + 1
+        }
+        if i >= n {
+            break
+        }
+        var s = i
+        while i < n && ws_b(str_byte(cv, i)) == false {
+            i = i + 1
+        }
+        var e = i
+        if e - s == m {
+            var eq = true
+            var k: i64 = 0
+            while k < m {
+                if str_byte(cv, s + k) != str_byte(cls, k) {
+                    eq = false
+                    break
+                }
+                k = k + 1
+            }
+            if eq {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// 节点是否命中第 st 步 simple 选择器
+func step_match(d: HtmlDoc, nid: i64, st: i64) -> bool {
+    if dom.kind(d, nid) != 0 {
+        return false
+    }
+    var tg = ss_tag[st]
+    if len(tg) > 0 && dom.tag(d, nid) != tg {
+        return false
+    }
+    var idv = ss_id[st]
+    if len(idv) > 0 && dom.attr(d, nid, "id") != idv {
+        return false
+    }
+    var k: i64 = 0
+    while k < ss_ncls[st] {
+        if class_has(d, nid, ss_cls[ss_coff[st] + k]) == false {
+            return false
+        }
+        k = k + 1
+    }
+    var j: i64 = 0
+    while j < ss_nat[st] {
+        var ai = ss_ato[st] + j
+        var av = dom.attr(d, nid, ss_atn[ai])
+        if ss_ath[ai] == 1 {
+            if av == "" {
+                return false
+            }
+        } else {
+            if av != ss_atv[ai] {
+                return false
+            }
+        }
+        j = j + 1
+    }
+    return true
+}
+
+// 链式后代匹配：**末步必须命中目标节点自身**；前序各步在严格更高层祖先链中
+// 任一命中（后代组合器语义）。
+func chain_match(d: HtmlDoc, nid: i64, stn: i64) -> bool {
+    if step_match(d, nid, stn - 1) == false {
+        return false
+    }
+    var cur = dom.parent(d, nid)
+    var si = stn - 2
+    while si >= 0 {
+        var found = false
+        var c = cur
+        while c > 0 {   // 到根（id 0）为止
+            if step_match(d, c, si) {
+                found = true
+                break
+            }
+            c = dom.parent(d, c)
+        }
+        if found == false {
+            return false
+        }
+        cur = dom.parent(d, c)
+        si = si - 1
+    }
+    return true
+}
+
+// ============================================================================
+// 四、查询入口
+// ============================================================================
+
+// 全文档选择器查询：返回匹配节点 id 表（文档序；不含根）。非法选择器 → 空表。
+pub func query(d: HtmlDoc, sel: string) -> table<i64> {
+    var out = table_new_i64()
+    var stn = parse(sel)
+    if stn == 0 {
+        return out
+    }
+    var cnt = dom.node_count(d)
+    var i: i64 = 1   // 跳过根节点
+    while i < cnt {
+        if chain_match(d, i, stn) {
+            table_push(out, i)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+}   // namespace slct

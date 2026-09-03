@@ -1,0 +1,152 @@
+type tie<class>
+// ============================================================================
+// text.tie：ext/html——HTML → 纯文本提取（命名空间 txtx，纯 tie）p.6.6.4
+// HTML → plain text extraction (namespace txtx, pure-tie). p.6.6.4
+//
+// 语义（尽力而为，可读性提取）：
+//   - **跳过** script/style 整棵子树（raw text 不入纯文本）；
+//   - 文本节点原样输出（实体已在分词期解码）；注释/doctype 本就不入树；
+//   - 块级标签（p/div/h1..h6/li/ul/ol/表格系/语义化容器等）在起始处换行；
+//     br 无条件换行；文档首部与换行后的冗余换行被抑制（不产生空行堆积）；
+//   - 不做空白折叠（pre 等特殊保留交由上层按需），源码空白原样保留；
+//   - 中文等多字节文本字节原样拷贝（UTF-8 安全）。
+//
+// 实现：显式栈做先序迭代遍历（不用递归，避免深嵌套调用栈风险）；输出经
+// string_builder 单遍累积（总 O(节点文本总长)），无逐字符字符串拼接。
+// 注意：`text` 是 tie 保留字，纯文本提取函数命名 `render`（html 层为 plain）。
+// ============================================================================
+
+import "./dom.tie" as dom
+
+// 块级标签表（懒构建一次，进程内复用）
+var g_blocks: table<string>;
+var g_blocks_ok: bool = false;
+
+namespace txtx {
+
+// 元素是否跳过（raw text 容器：内容不进纯文本）
+func skip_tag(tg: string) -> bool {
+    return tg == "script" || tg == "style"
+}
+
+// 构建块级标签表
+func build_blocks() {
+    var bs = table_new_string()
+    table_push(bs, "p")
+    table_push(bs, "div")
+    table_push(bs, "h1")
+    table_push(bs, "h2")
+    table_push(bs, "h3")
+    table_push(bs, "h4")
+    table_push(bs, "h5")
+    table_push(bs, "h6")
+    table_push(bs, "li")
+    table_push(bs, "ul")
+    table_push(bs, "ol")
+    table_push(bs, "dl")
+    table_push(bs, "dt")
+    table_push(bs, "dd")
+    table_push(bs, "table")
+    table_push(bs, "thead")
+    table_push(bs, "tbody")
+    table_push(bs, "tfoot")
+    table_push(bs, "tr")
+    table_push(bs, "td")
+    table_push(bs, "th")
+    table_push(bs, "section")
+    table_push(bs, "article")
+    table_push(bs, "header")
+    table_push(bs, "footer")
+    table_push(bs, "nav")
+    table_push(bs, "aside")
+    table_push(bs, "blockquote")
+    table_push(bs, "pre")
+    table_push(bs, "hr")
+    table_push(bs, "form")
+    table_push(bs, "fieldset")
+    table_push(bs, "figure")
+    table_push(bs, "figcaption")
+    table_push(bs, "main")
+    table_push(bs, "address")
+    table_push(bs, "details")
+    table_push(bs, "summary")
+    g_blocks = bs
+    g_blocks_ok = true
+}
+
+// 是否块级开头（br 单独处理：无条件换行）
+func block_tag(tg: string) -> bool {
+    if tg == "br" {
+        return true
+    }
+    if g_blocks_ok == false {
+        build_blocks()
+    }
+    var k: i64 = 0
+    while k < len(g_blocks) {
+        if g_blocks[k] == tg {
+            return true
+        }
+        k = k + 1
+    }
+    return false
+}
+
+// 纯文本渲染：先序遍历，块级换行，跳过 script/style 子树。
+pub func render(d: HtmlDoc) -> string {
+    var sb = string_builder()
+    var wrote: i64 = 0      // 已输出字节数（首部换行抑制用）
+    var last_nl = true      // 上一个输出字节是否为 '\n'（起点视为行首）
+    var st = table_new_i64()
+    table_push(st, 0)       // 栈：根节点 id
+    var sp: i64 = 1
+    while sp > 0 {
+        sp = sp - 1
+        var nid = st[sp]
+        var kd = dom.kind(d, nid)
+        if kd == 1 {
+            // 文本节点：原样追加
+            var t = dom.content(d, nid)
+            if len(t) > 0 {
+                sb_append(sb, t)
+                wrote = wrote + len(t)
+                last_nl = str_byte(t, len(t) - 1) == 10
+            }
+        } else {
+            var tg = dom.tag(d, nid)
+            if skip_tag(tg) {
+                continue   // 跳过整棵子树（其孩子不入栈）
+            }
+            if tg == "br" {
+                if wrote > 0 && last_nl == false {
+                    sb_append(sb, "\n")
+                    wrote = wrote + 1
+                }
+                last_nl = true
+            } else if block_tag(tg) {
+                if wrote > 0 && last_nl == false {
+                    sb_append(sb, "\n")
+                    wrote = wrote + 1
+                }
+                last_nl = true
+            }
+            // 孩子逆序入栈（保持文档序）；children() 一次取表避免逐 k 走链
+            var chs = dom.children(d, nid)
+            var cc = len(chs)
+            var k: i64 = cc - 1
+            while k >= 0 {
+                var cid = chs[k]
+                if sp == len(st) {
+                    table_push(st, cid)
+                } else {
+                    st[sp] = cid
+                }
+                sp = sp + 1
+                k = k - 1
+            }
+        }
+    }
+    return sb_build(sb)
+}
+
+}   // namespace txtx

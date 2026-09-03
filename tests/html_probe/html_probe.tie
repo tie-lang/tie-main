@@ -1,0 +1,314 @@
+type tie<logic>
+// ============================================================================
+// html_probe.tie：ext/html HTML 解析探针（p.6.6.4）。
+// HTML parsing probe (p.6.6.4).
+//
+// 覆盖（Coverage）：
+//   - 样本① 嵌套元素 + 属性 + 注释 + doctype + 大小写混写 + UTF-8 中文：
+//     tag/attr 解析、大小写折叠、中文保真、注释与 doctype 不入树、节点访问器、
+//     选择器（tag/.class/#id/[attr]/[attr=value]/后代组合）、纯文本换行；
+//   - 样本② raw text（script/style 含 "<" ">" "&" 伪标签）+ 各类链接：
+//     raw 原样保留、实体解码、links 绝对化（相对/绝对/根路径/协议相对/
+//     query+fragment）；
+//   - 样本③ 畸形输入（未闭合、错位、孤立 "<"、"<3"、连续 li 隐式闭合）：
+//     不崩溃、解析出预期子集、无标签泄漏；
+//   - 大样本 >200KB：单遍解析 + 选择器 + 链接 + 纯文本，秒级完成（防 O(n^2)）。
+// 数据平面：全 string（UTF-8）；无字节表。夹具全部内联（不入库）。
+// 编译运行：compiler\tiec.exe tests\html_probe\html_probe.tie（勿用根旧 tiec3.exe）
+// ============================================================================
+import "../../ext/html/html.tie" as html
+import "../../std/string.tie" as str
+import "../../std/time.tie" as time
+
+// ---- 断言工具 ----
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=[" + got + "] want=[" + want + "]")
+        exit(1)
+    }
+}
+
+func chk_i64(name: string, got: i64, want: i64) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+// 字节级 contains（中文安全）
+func chk_contains(name: string, hay: string, needle: string) {
+    var n = len(hay)
+    var m = len(needle)
+    var found = false
+    var i: i64 = 0
+    while i + m <= n {
+        var j: i64 = 0
+        var ok = true
+        while j < m {
+            if str_byte(hay, i + j) != str_byte(needle, j) {
+                ok = false
+                break
+            }
+            j = j + 1
+        }
+        if ok {
+            found = true
+            break
+        }
+        i = i + 1
+    }
+    if found {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " needle=[" + needle + "] hay=[" + hay + "]")
+        exit(1)
+    }
+}
+
+func chk_not_contains(name: string, hay: string, needle: string) {
+    var n = len(hay)
+    var m = len(needle)
+    var found = false
+    var i: i64 = 0
+    while i + m <= n {
+        var j: i64 = 0
+        var ok = true
+        while j < m {
+            if str_byte(hay, i + j) != str_byte(needle, j) {
+                ok = false
+                break
+            }
+            j = j + 1
+        }
+        if ok {
+            found = true
+            break
+        }
+        i = i + 1
+    }
+    if found {
+        println("FAIL " + name + " 不应包含 [" + needle + "] 却包含于 [" + hay + "]")
+        exit(1)
+    }
+    println("PASS " + name)
+}
+
+func fail(msg: string) {
+    println("FAIL " + msg)
+    exit(1)
+}
+
+// ---- 样本①：嵌套 + 属性 + 注释/doctype + 大小写混写 + 中文 ----
+func sample1() -> string {
+    return "<!DOCTYPE html>\n" +
+        "<html>\n" +
+        "<body>\n" +
+        "<div id=\"main\" CLASS=\"container\" data-x=\"42\">\n" +
+        "  <p>你好，世界</p>\n" +
+        "  <p class=\"cls1 cls2\">Second</p>\n" +
+        "  <!-- hidden comment -->\n" +
+        "  <a href=\"page.html\" title=\"Page\">Link</a>\n" +
+        "</div>\n" +
+        "</body>\n" +
+        "</html>"
+}
+
+// ---- 样本②：raw text + 伪标签 + 各类链接 + 实体 ----
+func sample2() -> string {
+    return "<html>\n" +
+        "<head>\n" +
+        "<link rel=\"stylesheet\" href=\"/css/main.css\">\n" +
+        "<script src=\"app.js\"></script>\n" +
+        "</head>\n" +
+        "<body>\n" +
+        "<script> if (a < b && c > d) { x = \"&amp;\"; } </script>\n" +
+        "<style> p > a { color: red; } </style>\n" +
+        "<h1>Title &amp; <b>bold</b></h1>\n" +
+        "<a href=\"../up/page.html?q=1#sec\" data-q=\"1&amp;2\">a1</a>\n" +
+        "<a href=\"/abs/path\">a2</a>\n" +
+        "<a href=\"//cdn.example.com/x.js\">a3</a>\n" +
+        "<a href=\"#tip\">a4</a>\n" +
+        "<img src=\"img/logo.png\">\n" +
+        "</body>\n" +
+        "</html>"
+}
+
+// ---- 样本③：畸形输入 ----
+func sample3() -> string {
+    return "<p>unclosed<div>xyz</p>tail<span class=\"t\"><b>bold<i>both</b>after</span> <3 love &amp; more&nbsp;x<div><li>one<li>two</div>"
+}
+
+func tst_sample1() -> HtmlDoc {
+    var d = html.parse(sample1())
+    chk_i64("s1_node_count_gt1", html.node_count(d) > 1 ? 1 : 0, 1)
+    // 标签/属性解析 + 大小写折叠断言
+    var divs = html.query(d, "div")
+    chk_i64("s1_query_div", len(divs), 1)
+    chk("s1_div_tag", html.tag(d, divs[0]), "div")
+    chk_i64("s1_query_DIV_upper", len(html.query(d, "DIV")), 1)
+    chk("s1_attr_id", html.attr(d, divs[0], "id"), "main")
+    chk("s1_attr_CLASS_fold", html.attr(d, divs[0], "CLASS"), "container")
+    chk("s1_attr_data_x", html.attr(d, divs[0], "data-x"), "42")
+    chk("s1_attr_missing", html.attr(d, divs[0], "nope"), "")
+    // 中文文本保真（文本节点）
+    var ps = html.query(d, "p")
+    chk_i64("s1_query_p", len(ps), 2)
+    var p1 = ps[0]
+    var kids1 = html.children(d, p1)
+    chk_i64("s1_p1_children", len(kids1), 1)
+    chk("s1_cn_text", html.content(d, kids1[0]), "你好，世界")
+    // 元素节点 content 返回空
+    chk("s1_el_content_empty", html.content(d, p1), "")
+    // 树关系
+    chk_i64("s1_parent_p", html.parent(d, p1), divs[0])
+    var bodys = html.query(d, "body")
+    chk_i64("s1_query_body", len(bodys), 1)
+    chk_i64("s1_parent_div", html.parent(d, divs[0]), bodys[0])
+    chk_i64("s1_body_children", len(html.children(d, bodys[0])), 3)
+    var bkids = html.children(d, bodys[0])
+    chk("s1_child1_tag", html.tag(d, bkids[1]), "div")
+    // 注释/doctype 不入树
+    chk_i64("s1_no_comment_tag", len(html.query(d, "!--")), 0)
+    chk_i64("s1_html_count", len(html.query(d, "html")), 1)
+    var pt1 = html.plain(d)
+    chk_not_contains("s1_plain_no_comment", pt1, "hidden comment")
+    chk_not_contains("s1_plain_no_doctype", pt1, "DOCTYPE")
+    chk_not_contains("s1_plain_no_tag_leak", pt1, "<div")
+    // 纯文本：中文完整、块级换行合理
+    chk_contains("s1_plain_cn", pt1, "你好，世界")
+    chk_contains("s1_plain_lb", pt1, "\nSecond")
+    chk_contains("s1_plain_link", pt1, "Link")
+    // 选择器：class / id / 属性 / 后代 / 复合
+    chk_i64("s1_sel_class", len(html.query(d, ".cls1")), 1)
+    chk_i64("s1_sel_class2", len(html.query(d, ".cls2")), 1)
+    chk_i64("s1_sel_id", len(html.query(d, "#main")), 1)
+    chk_i64("s1_sel_attr_pres", len(html.query(d, "[data-x]")), 1)
+    chk_i64("s1_sel_attr_eq", len(html.query(d, "[data-x=42]")), 1)
+    chk_i64("s1_sel_attr_eq_upper", len(html.query(d, "[DATA-X=42]")), 1)
+    chk_i64("s1_sel_desc", len(html.query(d, "div p")), 2)
+    chk_i64("s1_sel_desc2", len(html.query(d, "body #main")), 1)
+    chk_i64("s1_sel_desc3", len(html.query(d, "html #main")), 1)
+    chk_i64("s1_sel_complex", len(html.query(d, "div .cls1")), 1)
+    chk_i64("s1_sel_p_cls", len(html.query(d, "p.cls2")), 1)
+    chk_i64("s1_sel_a_href", len(html.query(d, "a[href]")), 1)
+    chk_i64("s1_sel_star", len(html.query(d, "*")), 6)
+    return d
+}
+
+func tst_sample2() {
+    var d = html.parse(sample2())
+    // raw text（script/style）原样保留含 "<" ">" "&" 伪标签
+    var scrs = html.query(d, "script")
+    chk_i64("s2_script_count", len(scrs), 2)
+    var sc_k = html.children(d, scrs[1])   // [1]=body 的内联 script（raw 内容所在）
+    chk_i64("s2_script_kids", len(sc_k), 1)
+    chk_contains("s2_raw_pseudo", html.content(d, sc_k[0]), "a < b && c > d")
+    chk_contains("s2_raw_amp", html.content(d, sc_k[0]), "&amp;")
+    // 实体解码（正文与属性值）
+    var h1s = html.query(d, "h1")
+    chk_i64("s2_h1_count", len(h1s), 1)
+    chk_contains("s2_plain_entity", html.plain(d), "Title & ")
+    var a1 = html.query(d, "a")[0]
+    chk("s2_attr_entity", html.attr(d, a1, "data-q"), "1&2")
+    // 纯文本：去 script/style；无标签泄漏
+    var pt = html.plain(d)
+    chk_not_contains("s2_plain_no_script", pt, "if (a < b")
+    chk_not_contains("s2_plain_no_style", pt, "color")
+    chk_not_contains("s2_plain_no_script_tag", pt, "<script>")
+    chk_not_contains("s2_plain_no_style_tag", pt, "<style>")
+    chk_not_contains("s2_plain_no_b_tag", pt, "<b>")
+    chk_contains("s2_plain_bold", pt, "bold")
+    // 选择器
+    chk_i64("s2_sel_a_href", len(html.query(d, "a[href]")), 4)
+    chk_i64("s2_sel_href", len(html.query(d, "[href]")), 5)
+    chk_i64("s2_sel_link", len(html.query(d, "link[href]")), 1)
+    chk_i64("s2_sel_script_src", len(html.query(d, "script[src]")), 1)
+    chk_i64("s2_sel_head_script", len(html.query(d, "head script")), 1)
+    chk_i64("s2_sel_html_script", len(html.query(d, "html script")), 2)
+    chk_i64("s2_sel_rel", len(html.query(d, "[rel]")), 1)
+    // links 绝对化（相对/绝对/根路径/协议相对/query+fragment）
+    var ls = html.links(d, "http://example.com/a/b/index.html")
+    chk_i64("s2_links_count", len(ls), 7)
+    chk("s2_links0", ls[0], "http://example.com/css/main.css")
+    chk("s2_links1", ls[1], "http://example.com/a/b/app.js")
+    chk("s2_links2", ls[2], "http://example.com/a/up/page.html?q=1#sec")
+    chk("s2_links3", ls[3], "http://example.com/abs/path")
+    chk("s2_links4", ls[4], "http://cdn.example.com/x.js")
+    chk("s2_links5", ls[5], "http://example.com/a/b/index.html#tip")
+    chk("s2_links6", ls[6], "http://example.com/a/b/img/logo.png")
+}
+
+func tst_sample3() {
+    var d = html.parse(sample3())
+    // 畸形输入：不崩溃且解析出预期子集
+    chk_i64("s3_sel_p", len(html.query(d, "p")), 1)
+    chk_i64("s3_sel_div", len(html.query(d, "div")), 2)
+    chk_i64("s3_sel_li", len(html.query(d, "li")), 2)
+    chk_i64("s3_sel_span", len(html.query(d, "span")), 1)
+    chk_i64("s3_sel_t_class", len(html.query(d, ".t")), 1)
+    chk_i64("s3_sel_b", len(html.query(d, "b")), 1)
+    chk_i64("s3_sel_i", len(html.query(d, "i")), 1)
+    chk_i64("s3_sel_gt_as_desc", len(html.query(d, "div > li")), 2)   // '>' 未支持：退化为后代语义，不崩
+    // 连续 li 隐式闭合：两 li 内容独立
+    var lis = html.query(d, "li")
+    chk("s3_li0_text", html.content(d, html.children(d, lis[0])[0]), "one")
+    chk("s3_li1_text", html.content(d, html.children(d, lis[1])[0]), "two")
+    // 文本保真 + 无标签泄漏（"<3" 与孤立 '<' 按文本）
+    var pt = html.plain(d)
+    chk_contains("s3_plain_unclosed", pt, "unclosed")
+    chk_contains("s3_plain_xyz", pt, "xyz")
+    chk_contains("s3_plain_tail", pt, "tail")
+    chk_contains("s3_plain_bold", pt, "bold")
+    chk_contains("s3_plain_both", pt, "both")
+    chk_contains("s3_plain_after", pt, "after")
+    chk_contains("s3_plain_lt3", pt, "<3 love")
+    chk_contains("s3_plain_entity_amp", pt, "& more")
+    var nbsp = str_from_code(160)
+    chk_contains("s3_plain_nbsp", pt, "more" + nbsp + "x")
+    chk_not_contains("s3_plain_no_div", pt, "<div>")
+    chk_not_contains("s3_plain_no_b", pt, "<b>")
+    chk_not_contains("s3_plain_no_p", pt, "</p>")
+    // 数字实体
+    var d2 = html.parse("<p>&#65;&#x42;&amp;</p>")
+    var pk = html.children(d2, html.query(d2, "p")[0])
+    chk("s3_num_entity", html.content(d2, pk[0]), "AB&")
+    // 空输入 → 空文档（仅根节点）
+    var d3 = html.parse("")
+    chk_i64("s3_empty_doc", html.node_count(d3), 1)
+}
+
+func tst_big() {
+    // 大样本 >200KB：单遍解析 + 查询 + 链接 + 纯文本，秒级完成（防 O(n^2)）
+    var chunk = "<li>item 你好 <b>bold</b> <a href=\"sub/page.html\">x</a></li>\n"
+    var big = str.repeat(chunk, 3300)
+    var byte_len = len(big)
+    chk_i64("big_size_gt_200k", byte_len > 200000 ? 1 : 0, 1)
+    time.tick_start()
+    var d = html.parse(big)
+    var parse_ms = time.tick_ms()
+    chk_i64("big_node_count", html.node_count(d) > 10000 ? 1 : 0, 1)
+    chk_i64("big_query_li", len(html.query(d, "li")), 3300)
+    chk_i64("big_query_a", len(html.query(d, "a[href]")), 3300)
+    chk_i64("big_query_desc", len(html.query(d, "li a")), 3300)
+    var ls = html.links(d, "http://e.com/x/index.html")
+    chk_i64("big_links_count", len(ls), 3300)
+    chk("big_links0", ls[0], "http://e.com/x/sub/page.html")
+    var pt = html.plain(d)
+    chk_i64("big_plain_size", len(pt) > 50000 ? 1 : 0, 1)
+    chk_contains("big_plain_cn", pt, "你好")
+    chk_i64("big_parse_sub_3s", parse_ms < 3000 ? 1 : 0, 1)
+    println("INFO big_bytes=" + to_string(byte_len) + " parse_ms=" + to_string(parse_ms))
+}
+
+func main() {
+    tst_sample1()
+    tst_sample2()
+    tst_sample3()
+    tst_big()
+    println("html 探针全部通过 / html probe all PASS")
+    exit(0)
+}

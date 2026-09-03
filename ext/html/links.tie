@@ -1,0 +1,240 @@
+type tie<class>
+// ============================================================================
+// links.tie：ext/html——链接/资源提取 + 相对 URL 绝对化（命名空间 lnk，纯 tie）
+// Link & resource extraction with URL absolutization (namespace lnk). p.6.6.4
+//
+// 提取目标（文档序，不去重——去重交由爬虫层 p.6.6.6 负责）：
+//   a[href] / img[src] / link[href] / script[src]；其余标签不产出。
+//
+// URL 绝对化（尽力而为，涵盖验收面）：
+//   - 含 "://" 的绝对 URL 原样返回；
+//   - "//host/path" 协议相对 → "scheme:" + loc（继承 base 的 scheme）；
+//   - "/path..." 根路径 → scheme://authority + loc（保留 query/fragment）；
+//   - "#frag" / "?query" 仅挂当前路径后；
+//   - 其余相对路径 → scheme://authority + base 目录 + loc，随后对路径部分做
+//     "."/".." 段归并（norm_path）；query/fragment 原样保留。
+// 不对 URL 做字符编码（空串 href 视为脏数据跳过）。
+// 失败语义：base 缺 scheme 时按 "http" 处理；恒不崩溃。
+// ============================================================================
+
+import "./dom.tie" as dom
+
+namespace lnk {
+
+// ============================================================================
+// 一、字节级小工具（本文件最小副本；局部持有）
+// ============================================================================
+
+// 在 h 的 [off, n) 中找 ASCII 串 nd（首字节早退）；未找到返回 -1
+func find_in(h: string, off: i64, nd: string) -> i64 {
+    var n = len(h)
+    var m = len(nd)
+    if m == 0 {
+        return off
+    }
+    var i: i64 = off
+    while i + m <= n {
+        var ok = true
+        var j: i64 = 0
+        while j < m {
+            if str_byte(h, i + j) != str_byte(nd, j) {
+                ok = false
+                break
+            }
+            j = j + 1
+        }
+        if ok {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 字节段 [s,e) → string（UTF-8 安全）
+func take(h: string, s: i64, e: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = s
+    while i < e {
+        sb_append_byte(sb, str_byte(h, i))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// ============================================================================
+// 二、base 解析与 URL 绝对化
+// ============================================================================
+
+// 解析 base 为 [scheme, authority, path(无 query/fragment), dir]。
+func base_parts(base: string) -> table<string> {
+    var out = table_new_string()
+    var sch = "http"
+    var rest = base
+    var sco = find_in(base, 0, "://")
+    if sco >= 0 {
+        sch = take(base, 0, sco)
+        rest = take(base, sco + 3, len(base))
+    }
+    var auth = rest
+    var path = "/"
+    var sl = -1
+    var k: i64 = 0
+    while k < len(rest) {
+        if str_byte(rest, k) == 47 {   // '/'
+            sl = k
+            break
+        }
+        k = k + 1
+    }
+    if sl >= 0 {
+        auth = take(rest, 0, sl)
+        path = take(rest, sl, len(rest))
+    }
+    // path 去 query/fragment（'?' / '#'）
+    var pe = len(path)
+    var q: i64 = 0
+    while q < len(path) {
+        var b = str_byte(path, q)
+        if b == 63 || b == 35 {
+            pe = q
+            break
+        }
+        q = q + 1
+    }
+    path = take(path, 0, pe)
+    // dir = path 到最后一个 '/'（含）
+    var ls = -1
+    var w: i64 = 0
+    while w < len(path) {
+        if str_byte(path, w) == 47 {
+            ls = w
+        }
+        w = w + 1
+    }
+    var dir = "/"
+    if ls >= 0 {
+        dir = take(path, 0, ls + 1)
+    }
+    table_push(out, sch)
+    table_push(out, auth)
+    table_push(out, path)
+    table_push(out, dir)
+    return out
+}
+
+// 路径点段归并：对 [/, dir1, .., name] 序列去掉 '.' 段、".." 弹出一段；
+// query/fragment 后缀原样保留（".." 超出根时收敛到根）。
+func norm_path(p: string) -> string {
+    // 分离 query/fragment 后缀
+    var end = len(p)
+    var i: i64 = 0
+    while i < len(p) {
+        var b = str_byte(p, i)
+        if b == 63 || b == 35 {
+            end = i
+            break
+        }
+        i = i + 1
+    }
+    var suffix = take(p, end, len(p))
+    // 分段（'/' 分隔，仅遍历路径部分 [0,end)；跳过空段——路径以 '/' 起）
+    var segs = table_new_string()
+    var s: i64 = 0
+    var seg_lo: i64 = 0
+    while s <= end {
+        if s == end || str_byte(p, s) == 47 {
+            if s > seg_lo {
+                table_push(segs, take(p, seg_lo, s))
+            }
+            seg_lo = s + 1
+        }
+        s = s + 1
+    }
+    // 归并：r 表 + 逻辑长度 rn（槽位可复用，免 pop）
+    var r = table_new_string()
+    var rn: i64 = 0
+    var k: i64 = 0
+    while k < len(segs) {
+        var sg = segs[k]
+        if sg == "." {
+            // 忽略
+        } else if sg == ".." {
+            if rn > 0 {
+                rn = rn - 1
+            }
+        } else {
+            if rn == len(r) {
+                table_push(r, sg)
+            } else {
+                r[rn] = sg
+            }
+            rn = rn + 1
+        }
+        k = k + 1
+    }
+    var sb = string_builder()
+    sb_append_byte(sb, 47)   // 前导 '/'
+    var u: i64 = 0
+    while u < rn {
+        if u > 0 {
+            sb_append_byte(sb, 47)
+        }
+        sb_append(sb, r[u])
+        u = u + 1
+    }
+    sb_append(sb, suffix)
+    return sb_build(sb)
+}
+
+// 依 base 解析信息把 loc 绝对化为完整 URL（尽力而为）。
+func resolve(pre: table<string>, loc: string) -> string {
+    if find_in(loc, 0, "://") >= 0 {
+        return loc
+    }
+    // 协议相对
+    if len(loc) >= 2 && str_byte(loc, 0) == 47 && str_byte(loc, 1) == 47 {
+        return pre[0] + ":" + loc
+    }
+    // 根路径
+    if len(loc) > 0 && str_byte(loc, 0) == 47 {
+        return pre[0] + "://" + pre[1] + loc
+    }
+    // 仅 query / fragment：挂当前路径后
+    if len(loc) > 0 && (str_byte(loc, 0) == 63 || str_byte(loc, 0) == 35) {
+        return pre[0] + "://" + pre[1] + pre[2] + loc
+    }
+    // 相对：dir + loc，路径段归并
+    var joined = pre[3] + loc
+    return pre[0] + "://" + pre[1] + norm_path(joined)
+}
+
+// ============================================================================
+// 三、提取入口
+// ============================================================================
+
+// 提取文档全部链接/资源 URL 并按 base 绝对化（文档序；空串跳过）。
+pub func collect(d: HtmlDoc, base: string) -> table<string> {
+    var out = table_new_string()
+    var pre = base_parts(base)
+    var cnt = dom.node_count(d)
+    var i: i64 = 1   // 跳过根
+    while i < cnt {
+        if dom.kind(d, i) == 0 {
+            var tg = dom.tag(d, i)
+            var v = ""
+            if tg == "a" || tg == "link" {
+                v = dom.attr(d, i, "href")
+            } else if tg == "img" || tg == "script" {
+                v = dom.attr(d, i, "src")
+            }
+            if len(v) > 0 {
+                table_push(out, resolve(pre, v))
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+}   // namespace lnk

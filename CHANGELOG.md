@@ -22,6 +22,44 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/html: HTML tokenizer/DOM/selector/links/plain-text extraction (p.6.6.4) (2026-09-03)
+
+- New ext/html package (pure tie; string/UTF-8 data plane, no byte tables — boundary with
+  httpc/sse documented in html.tie): completes the "fetch → parse" pipeline back-half, consumed
+  by p.6.6.6 crawler.
+  - token.tie (namespace mltok): language-agnostic markup tokenizer shared with p.6.6.5 xml —
+    MtCfg config: ASCII case folding (fold_case 0/1), minimal entity set (entity_mode: HTML
+    amp/lt/gt/quot/nbsp vs XML +apos; both plus numeric &#NN;/&#xHH;), raw-text tag list
+    (script/style); best-effort tolerance — orphan "<" and "<3" kept as literal text, unterminated
+    comment/doctype closed at EOF, raw `</name` close case-insensitive with ws/'/'> delimiter;
+    byte-level single-pass scan (str_byte O(1) + string_builder, total O(n), no O(n^2)).
+  - dom.tie (namespace dom): parallel-table DOM with tolerant tree assembly — child ordering via
+    first/last-child + next-sibling chain (a global flat interval distorts when nested nodes
+    interleave, same latent issue as std/json j_elem_flat), void-element self-close, p/li
+    implicit close, close-tag nearest-ancestor rebalance, comment/doctype skipped from tree,
+    script/style raw content kept as a text child; accessors tag/attr/children/parent/content
+    (attr name ASCII-folded, safe values on invalid ids).
+  - select.tie (namespace slct): CSS-subset selector query — tag / .class / #id / [attr] /
+    [attr=value] (quoted + unquoted values, compound e.g. div#a.b[c=v], space-separated
+    descendant combinator); selector tag/attr names folded, id/class/attr values case-sensitive;
+    illegal selectors return empty (no crash).
+  - links.tie (namespace lnk): a[href]/img[src]/link[href]/script[src] extraction + URL
+    absolutization vs base — absolute, protocol-relative "//", root-relative, query/fragment,
+    relative with "."/".." dot-segment normalization; document order, no dedup (crawler's job).
+  - text.tie (namespace txtx): HTML → plain text — script/style subtrees skipped, block-level
+    newline (incl. br), leading and consecutive newline suppression, iterative explicit stack
+    (no recursion), single-pass string_builder.
+  - html.tie (namespace html): unified entry parse/query/links/plain + node accessors;
+    failure semantics tolerant (no exceptions; empty input → doc with root only).
+- Compiler note (workaround, documented in code): cross-module qualified type annotations
+  (ns.Type) are not accepted — cross-file struct types referenced by bare name (same convention
+  as tls.Session used by httpc); virtual-stack logical-pop pattern (tie has no table pop)
+  overwrites reused slots to avoid stale reads.
+- Probe tests/html_probe/html_probe.tie: 3 inline samples (nesting + mixed-case + UTF-8 Chinese;
+  script/style raw with pseudo tags "<" ">" "&" + link variants; malformed — unclosed/misplaced/
+  orphan "<" / "<3" / consecutive li) + >200KB big sample: 100+ assertions all PASS, big parse
+  sub-second (O(n) guard).
+
 ## [feat] std/sse: streaming SSE event decoder on httpc.open_stream (p.6.6.3) (2026-09-03)
 
 - New std/sse.tie (namespace sse, type tie<class>): `text/event-stream` streaming

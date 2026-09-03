@@ -1,0 +1,356 @@
+type tie<class>
+// ============================================================================
+// dom.tie：ext/html——DOM 树（平行表）+ 遍历辅助（命名空间 dom，纯 tie）p.6.6.4
+// DOM tree (parallel tables, namespace dom, pure-tie). p.6.6.4
+//
+// 定位（Positioning）：消费 token.tie 的 token 流，按 HTML 容错语义组装 DOM 树。
+// 节点存储为**平行表**（对齐 std/json 节点风格），节点 id = 各表下标：
+//   dt_kind    0=元素（含根节点） 1=文本
+//   dt_tag     元素标签名（已折叠小写；根节点/文本为 ""）
+//   dt_fl / dt_lc / dt_sib  孩子链表：首孩子 / 末孩子 / 下一个兄弟（-1=无）
+//   dt_cnum    孩子个数
+//   dt_parent  父节点 id（根节点 -1）
+//   dt_val     文本节点内容（实体已解码）；元素节点为 ""
+//   dt_aoff / dt_acnt  属性区间在扁平表 [dt_anames, dt_avals] 中的 [起点, 个数]
+//   dt_anames / dt_avals  扁平属性名/值（追加式登记，永不修改）
+// 孩子组织用**兄弟链**而非全局扁平区间：单遍构建中嵌套节点的孩子会插入父的
+// 孩子序列之间，区间切分无法表达（std/json 的 j_elem_flat 区间在同型场景
+// 同样失真）；兄弟链 + 每父首/末指针为 O(1) 追加、children() O(孩子数) 遍历。
+//
+// 容错（Tolerance，尽力而为子集，注明对照点）：
+//   - 未闭合标签收口到文档尾（栈内未闭合节点成为其父的子树收尾）；
+//   - `</x>` 与开栈中匹配的**最近**祖先（含其上未闭合中间节点，一并收口）；
+//     无匹配则忽略该闭标签；
+//   - 隐式闭合仅覆盖常见 void 元素（br/img/hr/meta/link/input/area/base/col/
+//     embed/source/track/wbr）与 p/li 级基础（开同名 p/li 时先闭合前者）；
+//   - 注释与 doctype 不入树；raw text（script/style）内容作为文本子节点保留
+//     （text() 层跳过该子树）；CDATA 内容按文本节点保留；
+//   - 非法嵌套按上述规则"尽力而为"收口，不追求与 WHATWG 完全一致。
+//
+// 数据平面（Data plane）：全部 string（UTF-8）；属性名匹配 ASCII 字节级折叠。
+// 失败语义：build 恒成功返回 HtmlDoc（ok=true），无异常。
+// ============================================================================
+
+import "./token.tie" as mltok
+
+// ---- 文档句柄（crawler 等消费方持有；节点数据在 dom 模块级全局，一次一文档）----
+struct HtmlDoc {
+    var ok: bool = false      // 解析是否成功（尽力而为：恒 true）
+    var root: i64 = 0         // 根节点 id（文档容器）
+    var count: i64 = 0        // 节点总数
+    var err: string = ""      // 错误消息（尽力而为：恒 "")
+}
+
+// ---- DOM 节点存储（模块级全局；build 开头重置；index = 节点 id）----
+var dt_kind: table<i64>;      // 0=元素 1=文本
+var dt_tag: table<string>;    // 元素标签（折叠）
+var dt_fl: table<i64>;        // 首孩子 id（-1）
+var dt_lc: table<i64>;        // 末孩子 id（-1）
+var dt_sib: table<i64>;       // 下一兄弟 id（-1）
+var dt_cnum: table<i64>;      // 孩子个数
+var dt_parent: table<i64>;    // 父节点 id（根 -1）
+var dt_val: table<string>;    // 文本内容（元素为空）
+var dt_aoff: table<i64>;      // 属性扁平起点（-1）
+var dt_acnt: table<i64>;      // 属性个数
+var dt_anames: table<string>; // 扁平属性名（已折叠）
+var dt_avals: table<string>;  // 扁平属性值（已解码）
+
+namespace dom {
+
+// ============================================================================
+// 一、节点构造（append 式；总 O(节点数)）
+// ============================================================================
+
+// 新建元素节点并返回 id
+func new_el(tg: string) -> i64 {
+    table_push(dt_kind, 0)
+    table_push(dt_tag, tg)
+    table_push(dt_fl, -1)
+    table_push(dt_lc, -1)
+    table_push(dt_sib, -1)
+    table_push(dt_cnum, 0)
+    table_push(dt_parent, -1)
+    table_push(dt_val, "")
+    table_push(dt_aoff, -1)
+    table_push(dt_acnt, 0)
+    return len(dt_kind) - 1
+}
+
+// 新建文本节点并挂到 par；返回 id
+func new_text(tv: string, par: i64) -> i64 {
+    table_push(dt_kind, 1)
+    table_push(dt_tag, "")
+    table_push(dt_fl, -1)
+    table_push(dt_lc, -1)
+    table_push(dt_sib, -1)
+    table_push(dt_cnum, 0)
+    table_push(dt_parent, par)
+    table_push(dt_val, tv)
+    table_push(dt_aoff, -1)
+    table_push(dt_acnt, 0)
+    var nid = len(dt_kind) - 1
+    attach_child(par, nid)
+    return nid
+}
+
+// 把 cid 追加为 par 的孩子（写回父指针 + 首/末兄弟链 + 计数；O(1)）
+func attach_child(par: i64, cid: i64) {
+    dt_parent[cid] = par
+    var lc = dt_lc[par]
+    if lc < 0 {
+        dt_fl[par] = cid
+    } else {
+        dt_sib[lc] = cid
+    }
+    dt_lc[par] = cid
+    dt_cnum[par] = dt_cnum[par] + 1
+}
+
+// 从 token 拷贝属性到节点（扁平区间；O(属性数)）
+func copy_attrs(nid: i64, ao: i64, ac: i64) {
+    if ac <= 0 {
+        return
+    }
+    var o = len(dt_anames)
+    var k: i64 = 0
+    while k < ac {
+        table_push(dt_anames, mltok.tok_aname(ao + k))
+        table_push(dt_avals, mltok.tok_aval(ao + k))
+        k = k + 1
+    }
+    dt_aoff[nid] = o
+    dt_acnt[nid] = ac
+}
+
+// ============================================================================
+// 二、HTML 容错规则（tokenizer 保持语言无关，本模块持有 HTML 语义）
+// ============================================================================
+
+// void 元素（自闭合语义，不需要显式闭标签）
+func is_void(tg: string) -> bool {
+    if tg == "area" || tg == "base" || tg == "br" || tg == "col" || tg == "embed" ||
+       tg == "hr" || tg == "img" || tg == "input" || tg == "link" || tg == "meta" ||
+       tg == "param" || tg == "source" || tg == "track" || tg == "wbr" {
+        return true
+    }
+    return false
+}
+
+// 开标签前的隐式闭合（尽力而为：p/li 级基础——顶层栈顶同标签先收口）
+func maybe_auto_close(st: table<i64>, sp: i64, nm: string) -> i64 {
+    if sp > 1 {
+        var top = st[sp - 1]
+        if top > 0 && dt_tag[top] == nm && (nm == "p" || nm == "li") {
+            return sp - 1
+        }
+    }
+    return sp
+}
+
+// ============================================================================
+// 三、DOM 构建（token 流 → 平行表树）
+// ============================================================================
+
+// 消费 token.tie 的 token 流构建 DOM；返回 HtmlDoc（恒成功）。
+pub func build() -> HtmlDoc {
+    dt_kind = table_new_i64()
+    dt_tag = table_new_string()
+    dt_fl = table_new_i64()
+    dt_lc = table_new_i64()
+    dt_sib = table_new_i64()
+    dt_cnum = table_new_i64()
+    dt_parent = table_new_i64()
+    dt_val = table_new_string()
+    dt_aoff = table_new_i64()
+    dt_acnt = table_new_i64()
+    dt_anames = table_new_string()
+    dt_avals = table_new_string()
+    // 根节点（文档容器；tag=""）
+    var root = new_el("")
+    // 开栈（虚拟栈：逻辑槽位回写，sp 控制长度；root 恒在底部）
+    var st = table_new_i64()
+    table_push(st, root)
+    var sp: i64 = 1
+    var tk = mltok.tok_count()
+    var ti: i64 = 0
+    while ti < tk {
+        var ty = mltok.tok_type(ti)
+        if ty == MTK_TEXT || ty == MTK_CDATA {
+            // 文本并入当前栈顶
+            var txt = mltok.tok_text(ti)
+            if len(txt) > 0 {
+                new_text(txt, st[sp - 1])
+            }
+        } else if ty == MTK_OPEN || ty == MTK_SELF {
+            var nm = mltok.tok_name(ti)
+            sp = maybe_auto_close(st, sp, nm)
+            var nid = new_el(nm)
+            var ao = mltok.tok_aoff(ti)
+            var ac = mltok.tok_acnt(ti)
+            if ac > 0 {
+                copy_attrs(nid, ao, ac)
+            }
+            attach_child(st[sp - 1], nid)
+            // 虚拟栈：逻辑槽位写入（pop 后的旧槽可复用，防读到过期值）
+            if sp == len(st) {
+                table_push(st, nid)
+            } else {
+                st[sp] = nid
+            }
+            sp = sp + 1
+            if ty == MTK_SELF || is_void(nm) {
+                sp = sp - 1
+            }
+        } else if ty == MTK_CLOSE {
+            var nm2 = mltok.tok_name(ti)
+            // 从栈顶向下找匹配；匹配后收口到该层（含中途未闭合节点）
+            var f = sp - 1
+            while f > 0 && dt_tag[st[f]] != nm2 {
+                f = f - 1
+            }
+            if f > 0 {
+                sp = f
+            }
+        } else if ty == MTK_RAW {
+            // raw text（script/style）内容：作为文本子节点保留（text() 跳子树）
+            var raw = mltok.tok_text(ti)
+            if len(raw) > 0 {
+                new_text(raw, st[sp - 1])
+            }
+        }
+        // 注释与 doctype：不入树，跳过
+        ti = ti + 1
+    }
+    var d: HtmlDoc = HtmlDoc()
+    d.ok = true
+    d.root = root
+    d.count = len(dt_kind)
+    d.err = ""
+    return d
+}
+
+// ============================================================================
+// 四、节点访问器（越界/非法节点返回安全值，不崩溃）
+// ============================================================================
+
+// 字符串 ASCII 折叠（属性名匹配用；O(段长)）
+func fold_str(s: string) -> string {
+    var sb = string_builder()
+    var n = len(s)
+    var i: i64 = 0
+    while i < n {
+        var b = str_byte(s, i)
+        if b >= 65 && b <= 90 {
+            b = b + 32
+        }
+        sb_append_byte(sb, b)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 节点总数（含根）
+pub func node_count(d: HtmlDoc) -> i64 {
+    return d.count
+}
+
+// 节点类型：0=元素 1=文本；非法 id 返回 -1
+pub func kind(d: HtmlDoc, nid: i64) -> i64 {
+    if nid < 0 || nid >= len(dt_kind) {
+        return -1
+    }
+    return dt_kind[nid]
+}
+
+// 元素标签名（折叠小写）；文本/非法返回 ""
+pub func tag(d: HtmlDoc, nid: i64) -> string {
+    if nid < 0 || nid >= len(dt_kind) {
+        return ""
+    }
+    return dt_tag[nid]
+}
+
+// 属性值（name 不区分大小写，内部折叠比较）；无该属性返回 ""
+pub func attr(d: HtmlDoc, nid: i64, name: string) -> string {
+    if nid < 0 || nid >= len(dt_kind) {
+        return ""
+    }
+    if dt_kind[nid] != 0 {
+        return ""
+    }
+    var ac = dt_acnt[nid]
+    var ao = dt_aoff[nid]
+    if ac <= 0 || ao < 0 {
+        return ""
+    }
+    var lo = fold_str(name)
+    var k: i64 = 0
+    while k < ac {
+        if dt_anames[ao + k] == lo {
+            return dt_avals[ao + k]
+        }
+        k = k + 1
+    }
+    return ""
+}
+
+// 孩子个数
+pub func child_count(d: HtmlDoc, nid: i64) -> i64 {
+    if nid < 0 || nid >= len(dt_kind) {
+        return 0
+    }
+    return dt_cnum[nid]
+}
+
+// 第 k 个孩子 id（沿兄弟链走 k 步）；越界返回 -1
+pub func child(d: HtmlDoc, nid: i64, k: i64) -> i64 {
+    if nid < 0 || nid >= len(dt_kind) {
+        return -1
+    }
+    var cc = dt_cnum[nid]
+    if k < 0 || k >= cc {
+        return -1
+    }
+    var cur = dt_fl[nid]
+    var stp: i64 = 0
+    while stp < k {
+        cur = dt_sib[cur]
+        stp = stp + 1
+    }
+    return cur
+}
+
+// 孩子 id 动态表（文档序）
+pub func children(d: HtmlDoc, nid: i64) -> table<i64> {
+    var out = table_new_i64()
+    if nid < 0 || nid >= len(dt_kind) {
+        return out
+    }
+    var cur = dt_fl[nid]
+    while cur >= 0 {
+        table_push(out, cur)
+        cur = dt_sib[cur]
+    }
+    return out
+}
+
+// 父节点 id；根/非法返回 -1
+pub func parent(d: HtmlDoc, nid: i64) -> i64 {
+    if nid < 0 || nid >= len(dt_kind) {
+        return -1
+    }
+    return dt_parent[nid]
+}
+
+// 节点内容：文本节点返回原始文本（实体已解码）；元素节点返回 ""（规定语义）
+pub func content(d: HtmlDoc, nid: i64) -> string {
+    if nid < 0 || nid >= len(dt_kind) {
+        return ""
+    }
+    if dt_kind[nid] != 1 {
+        return ""
+    }
+    return dt_val[nid]
+}
+
+}   // namespace dom

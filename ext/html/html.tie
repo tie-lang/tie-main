@@ -1,0 +1,100 @@
+type tie<class>
+// ============================================================================
+// html.tie：ext/html——HTML 解析统一入口（命名空间 html，纯 tie）p.6.6.4
+// Unified HTML parsing entry point (namespace html, pure-tie). p.6.6.4
+//
+// 数据平面分界（Boundary with httpc/sse byte plane）：
+//   本模块数据平面为 string（UTF-8 文本）。HTML 文档一律先经 httpc.get_text
+//   或文件读取，以 UTF-8 文本 string 进入解析器，不触碰字节表（table<i64>）。
+//   这是与 httpc/sse 字节平面的分界——httpc.get_text 正向结果（body 转 string）
+//   即本模块的合法输入；反之，本模块的 string 输出可经 httpc.append_str 回写
+//   为字节表（如爬虫链接提取后写入下载队列）。
+//
+// 接口（Interface）：
+//   parse(src) -> HtmlDoc         解析 HTML 文档为 DOM 树（容错，恒成功）
+//   query(d, sel) -> table<i64>   选择器查询，返回匹配节点 id 表
+//   links(d, base) -> table<string> 链接/资源提取 + 绝对化
+//   plain(d) -> string            整文档纯文本提取
+//   tag(d, nid) / attr(d, nid, name) / children(d, nid) / parent(d, nid) /
+//     content(d, nid)             节点访问器（转发到 dom）
+//
+// 局限（Limits）：
+//   - HTML5 规范庞大，本文档按"尽力而为"子集实现：大小写折叠（ASCII tag/attr
+//     名不敏感）、未闭合/错位标签容错（隐式闭合规则仅覆盖常见 void 元素与
+//     p/li 级基础）、注释与 doctype 跳树、script/style 内文 raw text 原样保留、
+//     实体仅解码最小集（&amp; &lt; &gt; &quot; &#39; &nbsp; + 数字实体）。
+//   - 非法嵌套按"尽力而为"收口，不追求与 WHATWG 完全一致。
+//   - 选择器仅支持 tag / .class / #id / [attr] / [attr=value] / 空格后代组合。
+//   - 链接提取不查 <base> 标签（需 base 参数）；base 参数缺 scheme 时默认 "http"。
+//   - 纯文本不做空白折叠，块级元素插入换行，script/style 子树跳过。
+// ============================================================================
+
+import "./token.tie" as mltok
+import "./dom.tie" as dom
+import "./select.tie" as slct
+import "./links.tie" as lnk
+import "./text.tie" as txtx
+
+// ---- 默认分词配置（HTML）----
+func default_cfg() -> MtCfg {
+    var cfg = MtCfg()
+    cfg.fold_case = 1
+    cfg.entity_mode = 0
+    var raw = table_new_string()
+    table_push(raw, "script")
+    table_push(raw, "style")
+    cfg.raw_tags = raw
+    return cfg
+}
+
+namespace html {
+
+// 解析 HTML 文档为 DOM 树（容错，恒成功；空/畸形输入返回带根节点的空文档）。
+pub func parse(src: string) -> HtmlDoc {
+    var cfg = default_cfg()
+    var tk = mltok.scan(src, cfg)
+    if tk == 0 {
+        return dom.build()
+    }
+    return dom.build()
+}
+
+// 选择器查询：返回匹配节点 id 表（文档序；不含根）。选择器非法 → 空表。
+pub func query(d: HtmlDoc, sel: string) -> table<i64> {
+    return slct.query(d, sel)
+}
+
+// 链接/资源提取 + 按 base 绝对化（文档序；空串跳过）。
+pub func links(d: HtmlDoc, base: string) -> table<string> {
+    return lnk.collect(d, base)
+}
+
+// 整文档纯文本提取（去 script/style，块级换行）。
+pub func plain(d: HtmlDoc) -> string {
+    return txtx.render(d)
+}
+
+// 转发到 dom 访问器
+pub func tag(d: HtmlDoc, nid: i64) -> string {
+    return dom.tag(d, nid)
+}
+pub func attr(d: HtmlDoc, nid: i64, name: string) -> string {
+    return dom.attr(d, nid, name)
+}
+pub func children(d: HtmlDoc, nid: i64) -> table<i64> {
+    return dom.children(d, nid)
+}
+pub func parent(d: HtmlDoc, nid: i64) -> i64 {
+    return dom.parent(d, nid)
+}
+pub func content(d: HtmlDoc, nid: i64) -> string {
+    return dom.content(d, nid)
+}
+pub func kind(d: HtmlDoc, nid: i64) -> i64 {
+    return dom.kind(d, nid)
+}
+pub func node_count(d: HtmlDoc) -> i64 {
+    return dom.node_count(d)
+}
+
+}   // namespace html
