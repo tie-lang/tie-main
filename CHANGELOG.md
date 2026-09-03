@@ -22,6 +22,20 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/html/text: plain-text whitespace collapsing + pre raw preservation (p.6.6.4) (2026-09-03)
+
+- ext/html/text.tie render upgrade (html.plain), browser-like extraction:
+  - Inline whitespace collapsing: runs of spaces/tabs/newlines (outside pre) fold into a single
+    space; leading whitespace and the pending space before a block-level element are dropped
+    (cross-node folding across inline boundaries via a pending-space flag).
+  - block-level newline unchanged (incl. br) with leading/consecutive newline suppression;
+    script/style subtrees still skipped.
+  - pre subtrees preserved verbatim (no collapse, no injected block newlines); br still breaks
+    a line inside pre. Traversal stack extended with a parallel in_pre flag per node.
+- Probe: +9 assertions (multi-space collapse, inline folding, span-trailing space dropped at
+  block boundary, pre raw bytes incl. inner newlines, pre→p block newline, leading collapse);
+  existing sample1/2/3 + 207KB assertions stay green.
+
 ## [feat] ext/html/select: combinators > + ~, partial attrs ^= $= *=, pseudo-classes (p.6.6.4) (2026-09-03)
 
 - Selector upgrade in ext/html/select.tie (namespace slct), keeps p.6.6.4 probe compat:

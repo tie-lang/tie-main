@@ -358,11 +358,32 @@ func tst_selectx() {
     chk_i64("sx_tilde_ba", len(html.query(d5, "b ~ a")), 0)
 }
 
+func tst_plaintext() {
+    // ---- 空白折叠 + 块级换行 + pre 原样 ----
+    var d1 = html.parse("<div><p>a   b</p><p>c</p><span> x   y </span><p>z</p></div>")
+    var p1 = html.plain(d1)
+    chk_contains("pt_collapse_multi", p1, "a b")              // 连续多空格 → 单空格
+    chk_contains("pt_collapse_inline", p1, "c x y")            // span 行内折叠（与 c 同段）
+    chk_contains("pt_span_tail_nl", p1, "y\nz")               // span 尾空格丢弃 + p 块级换行
+    chk_not_contains("pt_no_double_space", p1, "a  b")
+    var d2 = html.parse("<pre>  keep  \n  these    spaces  </pre><p>x</p>")
+    var p2 = html.plain(d2)
+    chk_contains("pt_pre_raw", p2, "  keep  \n  these    spaces  ")   // pre 原样保留
+    chk_not_contains("pt_pre_no_fold", p2, "keep these")
+    chk_contains("pt_pre_block_nl", p2, "spaces  \nx")        // pre 后 p 块级换行
+    // 中英文混排 + 首尾折叠
+    var d3 = html.parse("<h1>  Title  你好 </h1><p>ok</p>")
+    var p3 = html.plain(d3)
+    chk_contains("pt_cn_mix", p3, "Title 你好")
+    chk( "pt_lead_collapse", p3, "Title 你好\nok")             // 首部空格折叠 + 块级换行
+}
+
 func main() {
     tst_sample1()
     tst_sample2()
     tst_sample3()
     tst_selectx()
+    tst_plaintext()
     tst_big()
     println("html 探针全部通过 / html probe all PASS")
     exit(0)

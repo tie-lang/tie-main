@@ -5,10 +5,11 @@ type tie<class>
 //
 // 语义（尽力而为，可读性提取）：
 //   - **跳过** script/style 整棵子树（raw text 不入纯文本）；
-//   - 文本节点原样输出（实体已在分词期解码）；注释/doctype 本就不入树；
-//   - 块级标签（p/div/h1..h6/li/ul/ol/表格系/语义化容器等）在起始处换行；
-//     br 无条件换行；文档首部与换行后的冗余换行被抑制（不产生空行堆积）；
-//   - 不做空白折叠（pre 等特殊保留交由上层按需），源码空白原样保留；
+//   - 文本节点内的**连续空白折叠为单空格**（空格/制表/换行统一视为空白，行首与
+//     块级元素前的折叠空格被丢弃——贴近浏览器默认渲染）；
+//   - **pre 子树原样保留**（不折叠、不插入块级换行；pre 内 br 仍换行）；
+//   - 块级标签（p/div/h1..h6/li/ul/ol/表格系/语义化容器等）在起始处换行；br 无条件
+//     换行；文档首部与换行后的冗余换行被抑制（不产生空行堆积）；
 //   - 中文等多字节文本字节原样拷贝（UTF-8 安全）。
 //
 // 实现：显式栈做先序迭代遍历（不用递归，避免深嵌套调用栈风险）；输出经
@@ -23,6 +24,11 @@ var g_blocks: table<string>;
 var g_blocks_ok: bool = false;
 
 namespace txtx {
+
+// 字节是否为空白（空格/制表/换行/回车）
+func ws_b(b: i64) -> bool {
+    return b == 32 || b == 9 || b == 10 || b == 13
+}
 
 // 元素是否跳过（raw text 容器：内容不进纯文本）
 func skip_tag(tg: string) -> bool {
@@ -95,40 +101,85 @@ func block_tag(tg: string) -> bool {
 // 纯文本渲染：先序遍历，块级换行，跳过 script/style 子树。
 pub func render(d: HtmlDoc) -> string {
     var sb = string_builder()
-    var wrote: i64 = 0      // 已输出字节数（首部换行抑制用）
+    var wrote: i64 = 0      // 已输出字节数（首部换行/空格抑制用）
     var last_nl = true      // 上一个输出字节是否为 '\n'（起点视为行首）
+    var sp_pend = false     // 已挂起的折叠空格（行内空白折叠：连续空白 → 单空格）
     var st = table_new_i64()
-    table_push(st, 0)       // 栈：根节点 id
+    var stp = table_new_i64()   // 平行栈：该节点是否处于 pre 子树（1=原样输出）
+    table_push(st, 0)
+    table_push(stp, 0)
     var sp: i64 = 1
     while sp > 0 {
         sp = sp - 1
         var nid = st[sp]
+        var in_pre = stp[sp] != 0
         var kd = dom.kind(d, nid)
         if kd == 1 {
-            // 文本节点：原样追加
+            // 文本节点
             var t = dom.content(d, nid)
-            if len(t) > 0 {
-                sb_append(sb, t)
-                wrote = wrote + len(t)
-                last_nl = str_byte(t, len(t) - 1) == 10
+            var n = len(t)
+            if in_pre {
+                // pre：原样输出（不折叠）
+                if n > 0 {
+                    sb_append(sb, t)
+                    wrote = wrote + n
+                    last_nl = str_byte(t, n - 1) == 10
+                }
+            } else {
+                // 非 pre：行内空白折叠（连续空白 → 单空格；行首/块前空格丢弃）
+                var k: i64 = 0
+                while k < n {
+                    var b = str_byte(t, k)
+                    if ws_b(b) {
+                        sp_pend = true
+                    } else {
+                        if sp_pend {
+                            if wrote > 0 && last_nl == false {
+                                sb_append(sb, " ")
+                                wrote = wrote + 1
+                                last_nl = false
+                            }
+                            sp_pend = false
+                        }
+                        sb_append_byte(sb, b)
+                        wrote = wrote + 1
+                        last_nl = b == 10
+                    }
+                    k = k + 1
+                }
             }
         } else {
             var tg = dom.tag(d, nid)
             if skip_tag(tg) {
                 continue   // 跳过整棵子树（其孩子不入栈）
             }
-            if tg == "br" {
-                if wrote > 0 && last_nl == false {
-                    sb_append(sb, "\n")
-                    wrote = wrote + 1
+            var is_pre_el = tg == "pre"
+            if in_pre == false {
+                // 非 pre：块级换行（丢弃折叠空格；块前输出 '\n'）
+                if tg == "br" {
+                    sp_pend = false
+                    if wrote > 0 && last_nl == false {
+                        sb_append(sb, "\n")
+                        wrote = wrote + 1
+                    }
+                    last_nl = true
+                } else if block_tag(tg) {
+                    sp_pend = false
+                    if wrote > 0 && last_nl == false {
+                        sb_append(sb, "\n")
+                        wrote = wrote + 1
+                    }
+                    last_nl = true
                 }
-                last_nl = true
-            } else if block_tag(tg) {
-                if wrote > 0 && last_nl == false {
-                    sb_append(sb, "\n")
-                    wrote = wrote + 1
+            } else {
+                // pre 子树：仅 br 换行，其余原样（不块换行、不折叠）
+                if tg == "br" {
+                    if wrote > 0 && last_nl == false {
+                        sb_append(sb, "\n")
+                        wrote = wrote + 1
+                    }
+                    last_nl = true
                 }
-                last_nl = true
             }
             // 孩子逆序入栈（保持文档序）；children() 一次取表避免逐 k 走链
             var chs = dom.children(d, nid)
@@ -136,10 +187,16 @@ pub func render(d: HtmlDoc) -> string {
             var k: i64 = cc - 1
             while k >= 0 {
                 var cid = chs[k]
+                var cpre: i64 = 0
+                if in_pre || is_pre_el {
+                    cpre = 1
+                }
                 if sp == len(st) {
                     table_push(st, cid)
+                    table_push(stp, cpre)
                 } else {
                     st[sp] = cid
+                    stp[sp] = cpre
                 }
                 sp = sp + 1
                 k = k - 1
