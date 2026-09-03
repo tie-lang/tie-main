@@ -15,7 +15,12 @@ type tie<class>
 //   xt_aoff/xt_acnt  属性区间在扁平表 [xt_anames, xt_avals] 中的 [起点, 个数]
 //   xt_anames/xt_avals  扁平属性名（原名原值，含 xmlns 声明；大小写保留）
 //   xt_pos     节点起始字节位置（取自 token 流；错误定位用）
-// 命名空间列（xt_prefix/xt_local/xt_ns）由 p.6.6.5 命名空间子项补充。
+//   xt_prefix  元素命名空间前缀（无前缀=""；默认命名空间元素亦为 ""）
+//   xt_local   元素本地名（无冒号则=完整标签名）
+//   xt_ns      解析后的命名空间 URI（无命名空间=""）：
+//              带前缀元素经 xmlns:<prefix> 声明解析（自身→祖先链）；无前缀元素取
+//              生效默认命名空间（自身 xmlns 声明，否则继承父元素默认）；未绑定
+//              前缀 → ""（不报错，记录为空）。
 //
 // 校验（Well-formed，与 HTML 容错相反——首个结构错误即返回）：
 //   - 单根：文档根容器下仅允许一个元素根 + 注释/PI；根外非空白文本视为多根错误；
@@ -59,6 +64,9 @@ var xt_acnt: table<i64>;      // 属性个数
 var xt_anames: table<string>; // 扁平属性名（原名，大小写保留）
 var xt_avals: table<string>;  // 扁平属性值（实体已解码）
 var xt_pos: table<i64>;       // 节点起始字节位置（-1）
+var xt_prefix: table<string>; // 元素命名空间前缀（无前缀=""）
+var xt_local: table<string>;  // 元素本地名
+var xt_ns: table<string>;     // 元素解析后命名空间 URI（无=""）
 
 namespace tree {
 
@@ -66,7 +74,8 @@ namespace tree {
 // 一、节点构造（append 式；总 O(节点数)）
 // ============================================================================
 
-// 新建元素节点并返回 id
+// 新建元素节点并返回 id；标签名按 ':' 拆分前缀/本地名（根容器 tag="" 时均为 ""）。
+// 命名空间 URI 由 build 在挂到父节点后解析（见 resolve_ns）。
 func new_el(tg: string) -> i64 {
     table_push(xt_kind, 0)
     table_push(xt_tag, tg)
@@ -79,7 +88,16 @@ func new_el(tg: string) -> i64 {
     table_push(xt_aoff, -1)
     table_push(xt_acnt, 0)
     table_push(xt_pos, -1)
-    return len(xt_kind) - 1
+    table_push(xt_prefix, "")
+    table_push(xt_local, "")
+    table_push(xt_ns, "")
+    var nid = len(xt_kind) - 1
+    if len(tg) > 0 {
+        var (pfx, loc) = split_name(tg)
+        xt_prefix[nid] = pfx
+        xt_local[nid] = loc
+    }
+    return nid
 }
 
 // 新建叶子节点（文本/注释/PI/CDATA）并挂到 par；返回 id
@@ -95,6 +113,9 @@ func new_leaf(kind: i64, tv: string, par: i64, pos: i64) -> i64 {
     table_push(xt_aoff, -1)
     table_push(xt_acnt, 0)
     table_push(xt_pos, pos)
+    table_push(xt_prefix, "")
+    table_push(xt_local, "")
+    table_push(xt_ns, "")
     var nid = len(xt_kind) - 1
     attach_child(par, nid)
     return nid
@@ -127,6 +148,47 @@ func copy_attrs(nid: i64, ao: i64, ac: i64) {
     }
     xt_aoff[nid] = o
     xt_acnt[nid] = ac
+}
+
+// 标签名按最后一个 ':' 拆分为 (前缀, 本地名)；无 ':' → ("", 完整名)
+func split_name(tg: string) -> (string, string) {
+    var n = len(tg)
+    var c: i64 = -1
+    var i: i64 = 0
+    while i < n {
+        if str_byte(tg, i) == 58 {
+            c = i
+        }
+        i = i + 1
+    }
+    if c < 0 {
+        return ("", tg)
+    }
+    return (slice(tg, 0, c), slice(tg, c + 1, n))
+}
+
+// 在 nid 自身及其祖先链上查找 xmlns 声明（prefix="" → 默认命名空间 "xmlns"；
+// 否则 "xmlns:<prefix>"）；未找到返回 ""。父节点在建树时先于孩子解析，
+// 故祖先链（含父的声明）随时可读；自身声明优先于祖先（XML 遮蔽语义）。
+func resolve_ns(nid: i64, prefix: string) -> string {
+    var cur = nid
+    var want = "xmlns"
+    if len(prefix) > 0 {
+        want = "xmlns:" + prefix
+    }
+    while cur >= 0 {
+        var ao = xt_aoff[cur]
+        var ac = xt_acnt[cur]
+        var k: i64 = 0
+        while k < ac {
+            if xt_anames[ao + k] == want {
+                return xt_avals[ao + k]
+            }
+            k = k + 1
+        }
+        cur = xt_parent[cur]
+    }
+    return ""
 }
 
 // ============================================================================
@@ -279,6 +341,9 @@ pub func build(src: string) -> XmlDoc {
     xt_anames = table_new_string()
     xt_avals = table_new_string()
     xt_pos = table_new_i64()
+    xt_prefix = table_new_string()
+    xt_local = table_new_string()
+    xt_ns = table_new_string()
     // 根容器节点（tag=""）
     var root = new_el("")
     // 开栈（虚拟栈：逻辑槽位回写，sp 控制长度；root 恒在底部）
@@ -322,6 +387,8 @@ pub func build(src: string) -> XmlDoc {
             }
             attach_child(st[sp - 1], nid)
             xt_pos[nid] = mltok.tok_pos(ti)
+            // 命名空间解析：默认/前缀声明沿自身→祖先链求值（父已先建）
+            xt_ns[nid] = resolve_ns(nid, xt_prefix[nid])
             if sp == 1 {
                 root_seen = 1
             }
@@ -471,6 +538,39 @@ pub func content(d: XmlDoc, nid: i64) -> string {
         return ""
     }
     return xt_val[nid]
+}
+
+// 元素命名空间前缀（无前缀=""）；非元素/非法返回 ""
+pub func prefix(d: XmlDoc, nid: i64) -> string {
+    if nid < 0 || nid >= len(xt_kind) {
+        return ""
+    }
+    if xt_kind[nid] != 0 {
+        return ""
+    }
+    return xt_prefix[nid]
+}
+
+// 元素本地名（无前缀则=完整标签名）；非元素/非法返回 ""
+pub func local(d: XmlDoc, nid: i64) -> string {
+    if nid < 0 || nid >= len(xt_kind) {
+        return ""
+    }
+    if xt_kind[nid] != 0 {
+        return ""
+    }
+    return xt_local[nid]
+}
+
+// 元素解析后的命名空间 URI（无命名空间/未绑定前缀=""）；非元素/非法返回 ""
+pub func ns(d: XmlDoc, nid: i64) -> string {
+    if nid < 0 || nid >= len(xt_kind) {
+        return ""
+    }
+    if xt_kind[nid] != 0 {
+        return ""
+    }
+    return xt_ns[nid]
 }
 
 }   // namespace tree

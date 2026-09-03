@@ -22,6 +22,19 @@
 
 ## 2026.1（正式版，进行中）
 
+## [feat] ext/xml/ns: namespace declaration collection + prefix→URI resolution + ns accessors (p.6.6.5) (2026-09-03)
+
+- ext/xml/tree.tie namespace columns (xt_prefix/xt_local/xt_ns) + resolution:
+  - Tag names split on the last ':' into prefix/local (split_name); an unbound prefix is
+    recorded as "" (documented, not an error).
+  - resolve_ns walks self→ancestor chain reading xmlns (default) / xmlns:<prefix> declarations;
+    a self declaration shadows ancestors; the default namespace is inherited by child elements,
+    reset by xmlns="", and never leaks outside the declaring subtree.
+- New accessors prefix()/local()/ns(); xmlns declarations stay readable via attr().
+- Verified with a one-shot namespace probe (tests/_p665, not committed): default inheritance /
+  override / reset, prefix on self / ancestor / multi-prefix, unbound prefix, same local name in
+  different namespaces, xmlns attr passthrough.
+
 ## [feat] ext/xml/tree: XML tree building + well-formed validation + structured errors (p.6.6.5) (2026-09-03)
 
 - ext/xml/tree.tie (new, namespace tree): consumes the strict-mode token stream from
