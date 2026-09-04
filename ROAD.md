@@ -247,7 +247,7 @@ neither continues the other**.
 
 - [ ] p.6.6.19 std/jwt：JWT（HS256/RS256 签发验证，供 p.6.6.21 会话）
 
-- [ ] p.6.6.20 数据库：SQLite 驱动（C ABI 桥，参考 ext/ecdsa extern 范式）
+- [ ] p.6.6.20 std/sqlite：SQLite 驱动（C ABI 桥，参考 ext/ecdsa extern 范式）
 
 - [ ] p.6.6.21 Web 服务框架：std/http\_server 升级（路由表 / keep-alive / 静态文件 / SSE 推送 / JWT 会话）
 

@@ -236,7 +236,7 @@ p.6.6.1 TLS 客户端
 * p.6.6.19 std/jwt：JWT——HS256 / RS256 签发与验证（base64url + 签名，依赖 std 哈希 +
   p.6.6.1 tls 的 RSA/ECDSA），供 p.6.6.21 会话。
 
-* p.6.6.20 数据库：SQLite 驱动——C ABI 桥（参考 ext/ecdsa 的 extern 范式）：
+* p.6.6.20 std/sqlite：SQLite 驱动——C ABI 桥（参考 ext/ecdsa 的 extern 范式）：
   open / exec / query / 行迭代 / 预处理。
 
 * p.6.6.21 Web 服务框架：std/http\_server 升级——路由表 / keep-alive / 静态文件 /
