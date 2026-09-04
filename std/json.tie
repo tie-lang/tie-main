@@ -374,29 +374,33 @@ func parse_string(s: string) -> i64 {
     return -1
 }
 
-// 解析数组 [v1, v2, ...]：元素节点 id 追加进 j_elem_flat，
-// 节点记录 [j_kids=起始下标, j_ovals=元素个数]。
+// 解析数组 [v1, v2, ...]：元素节点收集进局部表，解析完成后统一登记进
+// j_elem_flat，节点记录 [j_kids=起始下标, j_ovals=元素个数]。
+// 收集-登记两阶段（RCA 根治）：旧实现先记 start 再逐项 push，内层数组/对象
+// 解析时把内层元素 push 进 j_elem_flat 恰落入父区间 [start, start+cnt)
+// 污染外层元素集（如 [[1,2],[3]] 后外层读到 1,2）。统一登记后子块条目在父
+// 区间之外，元素连续。
 func parse_array(s: string) -> i64 {
     var n: i64 = str_len(s)
     var nd = new_node(5)
-    var start: i64 = len(j_elem_flat)
+    var elems = table_new_i64()   // 元素节点 id（局部收集）
+    var cnt: i64 = 0
     // 跳过 [
     g_pos = g_pos + 1
     skip_ws(s)
     if g_pos < n && str_char(s, g_pos) == "]" {
         // 空数组
         g_pos = g_pos + 1
-        j_kids[nd] = start
+        j_kids[nd] = len(j_elem_flat)
         j_ovals[nd] = 0
         return nd
     }
-    var cnt: i64 = 0
     while true {
         var v = parse_value(s)
         if v < 0 {
             return -1
         }
-        table_push(j_elem_flat, v)
+        table_push(elems, v)
         cnt = cnt + 1
         skip_ws(s)
         if g_pos >= n {
@@ -414,28 +418,41 @@ func parse_array(s: string) -> i64 {
             return -1
         }
     }
+    // 统一登记（追加到共享表尾；子块条目在父区间之外）
+    var start: i64 = len(j_elem_flat)
+    var i: i64 = 0
+    while i < cnt {
+        table_push(j_elem_flat, elems[i])
+        i = i + 1
+    }
     j_kids[nd] = start
     j_ovals[nd] = cnt
     return nd
 }
 
-// 解析对象 {"k": v, ...}：键值对交错登记进 j_key_flat（键 j_strs 索引）
-// 与 j_val_flat（值节点 id），节点记录 [j_kids=起始, j_ovals=键值对数]。
+// 解析对象 {"k": v, ...}：键值对收集进局部表，解析完成后统一登记进
+// j_key_flat（键 j_strs 索引）与 j_val_flat（值节点 id），节点记录
+// [j_kids=起始, j_ovals=键值对数]。
+// 收集-登记两阶段（RCA 根治）：旧实现先 push 键 + 值占位、再解析值，嵌套
+// 对象/数组解析时把内层键值对 push 进共享表，恰落入父区间 [start, start+cnt)
+// 污染外层键集（如 {"a":{"b":1},"c":2} 后 c 丢失）。统一登记后子块条目在父
+// 区间之外，键值对连续。
 func parse_object(s: string) -> i64 {
     var n: i64 = str_len(s)
     var nd = new_node(6)
-    var start: i64 = len(j_key_flat)
+    var keys = table_new_i64()   // 键的 j_strs 索引（局部收集）
+    var vals = table_new_i64()   // 值节点 id（局部收集）
+    var cnt: i64 = 0
     // 跳过 {
     g_pos = g_pos + 1
     skip_ws(s)
     if g_pos < n && str_char(s, g_pos) == "}" {
         // 空对象
         g_pos = g_pos + 1
-        j_kids[nd] = start
+        j_kids[nd] = len(j_key_flat)
         j_ovals[nd] = 0
         return nd
     }
-    var cnt: i64 = 0
     while true {
         skip_ws(s)
         if g_pos >= n {
@@ -465,11 +482,7 @@ func parse_object(s: string) -> i64 {
             table_push(j_strs, ktext)
             ks = len(j_strs) - 1
         }
-        table_push(j_key_flat, ks)
-        // 值槽占位：值表必须与键表平行（嵌套时内层值先于外层值完成解析，
-        // 若按完成顺序 push 会导致键值错位）——先占位，值解析后按槽回填。
-        table_push(j_val_flat, 0)
-        var val_slot: i64 = len(j_val_flat) - 1
+        table_push(keys, ks)
         skip_ws(s)
         if g_pos >= n || str_char(s, g_pos) != ":" {
             j_err_msg = "JSON 对象期望 :（位置 " + to_string(g_pos) + "）"
@@ -480,7 +493,7 @@ func parse_object(s: string) -> i64 {
         if v < 0 {
             return -1
         }
-        j_val_flat[val_slot] = v
+        table_push(vals, v)
         cnt = cnt + 1
         skip_ws(s)
         if g_pos >= n {
@@ -497,6 +510,14 @@ func parse_object(s: string) -> i64 {
             j_err_msg = "JSON 对象期望 , 或 }（位置 " + to_string(g_pos) + "）"
             return -1
         }
+    }
+    // 统一登记（追加到共享表尾；子块条目在父区间之外）
+    var start: i64 = len(j_key_flat)
+    var i: i64 = 0
+    while i < cnt {
+        table_push(j_key_flat, keys[i])
+        table_push(j_val_flat, vals[i])
+        i = i + 1
     }
     j_kids[nd] = start
     j_ovals[nd] = cnt
