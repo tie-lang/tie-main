@@ -1,0 +1,873 @@
+type tie<class>
+// markdown.tie：标准库——Markdown 解析子集（命名空间 md）。
+//
+// 【子集取舍】
+//   块级：
+//     1. ATX 标题仅支持一级 (#) 与二级 (##)，"#" 后须跟空格（"#" 单独也算，
+//        内容为空）；### 及以上视为段落（不处理）。
+//     2. 无序列表项：行首 "- " / "* " / "+ "（符号后须空格）。
+//     3. 有序列表项：行首 数字 + "." / ")" + 空格。
+//     4. 引用块：行首 ">"（可连续多行，逐行去掉 ">" 与一个可选空格后以 \n 连接）。
+//     5. 代码块：``` 起止围栏，首行 ``` 后的文本为语言标注，整体（含围栏、
+//        首行语言标注、内部换行/空格/缩进）原样保留；未闭合围栏容忍至文本末尾。
+//     6. 表格：行首 "|" 连续行；首行为表头，识别分隔行（单元格仅含 - / : / 空格），
+//        列数取首数据行；不足列数补空串。
+//     7. 段落：连续的非空白、非其他块起始的行，以空格连接（行内换行坍缩为空格）。
+//     8. 分隔线：整行仅由 >=3 个相同字符（- / * / _）组成。
+//   行内（inline_tokens，单层）：
+//     **粗体** / *斜体* / [文本](url) / `行内代码`。
+//     本子集**行内不做递归嵌套展开**（解析深度 = 1）：一个格式元素的内部原文
+//     原样登记（内部若再含标记符则作为普通字符保留其原文字符），不二次解析。
+//   畸形容错：任何畸形输入（空文本、未闭合围栏、孤立 / 错位符号）都不挂死，
+//   相应位置按普通文本兜底；访问器对非法句柄返回安全值。
+//
+// 【存储约定】
+//   模块级平行表按块登记（句柄 = 表下标，与 json 节点范式一致）：
+//     md_kinds[h]     块类型码：0=标题1 1=标题2 2=无序列表项 3=有序列表项
+//                     4=引用 5=代码块 6=表格 7=段落 8=分隔线
+//     md_texts[h]     块原始内容（表格/引用/段落用 \n 或空格连接；代码块整段原样）
+//     md_extra[h]     附加信息：有序列表项=起始数字；表格=列数；其余=0
+//     md_cellstart[h] 表格单元格在 md_cells 中的起始下标（非表格=0）
+//     md_cellcount[h] 表格单元格总数 rows*cols（非表格=0）
+//     md_cells        表格单元格扁平表
+//     md_handles      最近一次 parse 返回的"顶层块句柄表"
+//   parse(text) 返回 md_handles（table<i64>，元素为各块句柄），块数 = len(结果)，
+//   或调用 md.block_count() / md.block_at(i)。
+//
+//   inline_tokens(text) 返回 table<string>，按"分组"登记：每组为
+//     [类型码(字符串), 文本]            （类型 0/1/2/4）
+//     [类型码(字符串), 文本, url]       （类型 3，链接）
+//   类型码：0=普通文本 1=粗体(**) 2=斜体(*) 3=链接 4=行内代码(`)。
+//
+// 调用：import 后 md.parse(...) / md.inline_tokens(...) 等；命名空间内互调为裸调用。
+// 命名规范：命名空间内函数不加 md_ 前缀（统一 func 写法，Harbor M2.1.6）。
+// 注意：text / code / char / table 为 tie 类型关键字保留字，标识符避开。
+
+// ==================== 模块级全局（命名空间外，仿 std/json.tie） ====================
+var md_kinds: table<i64>;
+var md_texts: table<string>;
+var md_extra: table<i64>;
+var md_cellstart: table<i64>;
+var md_cellcount: table<i64>;
+var md_cells: table<string>;
+var md_handles: table<i64>;
+// 有序列表起始数字暂存（list_marker_ol 返回内容下标，数字经全局回传）
+var g_ol_num: i64 = 0;
+// 行内 token 输出表（inline_tokens 构建）
+var g_toks: table<string>;
+
+namespace md {
+
+// ---------- 公共 API ----------
+
+// 解析 markdown 文本 → 顶层块句柄表（table<i64>）。重置全部状态后逐行分块，
+// 结果存 md_handles 并返回之。畸形输入不挂死。
+pub func parse(src: string) -> table<i64> {
+    md_kinds = table_new_i64()
+    md_texts = table_new_string()
+    md_extra = table_new_i64()
+    md_cellstart = table_new_i64()
+    md_cellcount = table_new_i64()
+    md_cells = table_new_string()
+    md_handles = table_new_i64()
+    g_ol_num = 0
+    var lines = split_lines(src)
+    var n: i64 = len(lines)
+    var i: i64 = 0
+    while i < n {
+        var line = lines[i]
+        if is_blank(line) {
+            i = i + 1
+            continue
+        }
+        var tline = ltrim(line)
+        // 代码块
+        if is_fence_start(tline) {
+            i = read_code_block(lines, i)
+            continue
+        }
+        // 标题
+        var hk = heading_kind(tline)
+        if hk >= 0 {
+            var cl: i64 = 0
+            if hk == 0 {
+                cl = 1
+            } else {
+                cl = 2
+            }
+            add_block(hk, trim_line(sub(tline, cl + 1, str_len(tline))), 0)
+            i = i + 1
+            continue
+        }
+        // 分隔线（须在列表前判定，防 "***" 被当作列表）
+        if is_hr(tline) {
+            add_block(8, tline, 0)
+            i = i + 1
+            continue
+        }
+        // 引用块（收集连续 > 行）
+        if starts_with(tline, ">") {
+            i = read_quote(lines, i)
+            continue
+        }
+        // 无序列表项
+        var ul = ul_marker(tline)
+        if ul > 0 {
+            add_block(2, trim_line(sub(tline, ul, str_len(tline))), 0)
+            i = i + 1
+            continue
+        }
+        // 有序列表项
+        var ol = ol_marker(tline)
+        if ol > 0 {
+            add_block(3, trim_line(sub(tline, ol, str_len(tline))), g_ol_num)
+            i = i + 1
+            continue
+        }
+        // 表格
+        if starts_with(tline, "|") {
+            i = read_table(lines, i)
+            continue
+        }
+        // 段落（收集连续非块起始行，空格连接）
+        i = read_paragraph(lines, i)
+    }
+    return md_handles
+}
+
+// 最近一次 parse 的顶层块个数。
+pub func block_count() -> i64 {
+    return len(md_handles)
+}
+
+// 第 i 个顶层块句柄（越界返回 -1）。
+pub func block_at(i: i64) -> i64 {
+    if i < 0 || i >= len(md_handles) {
+        return -1
+    }
+    return md_handles[i]
+}
+
+// 块类型码（0..8；非法句柄返回 -1）。
+pub func kind(h: i64) -> i64 {
+    if h < 0 || h >= len(md_kinds) {
+        return -1
+    }
+    return md_kinds[h]
+}
+
+// 块原始内容（非法句柄返回空串）。命名 btext：text / string 是 tie 关键字保留字。
+pub func btext(h: i64) -> string {
+    if h < 0 || h >= len(md_texts) {
+        return ""
+    }
+    return md_texts[h]
+}
+
+// 块附加信息（非法句柄 / 表格越界返回安全值）。
+pub func extra(h: i64) -> i64 {
+    if h < 0 || h >= len(md_extra) {
+        return 0
+    }
+    return md_extra[h]
+}
+
+// 表格行数（非表格/非法返回 0）。
+pub func table_rows(h: i64) -> i64 {
+    if h < 0 || h >= len(md_cellcount) {
+        return 0
+    }
+    var tot = md_cellcount[h]
+    var cols = md_extra[h]
+    if cols <= 0 {
+        return 0
+    }
+    return tot / cols
+}
+
+// 表格列数（非表格/非法返回 0）。
+pub func table_cols(h: i64) -> i64 {
+    var v = extra(h)
+    if kind(h) != 6 {
+        return 0
+    }
+    return v
+}
+
+// 表格单元格（row,col）文本；越界返回空串。
+pub func cell(h: i64, row: i64, col: i64) -> string {
+    if h < 0 || h >= len(md_cellstart) {
+        return ""
+    }
+    var cols = md_extra[h]
+    if cols <= 0 {
+        return ""
+    }
+    if row < 0 || col < 0 {
+        return ""
+    }
+    if col >= cols {
+        return ""
+    }
+    var rows = md_cellcount[h] / cols
+    if row >= rows {
+        return ""
+    }
+    var idx = md_cellstart[h] + row * cols + col
+    if idx < 0 || idx >= len(md_cells) {
+        return ""
+    }
+    return md_cells[idx]
+}
+
+// 行内标记解析 → 分组表 table<string>。每组 [类型码, 文本]（类型 3 链接为
+// [3, 文本, url]）。单层解析，内部标记原文保留（见文件头"行内"说明）。
+pub func inline_tokens(s: string) -> table<string> {
+    g_toks = table_new_string()
+    scan_inline(s)
+    return g_toks
+}
+
+// ---------- 块登记 ----------
+
+// 登记一个块并返回句柄；默认 cellstart/cellcount 为 0。句柄加入句柄表。
+func add_block(ty: i64, content: string, extra: i64) -> i64 {
+    table_push(md_kinds, ty)
+    table_push(md_texts, content)
+    table_push(md_extra, extra)
+    table_push(md_cellstart, 0)
+    table_push(md_cellcount, 0)
+    var h = len(md_kinds) - 1
+    table_push(md_handles, h)
+    return h
+}
+
+// ---------- 代码块 ----------
+
+func read_code_block(lines: table<string>, i: i64) -> i64 {
+    var sb = string_builder()
+    sb_append(sb, lines[i])
+    var j: i64 = i + 1
+    var closed: bool = false
+    var n: i64 = len(lines)
+    while j < n && !closed {
+        var line = lines[j]
+        sb_append(sb, "\n")
+        sb_append(sb, line)
+        if is_fence_start(ltrim(line)) {
+            closed = true
+        }
+        j = j + 1
+    }
+    add_block(5, sb_build(sb), 0)
+    return j
+}
+
+// ---------- 分隔线 ----------
+
+func is_hr(s: string) -> bool {
+    var n: i64 = str_len(s)
+    if n < 3 {
+        return false
+    }
+    var c0 = str_char(s, 0)
+    if c0 != "-" && c0 != "*" && c0 != "_" {
+        return false
+    }
+    var k: i64 = 1
+    while k < n {
+        if str_char(s, k) != c0 {
+            return false
+        }
+        k = k + 1
+    }
+    return true
+}
+
+// ---------- 引用块（连续 > 行，\n 连接内容） ----------
+
+func read_quote(lines: table<string>, i: i64) -> i64 {
+    var sb = string_builder()
+    var first: bool = true
+    var j: i64 = i
+    var n: i64 = len(lines)
+    while j < n {
+        var line = lines[j]
+        var tline = ltrim(line)
+        if is_blank(line) || !starts_with(tline, ">") {
+            break
+        }
+        // 去掉 ">" 与一个可选空格
+        var content: string = ""
+        if str_len(tline) > 1 {
+            if str_char(tline, 1) == " " || str_char(tline, 1) == "\t" {
+                content = sub(tline, 2, str_len(tline))
+            } else {
+                content = sub(tline, 1, str_len(tline))
+            }
+        }
+        if !first {
+            sb_append(sb, "\n")
+        }
+        sb_append(sb, content)
+        first = false
+        j = j + 1
+    }
+    add_block(4, sb_build(sb), 0)
+    return j
+}
+
+// ---------- 表格（连续 | 行，首行为表头，识别分隔行） ----------
+
+func read_table(lines: table<string>, i: i64) -> i64 {
+    var sb = string_builder()
+    var n: i64 = len(lines)
+    var j: i64 = i
+    // 表格汇总（扁平单元格）
+    var all = table_new_string()
+    var rowcount: i64 = 0
+    var cols: i64 = 0
+    var colset: bool = false
+    var firstrow: bool = true
+    while j < n {
+        var line = lines[j]
+        var tline = ltrim(line)
+        if is_blank(line) || !starts_with(tline, "|") {
+            break
+        }
+        if firstrow {
+            sb_append(sb, line)
+            firstrow = false
+        } else {
+            sb_append(sb, "\n")
+            sb_append(sb, line)
+        }
+        // 分隔行：单元格仅含 - / : / 空格 → 不作为数据行
+        if !is_sep(tline) {
+            var row = row_cells(tline)
+            var cc: i64 = len(row)
+            if !colset {
+                cols = cc
+                colset = true
+            }
+            // 对齐列数，不足补空串
+            var pad: i64 = 0
+            while cc + pad < cols {
+                table_push(row, "")
+                pad = pad + 1
+            }
+            var k: i64 = 0
+            while k < len(row) {
+                table_push(all, row[k])
+                k = k + 1
+            }
+            rowcount = rowcount + 1
+        }
+        j = j + 1
+    }
+    // 登记表格块；先占其余槽，再回填单元格区间
+    table_push(md_kinds, 6)
+    table_push(md_texts, sb_build(sb))
+    table_push(md_extra, cols)
+    table_push(md_cellstart, len(md_cells))
+    table_push(md_cellcount, rowcount * cols)
+    var h = len(md_kinds) - 1
+    table_push(md_handles, h)
+    var k2: i64 = 0
+    while k2 < len(all) {
+        table_push(md_cells, all[k2])
+        k2 = k2 + 1
+    }
+    return j
+}
+
+// 分隔行判断：拆行后每个单元格仅含 - / : / 空格。
+func is_sep(line: string) -> bool {
+    var t = strip_outer_pipe(ltrim(line))
+    var parts = split_char(t, "|")
+    var n: i64 = len(parts)
+    if n == 0 {
+        return false
+    }
+    var k: i64 = 0
+    while k < n {
+        var cc = trim_line(parts[k])
+        if !only_dash_colon(cc) {
+            return false
+        }
+        k = k + 1
+    }
+    return true
+}
+
+// 字符串是否仅由 '-' / ':' / 空格 / 制表组成（空串返回 false）。
+func only_dash_colon(s: string) -> bool {
+    var n: i64 = str_len(s)
+    if n == 0 {
+        return false
+    }
+    var k: i64 = 0
+    while k < n {
+        var c = str_char(s, k)
+        if c != "-" && c != ":" && c != " " && c != "\t" {
+            return false
+        }
+        k = k + 1
+    }
+    return true
+}
+
+// 按 | 切行并 trim 各单元格 → table<string>（行首尾的 | 剥除）。
+func row_cells(line: string) -> table<string> {
+    var s = strip_outer_pipe(ltrim(line))
+    var parts = split_char(s, "|")
+    var out = table_new_string()
+    var n: i64 = len(parts)
+    var k: i64 = 0
+    while k < n {
+        table_push(out, trim_line(parts[k]))
+        k = k + 1
+    }
+    return out
+}
+
+// 剥去首尾的 "|"（若存在）。
+func strip_outer_pipe(s: string) -> string {
+    var t = s
+    var n: i64 = str_len(t)
+    if n > 0 && str_char(t, 0) == "|" {
+        t = sub(t, 1, n)
+        n = str_len(t)
+    }
+    if n > 0 && str_char(t, n - 1) == "|" {
+        t = sub(t, 0, n - 1)
+    }
+    return t
+}
+
+// ---------- 段落 ----------
+
+func read_paragraph(lines: table<string>, i: i64) -> i64 {
+    var sb = string_builder()
+    var count: i64 = 0
+    var j: i64 = i
+    var n: i64 = len(lines)
+    while j < n {
+        var line = lines[j]
+        if is_blank(line) {
+            break
+        }
+        var tline = ltrim(line)
+        if is_special_start(tline) {
+            break
+        }
+        if count > 0 {
+            sb_append(sb, " ")
+        }
+        sb_append(sb, trim_line(line))
+        count = count + 1
+        j = j + 1
+    }
+    add_block(7, sb_build(sb), 0)
+    return j
+}
+
+// 行首是否开启一种块（供段落收集判定边界）。
+func is_special_start(s: string) -> bool {
+    var tl = ltrim(s)
+    if is_fence_start(tl) {
+        return true
+    }
+    if heading_kind(tl) >= 0 {
+        return true
+    }
+    if is_hr(tl) {
+        return true
+    }
+    if starts_with(tl, ">") {
+        return true
+    }
+    if ul_marker(tl) > 0 {
+        return true
+    }
+    if ol_marker(tl) > 0 {
+        return true
+    }
+    if starts_with(tl, "|") {
+        return true
+    }
+    return false
+}
+
+// ---------- 列表标记 ----------
+
+// 无序列表：返回内容起始下标（"x " 后）；不匹配返回 -1。
+func ul_marker(s: string) -> i64 {
+    var n: i64 = str_len(s)
+    if n < 2 {
+        return -1
+    }
+    var c0 = str_char(s, 0)
+    if c0 != "-" && c0 != "*" && c0 != "+" {
+        return -1
+    }
+    if str_char(s, 1) != " " && str_char(s, 1) != "\t" {
+        return -1
+    }
+    return 2
+}
+
+// 有序列表：解析起始数字（全局 g_ol_num 回传），返回内容下标；不匹配返回 -1。
+func ol_marker(s: string) -> i64 {
+    var n: i64 = str_len(s)
+    var nval: i64 = 0
+    var k: i64 = 0
+    var started: bool = false
+    while k < n {
+        var cp: i64 = char_code(str_char(s, k))
+        if cp >= 48 && cp <= 57 {
+            nval = nval * 10 + (cp - 48)
+            started = true
+            k = k + 1
+        } else {
+            break
+        }
+    }
+    if !started {
+        return -1
+    }
+    if k >= n {
+        return -1
+    }
+    var c = str_char(s, k)
+    if c != "." && c != ")" {
+        return -1
+    }
+    if k + 1 >= n {
+        return -1
+    }
+    if str_char(s, k + 1) != " " && str_char(s, k + 1) != "\t" {
+        return -1
+    }
+    g_ol_num = nval
+    return k + 2
+}
+
+// ---------- 标题 ----------
+
+// 标题等级：返回 0（#）/ 1（##），其余 -1。
+func heading_kind(s: string) -> i64 {
+    if starts_with(s, "## ") || s == "##" {
+        return 1
+    }
+    if starts_with(s, "# ") || s == "#" {
+        return 0
+    }
+    return -1
+}
+
+// ---------- 代码围栏 ----------
+
+func is_fence_start(s: string) -> bool {
+    var n: i64 = str_len(s)
+    if n < 3 {
+        return false
+    }
+    if str_char(s, 0) == "`" && str_char(s, 1) == "`" && str_char(s, 2) == "`" {
+        return true
+    }
+    return false
+}
+
+// ---------- 行内 token 解析（单层） ----------
+
+func scan_inline(s: string) {
+    // 用模块级缓冲承接文本构建（tie 的 string_builder 句柄无法标注函数参数类型，
+    // 故文本累积用一个局部重取值策略：累积逻辑内联在各分支里）。
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    var sb = string_builder()
+    var has: bool = false
+    while i < n {
+        var c = str_char(s, i)
+        if c == "*" && i + 1 < n && str_char(s, i + 1) == "*" {
+            // 粗体 **...**
+            if has {
+                push_tok(0, sb_build(sb), "")
+                sb_reset(sb)
+            }
+            has = false
+            var j = find_sub(s, i + 2, n, "**")
+            if j < 0 {
+                sb_append(sb, "*")
+                has = true
+                i = i + 1
+                continue
+            }
+            push_tok(1, sub(s, i + 2, j), "")
+            i = j + 2
+            continue
+        }
+        if c == "*" {
+            if has {
+                push_tok(0, sb_build(sb), "")
+                sb_reset(sb)
+            }
+            has = false
+            var j = find_char(s, i + 1, n, "*")
+            if j < 0 {
+                sb_append(sb, "*")
+                has = true
+                i = i + 1
+                continue
+            }
+            push_tok(2, sub(s, i + 1, j), "")
+            i = j + 1
+            continue
+        }
+        if c == "`" && i + 1 < n && str_char(s, i + 1) == "`" {
+            // 双反引号行内代码 ``..``
+            if has {
+                push_tok(0, sb_build(sb), "")
+                sb_reset(sb)
+            }
+            has = false
+            var j = find_sub(s, i + 2, n, "``")
+            if j < 0 {
+                sb_append(sb, "`")
+                has = true
+                i = i + 1
+                continue
+            }
+            push_tok(4, sub(s, i + 2, j), "")
+            i = j + 2
+            continue
+        }
+        if c == "`" {
+            // 单反引号行内代码 `..`
+            if has {
+                push_tok(0, sb_build(sb), "")
+                sb_reset(sb)
+            }
+            has = false
+            var j = find_char(s, i + 1, n, "`")
+            if j < 0 {
+                sb_append(sb, "`")
+                has = true
+                i = i + 1
+                continue
+            }
+            push_tok(4, sub(s, i + 1, j), "")
+            i = j + 1
+            continue
+        }
+        if c == "[" {
+            // 链接 [文本](url)
+            var j = find_char(s, i + 1, n, "]")
+            if j >= 0 && j + 1 < n && str_char(s, j + 1) == "(" {
+                var k = find_char(s, j + 2, n, ")")
+                if k >= 0 {
+                    if has {
+                        push_tok(0, sb_build(sb), "")
+                        sb_reset(sb)
+                    }
+                    has = false
+                    push_tok(3, sub(s, i + 1, j), sub(s, j + 2, k))
+                    i = k + 1
+                    continue
+                }
+            }
+            sb_append(sb, "[")
+            has = true
+            i = i + 1
+            continue
+        }
+        sb_append(sb, c)
+        has = true
+        i = i + 1
+    }
+    if has {
+        push_tok(0, sb_build(sb), "")
+    }
+}
+
+// 登记一个 token：类型 3（链接）为三元 [码,文本,url]，其余二元 [码,文本]。
+func push_tok(ty: i64, t: string, url: string) {
+    table_push(g_toks, to_string(ty))
+    table_push(g_toks, t)
+    if ty == 3 {
+        table_push(g_toks, url)
+    }
+}
+
+// ---------- 通用字符串工具（零依赖内联） ----------
+
+// 是否空白行（去空白后为空）。
+func is_blank(s: string) -> bool {
+    var n: i64 = str_len(s)
+    var k: i64 = 0
+    while k < n {
+        var c = str_char(s, k)
+        if c != " " && c != "\t" {
+            return false
+        }
+        k = k + 1
+    }
+    return true
+}
+
+// 按 \n 拆行（去掉 \r），空文本返回空表；空白行保留为空串元素。
+func split_lines(s: string) -> table<string> {
+    var rows = table_new_string()
+    var n: i64 = str_len(s)
+    if n == 0 {
+        return rows
+    }
+    var sb = string_builder()
+    var nonempty: bool = false
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(s, i)
+        if c == "\n" {
+            table_push(rows, sb_build(sb))
+            sb_reset(sb)
+            nonempty = false
+        } else if c == "\r" {
+            // 行尾 \r 忽略
+        } else {
+            sb_append(sb, c)
+            nonempty = true
+        }
+        i = i + 1
+    }
+    if nonempty {
+        table_push(rows, sb_build(sb))
+    }
+    return rows
+}
+
+// 去除字符串首部空格/制表。
+func ltrim(s: string) -> string {
+    var n: i64 = str_len(s)
+    var k: i64 = 0
+    while k < n && (str_char(s, k) == " " || str_char(s, k) == "\t") {
+        k = k + 1
+    }
+    return sub(s, k, n)
+}
+
+// 去除字符串首尾空格/制表。
+func trim_line(s: string) -> string {
+    var n: i64 = str_len(s)
+    var lo: i64 = 0
+    var hi: i64 = n
+    while lo < hi && (str_char(s, lo) == " " || str_char(s, lo) == "\t") {
+        lo = lo + 1
+    }
+    while hi > lo && (str_char(s, hi - 1) == " " || str_char(s, hi - 1) == "\t") {
+        hi = hi - 1
+    }
+    return sub(s, lo, hi)
+}
+
+// 取子串 [a,b)，越界收敛。
+func sub(s: string, a: i64, b: i64) -> string {
+    var n: i64 = str_len(s)
+    var lo: i64 = a
+    var hi: i64 = b
+    if lo < 0 {
+        lo = 0
+    }
+    if lo > n {
+        lo = n
+    }
+    if hi < 0 {
+        hi = 0
+    }
+    if hi > n {
+        hi = n
+    }
+    if lo >= hi {
+        return ""
+    }
+    var sb = string_builder()
+    var k: i64 = lo
+    while k < hi {
+        sb_append(sb, str_char(s, k))
+        k = k + 1
+    }
+    return sb_build(sb)
+}
+
+// 是否以 pre 开头。
+func starts_with(s: string, pre: string) -> bool {
+    var m: i64 = str_len(pre)
+    var n: i64 = str_len(s)
+    if m > n {
+        return false
+    }
+    var k: i64 = 0
+    while k < m {
+        if str_char(s, k) != str_char(pre, k) {
+            return false
+        }
+        k = k + 1
+    }
+    return true
+}
+
+// 在 s[from,to) 中找单字符 ch 的首次位置；未找到 -1。
+func find_char(s: string, from: i64, to: i64, ch: string) -> i64 {
+    var k: i64 = from
+    while k < to {
+        if str_char(s, k) == ch {
+            return k
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// 在 s[from,to) 中找子串 marker 的首次位置；未找到 -1。
+func find_sub(s: string, from: i64, to: i64, marker: string) -> i64 {
+    var m: i64 = str_len(marker)
+    var k: i64 = from
+    while k + m <= to {
+        var matched: bool = true
+        var j: i64 = 0
+        while j < m {
+            if str_char(s, k + j) != str_char(marker, j) {
+                matched = false
+                break
+            }
+            j = j + 1
+        }
+        if matched {
+            return k
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// 按单字符 sep 切分（保留空段）："a||b" → ["a","","b"]。
+func split_char(s: string, sep: string) -> table<string> {
+    var parts = table_new_string()
+    var n: i64 = str_len(s)
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(s, i)
+        if c == sep {
+            table_push(parts, sb_build(sb))
+            sb_reset(sb)
+        } else {
+            sb_append(sb, c)
+        }
+        i = i + 1
+    }
+    table_push(parts, sb_build(sb))
+    return parts
+}
+
+}
