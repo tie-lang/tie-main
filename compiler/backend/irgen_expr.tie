@@ -406,7 +406,8 @@ func is_builtin_name(nm: string) -> bool {
     if nm == "net_close" || nm == "net_tcp_accept" || nm == "net_tcp_connect" ||
         nm == "net_tcp_listen" || nm == "net_tcp_recv" || nm == "net_tcp_send" ||
         nm == "net_udp_bind" || nm == "net_udp_recv" || nm == "net_udp_send" ||
-        nm == "net_tcp_recv_bytes" || nm == "net_tcp_send_bytes" {
+        nm == "net_tcp_recv_bytes" || nm == "net_tcp_send_bytes" ||
+        nm == "net_udp_recv_bytes" || nm == "net_udp_send_bytes" {
         return true
     }
     if nm == "to_string" || nm == "parse_int" || nm == "parse_float" || nm == "parse_trit" ||
@@ -1509,7 +1510,8 @@ func builtin_expr(nm: string, id: i64) -> i64 {
     if nm == "net_close" || nm == "net_tcp_accept" || nm == "net_tcp_connect" ||
         nm == "net_tcp_listen" || nm == "net_tcp_recv" || nm == "net_tcp_send" ||
         nm == "net_udp_bind" || nm == "net_udp_recv" || nm == "net_udp_send" ||
-        nm == "net_tcp_recv_bytes" || nm == "net_tcp_send_bytes" {
+        nm == "net_tcp_recv_bytes" || nm == "net_tcp_send_bytes" ||
+        nm == "net_udp_recv_bytes" || nm == "net_udp_send_bytes" {
         // p.6.4.5：net_* 全部内联 Winsock2 直调（去 Rust 桥 tie_net_*）。
         // 置位 g_used_wsock → driver 链 ws2_32（详见 tig_net_* helper）。
         g_used_wsock = true
@@ -1532,7 +1534,7 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         }
         // 通用参值提取：i 整数（窄 sext→i64）、s 串/表（ptr 直传）
         var pat: table<string> = table_new_string()
-        if nm == "net_udp_send" {
+        if nm == "net_udp_send" || nm == "net_udp_send_bytes" {
             table_push(pat, "i")
             table_push(pat, "s")
             table_push(pat, "i")
@@ -1544,7 +1546,7 @@ func builtin_expr(nm: string, id: i64) -> i64 {
             table_push(pat, "i")
             table_push(pat, "s")
         } else if nm == "net_tcp_recv" || nm == "net_udp_recv" ||
-            nm == "net_tcp_recv_bytes" {
+            nm == "net_tcp_recv_bytes" || nm == "net_udp_recv_bytes" {
             table_push(pat, "i")
             table_push(pat, "i")
         } else {
@@ -1593,6 +1595,10 @@ func builtin_expr(nm: string, id: i64) -> i64 {
             g_builtin_res = tig_net_udp_send(avs[0], avs[1], avs[2], avs[3])
         } else if nm == "net_udp_recv" {
             g_builtin_res = tig_net_udp_recv(avs[0], avs[1])
+        } else if nm == "net_udp_send_bytes" {
+            g_builtin_res = tig_net_udp_send_bytes(avs[0], avs[1], avs[2], avs[3])
+        } else if nm == "net_udp_recv_bytes" {
+            g_builtin_res = tig_net_udp_recv_bytes(avs[0], avs[1])
         } else {
             g_builtin_res = tig_net_close(avs[0])
         }
@@ -4874,6 +4880,129 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         var r64 = tig_sext(r, I32, T64)
         var nr = tig_select_i(rgt0, r64, tig_int_lit(0), T64)
         return tig_bytes_to_tie(buf, nr)
+    }
+
+    // ---- UDP 字节版（p.6.6.9 std/dns 用）----
+    // net_udp_send_bytes(h, host, port, data:表<i64>) -> i64：resolve + 逐元素取低字节拼
+    // 缓冲后 sendto 数据报，返回发送字节数（失败 -1）。
+    func tig_net_udp_send_bytes(h: i64, host: i64, pt: i64, data: i64) -> i64 {
+        var T64 = types.named(TK_I64)
+        var I32 = types.named(TK_I32)
+        var I8 = types.named(TK_I8)
+        var ST = types.named(TK_STR)
+        tig_wsa_init()
+        var dlen = s21_load(s21_gep(data, 8, true), T64)    // 表 len
+        var dptr = s21_load(s21_gep(data, 16, true), ST)    // 表 data 段
+        var nytes = s21_raw_alloc_str(dlen)
+        // i 槽（i64）
+        var i_slot = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(i_slot, T64, 2)
+        var iv = ir.get_value(i_slot)
+        s21_store(iv, tig_int_lit(0), T64)
+        var bCond = ir.new_block(g_cur_func, interner.intern("usb.c"))
+        var bBody = ir.new_block(g_cur_func, interner.intern("usb.b"))
+        var bLExit = ir.new_block(g_cur_func, interner.intern("usb.le"))
+        var b0 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(b0, bCond, 1)
+        g_cur_block = bCond
+        var ci = s21_load(iv, T64)
+        var cond = tig_icmp_c(ci, dlen, 2)   // i < len
+        var cb = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb, cond, 0)
+        ir.add_operand(cb, bBody, 1)
+        ir.add_operand(cb, bLExit, 1)
+        g_cur_block = bBody
+        var ci2 = s21_load(iv, T64)
+        var elem = s21_load(s21_gep(dptr, s21_bin(10, ci2, tig_int_lit(3)), false), T64)  // data[i*8]
+        var byt = s21_bin(6, elem, tig_int_lit(255))          // & 0xFF
+        s21_store(s21_gep(nytes, ci2, false), s21_trunc_i8(byt), I8)
+        s21_store(iv, s21_bin(0, ci2, tig_int_lit(1)), T64)   // i += 1
+        var brb = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brb, bCond, 1)
+        g_cur_block = bLExit
+        var saddr = tig_net_resolve(host)
+        var svv = tig_slot64(-1)
+        var rbad = tig_icmp_c(saddr, tig_int_lit(-1), 0)
+        var bE = ir.new_block(g_cur_func, interner.intern("us2.e"))
+        var bS = ir.new_block(g_cur_func, interner.intern("us2.s"))
+        var bM = ir.new_block(g_cur_func, interner.intern("us2.m"))
+        var cb2 = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb2, rbad, 0)
+        ir.add_operand(cb2, bE, 1)
+        ir.add_operand(cb2, bS, 1)
+        g_cur_block = bE
+        var brE = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brE, bM, 1)
+        g_cur_block = bS
+        var sa = tig_wsa_addr(pt, tig_trunc_i32(saddr))
+        var ats: table<i64> = table_new_i64()
+        var avs: table<i64> = table_new_i64()
+        table_push(ats, T64); table_push(avs, h)
+        table_push(ats, ST);  table_push(avs, nytes)
+        table_push(ats, I32); table_push(avs, tig_trunc_i32(dlen))
+        table_push(ats, I32); table_push(avs, tig_int_lit_ty(0, I32))
+        table_push(ats, ST);  table_push(avs, sa)
+        table_push(ats, I32); table_push(avs, tig_int_lit_ty(16, I32))
+        var r = tig_ext_call_typed("sendto", ats, avs, I32)
+        var rs = tig_sext(r, I32, T64)
+        tig_ext_call1("free", nytes, ST, -1)
+        s21_store(svv, rs, T64)
+        var brS = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brS, bM, 1)
+        g_cur_block = bM
+        return s21_load(svv, T64)
+    }
+
+    // net_udp_recv_bytes(h, max) -> 表<i64>：recvfrom 原始字节 → 逐字节装入 i64 元素表
+    //（cap=max, len=实收, data=8×max 元素缓冲, esz=8——仿 tig_byte_read 表格式）
+    func tig_net_udp_recv_bytes(h: i64, max: i64) -> i64 {
+        var T64 = types.named(TK_I64)
+        var I32 = types.named(TK_I32)
+        var I8 = types.named(TK_I8)
+        var ST = types.named(TK_STR)
+        var P8 = types.ptr_of(types.named(TK_I8))
+        tig_wsa_init()
+        var rawB = s21_raw_alloc_str(max)
+        var nullp = tig_null_ptr()
+        var ats: table<i64> = table_new_i64()
+        var avs: table<i64> = table_new_i64()
+        table_push(ats, T64); table_push(avs, h)
+        table_push(ats, ST);  table_push(avs, rawB)
+        table_push(ats, I32); table_push(avs, tig_trunc_i32(max))
+        table_push(ats, I32); table_push(avs, tig_int_lit_ty(0, I32))
+        table_push(ats, P8);  table_push(avs, nullp)   // sockaddr*
+        table_push(ats, P8);  table_push(avs, nullp)   // socklen_t*
+        var r = tig_ext_call_typed("recvfrom", ats, avs, I32)
+        var rgt0 = tig_icmp_c(r, tig_int_lit_ty(0, I32), 3)
+        var r64 = tig_sext(r, I32, T64)
+        var nr = tig_select_i(rgt0, r64, tig_int_lit(0), T64)
+        var edata = s21_raw_alloc_str(s21_bin(10, max, tig_int_lit(3)))  // max*8 字节
+        var i_slot = ir.new_inst(g_cur_block, 20, T64)
+        ir.add_operand(i_slot, T64, 2)
+        var iv = ir.get_value(i_slot)
+        s21_store(iv, tig_int_lit(0), T64)
+        var bCond = ir.new_block(g_cur_func, interner.intern("urb.c"))
+        var bBody = ir.new_block(g_cur_func, interner.intern("urb.b"))
+        var bExit = ir.new_block(g_cur_func, interner.intern("urb.e"))
+        var b0 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(b0, bCond, 1)
+        g_cur_block = bCond
+        var ci = s21_load(iv, T64)
+        var cond = tig_icmp_c(ci, nr, 2)   // i < nr
+        var cb = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb, cond, 0)
+        ir.add_operand(cb, bBody, 1)
+        ir.add_operand(cb, bExit, 1)
+        g_cur_block = bBody
+        var ci2 = s21_load(iv, T64)
+        var bval = s21_zext(s21_load(s21_gep(rawB, ci2, false), I8), I8)  // 原始字节 → i64
+        s21_store(s21_gep(edata, s21_bin(10, ci2, tig_int_lit(3)), false), bval, T64)  // edata[i*8]
+        s21_store(iv, s21_bin(0, ci2, tig_int_lit(1)), T64)
+        var brb = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brb, bCond, 1)
+        g_cur_block = bExit
+        tig_ext_call1("free", rawB, ST, -1)
+        return tig_fill_table(edata, max, nr)
     }
 
     // net_close(h) -> bool：closesocket 返回 0 = 成功

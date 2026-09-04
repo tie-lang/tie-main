@@ -298,14 +298,15 @@ func ensure_builtins() {
     // p.6.4.5 字节版：recv_bytes 返回 table<i64>（kind=1 特判）、send_bytes=I64。
     var net_names: table<string> = ["net_close", "net_tcp_accept",
         "net_tcp_connect", "net_tcp_listen", "net_tcp_recv", "net_tcp_recv_bytes",
-        "net_tcp_send", "net_tcp_send_bytes", "net_udp_bind", "net_udp_recv", "net_udp_send"]
-    var net_nargs: table<i64> = [1, 1, 2, 1, 2, 2, 2, 2, 1, 2, 4]
-    var net_kws: table<i64> = [10, 3, 3, 3, 13, 3, 3, 3, 3, 13, 3]
+        "net_tcp_send", "net_tcp_send_bytes", "net_udp_bind", "net_udp_recv", "net_udp_recv_bytes",
+        "net_udp_send", "net_udp_send_bytes"]
+    var net_nargs: table<i64> = [1, 1, 2, 1, 2, 2, 2, 2, 1, 2, 2, 4, 4]
+    var net_kws: table<i64> = [10, 3, 3, 3, 13, 3, 3, 3, 3, 13, 3, 3, 3]
     var i2: i64 = 0
     while i2 < len(net_names) {
         table_push(bi_keys, net_names[i2])
         table_push(bi_nargs, net_nargs[i2])
-        if net_names[i2] == "net_tcp_recv_bytes" {
+        if net_names[i2] == "net_tcp_recv_bytes" || net_names[i2] == "net_udp_recv_bytes" {
             table_push(bi_ret, ret_of(1, 3))  // table<i64>
         } else {
             table_push(bi_ret, types.named(net_kws[i2]))
@@ -324,8 +325,8 @@ pub func builtin_count() -> i64 {
 // （调用方按"用户函数"处理，对齐 builtin_call 返回 -3 语义）。
 pub func builtin_lookup(name: string) -> i64 {
     ensure_builtins()
-    // 主表（73 项，有序）二分范围 [0, base)
-    var base = len(bi_keys) - 9
+    // 主表（73 项，有序）二分范围 [0, base)；net 子表 13 项追加其后
+    var base = len(bi_keys) - 13
     var lo: i64 = 0
     var hi = base - 1
     while lo <= hi {
@@ -339,7 +340,7 @@ pub func builtin_lookup(name: string) -> i64 {
             hi = mid - 1
         }
     }
-    // net 子表（追加在主表后，9 项有序）二分范围 [base, len)
+    // net 子表（追加在主表后，13 项有序）二分范围 [base, len)
     lo = base
     hi = len(bi_keys) - 1
     while lo <= hi {

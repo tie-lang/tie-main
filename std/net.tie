@@ -70,6 +70,17 @@ namespace net {
         return net_udp_recv(handle, max)
     }
 
+    // 发送数据报字节表（0..255 原始二进制），host:port，返回发送字节数（失败 -1）。
+    // p.6.6.9 std/dns：DNS 查询等二进制报文统一走字节表。
+    pub func udp_send_bytes(handle: i64, host: string, pport: i64, data: table<i64>) -> i64 {
+        return net_udp_send_bytes(handle, host, pport, data)
+    }
+
+    // 接收一数据报原始字节（最多 max 字节，阻塞），返回字节表；无数据返回空表。
+    pub func udp_recv_bytes(handle: i64, max: i64) -> table<i64> {
+        return net_udp_recv_bytes(handle, max)
+    }
+
     // ---------- 通用 ----------
 
     // 关闭句柄（释放底层套接字），成功返回 true。
