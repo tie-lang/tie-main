@@ -1,0 +1,236 @@
+type tie<logic>
+// tests/ws_probe/ws_probe.tie —— p.6.6.7 验收：std/ws WebSocket 客户端库。
+// 全离线确定性探针（不连网）：RFC 6455 握手接受键向量、字节表 base64 往返、
+// 帧编解码（differ 长度档位 + 掩码往返）、服务端无掩码帧、分片/控制帧帧级解析。
+// 期望全部 PASS / exit 0。
+import "../../std/ws.tie" as ws
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// 字节表相等比较（探针本地工具）。
+func beq(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 求值 n 长度的确定性载荷：payload[i] = i & 0xFF（0..255 循环，覆盖原始字节）。
+func mkpayload(n: i64) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        table_push(t, i & 0xFF)
+        i = i + 1
+    }
+    return t
+}
+
+// 固定 16 字节节表（含不可打印/高位字节）→ base64 解码往返。
+func fixed16() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0x00)
+    table_push(t, 0xFF)
+    table_push(t, 0x80)
+    table_push(t, 0x49)
+    table_push(t, 0x03)
+    table_push(t, 0x7F)
+    table_push(t, 0xE2)
+    table_push(t, 0x11)
+    table_push(t, 0x5A)
+    table_push(t, 0x01)
+    table_push(t, 0xFE)
+    table_push(t, 0x66)
+    table_push(t, 0x2B)
+    table_push(t, 0x90)
+    table_push(t, 0xC7)
+    table_push(t, 0x3D)
+    return t
+}
+
+// ==================== 段 1：RFC 6455 握手接受键 ====================
+func handshake_section() {
+    // RFC 6455 §1.3 标准向量：key "The sample nonce" 的 base64 → 已知 accept。
+    var acc = ws.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
+    check(acc == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "rfc6455 accept vector")
+    // accept 结构：base64 串，长度 28（20 字节 SHA-1 → 27 字符 + '='）。
+    check(str_len(acc) == 28, "accept length 28")
+    // 幂等/确定性最常见：同 key 复算一致。
+    check(ws.compute_accept("dGhlIHNhbXBsZSBub25jZQ==") == acc, "accept deterministic")
+}
+
+// ==================== 段 2：字节表 base64 往返 ====================
+func b64_section() {
+    var b = fixed16()
+    var enc = ws.b64_encode_bytes(b)
+    // 16 字节 → 24 字符（5 组 3 字节 + 1 字节余量 → 20+4 字符含 "=="）。
+    check(str_len(enc) == 24, "b64 16 bytes -> 24 chars")
+    var dec = ws.b64_decode_bytes(enc)
+    check(len(dec) == 16, "decode length 16")
+    check(beq(dec, b), "b64 roundtrip byte-exact")
+    // 变长边界：0/1/2/3 字节。
+    var z = table_new_i64()
+    check(str_len(ws.b64_encode_bytes(z)) == 0, "b64 empty->empty")
+    var t1 = table_new_i64()
+    table_push(t1, 0xAC)
+    check(beq(ws.b64_decode_bytes(ws.b64_encode_bytes(t1)), t1), "b64 1 byte roundtrip")
+    var t2 = table_new_i64()
+    table_push(t2, 0x12)
+    table_push(t2, 0x34)
+    check(beq(ws.b64_decode_bytes(ws.b64_encode_bytes(t2)), t2), "b64 2 byte roundtrip")
+    var t3 = table_new_i64()
+    table_push(t3, 0x01)
+    table_push(t3, 0x02)
+    table_push(t3, 0x03)
+    check(beq(ws.b64_decode_bytes(ws.b64_encode_bytes(t3)), t3), "b64 3 byte roundtrip")
+}
+
+// ==================== 段 3：帧编解码（长度档位 + 掩码往返） ====================
+// 每个长度用例：mk_frame(固定掩码键) → parse_frame 解 == 原文、opcode、长度档位。
+func frame_case(key: table<i64>, plen: i64, label: string,
+                want_l7: i64, want_hdr: i64) {
+    var payload = mkpayload(plen)
+    var f = ws.mk_frame(key, 2, payload)
+    // 长度档位：帧[1] & 0x7F 编码长度标识（126/127 或直接值）
+    var got_l7 = f[1] & 0x7F
+    var tier_ok = got_l7 == want_l7
+    if want_l7 == 126 && plen < 126 {
+        tier_ok = true
+    }
+    check(tier_ok, label + " length tier l7=" + to_string(got_l7))
+    if want_l7 >= 126 {
+        // 扩展长度字节存在性由总帧长（2 + want_hdr +4掩码 + plen）间接校验
+        check(len(f) == 2 + want_hdr + 4 + plen, label + " frame total length")
+    }
+    var (op, pl, next) = ws.parse_frame(f, 0)
+    check(op == 2, label + " opcode 2")
+    check(beq(pl, payload), label + " payload byte-exact (unmask r.t)")
+    check(next == len(f), label + " next_off == frame length")
+}
+
+func frame_section() {
+    var key = table_new_i64()
+    table_push(key, 0x01)
+    table_push(key, 0x23)
+    table_push(key, 0x45)
+    table_push(key, 0x67)
+
+    frame_case(key, 0, "len0", 0, 0)
+    frame_case(key, 125, "len125", 125, 0)
+    frame_case(key, 126, "len126", 126, 2)
+    frame_case(key, 127, "len127", 126, 2)
+    frame_case(key, 65535, "len65535", 126, 2)
+    frame_case(key, 65536, "len65536", 127, 8)
+
+    // 显式校验 16/64 位长度字节的大端值。
+    var p16 = mkpayload(65535)
+    var f16 = ws.mk_frame(key, 2, p16)
+    check(((f16[2] << 8) | f16[3]) == 65535, "len65535 16-bit BE value")
+    var p64 = mkpayload(65536)
+    var fwide = ws.mk_frame(key, 2, p64)
+    var v64: i64 = 0
+    var t: i64 = 0
+    while t < 8 {
+        v64 = (v64 << 8) | fwide[2 + t]
+        t = t + 1
+    }
+    check(v64 == 65536, "len65536 64-bit BE value")
+}
+
+// ==================== 段 4：服务端帧（无掩码） ====================
+func server_frame_section() {
+    var sf = table_new_i64()
+    table_push(sf, 0x81)   // FIN=1, opcode=1 (text)
+    table_push(sf, 0x03)   // MASK=0, len=3
+    table_push(sf, 0x74)   // 't'
+    table_push(sf, 0x68)   // 'h'
+    table_push(sf, 0x69)   // 'i'
+    var (op, pl, next) = ws.parse_frame(sf, 0)
+    check(op == 1, "server frame opcode 1")
+    var want = table_new_i64()
+    table_push(want, 0x74)
+    table_push(want, 0x68)
+    table_push(want, 0x69)
+    check(beq(pl, want), "server frame unmask payload")
+    check(next == 5, "server frame next_off 5")
+}
+
+// ==================== 段 5：分片(FIN=0) 与控制帧帧级解析 ====================
+func control_frame_section() {
+    // 分片起始帧：FIN=0, opcode=2, 空载荷
+    var fg = table_new_i64()
+    table_push(fg, 0x02)
+    table_push(fg, 0x00)
+    var (opg, plg, _n0) = ws.parse_frame(fg, 0)
+    check(opg == 2 && len(plg) == 0, "fragment FIN=0 opcode 2")
+
+    // 裸控制帧（无掩码，服务端视角）
+    var pf = table_new_i64()
+    table_push(pf, 0x89)  // ping
+    table_push(pf, 0x01)
+    table_push(pf, 0x61)  // 'a'
+    var (opp, plp, _n1) = ws.parse_frame(pf, 0)
+    check(opp == 9, "ping opcode 9")
+    var pwant = table_new_i64()
+    table_push(pwant, 0x61)
+    check(beq(plp, pwant), "ping payload")
+
+    var po = table_new_i64()
+    table_push(po, 0x8A)  // pong
+    table_push(po, 0x00)
+    var (opo, _n2, _n3) = ws.parse_frame(po, 0)
+    check(opo == 10, "pong opcode 10")
+
+    var cl = table_new_i64()
+    table_push(cl, 0x88)  // close
+    table_push(cl, 0x02)
+    table_push(cl, 0x03)
+    table_push(cl, 0xE8)  // 1000
+    var (opc, plc, _n4) = ws.parse_frame(cl, 0)
+    check(opc == 8, "close opcode 8")
+    check(len(plc) == 2, "close payload len 2")
+
+    // 带掩码的客户端控制帧（验证控制帧也可被掩码解出）
+    var key = table_new_i64()
+    table_push(key, 0x0F)
+    table_push(key, 0x0E)
+    table_push(key, 0x0D)
+    table_push(key, 0x0C)
+    var ctrl = table_new_i64()
+    table_push(ctrl, 0x42)
+    var cf = ws.mk_frame(key, 9, ctrl)
+    var (opcf, plcf, _n5) = ws.parse_frame(cf, 0)
+    check(opcf == 9 && beq(plcf, ctrl), "masked ping opcode+payload")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    handshake_section()
+    b64_section()
+    frame_section()
+    server_frame_section()
+    control_frame_section()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}
