@@ -1,0 +1,440 @@
+type tie<class>
+// ============================================================================
+// robots.tie：ext/spidey——robots.txt 解析与匹配（命名空间 robots，纯 tie）p.6.6.6.1
+// Robots.txt parsing and matching (namespace robots, pure-tie). p.6.6.6.1
+//
+// 数据平面（Data plane）：全部 string（UTF-8 文本）。robots.txt 正文以文本
+// string 进入 parse()，不做字节表（table<i64>）操作；模式与路径按原始字节
+// 逐字符比较（大小写敏感，百分号编码不做解码——RFC 9309 §2.2.1 语义）。
+//
+// 接口（Interface）：
+//   parse(text, ua) -> Robots     解析 robots.txt 正文（恒成功；解析不出合法组
+//     时 ok=false，allowed 一律放行——robots 治理的"失稳即放宽"纪律）
+//   allowed(r, path) -> i64       1=允许抓取 / 0=禁止（path 须以 '/' 起始；
+//     判定按 parse 时登记的爬虫 UA r.ua 选择 UA 组）
+//   group_delay(r, ua) -> i64     命中 UA 组的 crawl-delay（毫秒，缺省 0）
+//   sitemaps(r) -> table<string>  Sitemap: 行收集（全局，文档序）
+//
+// 规格子集（RFC 9309 核心，尽力而为）：
+//   - 行：`User-agent` / `Allow` / `Disallow` / `Crawl-delay` / `Sitemap`；
+//     `#` 至行尾为注释（先剥注释再 trim）；\r\n 与 \n 均按行尾。
+//   - 组：一条或多条 User-agent 行累积同组（上组不含规则时才并入，否则另起
+//     新组），随后规则绑定就近组；空行/未知行忽略。
+//   - UA 选择：大小写不敏感；目标 ua 以规则 ua 名起始（前缀）即命中，"*" 匹配
+//     一切；最长的前缀命中组胜出（约简了 token 化匹配）。
+//   - 路径：按最长匹配位置胜出；并列时 **Allow 胜于 Disallow**（RFC 9309 §2.2.2
+//     "least specific" 语义）。`*` 匹配任意字节串（含空），尾部 `$` 锚定结尾；
+//     空模式（如 "Disallow:"）视为放行一切（Google 口径）。
+//   - Crawl-delay：可为小数秒（如 0.5），按毫秒取整（≥0，负值忽略）。
+//   - 组无规则 / UA 未命中 → 放行（默认允许）。
+//
+// 语言约束（Language constraints）：纯函数、零模块级可变状态；struct 字段表按
+// 「局部表构建→整表赋回」纪律维护（table_push 不可直接作用于结构字段）。
+// UA 名小写化仅作用于短名称（str.to_lower），路径匹配在热路径用 str_char 下标
+// 推进（单遍 O(n)），无 O(n^2)。
+// ============================================================================
+
+import "../../std/string.tie" as str
+
+// ---- Robots：一次 robots.txt 解析结果（平行表布局，全部只读访问）----
+struct Robots {
+    var ok: bool = false                // 是否解析出至少一个 UA 行
+    var ua: string = ""                 // 解析期登记的爬虫 UA（小写）
+    var ua_g: table<i64> = table_new_i64()      // UA 行 → 组号
+    var ua_n: table<string> = table_new_string() // UA 行名（小写）
+    var rg: table<i64> = table_new_i64()        // 规则 → 组号
+    var rk: table<i64> = table_new_i64()        // 规则 kind：1=Allow 0=Disallow
+    var rp: table<string> = table_new_string()  // 规则模式
+    var vg: table<i64> = table_new_i64()        // 组 → crawl-delay 毫秒（稀疏）
+    var sitemaps: table<string> = table_new_string()  // Sitemap 行（全局）
+}
+
+namespace robots {
+
+// 取一行（遇 \n 或串尾截断；剥 \r）；返回行文本与新起点（跳过行尾换行）。
+func take_line(s: string, from: i64) -> (string, i64) {
+    var L = str_len(s)
+    var i = from
+    while i < L && str_char(s, i) != "\n" {
+        i = i + 1
+    }
+    var e = i
+    if e > from && str_char(s, e - 1) == "\r" {
+        e = e - 1
+    }
+    var line = ""
+    if e > from {
+        line = str_sub_bytes(s, from, e)
+    }
+    var nx = i + 1
+    return (line, nx)
+}
+
+// 剥注释：第一个 '#' 起全部作废（RFC 9309 §3.2.1：路径段不含片段）。
+func strip_comment(line: string) -> string {
+    var L = str_len(line)
+    var i: i64 = 0
+    while i < L {
+        if str_char(line, i) == "#" {
+            if i > 0 {
+                return str_sub_bytes(line, 0, i)
+            }
+            return ""
+        }
+        i = i + 1
+    }
+    return line
+}
+
+// 去掉首尾空白（空格/制表符）。
+func trim(s: string) -> string {
+    var L = str_len(s)
+    var a: i64 = 0
+    while a < L {
+        var c = str_char(s, a)
+        if c != " " && c != "\t" {
+            break
+        }
+        a = a + 1
+    }
+    var b = L
+    while b > a {
+        var c = str_char(s, b - 1)
+        if c != " " && c != "\t" {
+            break
+        }
+        b = b - 1
+    }
+    if a >= b {
+        return ""
+    }
+    return str_sub_bytes(s, a, b)
+}
+
+// 拆 "name: value" 行：名字小写化（冒号前），值 trim。
+func kv(line: string) -> (string, string) {
+    var L = str_len(line)
+    var i: i64 = 0
+    while i < L {
+        if str_char(line, i) == ":" {
+            var name = str.to_lower(str_sub_bytes(line, 0, i))
+            var v = ""
+            if i + 1 < L {
+                v = str_sub_bytes(line, i + 1, L)
+            }
+            return (name, trim(v))
+        }
+        i = i + 1
+    }
+    return (str.to_lower(trim(line)), "")
+}
+
+// 秒（可小数）→ 毫秒：手工解析小数点，最多 3 位毫秒精度；非法/负值返回 -1。
+func delay_ms(v: string) -> i64 {
+    var L = str_len(v)
+    var i: i64 = 0
+    var ip: i64 = 0
+    while i < L {
+        var c = str_char(v, i)
+        if c == "." {
+            break
+        }
+        if c < "0" || c > "9" {
+            return -1
+        }
+        ip = ip * 10 + parse_int(c)
+        i = i + 1
+    }
+    var fp: i64 = 0
+    var digits: i64 = 0
+    var j = i + 1
+    while j < L && digits < 3 {
+        var c = str_char(v, j)
+        if c < "0" || c > "9" {
+            return -1
+        }
+        fp = fp * 10 + parse_int(c)
+        digits = digits + 1
+        j = j + 1
+    }
+    // 剩余小数位截断（不影响毫秒精度上限外）；非法字符 → -1
+    while j < L {
+        var c = str_char(v, j)
+        if (c < "0" || c > "9") && c != " " && c != "\t" {
+            return -1
+        }
+        j = j + 1
+    }
+    if digits == 0 {
+        fp = 0
+    } else if digits == 1 {
+        fp = fp * 100
+    } else if digits == 2 {
+        fp = fp * 10
+    }
+    return ip * 1000 + fp
+}
+
+// 解析 robots.txt 正文 → Robots（登记爬虫 ua 供 allowed 判定）。
+// 收集期全部落在局部表，结尾一次性整表赋回 struct 字段（table_push 不可作用字段）。
+pub func parse(doc: string, ua: string) -> Robots {
+    var r = Robots()
+    r.ua = str.to_lower(ua)
+    var ua_g2: table<i64> = table_new_i64()
+    var ua_n2: table<string> = table_new_string()
+    var rg2: table<i64> = table_new_i64()
+    var rk2: table<i64> = table_new_i64()
+    var rp2: table<string> = table_new_string()
+    var vg2: table<i64> = table_new_i64()
+    var sm2: table<string> = table_new_string()
+    var L = str_len(doc)
+    var pos: i64 = 0
+    var g: i64 = -1              // 当前组号（-1 = 未开组）
+    var g_has_rules: i64 = 0     // 当前组是否已有规则
+    var ngrp: i64 = 0            // 已开组数
+    while pos < L {
+        var (line, nx) = take_line(doc, pos)
+        pos = nx
+        var t = trim(strip_comment(line))
+        if str_len(t) == 0 {
+            continue
+        }
+        var (n, v) = kv(t)
+        if str_len(n) == 0 {
+            continue
+        }
+        if n == "user-agent" {
+            var un = str.to_lower(v)
+            if g >= 0 && g_has_rules == 0 {
+                // 并入当前组（多 UA 同组）
+            } else {
+                g = ngrp
+                ngrp = ngrp + 1
+                g_has_rules = 0
+            }
+            table_push(ua_g2, g)
+            table_push(ua_n2, un)
+            r.ok = true
+        } else if n == "allow" || n == "disallow" {
+            if g >= 0 {
+                var pat = v
+                if str_len(pat) == 0 {
+                    // 空模式 = 放行一切（Google 口径）
+                    table_push(rg2, g)
+                    table_push(rk2, 1)
+                    table_push(rp2, "")
+                } else {
+                    table_push(rg2, g)
+                    if n == "allow" {
+                        table_push(rk2, 1)
+                    } else {
+                        table_push(rk2, 0)
+                    }
+                    table_push(rp2, pat)
+                }
+                g_has_rules = 1
+            }
+        } else if n == "crawl-delay" {
+            if g >= 0 {
+                var di = delay_ms(v)
+                if di >= 0 {
+                    while len(vg2) <= g {
+                        table_push(vg2, 0)
+                    }
+                    vg2[g] = di
+                }
+            }
+        } else if n == "sitemap" {
+            table_push(sm2, v)
+        }
+        // 其余行（noindex / host 等）忽略
+    }
+    r.ua_g = ua_g2
+    r.ua_n = ua_n2
+    r.rg = rg2
+    r.rk = rk2
+    r.rp = rp2
+    r.vg = vg2
+    r.sitemaps = sm2
+    return r
+}
+
+// 从 off 起在 h 中找 nd，命中返回下标，否则 -1（本地实现，含偏移）。
+func find_from(h: string, nd: string, off: i64) -> i64 {
+    var HL = str_len(h)
+    var NL = str_len(nd)
+    if NL == 0 {
+        return off
+    }
+    var i = off
+    var c0 = str_char(nd, 0)
+    while i + NL <= HL {
+        if str_char(h, i) == c0 {
+            var k: i64 = 0
+            var eq: i64 = 1
+            while k < NL {
+                if str_char(h, i + k) != str_char(nd, k) {
+                    eq = 0
+                    break
+                }
+                k = k + 1
+            }
+            if eq == 1 {
+                return i
+            }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 通配模式匹配：pat（已剥尾部 $）与 path 匹配，返回命中结束位置（≥0）或 -1。
+// 按 '*' 切段：首段前缀锚定，中间段顺序查找，末段锚定（anchored=1）须为后缀。
+func seg_matches(pat: string, path: string, anchored: i64) -> i64 {
+    var PL = str_len(pat)
+    var HL = str_len(path)
+    if PL == 0 {
+        return 0    // 空模式匹配一切（len 0 → 放行）
+    }
+    var pos: i64 = 0
+    // 首段（截至第一个 '*'）
+    var e0: i64 = 0
+    while e0 < PL && str_char(pat, e0) != "*" {
+        e0 = e0 + 1
+    }
+    if e0 > 0 {
+        var seg0 = str_sub_bytes(pat, 0, e0)
+        var SL = e0
+        if HL < SL || str_sub_bytes(path, 0, SL) != seg0 {
+            return -1
+        }
+        pos = SL
+    }
+    var i = e0
+    while i < PL {
+        var j = i
+        while j < PL && str_char(pat, j) != "*" {
+            j = j + 1
+        }
+        if j > i {
+            var seg = str_sub_bytes(pat, i, j)
+            var SL = str_len(seg)
+            var anchored_tail: i64 = 0
+            if j >= PL {
+                anchored_tail = anchored
+            }
+            if anchored_tail == 1 {
+                // 收尾段（锚定）：seg 须为路径**后缀**；中间段被通配吃掉（pos ≤ 尾段起点）
+                var SL = str_len(seg)
+                if pos <= HL - SL && str_sub_bytes(path, HL - SL, HL) == seg {
+                    return HL
+                }
+                return -1
+            }
+            var fk = find_from(path, seg, pos)
+            if fk < 0 {
+                return -1
+            }
+            pos = fk + SL
+        }
+        i = j + 1
+    }
+    // 模式以 '*' 结尾（非锚定）：自由吃到串尾
+    if PL > 0 && str_char(pat, PL - 1) == "*" && anchored == 0 {
+        return HL
+    }
+    return pos
+}
+
+// path 是否匹配模式 pat（可含 * 通配与尾部 $ 锚定）。返回结束位置或 -1。
+func pat_match(pat: string, path: string) -> i64 {
+    var PL = str_len(pat)
+    var anchored: i64 = 0
+    var body = pat
+    if PL > 0 && str_char(pat, PL - 1) == "$" {
+        anchored = 1
+        body = str_sub_bytes(pat, 0, PL - 1)
+    }
+    return seg_matches(body, path, anchored)
+}
+
+// UA 组选择：返回命中组号（-1 = 无命中）。最长前缀命中者胜出（"*" 记 0）。
+func pick_group(r: Robots, ua: string) -> i64 {
+    var target = str.to_lower(ua)
+    var tl = str_len(target)
+    var best_g: i64 = -1
+    var best_n: i64 = -1
+    var k: i64 = 0
+    var n = len(r.ua_n)
+    while k < n {
+        var name = r.ua_n[k]
+        var score: i64 = -1
+        if name == "*" {
+            score = 0
+        } else {
+            var nl = str_len(name)
+            if tl >= nl && str_sub_bytes(target, 0, nl) == name {
+                score = nl
+            }
+        }
+        if score >= 0 && score > best_n {
+            best_n = score
+            best_g = r.ua_g[k]
+        }
+        k = k + 1
+    }
+    return best_g
+}
+
+// 判定 path 是否允许抓取（1=允许 0=禁止；按 r.ua 选组；未命中/组无规则 → 允许）。
+pub func allowed(r: Robots, path: string) -> i64 {
+    if r.ok == false {
+        return 1
+    }
+    var g = pick_group(r, r.ua)
+    if g < 0 {
+        return 1
+    }
+    var best_end: i64 = -1
+    var best_kind: i64 = 0
+    var k: i64 = 0
+    var n = len(r.rg)
+    while k < n {
+        if r.rg[k] == g {
+            var end = pat_match(r.rp[k], path)
+            if end >= 0 {
+                if end > best_end || (end == best_end && best_kind == 0 && r.rk[k] == 1) {
+                    best_end = end
+                    best_kind = r.rk[k]
+                }
+            }
+        }
+        k = k + 1
+    }
+    if best_end < 0 {
+        return 1
+    }
+    return best_kind
+}
+
+// 命中 UA 组的 crawl-delay（毫秒；无组/无 delay → 0）。
+pub func group_delay(r: Robots, ua: string) -> i64 {
+    if r.ok == false {
+        return 0
+    }
+    var g = pick_group(r, ua)
+    if g < 0 {
+        return 0
+    }
+    if g < len(r.vg) {
+        return r.vg[g]
+    }
+    return 0
+}
+
+// Sitemap 行收集（文档序）。
+pub func sitemaps(r: Robots) -> table<string> {
+    return r.sitemaps
+}
+
+}   // namespace robots
