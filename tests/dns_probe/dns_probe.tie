@@ -1,0 +1,295 @@
+type tie<logic>
+// tests/dns_probe/dns_probe.tie —— p.6.6.9 验收：std/dns 解析客户端库。
+// 全离线确定性探针（无网络）：
+//   1. encode_query 逐字节断言（head + QNAME + qtype/qclass）；
+//   2. parse_response 手工字节应答——A/MX/TXT/NS 记录（含 0xC0 指针解压）；
+//   3. 多记录/多节一次应答顺序解析；
+//   4. 自指指针（环）守卫不挂死；
+//   5. 模块级 id 自增；
+//   6. 真实 UDP 查询（环境变量 TIE_DNS_LIVE=1 才执行，默认跳过）。
+// 期望全部 PASS / exit 0。
+import "../../std/dns.tie" as dns
+import "../../std/string.tie" as str
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ---- 字节表小工具（探针内部，构造手工应答）----
+
+// 16 位大端。
+func b16(t: table<i64>, v: i64) {
+    table_push(t, (v >> 8) & 0xFF)
+    table_push(t, v & 0xFF)
+}
+
+// 32 位大端。
+func b32(t: table<i64>, v: i64) {
+    table_push(t, (v >> 24) & 0xFF)
+    table_push(t, (v >> 16) & 0xFF)
+    table_push(t, (v >> 8) & 0xFF)
+    table_push(t, v & 0xFF)
+}
+
+// ASCII 字符串追加成字节。
+func ab(t: table<i64>, s: string) {
+    var n: i64 = len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+}
+
+// 域名标签序列 + 终止 0。
+func labels(t: table<i64>, name: string) {
+    var parts = str.split(name, ".")
+    var i: i64 = 0
+    while i < len(parts) {
+        var p = parts[i]
+        table_push(t, str_len(p))
+        ab(t, p)
+        i = i + 1
+    }
+    table_push(t, 0)
+}
+
+// 应答头 + 一个 question（qname + qtype=A + qclass=IN）。an=答案个数。
+// 头：id=0x1234、flags=0x8180（QR=1、RCODE=0）、qd=1。
+func hdr_q(t: table<i64>, name: string, an: i64) {
+    b16(t, 0x1234)      // id
+    b16(t, 0x8180)      // flags（QR=1）
+    b16(t, 1)           // qdcount
+    b16(t, an)          // ancount
+    b16(t, 0)           // nscount
+    b16(t, 0)           // arcount
+    labels(t, name)     // question qname（偏移 12 起）
+    b16(t, 1)           // qtype A
+    b16(t, 1)           // qclass IN
+}
+
+// 普通答卷 A 记录：name=指针(nameptr) 或字面 labels，rdata 4 字节 ip。
+func rr_a(t: table<i64>, nameptr: i64, i0: i64, i1: i64, i2: i64, i3: i64) {
+    if nameptr >= 0 {
+        table_push(t, 0xC0)
+        table_push(t, nameptr)
+    } else {
+        labels(t, "nul.example")
+    }
+    b16(t, 1)       // type A
+    b16(t, 1)       // class IN
+    b32(t, 60)      // ttl
+    b16(t, 4)       // rdlength
+    table_push(t, i0)
+    table_push(t, i1)
+    table_push(t, i2)
+    table_push(t, i3)
+}
+
+// 1) encode_query 逐字节断言
+func encode_section() {
+    var q = dns.encode_query("example.com", 1, 0x1234)
+    check(len(q) == 29, "query len 29")
+    // header 12
+    var exp: table<i64> = table_new_i64()
+    b16(exp, 0x1234)
+    b16(exp, 0x0100)
+    b16(exp, 1)
+    b16(exp, 0)
+    b16(exp, 0)
+    b16(exp, 0)
+    // QNAME: 07 example 03 com 00
+    table_push(exp, 0x07)
+    ab(exp, "example")
+    table_push(exp, 0x03)
+    ab(exp, "com")
+    table_push(exp, 0x00)
+    // qtype A / qclass IN
+    b16(exp, 1)
+    b16(exp, 1)
+    var same: i64 = 1
+    var i: i64 = 0
+    while i < len(exp) {
+        if q[i] != exp[i] {
+            same = 0
+        }
+        i = i + 1
+    }
+    check(same == 1, "query bytes exact match")
+    check(q[0] == 0x12 && q[1] == 0x34, "query id be")
+}
+
+// 2) parse_response：A / MX / TXT / NS（含指针解压）
+func parse_section() {
+    // ---- A：answer name = C0 0C（指向偏移 12 的查询名）----
+    var a = table_new_i64()
+    hdr_q(a, "example.com", 1)
+    rr_a(a, 0x0C, 93, 184, 216, 34)
+    var ra = dns.parse_response(a, "example.com")
+    check(len(ra) == 1 && ra[0] == "93.184.216.34", "A record with pointer name")
+
+    // ---- MX：prio=10 + 名称 "mail" + 指针 C0 0C → "10 mail.example.com."----
+    var m = table_new_i64()
+    hdr_q(m, "example.com", 1)
+    table_push(m, 0xC0)   // answer name：指针
+    table_push(m, 0x0C)
+    b16(m, 15)            // type MX
+    b16(m, 1)             // class IN
+    b32(m, 60)
+    b16(m, 9)             // rdlength = 2 + (label `mail`+ptr = 4+1+2=7)
+    b16(m, 10)            // prio = 10
+    table_push(m, 0x04)   // 'mail'
+    ab(m, "mail")
+    table_push(m, 0xC0)
+    table_push(m, 0x0C)
+    var rm = dns.parse_response(m, "example.com")
+    check(len(rm) == 1 && rm[0] == "10 mail.example.com.", "MX prio+name pointer")
+
+    // ---- TXT：单段 "hello" ----
+    var t = table_new_i64()
+    hdr_q(t, "example.com", 1)
+    table_push(t, 0xC0)
+    table_push(t, 0x0C)
+    b16(t, 16)            // type TXT
+    b16(t, 1)
+    b32(t, 60)
+    b16(t, 6)             // rdlength = 1+5
+    table_push(t, 0x05)
+    ab(t, "hello")
+    var rt = dns.parse_response(t, "example.com")
+    check(len(rt) == 1 && rt[0] == "hello", "TXT single segment")
+
+    // ---- TXT：多段 "hi bob"（空格分隔）----
+    var tx = table_new_i64()
+    hdr_q(tx, "example.com", 1)
+    table_push(tx, 0xC0)
+    table_push(tx, 0x0C)
+    b16(tx, 16)
+    b16(tx, 1)
+    b32(tx, 60)
+    b16(tx, 7)            // rdlength = 1 + 2 + 1 + 3
+    table_push(tx, 0x02)
+    ab(tx, "hi")
+    table_push(tx, 0x03)
+    ab(tx, "bob")
+    var rtx = dns.parse_response(tx, "example.com")
+    check(len(rtx) == 1 && rtx[0] == "hi bob", "TXT multi segment join space")
+
+    // ---- NS：name 为指针 C0 0C → "example.com." ----
+    var ns = table_new_i64()
+    hdr_q(ns, "example.com", 1)
+    table_push(ns, 0xC0)
+    table_push(ns, 0x0C)
+    b16(ns, 2)            // type NS
+    b16(ns, 1)
+    b32(ns, 60)
+    b16(ns, 2)
+    table_push(ns, 0xC0)
+    table_push(ns, 0x0C)
+    var rns = dns.parse_response(ns, "example.com")
+    check(len(rns) == 1 && rns[0] == "example.com.", "NS pointer name")
+}
+
+// 3) 多记录/多节：2×A + 1×MX 一次应答顺序解析
+func multi_section() {
+    var t = table_new_i64()
+    hdr_q(t, "example.com", 3)
+    rr_a(t, 0x0C, 93, 184, 216, 34)
+    rr_a(t, 0x0C, 1, 2, 3, 4)
+    // MX
+    table_push(t, 0xC0)
+    table_push(t, 0x0C)
+    b16(t, 15)
+    b16(t, 1)
+    b32(t, 60)
+    b16(t, 9)
+    b16(t, 10)
+    table_push(t, 0x04)
+    ab(t, "mail")
+    table_push(t, 0xC0)
+    table_push(t, 0x0C)
+    var r = dns.parse_response(t, "example.com")
+    check(len(r) == 3, "multi 3 records")
+    check(r[0] == "93.184.216.34", "multi A0")
+    check(r[1] == "1.2.3.4", "multi A1")
+    check(r[2] == "10 mail.example.com.", "multi MX")
+}
+
+// 4) 指针解压带环守卫：自指指针（偏移回指自己）→ 不挂死。
+// 语义：decode_name 指针链跳转 ≥128 次即中止，消耗按首 2 字节指针计，
+// 解析继续推进到后续 RR → 返回其后那条合法 A 记录（本探针据此断言）。
+func cycle_section() {
+    // 构造：question 后置 2 字节自指指针（0xC0 指向自身偏移）作为 ANSWER name，
+    // 随后直接跟 type/class/ttl/rdlength/rdata（自指名消耗 2 字节，解析继续推进）。
+    var t = table_new_i64()
+    b16(t, 0x1234)
+    b16(t, 0x8180)
+    b16(t, 1)
+    b16(t, 1)
+    b16(t, 0)
+    b16(t, 0)
+    labels(t, "example.com")
+    b16(t, 1)
+    b16(t, 1)
+    var ans = len(t)          // 答案节偏移（= 自指指针位置）
+    var hi = 0xC0 | ((ans >> 8) & 0x3F)
+    var lo = ans & 0xFF
+    table_push(t, hi)
+    table_push(t, lo)
+    // 后续直接是完整 A RR（无 name 字段）
+    b16(t, 1)       // type A
+    b16(t, 1)       // class IN
+    b32(t, 60)
+    b16(t, 4)
+    table_push(t, 9)
+    table_push(t, 8)
+    table_push(t, 7)
+    table_push(t, 6)
+    var r = dns.parse_response(t, "example.com")
+    // 无论如何不能挂死；断言回到确定结果
+    check(len(r) == 1 && r[0] == "9.8.7.6", "cycle guard no-hang + continue parse")
+}
+
+// 5) id 模块级自增：连续两次取 id，二次 = 一次 +1（& 0xFFFF）。
+func qid_section() {
+    var qa = dns.encode_query("example.com", 1, dns.next_id())
+    var qb = dns.encode_query("example.com", 1, dns.next_id())
+    var a = (qa[0] << 8) | qa[1]
+    var b = (qb[0] << 8) | qb[1]
+    check(b == ((a + 1) & 0xFFFF), "id increments +1")
+    check(a != b, "id distinct")
+}
+
+// 6) 真实 UDP 查询（TIE_DNS_LIVE=1 才执行）
+func live_section() {
+    var live = get_env("TIE_DNS_LIVE")
+    if live == "1" {
+        var r = dns.query("example.com", 1, "8.8.8.8", 53, 8)
+        check(len(r) >= 1 && str.find(r[0], ".") >= 0, "live A record")
+    } else {
+        check(true, "live skipped (set TIE_DNS_LIVE=1)")
+    }
+}
+
+func main() {
+    println("start")
+    encode_section()
+    parse_section()
+    multi_section()
+    cycle_section()
+    qid_section()
+    live_section()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}
