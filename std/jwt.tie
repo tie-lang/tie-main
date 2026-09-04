@@ -1,0 +1,506 @@
+type tie<class>
+// ============================================================================
+// jwt.tie：标准库——JWT（JSON Web Token）HS256（命名空间 jwt，纯 tie）p.6.6.19
+// JSON Web Token signing (namespace jwt, pure-tie), HMAC-SHA256 / RS256-pending.
+//
+// 定位（Positioning）：在 std/hmac（HMAC-SHA256）与 std/json（claims 解析）之上
+// 实现 JWT 的构造与验证，兑现「签名令牌 / 平台鉴权」链路（依赖方向 hmac → jwt）。
+// 仅实现 HS256；RS256（RSA 签名）**暂缓**——依赖 std 的 RSA 模块就绪，本模块在
+// verify 中对非 "HS256" 的 header 一律返回 -3（见下方错误码），未做 RS256 分支。
+//
+// 接口（Interface，string 平面）：
+//   - b64u_encode(b: table<i64>) -> string  字节表 → base64url（无 padding，字符表 - _）
+//   - b64u_decode(s: string) -> table<i64>  base64url → 字节表（对 '=' 容错；失败返回空表）
+//   - encode(secret, claims_json, gexp) -> string  构造 token（gexp=0 不带 exp，否则注入）
+//   - verify(token, secret) -> i64          验证：0=有效；负码见错误码表
+//   - claims(token) -> string               返回 payload 段 JSON 文本（不可解析返回 ""）
+//   - last_err() -> string                  最近一次失败的错误原文（成功时为空串）
+//
+// == 密钥（secret）解释（重要）==
+//   secret 参数按 JWT 惯例视为 **base64url 字符串**：先 b64u_decode 得到字节，再作为
+//   HMAC 密钥参与计算。这与 RFC 7515 A.1 的约定一致（其给定的 86 字符 secret 即 64 字节
+//   密钥的 base64url 编码、且末尾无 '='），且能验证真实世界（如 jwt.io / RFC）签发的令牌。
+//   反过来直接用 secret 字面字符的 ASCII 字节做密钥，是**非标准**做法，不能互通。
+//
+// == 数据平面（Data plane）==
+//   base64url 全部作用于**字节表**（table<i64>，元素 0..255）：header/payload 先按 UTF-8
+//   字节推进（str_byte/len，字节语义）组装字节表再编码——中文 claims 按其 UTF-8 字节参与
+//   编码，与主流实现一致。签名段 = hmac(secret字节, 签名字符串) 的摘要字节再 b64u。
+//   解码输出的字节表经 sb_append_byte 还原为 string（ASCII/UTF-8 均正确）。
+//   复用 std/enc 的 base64 不可行：enc 按码点且只吃可打印 ASCII（见 encoding.tie 头注释），
+//   JWT 需要字节级 + 无 padding + -_ 表，故本模块自实现字节级 base64url。
+//
+// == 错误码（verify 返回；last_err 附原文）==
+//   0   有效（签名正确且时间字段通过）
+//   -1  段数 ≠ 3（含空 token）
+//   -2  某段 base64url 解码失败，或 header 段非 ASCII
+//   -3  header 的 alg ≠ "HS256"（RS256 等算法暂缓）或 header JSON 不可解析
+//   -4  签名不匹配（token 被篡改 / 密钥不符）
+//   -5  exp 存在且 ≤ now（已过期）
+//   -6  nbf 存在且 > now（未生效）
+//
+// == exp 注入（encode）==
+//   gexp=0 时不带 exp，claims_json 原样作 payload；gexp≠0 时注入 claims 的 "exp" 字段
+//   为 JSON 数字（若 claims 已含 exp 且值 == gexp，保持原文以支持精确向量对撞；否则在
+//   对象末尾追加 "exp" 字段——tie 的 json.obj_get 对重复键按**后者覆盖前者**（json.tie
+//   文件头局限 5），故追加即实现「以参数为准覆盖」）。
+//
+// == 性能（Performance）==
+//   b64u 编码/解码与 hex 转换全部单遍字节表 + string_builder，禁止逐字节字符串拼接
+//   （O(n^2)）。
+//
+// == 语言约束（Language constraints）==
+//   `text`、`port` 等 tie 保留字规避；namespace 内互调为裸调用（Harbor M2.1.6）。
+//   失败约定：encode/verify/claims 不抛异常，返回标量并在出错时置 g_err（last_err()）。
+// ============================================================================
+
+import "./hmac.tie" as hmac
+import "./json.tie" as json
+import "./time.tie" as time
+
+// 模块级全局错误消息（last_err() 读取；成功/调用开头清空）。
+var g_err: string = ""
+
+// base64url 字符表（RFC 4648 §5 变体：- 与 _ 替代 + 与 /）。
+var b64u_tbl: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+namespace jwt {
+
+// ==================== 字节/hex 小工具 ====================
+
+// 字符串 → 字节表：按 **UTF-8 字节** 推进（len(s) 为字节数、str_byte 取第 i 字节，
+// 与 std/sha256.tie 同款字节语义），中文等非 ASCII 按多字节逐一入表。
+func str_to_bytes(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var n: i64 = len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+    return t
+}
+
+// 字节表 → 字符串（ASCII/UTF-8 均正确）：逐字节经 sb_append_byte 还原。
+func bytes_to_str(b: table<i64>) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < len(b) {
+        sb_append_byte(sb, b[i])
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 单字符十六进制数字（0..15）；非十六进制返回 -1。
+func hex_val(c: string) -> i64 {
+    var cp: i64 = char_code(c)
+    if cp >= 48 && cp <= 57 {
+        return cp - 48
+    }
+    if cp >= 97 && cp <= 102 {
+        return cp - 97 + 10
+    }
+    if cp >= 65 && cp <= 70 {
+        return cp - 65 + 10
+    }
+    return -1
+}
+
+// 字节表 → 连续小写 hex 字符串（单遍 string_builder）。
+func bytes_to_hex(b: table<i64>) -> string {
+    var hex = "0123456789abcdef"
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < len(b) {
+        var v: i64 = b[i]
+        sb_append(sb, str_char(hex, (v >> 4) & 0xF))
+        sb_append(sb, str_char(hex, v & 0xF))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// hex 字符串 → 字节表（每 2 位 hex 一个字节；奇数长度/非法 hex 返回空表）。
+func hex_to_bytes(h: string) -> table<i64> {
+    var t = table_new_i64()
+    var n: i64 = len(h)
+    if n % 2 != 0 {
+        return t
+    }
+    var i: i64 = 0
+    while i < n {
+        var hi: i64 = hex_val(str_char(h, i))
+        var lo: i64 = hex_val(str_char(h, i + 1))
+        if hi < 0 || lo < 0 {
+            return table_new_i64()
+        }
+        table_push(t, (hi << 4) | lo)
+        i = i + 2
+    }
+    return t
+}
+
+// 字符串 → 小写 hex：UTF-8 字节逐个转 hex（供 hmac 消息/密钥的 hex 输入）。
+func ascii_to_hex(s: string) -> string {
+    return bytes_to_hex(str_to_bytes(s))
+}
+
+// 字节表是否全部 ≤ 0x7F（ASCII）。
+func all_ascii(b: table<i64>) -> bool {
+    var i: i64 = 0
+    while i < len(b) {
+        if b[i] > 127 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 字节表相等。
+func bytes_equal(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// ==================== base64url（字节级） ====================
+
+// 单字符 → base64url 索引（0..63）；不在字符表返回 -1。线性扫描（表长 64，开销可忽略）。
+func b64u_idx(c: string) -> i64 {
+    var m: i64 = len(b64u_tbl)
+    var j: i64 = 0
+    while j < m {
+        if str_char(b64u_tbl, j) == c {
+            return j
+        }
+        j = j + 1
+    }
+    return -1
+}
+
+// 字节表 → base64url 字符串（无 padding）：3 字节 → 4 字符；余 1 字节 → 2 字符；
+// 余 2 字节 → 3 字符。全部单遍 string_builder。
+pub func b64u_encode(b: table<i64>) -> string {
+    var sb = string_builder()
+    var n: i64 = len(b)
+    var i: i64 = 0
+    while i + 2 < n {
+        var b0: i64 = b[i]
+        var b1: i64 = b[i + 1]
+        var b2: i64 = b[i + 2]
+        var v: i64 = (b0 << 16) | (b1 << 8) | b2
+        sb_append(sb, str_char(b64u_tbl, (v >> 18) & 0x3F))
+        sb_append(sb, str_char(b64u_tbl, (v >> 12) & 0x3F))
+        sb_append(sb, str_char(b64u_tbl, (v >> 6) & 0x3F))
+        sb_append(sb, str_char(b64u_tbl, v & 0x3F))
+        i = i + 3
+    }
+    var rem: i64 = n - i
+    if rem == 1 {
+        var b0: i64 = b[i]
+        sb_append(sb, str_char(b64u_tbl, b0 >> 2))
+        sb_append(sb, str_char(b64u_tbl, (b0 & 0x03) << 4))
+    } else if rem == 2 {
+        var b0: i64 = b[i]
+        var b1: i64 = b[i + 1]
+        sb_append(sb, str_char(b64u_tbl, b0 >> 2))
+        sb_append(sb, str_char(b64u_tbl, ((b0 & 0x03) << 4) | (b1 >> 4)))
+        sb_append(sb, str_char(b64u_tbl, (b1 & 0x0F) << 2))
+    }
+    return sb_build(sb)
+}
+
+// base64url → 字节表。容错：忽略尾部 '='；长度非 4 倍数（无 padding 的 2/3 字符余组）
+// 按无 padding 处理；含非法字符返回空表（调用方经「非空输入必非空输出」不变式判错）。
+pub func b64u_decode(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var n: i64 = len(s)
+    if n == 0 {
+        return t
+    }
+    // 忽略尾部 '='（ASCII 61）
+    var end: i64 = n
+    while end > 0 && str_byte(s, end - 1) == 61 {
+        end = end - 1
+    }
+    var i: i64 = 0
+    while i < end {
+        var rem: i64 = end - i
+        if rem >= 4 {
+            var i0: i64 = b64u_idx(str_char(s, i))
+            var i1: i64 = b64u_idx(str_char(s, i + 1))
+            var i2: i64 = b64u_idx(str_char(s, i + 2))
+            var i3: i64 = b64u_idx(str_char(s, i + 3))
+            if i0 < 0 || i1 < 0 || i2 < 0 || i3 < 0 {
+                return table_new_i64()
+            }
+            var v: i64 = (i0 << 18) | (i1 << 12) | (i2 << 6) | i3
+            table_push(t, (v >> 16) & 0xFF)
+            table_push(t, (v >> 8) & 0xFF)
+            table_push(t, v & 0xFF)
+            i = i + 4
+        } else if rem == 3 {
+            var i0: i64 = b64u_idx(str_char(s, i))
+            var i1: i64 = b64u_idx(str_char(s, i + 1))
+            var i2: i64 = b64u_idx(str_char(s, i + 2))
+            if i0 < 0 || i1 < 0 || i2 < 0 {
+                return table_new_i64()
+            }
+            var v: i64 = (i0 << 18) | (i1 << 12) | (i2 << 6)
+            table_push(t, (v >> 16) & 0xFF)
+            table_push(t, (v >> 8) & 0xFF)
+            i = i + 3
+        } else if rem == 2 {
+            var i0: i64 = b64u_idx(str_char(s, i))
+            var i1: i64 = b64u_idx(str_char(s, i + 1))
+            if i0 < 0 || i1 < 0 {
+                return table_new_i64()
+            }
+            var v: i64 = (i0 << 18) | (i1 << 12)
+            table_push(t, (v >> 16) & 0xFF)
+            i = i + 2
+        } else {
+            // rem == 1：单个残留字符，非法
+            return table_new_i64()
+        }
+    }
+    return t
+}
+
+// ==================== 密钥 ====================
+
+// secret（base64url 字符串）→ HMAC 密钥字节表。解码失败返回空表（调用方判错）。
+func secret_bytes(secret: string) -> table<i64> {
+    return b64u_decode(secret)
+}
+
+// ==================== exp 注入 ====================
+
+// 取字符串倒数一个码点是否等于 ch（用于判断空对象省略逗号）。
+func ends_with(s: string, ch: string) -> bool {
+    var n: i64 = str_len(s)
+    if n == 0 {
+        return false
+    }
+    return str_char(s, n - 1) == ch
+}
+
+// 截取字符串 [a, b)（码点区间）。
+func cpsubstr(s: string, a: i64, b: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = a
+    while i < b {
+        sb_append(sb, str_char(s, i))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 最后一个 '}' 的码点下标；无返回值返回 -1。
+func last_brace(s: string) -> i64 {
+    var n: i64 = str_len(s)
+    var i: i64 = n - 1
+    while i >= 0 {
+        if str_char(s, i) == "}" {
+            return i
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+// 向 claims_json 注入 exp 为 JSON 数字 gexp。gexp=0 时原样返回。
+// 若 claims 已含 exp 且值 == gexp，返回原文（支持精确向量对撞）；否则在对象末尾追加
+// "exp" 字段——json.obj_get 对重复键按后者覆盖（见 json.tie 头局限 5）。
+// 失败（不可解析/非对象）返回 "" 并置 g_err。
+func inject_exp(claims: string, gexp: i64) -> string {
+    if gexp == 0 {
+        return claims
+    }
+    var root = json.parse(claims)
+    if root < 0 {
+        g_err = "jwt: claims JSON 解析失败: " + json.err_msg()
+        return ""
+    }
+    var en = json.obj_get(root, "exp")
+    if en >= 0 && json.type_of(en) == 2 && json.int_val(en) == gexp {
+        return claims
+    }
+    var lb = last_brace(claims)
+    if lb < 0 {
+        g_err = "jwt: claims 非 JSON 对象，无法注入 exp"
+        return ""
+    }
+    var content = cpsubstr(claims, 0, lb)
+    var post: string = ""
+    if ends_with(content, "{") {
+        post = "\"exp\":" + to_string(gexp)
+    } else {
+        post = ",\"exp\":" + to_string(gexp)
+    }
+    return content + post + "}"
+}
+
+// ==================== 编码 ====================
+
+// 计算签名：对 signing_input 求 HMAC-SHA256，返回摘要字节表。
+// 密钥 = b64u_decode(secret) 字节；输入 = header/payload 的 b64u 拼接串（ASCII）。
+func sign_bytes(secret: string, input: string) -> table<i64> {
+    var key = b64u_decode(secret)
+    var hm = hmac.hmac_sha256(bytes_to_hex(key), ascii_to_hex(input))
+    return hex_to_bytes(hm)
+}
+
+// 构造 JWT：header 固定 {"alg":"HS256","typ":"JWT"}；gexp=0 不带 exp，否则注入。
+// 返回 token（input.sig）；失败返回 "" 并置 g_err。
+pub func encode(secret: string, claims_json: string, gexp: i64) -> string {
+    g_err = ""
+    var payload = inject_exp(claims_json, gexp)
+    if str_len(payload) == 0 && g_exp_fail(claims_json, gexp) {
+        return ""
+    }
+    var header = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
+    var hb = str_to_bytes(header)
+    var pb = str_to_bytes(payload)
+    var hed = b64u_encode(hb)
+    var ped = b64u_encode(pb)
+    var input = hed + "." + ped
+    var sig = sign_bytes(secret, input)
+    if len(sig) == 0 {
+        g_err = "jwt: 密钥解码失败或签名计算失败"
+        return ""
+    }
+    return input + "." + b64u_encode(sig)
+}
+
+// encode 辅助：claims 注入失败（g_err 已置）时返回 true，供 encode 判定空 payload。
+func g_exp_fail(claims: string, gexp: i64) -> bool {
+    if gexp != 0 {
+        return str_len(g_err) > 0
+    }
+    return false
+}
+
+// ==================== 验证 ====================
+
+// 按 '.' 切分 token 为段表（base64url/'.' 均 ASCII，字节级扫描安全）。
+func split_dot(s: string) -> table<string> {
+    var out = table_new_string()
+    var sb = string_builder()
+    var n: i64 = len(s)
+    var i: i64 = 0
+    while i < n {
+        var b: i64 = str_byte(s, i)
+        if b == 46 {
+            table_push(out, sb_build(sb))
+            sb = string_builder()
+        } else {
+            sb_append_byte(sb, b)
+        }
+        i = i + 1
+    }
+    table_push(out, sb_build(sb))
+    return out
+}
+
+// 校验 token；返回 0（有效）或负码（见头注释错误码表）。last_err() 附原文。
+pub func verify(token: string, secret: string) -> i64 {
+    g_err = ""
+    if len(token) == 0 {
+        g_err = "jwt: 空 token（段数 != 3，-1）"
+        return -1
+    }
+    var seg = split_dot(token)
+    if len(seg) != 3 {
+        g_err = "jwt: token 段数 != 3（" + to_string(len(seg)) + " 段）"
+        return -1
+    }
+    // 1) header 段
+    var hb = b64u_decode(seg[0])
+    if len(hb) == 0 && len(seg[0]) > 0 {
+        g_err = "jwt: header 段 base64url 解码失败（-2）"
+        return -2
+    }
+    if !all_ascii(hb) {
+        g_err = "jwt: header 段非 ASCII（-2）"
+        return -2
+    }
+    var hstr = bytes_to_str(hb)
+    var hroot = json.parse(hstr)
+    if hroot < 0 {
+        g_err = "jwt: header JSON 解析失败（-3）"
+        return -3
+    }
+    var alg_node = json.obj_get(hroot, "alg")
+    if json.str_val(alg_node) != "HS256" {
+        g_err = "jwt: alg != HS256（RS256 暂缓，-3）"
+        return -3
+    }
+    // 2) 签名段（先于 payload JSON 解析，篡改 payload 时先命中 -4）
+    var sig = b64u_decode(seg[2])
+    if len(sig) == 0 && len(seg[2]) > 0 {
+        g_err = "jwt: 签名段 base64url 解码失败（-2）"
+        return -2
+    }
+    var input = seg[0] + "." + seg[1]
+    if !bytes_equal(sig, sign_bytes(secret, input)) {
+        g_err = "jwt: 签名不匹配（token 被篡改或密钥不符，-4）"
+        return -4
+    }
+    // 3) payload 段（时间字段）
+    var pb = b64u_decode(seg[1])
+    if len(pb) == 0 && len(seg[1]) > 0 {
+        g_err = "jwt: payload 段 base64url 解码失败（-2）"
+        return -2
+    }
+    var pstr = bytes_to_str(pb)
+    var proot = json.parse(pstr)
+    if proot < 0 {
+        g_err = "jwt: payload JSON 解析失败（-2）"
+        return -2
+    }
+    var now = time.now()
+    var exp_node = json.obj_get(proot, "exp")
+    if exp_node >= 0 && json.type_of(exp_node) == 2 && json.int_val(exp_node) <= now {
+        g_err = "jwt: token 已过期（exp <= now，-5）"
+        return -5
+    }
+    var nbf_node = json.obj_get(proot, "nbf")
+    if nbf_node >= 0 && json.type_of(nbf_node) == 2 && json.int_val(nbf_node) > now {
+        g_err = "jwt: token 未生效（nbf > now，-6）"
+        return -6
+    }
+    g_err = ""
+    return 0
+}
+
+// 返回 token 的 payload 段 JSON 文本（第 2 段解码后的字符串）。
+// 段数不足 / 解码失败 / 非 payload 时返回 ""。
+pub func claims(token: string) -> string {
+    var seg = split_dot(token)
+    if len(seg) < 2 {
+        return ""
+    }
+    var pb = b64u_decode(seg[1])
+    if len(pb) == 0 && len(seg[1]) > 0 {
+        return ""
+    }
+    return bytes_to_str(pb)
+}
+
+// 最近一次失败错误原文；成功时为空串。
+pub func last_err() -> string {
+    return g_err
+}
+
+}   // namespace jwt
