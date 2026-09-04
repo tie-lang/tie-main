@@ -1,0 +1,359 @@
+type tie<class>
+// ============================================================================
+// dns.tie：标准库——DNS 解析客户端（命名空间 dns，纯 tie）p.6.6.9
+// ============================================================================
+// 数据平面（Data plane）：DNS 报文全部以 table<i64>（元素 0..255）承载原始字节
+// （tie 字符串不能承载 ≥0x80 原始字节）；本库只对需按文本语义匹配/输出的片段
+// （域名、TXT 文本、十六进制地址）局部转 string。
+//
+// 功能（Features）：
+//   - encode_query(name, rtype, id)：构造标准 DNS 查询字节（head + QNAME +
+//     qtype + qclass），供 UDP 发送 / 探针逐字节断言。
+//   - parse_response(bytes, qname)：解析应答——校验头（QR=1、RCODE==0）、
+//     读 qd/an 计数、逐 ANSWER RR 解出记录文本（A/AAAA/TXT/MX/NS），支持
+//     RR 名与 MX/NS 负载内的 0xC0 指针解压（跨节引用 + 防环守卫）。
+//   - query(name, rtype, server, pport, steps)：完整 UDP 查询（id 模块级自增），
+//     发送并解析应答，返回记录文本表。
+//
+// 记录文本格式（Record text）：
+//   A    → "a.b.c.d"（点分四段）
+//   AAAA → 8 组每组 2 字节小写 4 位 hex、冒号分隔（如 "2606:4700:4700:0:0:0:0:64"）
+//   TXT  → 各长度字节段的文本（多段以单空格串接）
+//   MX   → "prio host"（prio 十进制 + 空格 + 主机名）
+//   NS   → 主机名
+//   域名一律带尾点（"example.com."）；根名（单 0 标签）→ 空串。
+//
+// 语言约束（Language constraints）：
+//   - tie 保留字 port/text 参数命名用 pport / rdtext 风格。
+//   - 性能：报文构建单遍 table_push（摊销 O(1)）；解析下标推进（单遍+指针跳），
+//     禁止逐字节字符串拼接（O(n^2)）；指针链以跳转次数上限防环。
+//   - 非 ASCII 域（IDN）不做国际化编码（本库不处理）；
+//     域名/标签长度假定合法（单标签 ≤63，此处不校验）。
+//
+// 局限（Limits）：
+//   - query 的 steps 为「读到匹配应答前最多读几包数据报」的守卫；底层
+//     net.udp_recv_bytes 为阻塞读，若 server 无响应单包会阻塞等待（无超时）。
+//   - 只解析 ANSWER 节；授权/附加节（NSCOUNT/ARCOUNT）不遍历。
+// ============================================================================
+
+import "./net.tie" as net
+import "./string.tie" as str
+
+// 模块级查询 id 自增源（0 起始，每次 +1 并 & 0xFFFF，可回绕）。
+// 首位调用懒初始化（对齐 std/httpc cookie jar 的全局变量守卫约定）。
+var g_qid: i64 = 0
+var g_qid_ready: bool = false
+
+namespace dns {
+
+// 下一个查询 id（低位 0..0xFFFF，自增回绕）。
+pub func next_id() -> i64 {
+    if g_qid_ready == false {
+        g_qid = 0
+        g_qid_ready = true
+    }
+    var v = g_qid
+    g_qid = (g_qid + 1) & 0xFFFF
+    return v
+}
+
+// ============================================================================
+// 一、字节 / 文本小工具
+// ============================================================================
+
+// 字符串按字节追加进字节表（str_byte 按字节索引，ASCII 段 = 码点）。
+func append_str(t: table<i64>, s: string) {
+    var n: i64 = len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+}
+
+// v（0..0xFFFF）→ 小写 4 位十六进制字符串。
+func hex4(v: i64) -> string {
+    var sb = string_builder()
+    var sh: i64 = 12
+    while sh >= 0 {
+        var d = (v >> sh) & 0x0F
+        if d < 10 {
+            sb_append_byte(sb, 0x30 + d)
+        } else {
+            sb_append_byte(sb, 0x61 + d - 10)
+        }
+        sh = sh - 4
+    }
+    return sb_build(sb)
+}
+
+// ============================================================================
+// 二、报文构建
+// ============================================================================
+
+// 构造 DNS 查询字节：head(12B) + QNAME + qtype(BE) + qclass=1。
+// 头：id(BE)、flags=0x0100(RD)、qd=1、an=ns=ar=0。
+// name 形如 "a.b" → 标签 1 'a' 1 'b' 0（非 ASCII 域不处理；根名 "" → 单 0）。
+pub func encode_query(name: string, rtype: i64, id: i64) -> table<i64> {
+    var q = table_new_i64()
+    // ---- header ----
+    table_push(q, (id >> 8) & 0xFF)
+    table_push(q, id & 0xFF)
+    table_push(q, 0x01)   // flags hi = RD(0x0100)
+    table_push(q, 0x00)
+    table_push(q, 0x00)   // qdcount = 1
+    table_push(q, 0x01)
+    table_push(q, 0x00)   // ancount = 0
+    table_push(q, 0x00)
+    table_push(q, 0x00)   // nscount = 0
+    table_push(q, 0x00)
+    table_push(q, 0x00)   // arcount = 0
+    table_push(q, 0x00)
+    // ---- QNAME（标签 + 根）----
+    var labels = str.split(name, ".")
+    var i: i64 = 0
+    while i < len(labels) {
+        var lab = labels[i]
+        if str_len(lab) == 0 {
+            i = i + 1
+            continue
+        }
+        table_push(q, str_len(lab))
+        append_str(q, lab)
+        i = i + 1
+    }
+    table_push(q, 0x00)   // 根标签
+    // ---- qtype + qclass ----
+    table_push(q, (rtype >> 8) & 0xFF)
+    table_push(q, rtype & 0xFF)
+    table_push(q, 0x00)
+    table_push(q, 0x01)
+    return q
+}
+
+// ============================================================================
+// 三、应答解析
+// ============================================================================
+
+// 解析位于 pos 的（可压缩）域名：返回 (域名文本, 该记录帧内消耗字节数)。
+// 域名文本带尾点；消耗字节数 = 帧内字节（标签序列 + 终止 0，或标签 + 2 字节指针），
+// 不含指针所指远端数据。指针（0xC0 | 14 位偏移）可跨节引用（如指向偏移 12 的
+// 查询名）；跳转次数 ≥128 视为环/过深 → 提前终止，消耗置 -1（调用方中止该包）。
+func decode_name(b: table<i64>, pos: i64) -> (string, i64) {
+    var sb = string_builder()
+    var n = len(b)
+    var consumed: i64 = 0
+    var cur: i64 = pos
+    var count: i64 = 1    // 仅首段帧内计入（count==1）；遇指针后置 2
+    var jumps: i64 = 0
+    var stop = false
+    while stop == false && jumps < 128 {
+        if cur < 0 || cur >= n {
+            return (sb_build(sb), -1)
+        }
+        var lb = b[cur]
+        if lb == 0x00 {
+            if count == 1 {
+                consumed = cur - pos + 1
+            }
+            stop = true
+            break
+        }
+        if (lb & 0xC0) == 0xC0 {
+            if cur + 1 >= n {
+                return (sb_build(sb), -1)
+            }
+            if count == 1 {
+                consumed = cur - pos + 2
+                count = 2
+            }
+            var off = ((lb & 0x3F) << 8) | b[cur + 1]
+            cur = off
+            jumps = jumps + 1
+            continue
+        }
+        if (lb & 0xC0) != 0 {
+            // 01/10 为未用地址形式 → 视为非法，中止
+            if count == 1 {
+                consumed = -1
+            }
+            stop = true
+            break
+        }
+        if cur + 1 + lb > n {
+            return (sb_build(sb), -1)
+        }
+        var i: i64 = 0
+        while i < lb {
+            sb_append_byte(sb, b[cur + 1 + i])
+            i = i + 1
+        }
+        sb_append(sb, ".")
+        cur = cur + 1 + lb
+    }
+    return (sb_build(sb), consumed)
+}
+
+// 点分四段：rdata 起 4 字节 → "a.b.c.d"。
+func ipv4_text(b: table<i64>, off: i64) -> string {
+    return to_string(b[off]) + "." + to_string(b[off + 1]) + "." +
+        to_string(b[off + 2]) + "." + to_string(b[off + 3])
+}
+
+// 8 组每组 2 字节小写 hex、冒号分隔。
+func ipv6_text(b: table<i64>, off: i64) -> string {
+    var sb = string_builder()
+    var g: i64 = 0
+    while g < 8 {
+        if g > 0 {
+            sb_append(sb, ":")
+        }
+        var v = (b[off + g * 2] << 8) | b[off + g * 2 + 1]
+        sb_append(sb, hex4(v))
+        g = g + 1
+    }
+    return sb_build(sb)
+}
+
+// MX：2 字节 prio(BE) + （可含指针的）主机名 → "prio host"。
+func mx_text(b: table<i64>, off: i64) -> string {
+    var prio = (b[off] << 8) | b[off + 1]
+    var (hname, _) = decode_name(b, off + 2)
+    return to_string(prio) + " " + hname
+}
+
+// TXT：rdata 起 rdlen 内一串 <len><text> 段，多段以单空格串接。
+func txt_text(b: table<i64>, off: i64, rdlen: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    var seg: i64 = 0
+    while i < rdlen {
+        var sl = b[off + i]
+        if i + 1 + sl > rdlen {
+            break
+        }
+        if seg > 0 {
+            sb_append(sb, " ")
+        }
+        var k: i64 = 0
+        while k < sl {
+            sb_append_byte(sb, b[off + i + 1 + k])
+            k = k + 1
+        }
+        i = i + 1 + sl
+        seg = seg + 1
+    }
+    return sb_build(sb)
+}
+
+// 解析应答字节 → 记录文本表。
+// 头校验：QR=1（应答）、RCODE==0；读 qd（跳 question）与 an（答案计数）。
+// 逐 ANSWER RR：名字（支持 0xC0 指针解压）→ type/class/ttl/rdlength → rdata。
+// 仅把 IN 类下已识别类型（A/AAAA/TXT/MX/NS）压入结果；未知/不可解析 RR 跳过。
+// qname 参数保留供调用方语义对齐（本实现不按名过滤）。
+pub func parse_response(b: table<i64>, qname: string) -> table<string> {
+    var out = table_new_string()
+    var n = len(b)
+    if n < 12 {
+        return out
+    }
+    var flags = (b[2] << 8) | b[3]
+    var qr = (flags >> 15) & 1
+    var rcode = flags & 0x0F
+    if qr != 1 || rcode != 0 {
+        return out
+    }
+    var qd = (b[4] << 8) | b[5]
+    var an = (b[6] << 8) | b[7]
+    var pos: i64 = 12
+    // 跳 question 节（每问题：名字 + qtype/qclass 4 字节）
+    var q: i64 = 0
+    while q < qd {
+        var (qn, cn) = decode_name(b, pos)
+        if cn <= 0 {
+            return out
+        }
+        pos = pos + cn
+        if pos + 4 > n {
+            return out
+        }
+        pos = pos + 4
+        q = q + 1
+    }
+    // 逐 ANSWER RR
+    var a: i64 = 0
+    while a < an && pos + 10 <= n {
+        var (nm, cn2) = decode_name(b, pos)
+        if cn2 <= 0 {
+            break
+        }
+        pos = pos + cn2
+        if pos + 10 > n {
+            break
+        }
+        var rtype = (b[pos] << 8) | b[pos + 1]
+        var rclass = (b[pos + 2] << 8) | b[pos + 3]
+        var rdlen = (b[pos + 8] << 8) | b[pos + 9]
+        var rdata = pos + 10
+        if rdata + rdlen > n {
+            break
+        }
+        if rtype == 1 && rclass == 1 && rdlen == 4 {
+            table_push(out, ipv4_text(b, rdata))
+        } else if rtype == 28 && rclass == 1 && rdlen == 16 {
+            table_push(out, ipv6_text(b, rdata))
+        } else if rtype == 15 && rclass == 1 && rdlen >= 3 {
+            table_push(out, mx_text(b, rdata))
+        } else if rtype == 2 && rclass == 1 && rdlen >= 1 {
+            var (nsn, _) = decode_name(b, rdata)
+            table_push(out, nsn)
+        } else if rtype == 16 && rclass == 1 && rdlen >= 1 {
+            table_push(out, txt_text(b, rdata, rdlen))
+        }
+        pos = rdata + rdlen
+        a = a + 1
+    }
+    return out
+}
+
+// ============================================================================
+// 四、真实 UDP 查询
+// ============================================================================
+
+// 发送 DNS 查询到 server:pport 并解析应答。返回记录文本表（失败/无应答 = 空表）。
+// steps：读到匹配应答前最多读取的数据报个数（守卫上限）。
+// A=1/AAAA=28/TXT=16/MX=15/NS=2。
+pub func query(name: string, rtype: i64, server: string, pport: i64, steps: i64) -> table<string> {
+    var qid = next_id()
+    var q = encode_query(name, rtype, qid)
+    var h = net.udp_bind(0)
+    var empty = table_new_string()
+    if h < 0 {
+        return empty
+    }
+    var sent = net.udp_send_bytes(h, server, pport, q)
+    if sent < 0 {
+        net.close(h)
+        return empty
+    }
+    var out = table_new_string()
+    var g: i64 = 0
+    while g < steps {
+        var resp = net.udp_recv_bytes(h, 65536)
+        if len(resp) == 0 {
+            break
+        }
+        if len(resp) >= 2 {
+            var rid = (resp[0] << 8) | resp[1]
+            if rid == qid {
+                out = parse_response(resp, name)
+                break
+            }
+        }
+        g = g + 1
+    }
+    net.close(h)
+    return out
+}
+
+}   // namespace dns
