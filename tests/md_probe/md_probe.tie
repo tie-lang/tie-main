@@ -1,0 +1,135 @@
+type tie<logic>
+// tests/md_probe/md_probe.tie —— p.6.6.12 验收：std/markdown 解析子集库。
+// 全离线确定性探针：覆盖各块级类型（标题/无序/有序/引用/代码块/表格/段落/分隔线）、
+// 行内标记（粗/斜/链接/行内代码嵌在段落块）、表格行列断言、代码块原样保留
+// （含换行/空格/语言标注）、畸形容错（空输入、未闭合代码块、孤立/错位符号）。
+// 期望逐条 PASS，最后一行 done，exit 0。
+import "../../std/markdown.tie" as md
+
+var fails: i64 = 0
+
+// 断言布尔条件；失败累积 fails（不立即 exit，保证全部用例被执行）。
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+func main() {
+    // ---------- 1 空输入 ----------
+    var r0 = md.parse("")
+    check(len(r0) == 0, "empty-input: zero blocks")
+
+    // ---------- 2 标题（# / ##） ----------
+    var r1 = md.parse("# Heading A\n\n## Heading B\n\n### Not heading")
+    check(md.block_count() == 3, "h: three blocks")
+    var h1a = md.block_at(0)
+    var h1b = md.block_at(1)
+    var h1c = md.block_at(2)
+    check(md.kind(h1a) == 0, "h: kind(#)==0")
+    check(md.btext(h1a) == "Heading A", "h: text(#)")
+    check(md.kind(h1b) == 1, "h: kind(##)==1")
+    check(md.btext(h1b) == "Heading B", "h: text(##)")
+    check(md.kind(h1c) == 7, "h: ### is paragraph")
+
+    // ---------- 3 无序 / 有序列表项 ----------
+    var r2 = md.parse("- apple\n* banana\n+ cherry\n\n1. first\n2) second")
+    check(md.block_count() == 5, "list: five items")
+    check(md.kind(md.block_at(0)) == 2, "list: '-' kind==2")
+    check(md.btext(md.block_at(0)) == "apple", "list: '-' text")
+    check(md.kind(md.block_at(1)) == 2, "list: '*' kind==2")
+    check(md.btext(md.block_at(1)) == "banana", "list: '*' text")
+    check(md.kind(md.block_at(2)) == 2, "list: '+' kind==2")
+    check(md.kind(md.block_at(3)) == 3, "list: '1.' kind==3")
+    check(md.btext(md.block_at(3)) == "first", "list: '1.' text")
+    check(md.extra(md.block_at(3)) == 1, "list: '1.' start num")
+    check(md.kind(md.block_at(4)) == 3, "list: '2)' kind==3")
+    check(md.extra(md.block_at(4)) == 2, "list: '2)' start num")
+
+    // ---------- 4 引用块（连续 > 行） ----------
+    var r3 = md.parse("> quote one\n> quote two\n\nplain")
+    check(md.block_count() == 2, "quote: two blocks")
+    var hq = md.block_at(0)
+    check(md.kind(hq) == 4, "quote: kind==4")
+    check(md.btext(hq) == "quote one\nquote two", "quote: joined inner text")
+
+    // ---------- 5 代码块原样保留（含语言标注 / 换行 / 空格） ----------
+    var r4 = md.parse("```python\ndef f():\n    return 1\n\n```\nafter")
+    check(md.kind(md.block_at(0)) == 5, "code: kind==5")
+    check(md.btext(md.block_at(0)) == "```python\ndef f():\n    return 1\n\n```",
+        "code: preserved verbatim with lang/indent/newline")
+    check(md.btext(md.block_at(1)) == "after", "code: following paragraph")
+
+    // ---------- 6 表格行列断言 ----------
+    var r5 = md.parse(join_table())
+    check(md.block_count() == 1, "table: one block")
+    var ht = md.block_at(0)
+    check(md.kind(ht) == 6, "table: kind==6")
+    check(md.table_cols(ht) == 3, "table: cols==3")
+    check(md.table_rows(ht) == 3, "table: rows==3 (header+2 data)")
+    check(md.cell(ht, 0, 0) == "Name", "table: cell(0,0)")
+    check(md.cell(ht, 0, 1) == "Age", "table: cell(0,1)")
+    check(md.cell(ht, 1, 0) == "Alice", "table: cell(1,0)")
+    check(md.cell(ht, 1, 2) == "F", "table: cell(1,2)")
+    check(md.cell(ht, 2, 1) == "30", "table: cell(2,1)")
+    check(md.cell(ht, 2, 2) == "M", "table: cell(2,2)")
+    check(md.cell(ht, 1, 5) == "", "table: cell col out of range")
+
+    // ---------- 7 分隔线 ----------
+    var r6 = md.parse("---\n\n***\n\ntext")
+    check(md.kind(md.block_at(0)) == 8, "hr: '---' kind==8")
+    check(md.kind(md.block_at(1)) == 8, "hr: '***' kind==8")
+    check(md.kind(md.block_at(2)) == 7, "hr: following paragraph")
+
+    // ---------- 8 行内标记（嵌在段落块） ----------
+    var tok = md.inline_tokens("a **b** c *d* [e](http://f) `g`")
+    check(len(tok) == 17, "inline: total entries == 17")
+    check(tok[0] == "0" && tok[1] == "a ", "inline: text 'a '")
+    check(tok[3] == "b", "inline: bold text")
+    check(tok[5] == " c ", "inline: text ' c '")
+    check(tok[6] == "2" && tok[7] == "d", "inline: italic 'd'")
+    check(tok[10] == "3" && tok[11] == "e" && tok[12] == "http://f",
+        "inline: link token triplet")
+    check(tok[15] == "4" && tok[16] == "g", "inline: code 'g'")
+
+    // ---------- 9 行内标记嵌在表格单元格（单层原文保留） ----------
+    var tok2 = md.inline_tokens("**bold slow**")
+    check(len(tok2) == 2 && tok2[0] == "1" && tok2[1] == "bold slow",
+        "inline: bold inner preserved")
+
+    // ---------- 10 畸形容错 ----------
+    // 未闭合代码块：容忍至末尾不挂死
+    var r7 = md.parse("```c\nint x;")
+    check(md.block_count() == 1 && md.kind(md.block_at(0)) == 5,
+        "tolerate: unclosed code fence")
+    check(md.btext(md.block_at(0)) == "```c\nint x;", "tolerate: unclosed fence text")
+    // 孤立反引号回落为普通文本
+    var tok3 = md.inline_tokens("a ` b")
+    check(len(tok3) == 4 && tok3[0] == "0" && tok3[1] == "a " && tok3[3] == "` b",
+        "tolerate: lonely backtick as text tokens")
+    // 错位符号（孤 *、孤 ]、无 url 的链接）回落
+    var tok4 = md.inline_tokens("* lone [text] and x yy")
+    check(len(tok4) == 2 && tok4[0] == "0", "tolerate: malformed markers as text")
+    // 表格畸形（行行数不足列数 → 补空串；越界访问安全）
+    var r8 = md.parse("|a|b|\n| c |")
+    check(md.kind(md.block_at(0)) == 6, "tolerate: raggedy table parses")
+    check(md.table_cols(md.block_at(0)) == 2, "tolerate: table cols==2")
+    check(md.cell(md.block_at(0), 1, 1) == "", "tolerate: short row padded empty")
+    // 全除错输入不挂死
+    var junk = md.parse("##\n*** * *\n> >\n| | | |")
+    check(md.block_count() >= 1, "tolerate: junk input no crash")
+
+    if fails > 0 {
+        println("md 探针部分失败 fails=" + to_string(fails))
+        exit(1)
+    }
+    println("done")
+}
+
+// 表格块测试文本。#include 帮助行以代码块包起来避免歧义，此处直接拼串。
+func join_table() -> string {
+    return "| Name | Age | Sex |\n| --- | --- | --- |\n| Alice | 25 | F |\n| Bob | 30 | M |"
+}
