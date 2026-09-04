@@ -1,0 +1,260 @@
+type tie<class>
+// ============================================================================
+// sqlite.tie：标准库——SQLite 驱动（命名空间 sqlite，C ABI 桥 + 动态加载） p.6.6.20
+// Windows 10+ 自带 winsqlite3.dll（System32，导出 sqlite3_* 符号），但 toolchain
+// 无对应 .lib 可静态链——本库经语言级动态加载原语（p.6.6.20 编译器新增）在运行期
+// LoadLibraryW + GetProcAddress 解析 sqlite3_* 并间接调用，零 .lib、零 -l 附加。
+//
+// 底层原语（语言内置，非 unsafe extern fn）：
+//   load_library(name)->i64      LoadLibraryW 模块句柄（失败 0）
+//   get_proc(handle, name)->i64   GetProcAddress 函数地址（失败 0）
+//   dyn_call(addr, a1..a5)->i64  调「int 返回」C 函数（sqlite3_* int 码，zext i64）
+//   dyn_call_p(addr, a1..a5)->i64 调「完整 64 位返回」C 函数（指针/句柄）
+//   cstr_to_string(addr)->string  NUL 结尾 C 字符串（UTF-8）→ tie 字符串
+// 字符串实参按 const char* 零拷贝直传（tie 字符串 {ptr,len} 布局 + 尾 NUL 兼容 C）；
+// 指针形参用 addr_of(x)+ptr_to_int 取槽地址传 i64（须 unsafe 块），可空指针传 0。
+//
+// 接口（Interface）：
+//   open(path) -> i64        打开/创建数据库（":memory:" 支持）；失败 -1 + last_err()
+//   exec(conn, sql) -> i64   执行无结果 SQL（DDL/DML）；0 成功 / 负码失败 + last_err()
+//   query(conn, sql) -> i64  预编译查询 → 结果句柄（失败 -1 + last_err）
+//   step(qh) -> i64          行迭代：0=有行 / 1=完成（已自动 finalize）/ -1=错误 + last_err
+//   col_count(qh) -> i64     列数
+//   col_name(qh, i) -> string 列名（UTF-8）
+//   col_int(qh, i) -> i64    整型列值（SQLITE_INTEGER）
+//   col_str(qh, i) -> string 文本列值（SQLITE_TEXT，UTF-8）
+//   close(conn) -> i64       关闭连接（0 成功）
+//   last_err() -> string     最近一次失败的错误消息（无失败返回空串）
+//
+// 状态/错误约定（Error contract）：
+//   - exec 失败：sqlite3_exec 经 errmsg 槽回填分配的错误串 → cstr_to_string 后
+//     sqlite3_free 释放，存 g_last_err；
+//   - query/step 失败：sqlite3_errmsg(conn) 静态串 → cstr_to_string，存 g_last_err；
+//   - step 返回 SQLITE_DONE(101) 时自动 sqlite3_finalize 释放语句（完成即回收）；
+//     中途放弃迭代的语句会泄漏（最小 API，注释声明）。
+//   - 本模块一次性解析 12 个符号，全局句柄/地址在文件顶层（namespace 内不能 var）。
+//
+// prepare 单独暴露为可选（prepare/step/column_* 已内聚在 query 流程）；本版不单列
+// prepare，需要更精细控制的调用方可自行经动态加载原语组合（见 docs）。
+// 验收：tests/sqlite_probe/sqlite_probe.tie（纯 ":memory:" 离线，≥15 断言全 PASS）。
+// ============================================================================
+
+// ---- 模块级全局（文件顶层；namespace 内不能声明 var）----
+var g_loaded: bool = false          // winsqlite3.dll 已加载 + 符号已解析
+var g_handle: i64 = 0               // LoadLibraryW 模块句柄
+var g_open: i64 = 0                 // sqlite3_open
+var g_close: i64 = 0                // sqlite3_close
+var g_exec: i64 = 0                 // sqlite3_exec
+var g_prepare: i64 = 0              // sqlite3_prepare_v2
+var g_step: i64 = 0                 // sqlite3_step
+var g_col_count: i64 = 0            // sqlite3_column_count
+var g_col_name: i64 = 0             // sqlite3_column_name
+var g_col_int: i64 = 0              // sqlite3_column_int
+var g_col_text: i64 = 0             // sqlite3_column_text
+var g_finalize: i64 = 0             // sqlite3_finalize
+var g_errmsg: i64 = 0               // sqlite3_errmsg
+var g_free: i64 = 0                 // sqlite3_free
+var g_last_err: string = ""         // 最近一次失败的错误消息
+
+namespace sqlite {
+
+    // 解析一个 sqlite3_* 导出符号（失败 0）。
+    func resolve(h: i64, name: string) -> i64 {
+        return get_proc(h, name)
+    }
+
+    // 确保 winsqlite3.dll 已加载 + 12 个符号已解析；失败置 g_last_err 并返回 false。
+    // 坑（RCA）：LoadLibraryW("winsqlite3.dll") 依赖 DLL 搜索路径，System32 是
+    // 系统目录应命中；若被搜索顺序干扰，回退绝对路径 C:\Windows\System32。
+    func ensure_loaded() -> bool {
+        if g_loaded {
+            return true
+        }
+        var h = load_library("winsqlite3.dll")
+        if h == 0 {
+            h = load_library("C:\\Windows\\System32\\winsqlite3.dll")
+        }
+        if h == 0 {
+            g_last_err = "winsqlite3.dll 加载失败（LoadLibraryW 返回 0）"
+            return false
+        }
+        g_handle = h
+        g_open = resolve(h, "sqlite3_open")
+        g_close = resolve(h, "sqlite3_close")
+        g_exec = resolve(h, "sqlite3_exec")
+        g_prepare = resolve(h, "sqlite3_prepare_v2")
+        g_step = resolve(h, "sqlite3_step")
+        g_col_count = resolve(h, "sqlite3_column_count")
+        g_col_name = resolve(h, "sqlite3_column_name")
+        g_col_int = resolve(h, "sqlite3_column_int")
+        g_col_text = resolve(h, "sqlite3_column_text")
+        g_finalize = resolve(h, "sqlite3_finalize")
+        g_errmsg = resolve(h, "sqlite3_errmsg")
+        g_free = resolve(h, "sqlite3_free")
+        if g_open == 0 || g_close == 0 || g_exec == 0 || g_prepare == 0 ||
+            g_step == 0 || g_col_count == 0 || g_col_name == 0 ||
+            g_col_int == 0 || g_col_text == 0 || g_finalize == 0 ||
+            g_errmsg == 0 || g_free == 0 {
+            g_last_err = "winsqlite3.dll 符号解析失败（GetProcAddress 返回 0）"
+            return false
+        }
+        g_loaded = true
+        return true
+    }
+
+    // sqlite3_errmsg(db) → g_last_err（query/step/open 失败统一入口）。
+    // errmsg 返回指向 sqlite 内部静态缓冲的 const char*，须立即 cstr_to_string 拷贝。
+    func capture_err(conn: i64) {
+        if g_errmsg != 0 {
+            var p = dyn_call_p(g_errmsg, conn, 0, 0, 0, 0)
+            if p != 0 {
+                g_last_err = cstr_to_string(p)
+                return
+            }
+        }
+        g_last_err = "unknown sqlite error"
+    }
+
+    // 打开数据库连接：":memory:" 支持；失败 -1 + last_err()。
+    // sqlite3_open(filename, &ppDb)：ppDb 槽由 addr_of(db) 提供，open 直接把句柄
+    // 写进 db 槽（零拷贝）。
+    pub func open(path: string) -> i64 {
+        if !ensure_loaded() {
+            return -1
+        }
+        var db: i64 = 0
+        var rc: i64 = 0
+        unsafe {
+            rc = dyn_call(g_open, path, ptr_to_int(addr_of(db)), 0, 0, 0)
+        }
+        if rc != 0 {
+            if db != 0 {
+                capture_err(db)
+            } else {
+                g_last_err = "sqlite3_open failed code " + to_string(rc)
+            }
+            return -1
+        }
+        return db
+    }
+
+    // 执行无结果 SQL（DDL/DML，如 CREATE/INSERT/UPDATE）；0 成功 / 负码失败 + last_err。
+    // sqlite3_exec(db, sql, cb=NULL, arg=NULL, &errmsg)：errmsg 槽接收分配的错误串，
+    // 失败时拷贝到 g_last_err 后 sqlite3_free 释放（避免泄漏）。
+    pub func exec(conn: i64, sql: string) -> i64 {
+        if !ensure_loaded() || conn == 0 {
+            g_last_err = "exec: 未打开连接"
+            return -1
+        }
+        var em: i64 = 0
+        var rc: i64 = 0
+        unsafe {
+            rc = dyn_call(g_exec, conn, sql, 0, 0, ptr_to_int(addr_of(em)))
+        }
+        if rc != 0 {
+            if em != 0 {
+                g_last_err = cstr_to_string(em)
+                dyn_call(g_free, em, 0, 0, 0, 0)
+            } else {
+                capture_err(conn)
+            }
+            return 0 - rc
+        }
+        return 0
+    }
+
+    // 预编译查询（SELECT）→ 结果句柄（即 sqlite3_stmt*）；失败 -1 + last_err。
+    // sqlite3_prepare_v2(db, sql, nByte=-1, &ppStmt, pzTail=NULL)。
+    pub func query(conn: i64, sql: string) -> i64 {
+        if !ensure_loaded() || conn == 0 {
+            g_last_err = "query: 未打开连接"
+            return -1
+        }
+        var st: i64 = 0
+        var rc: i64 = 0
+        unsafe {
+            rc = dyn_call(g_prepare, conn, sql, -1, ptr_to_int(addr_of(st)), 0)
+        }
+        if rc != 0 {
+            if st != 0 {
+                dyn_call(g_finalize, st, 0, 0, 0, 0)
+            }
+            capture_err(conn)
+            return -1
+        }
+        return st
+    }
+
+    // 迭代一行：0=有行（可读列）/ 1=完成（语句已 finalize）/ -1=错误 + last_err。
+    pub func step(qh: i64) -> i64 {
+        if qh == 0 {
+            g_last_err = "step: 无效结果句柄"
+            return -1
+        }
+        var rc = dyn_call(g_step, qh, 0, 0, 0, 0)
+        if rc == 100 {            // SQLITE_ROW
+            return 0
+        }
+        if rc == 101 {            // SQLITE_DONE
+            dyn_call(g_finalize, qh, 0, 0, 0, 0)
+            return 1
+        }
+        g_last_err = "sqlite3_step code " + to_string(rc)
+        dyn_call(g_finalize, qh, 0, 0, 0, 0)
+        return -1
+    }
+
+    // 列数（sqlite3_column_count）。
+    pub func col_count(qh: i64) -> i64 {
+        if qh == 0 {
+            return 0
+        }
+        return dyn_call(g_col_count, qh, 0, 0, 0, 0)
+    }
+
+    // 列名（sqlite3_column_name 返回 const char*，dyn_call_p 拿 64 位指针）。
+    pub func col_name(qh: i64, i: i64) -> string {
+        if qh == 0 {
+            return ""
+        }
+        var p = dyn_call_p(g_col_name, qh, i, 0, 0, 0)
+        if p == 0 {
+            return ""
+        }
+        return cstr_to_string(p)
+    }
+
+    // 整型列值（sqlite3_column_int 返回 int）。
+    pub func col_int(qh: i64, i: i64) -> i64 {
+        if qh == 0 {
+            return 0
+        }
+        return dyn_call(g_col_int, qh, i, 0, 0, 0)
+    }
+
+    // 文本列值（sqlite3_column_text 返回 const unsigned char*，UTF-8）。
+    pub func col_str(qh: i64, i: i64) -> string {
+        if qh == 0 {
+            return ""
+        }
+        var p = dyn_call_p(g_col_text, qh, i, 0, 0, 0)
+        if p == 0 {
+            return ""
+        }
+        return cstr_to_string(p)
+    }
+
+    // 关闭连接（sqlite3_close；0 成功）。
+    pub func close(conn: i64) -> i64 {
+        if !ensure_loaded() || conn == 0 {
+            return -1
+        }
+        return dyn_call(g_close, conn, 0, 0, 0, 0)
+    }
+
+    // 最近一次失败的错误消息（无失败返回空串）。
+    pub func last_err() -> string {
+        return g_last_err
+    }
+
+}   // namespace sqlite

@@ -410,6 +410,11 @@ func is_builtin_name(nm: string) -> bool {
         nm == "net_udp_recv_bytes" || nm == "net_udp_send_bytes" {
         return true
     }
+    // ---------- 动态加载原语（p.6.6.20 std/sqlite：winsqlite3.dll C ABI 桥）----------
+    if nm == "load_library" || nm == "get_proc" ||
+        nm == "dyn_call" || nm == "dyn_call_p" || nm == "cstr_to_string" {
+        return true
+    }
     if nm == "to_string" || nm == "parse_int" || nm == "parse_float" || nm == "parse_trit" ||
         nm == "to_trit" || nm == "trit_val" {
         return true
@@ -1602,6 +1607,137 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         } else {
             g_builtin_res = tig_net_close(avs[0])
         }
+        return 0
+    }
+    // ---------- 动态加载原语（p.6.6.20 std/sqlite：winsqlite3.dll C ABI 桥）----------
+    // load_library(name) -> i64：宽名缓冲 + LoadLibraryW（kernel32；失败 0）。
+    // get_proc(handle, name) -> i64：GetProcAddress（kernel32；失败 0）。
+    // dyn_call / dyn_call_p（addr + 5×i64 实参）-> i64：op73 动态 C 调用
+    // （字符串实参按 TK_STR 原样传 ptr = const char*；整数传 i64；可空指针传 0）。
+    // cstr_to_string(addr) -> string：NUL 结尾 C 字符串 → tie 字符串。
+    if nm == "load_library" {
+        var namev = tig_expr(call_arg(id, 0))
+        if namev < 0 {
+            return -1
+        }
+        var w = tig_wide16(namev)
+        var h = tig_ext_call1("LoadLibraryW", w, types.named(TK_STR), types.named(TK_I64))
+        g_builtin_res = h
+        return 0
+    }
+    if nm == "get_proc" {
+        var hnd = tig_expr(call_arg(id, 0))
+        if hnd < 0 {
+            return -1
+        }
+        var nmv = tig_expr(call_arg(id, 1))
+        if nmv < 0 {
+            return -1
+        }
+        var hty = node_types[call_arg(id, 0)]
+        if hty != types.named(TK_I64) && hty != types.named(TK_U64) && hty >= 0 {
+            var sh = tig_sext(hnd, hty, types.named(TK_I64))
+            if sh < 0 {
+                return -1
+            }
+            hnd = sh
+        }
+        var ats: table<i64> = table_new_i64()
+        var avs: table<i64> = table_new_i64()
+        table_push(ats, types.named(TK_I64)); table_push(avs, hnd)
+        table_push(ats, types.named(TK_STR)); table_push(avs, nmv)
+        var p = tig_ext_call_typed("GetProcAddress", ats, avs, types.named(TK_I64))
+        g_builtin_res = p
+        return 0
+    }
+    if nm == "dyn_call" || nm == "dyn_call_p" {
+        var T64 = types.named(TK_I64)
+        var retmode: i64 = 0
+        if nm == "dyn_call_p" {
+            retmode = 1
+        }
+        // 先求值全部 6 个实参（避免 add_operand 段交错：常量/求值必须发生在
+        // 一切 new_inst+add_operand 序列之前）
+        var avs: table<i64> = table_new_i64()
+        var atys: table<i64> = table_new_i64()
+        var k: i64 = 0
+        while k < 6 {
+            var anode = call_arg(id, k)
+            var av = tig_expr(anode)
+            if av < 0 {
+                return -1
+            }
+            var at = node_types[anode]
+            if at == types.named(TK_STR) {
+                // 字符串实参：按 TK_STR 传（llvmgen 渲染 ptr <ref> = const char*），
+                // 零拷贝直传 tie 字符串数据指针（{ptr,len} 布局 + 尾 NUL 兼容 C）
+                table_push(atys, at)
+                table_push(avs, av)
+            } else {
+                if at != T64 && at != types.named(TK_U64) && at >= 0 {
+                    var sa = tig_sext(av, at, T64)
+                    if sa < 0 {
+                        return -1
+                    }
+                    av = sa
+                }
+                table_push(atys, T64)
+                table_push(avs, av)
+            }
+            k = k + 1
+        }
+        // addr（实参 0）inttoptr → ptr（op73 entry 值）
+        var fp = ir.new_inst(g_cur_block, 25, T64)
+        ir.add_operand(fp, avs[0], 0)
+        var fpv = ir.get_value(fp)
+        var inst = ir.new_inst(g_cur_block, 73, T64)
+        ir.add_operand(inst, fpv, 0)
+        ir.add_operand(inst, retmode, 2)
+        var k2: i64 = 1
+        while k2 < 6 {
+            ir.add_operand(inst, atys[k2], 2)
+            ir.add_operand(inst, avs[k2], 0)
+            k2 = k2 + 1
+        }
+        g_builtin_res = ir.get_value(inst)
+        return 0
+    }
+    if nm == "cstr_to_string" {
+        var addr = tig_expr(call_arg(id, 0))
+        if addr < 0 {
+            return -1
+        }
+        // addr 是 i64 指针整数（dyn_call_p/get_proc 返回值）→ inttoptr → ptr，
+        // 否则 s21_gep 基址被 to_ptr 原样输出（i64 当 ptr → LLVM 类型错）
+        var ap = ir.new_inst(g_cur_block, 25, types.named(TK_STR))
+        ir.add_operand(ap, addr, 0)
+        var addrp = ir.get_value(ap)
+        var hv = s21_sb_new()
+        var ia = ir.new_inst(g_cur_block, 20, types.named(TK_I64))
+        ir.add_operand(ia, types.named(TK_I64), 2)
+        var ip = ir.get_value(ia)
+        s21_store(ip, tig_int_lit(0), types.named(TK_I64))
+        var hd = ir.new_block(g_cur_func, interner.intern("cs.h"))
+        var bd = ir.new_block(g_cur_func, interner.intern("cs.b"))
+        var ex = ir.new_block(g_cur_func, interner.intern("cs.x"))
+        var br0 = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(br0, hd, 1)
+        g_cur_block = hd
+        var iv = s21_load(ip, types.named(TK_I64))
+        var byt = s21_zext(s21_load(s21_gep(addrp, iv, false), types.named(TK_I8)), types.named(TK_I8))
+        var nul = tig_cmp_zero(byt, 0)
+        var cb = ir.new_inst(g_cur_block, 31, -1)
+        ir.add_operand(cb, nul, 0)
+        ir.add_operand(cb, ex, 1)
+        ir.add_operand(cb, bd, 1)
+        g_cur_block = bd
+        var iv2 = s21_load(ip, types.named(TK_I64))
+        s21_sb_append_byte(hv, byt)
+        s21_store(ip, s21_bin(0, iv2, tig_int_lit(1)), types.named(TK_I64))
+        var brb = ir.new_inst(g_cur_block, 30, -1)
+        ir.add_operand(brb, hd, 1)
+        g_cur_block = ex
+        g_builtin_res = s21_sb_build(hv)
         return 0
     }
     if nm == "to_string" {

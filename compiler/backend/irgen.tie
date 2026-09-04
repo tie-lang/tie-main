@@ -533,6 +533,11 @@ func is_libc_sym(sym: string) -> bool {
         sym == "SetEnvironmentVariableW" || sym == "GetCurrentDirectoryW" {
         return true
     }
+    // p.6.6.20 std/sqlite 动态加载：kernel32 LoadLibraryW/GetProcAddress
+    //（winsqlite3.dll 无 .lib 可链，须动态加载；符号经 CRT 隐式链 kernel32）
+    if sym == "LoadLibraryW" || sym == "GetProcAddress" {
+        return true
+    }
     // 一期并发 A4 执行层：kernel32 线程 + 同步原语（系统库默认自动链入，非 interp 桥）
     if sym == "CreateThread" || sym == "WaitForSingleObject" || sym == "CloseHandle" ||
         sym == "GetCurrentThreadId" ||

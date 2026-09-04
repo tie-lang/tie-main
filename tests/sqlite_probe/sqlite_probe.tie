@@ -1,0 +1,91 @@
+type tie<logic>
+// tests/sqlite_probe/sqlite_probe.tie —— p.6.6.20 验收：std/sqlite SQLite 驱动。
+// 全离线确定性探针：只用内存库 ":memory:"（不落盘、不联网），覆盖 create/insert/
+// select、列名/列数、多行遍历、错误 SQL（负码 + last_err 非空）、close。
+// 期望全部 PASS / exit 0（main 正常返回）。
+import "../../std/sqlite.tie" as sqlite
+
+var fails: i64 = 0
+var asserts: i64 = 0
+
+func check(cond: bool, msg: string) {
+    asserts = asserts + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+func main() {
+    println("start")
+    // ---------- open 内存库 ----------
+    var conn = sqlite.open(":memory:")
+    check(conn != -1, "open_memory_db_handle")
+    check(conn != 0, "open_memory_db_nonzero")
+    check(sqlite.last_err() == "", "last_err_empty_after_open")
+
+    // ---------- DDL / DML ----------
+    var rc = sqlite.exec(conn, "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+    check(rc == 0, "exec_create_table_ok")
+    check(sqlite.exec(conn, "INSERT INTO users(name, age) VALUES('alice', 30)") == 0, "exec_insert_alice")
+    check(sqlite.exec(conn, "INSERT INTO users(name, age) VALUES('bob', 25)") == 0, "exec_insert_bob")
+    check(sqlite.exec(conn, "INSERT INTO users(name, age) VALUES('carol', 41)") == 0, "exec_insert_carol")
+    check(sqlite.exec(conn, "UPDATE users SET age = 31 WHERE name = 'alice'") == 0, "exec_update_ok")
+
+    // ---------- query + 行迭代（多行遍历） ----------
+    var qh = sqlite.query(conn, "SELECT id, name, age FROM users ORDER BY id")
+    check(qh != -1, "query_select_ok")
+    check(qh != 0, "query_select_stmt")
+    check(sqlite.col_count(qh) == 3, "col_count_3")
+    check(sqlite.col_name(qh, 0) == "id", "col_name_0_id")
+    check(sqlite.col_name(qh, 1) == "name", "col_name_1_name")
+    check(sqlite.col_name(qh, 2) == "age", "col_name_2_age")
+
+    check(sqlite.step(qh) == 0, "step_row1")
+    check(sqlite.col_int(qh, 0) == 1, "row1_id_1")
+    check(sqlite.col_str(qh, 1) == "alice", "row1_name_alice")
+    check(sqlite.col_int(qh, 2) == 31, "row1_age_31")
+
+    check(sqlite.step(qh) == 0, "step_row2")
+    check(sqlite.col_int(qh, 0) == 2, "row2_id_2")
+    check(sqlite.col_str(qh, 1) == "bob", "row2_name_bob")
+    check(sqlite.col_int(qh, 2) == 25, "row2_age_25")
+
+    check(sqlite.step(qh) == 0, "step_row3")
+    check(sqlite.col_int(qh, 0) == 3, "row3_id_3")
+    check(sqlite.col_str(qh, 1) == "carol", "row3_name_carol")
+    check(sqlite.col_int(qh, 2) == 41, "row3_age_41")
+
+    check(sqlite.step(qh) == 1, "step_done")
+
+    // ---------- 聚合/WHERE 查询 ----------
+    var qh2 = sqlite.query(conn, "SELECT COUNT(*) FROM users")
+    check(qh2 != -1, "query_count_ok")
+    check(sqlite.step(qh2) == 0, "count_step_row")
+    check(sqlite.col_int(qh2, 0) == 3, "count_total_3")
+    check(sqlite.step(qh2) == 1, "count_step_done")
+
+    // ---------- 错误 SQL：负码 + last_err 非空 ----------
+    var rce = sqlite.exec(conn, "NOT A VALID SQL STATEMENT")
+    check(rce < 0, "exec_bad_sql_negative")
+    check(len(sqlite.last_err()) > 0, "exec_bad_sql_errmsg")
+
+    var rcq = sqlite.query(conn, "SELECT * FROM no_such_table")
+    check(rcq == -1, "query_bad_table_neg1")
+    check(len(sqlite.last_err()) > 0, "query_bad_table_errmsg")
+
+    // ---------- close ----------
+    var crc = sqlite.close(conn)
+    check(crc == 0, "close_ok")
+
+    // ---------- 汇总 ----------
+    println("INFO asserts=" + to_string(asserts))
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}

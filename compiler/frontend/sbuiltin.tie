@@ -445,6 +445,48 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_I64)
     }
+    // ---------- 动态加载原语（p.6.6.20 std/sqlite：winsqlite3.dll C ABI 桥）----------
+    // load_library(name) -> i64：LoadLibraryW 模块句柄（失败 0）。
+    // get_proc(handle, name) -> i64：GetProcAddress 函数地址（失败 0）。
+    // dyn_call(addr,a1..a5) -> i64：调 i32 返回 C 函数（zext i64；sqlite int 码）。
+    // dyn_call_p(addr,a1..a5) -> i64：调完整 64 位返回 C 函数（指针/句柄）。
+    // cstr_to_string(addr) -> string：C 字符串（NUL 结尾）→ tie 字符串。
+    if fn_name == "load_library" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "load_library() 期望 1 个参数（DLL 名），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
+    if fn_name == "get_proc" {
+        if nargs != 2 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "get_proc() 期望 2 个参数（模块句柄, 函数名），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
+    if fn_name == "dyn_call" || fn_name == "dyn_call_p" {
+        if nargs != 6 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = fn_name + "() 期望 6 个参数（地址 + 5 个 i64 实参），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
+    if fn_name == "cstr_to_string" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "cstr_to_string() 期望 1 个参数（C 字符串地址），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_STR)
+    }
     if fn_name == "to_string" || fn_name == "parse_int" || fn_name == "parse_float" || fn_name == "parse_trit" ||
         fn_name == "to_trit" || fn_name == "trit_val" {
         if nargs != 1 {

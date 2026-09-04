@@ -354,6 +354,14 @@ func extern_decl(sym: string) -> string {
     if sym == "GetCurrentThreadId" {
         return "declare i64 @GetCurrentThreadId()"
     }
+    // p.6.6.20 std/sqlite 动态加载：kernel32 动态链接 API（winsqlite3.dll 桥）
+    if sym == "LoadLibraryW" {
+        return "declare i64 @LoadLibraryW(ptr)"
+    }
+    if sym == "GetProcAddress" {
+        // 形参 1 = HMODULE 句柄（tie 侧为 i64），形参 2 = LPCSTR 函数名（ptr）
+        return "declare i64 @GetProcAddress(i64, ptr)"
+    }
     if sym == "tie_str_len" {
         return "declare i64 @tie_str_len(ptr)"
     }
