@@ -906,6 +906,47 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_VOID)
     }
+    // ---------- WaitGroup 原语（p.6.7.11：Go sync.WaitGroup 语义） ----------
+    // wg_new() -> i64（新组句柄），0 参数。
+    if fn_name == "wg_new" {
+        if nargs != 0 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "wg_new() 期望 0 个参数，实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
+    // wg_add(h, n) -> void：计数 += n（n ≥ 0），2 参数。
+    if fn_name == "wg_add" {
+        if nargs != 2 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "wg_add() 期望 2 个参数（句柄, n），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_VOID)
+    }
+    // wg_done(h) -> void：计数 -= 1，归零广播，1 参数。
+    if fn_name == "wg_done" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "wg_done() 期望 1 个参数（句柄），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_VOID)
+    }
+    // wg_wait(h) -> void：等计数归零，1 参数。
+    if fn_name == "wg_wait" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "wg_wait() 期望 1 个参数（句柄），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_VOID)
+    }
     // ---------- channel 原语（p.6.5.7：mailbox 承载，静态链接 trm_lite.a）----------
     // ch_open() -> i64（新通道句柄），0 参数。
     if fn_name == "ch_open" {

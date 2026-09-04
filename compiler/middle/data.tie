@@ -259,14 +259,14 @@ func ensure_builtins() {
         "str_from_code", "str_char", "str_len", "table_at", "table_new_bool",
         "table_new_f64", "table_new_i64", "table_new_string", "table_push", "tan",
         "time_now", "to_string", "untar_gz", "unzip", "walk_dir",
-        "yield", "to_trit", "trit_val", "gosched"]
+        "yield", "to_trit", "trit_val", "gosched", "wg_new", "wg_add", "wg_done", "wg_wait"]
     // 参数个数（-1 = 任意，println/print）
     var nargs: table<i64> =  [0, 1, 2, 3, 2, 1, 2, 1, 1, 0, 1, 2, 1, 0, 2, 1, 0, 1, 2,
         1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 2, 1, 1, 1, 2,
         1, 1, 1, 1, 0, 3, 1, 1, 2, 1, 1, 1, 2, 2, -1,
         1, -1, 2, 0, 2, 2, 3, 2, 3, 1, 1, 2, 1, 1, 1,
         1, 2, 1, 2, 0, 0, 0, 0, 2, 1, 0, 1, 2, 2, 1,
-        0, 1, 1]
+        0, 1, 1, 0, 0, 2, 1, 1]
     // 返回编码 kind（0=Named 1=table<Named> 2=裸 table）
     var kinds: table<i64> =  [0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

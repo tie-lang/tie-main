@@ -1,0 +1,90 @@
+type tie<logic>
+// tests/_p67_probe/wg_par_ctx_probe.tie —— p.6.7.11 验收：结构化并发 WaitGroup（复杂形态）。
+// import trm-lite 复杂形态：ctx_wg_new/add/done/wait（tl_runtime_ctx 转发 trm_lite_wg）。
+// 场景：3 波 × 4 组 × 8 任务并发 ctx_wg_done——任务把自编码 push 共享表 +
+// ctx_wg_done；主线程 ctx_wg_wait 等各组归零后校验。
+// 断言：len==96、无重复、区间合法、分组和精确（Σg*8*1000*3 + Σi*4*3 = 144336）；
+// ctx_shutdown 后 exit 0。
+// 期望：len=96 sum=9744336 精确 / PASS / exit 0；连跑 3 次全 PASS。
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_data: table<i64> = []
+
+func main() {
+    var ok: i64 = 1
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    var wave: i64 = 0
+    while wave < 3 {
+        file_write("tests/_p67_probe/wg_progress.log", "wave=" + to_string(wave) + "\n")
+        var g: i64 = 0
+        while g < 4 {
+            var h = tl_runtime_ctx.ctx_wg_new()
+            file_write("tests/_p67_probe/wg_progress.log", "wg_new g=" + to_string(g) + "\n")
+            tl_runtime_ctx.ctx_wg_add(h, 8)
+            file_write("tests/_p67_probe/wg_progress.log", "wg_add g=" + to_string(g) + "\n")
+            var i: i64 = 0
+            while i < 8 {
+                var wv = wave
+                var gv = g
+                var iv = i
+                var hv = h
+                tl_runtime_ctx.ctx_spawn(func() -> i64 {
+                    var w: i64 = gv * 1000 + iv
+                    var f: i64 = 0
+                    while f < 20000 {
+                        w = (w * 3 + f) % 1000003
+                        f = f + 1
+                    }
+                    table_push(g_data, wv * 100000 + gv * 1000 + iv)
+                    tl_runtime_ctx.ctx_wg_done(hv)
+                    return w
+                })
+                i = i + 1
+            }
+            tl_runtime_ctx.ctx_drain()   // 复杂形态任务由 drain 驱动执行（wg_done 落位）
+            tl_runtime_ctx.ctx_wg_wait(h)
+            g = g + 1
+        }
+        wave = wave + 1
+    }
+    var L = len(g_data)
+    var bad: i64 = 0
+    var i: i64 = 0
+    while i < L {
+        if g_data[i] < 0 || g_data[i] >= 400000 {
+            bad = 1
+        }
+        i = i + 1
+    }
+    var dup: i64 = 0
+    i = 0
+    while i < L && dup == 0 {
+        var j = i + 1
+        while j < L {
+            if g_data[i] == g_data[j] {
+                dup = 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    var sum: i64 = 0
+    i = 0
+    while i < L {
+        sum = sum + g_data[i]
+        i = i + 1
+    }
+    var expect: i64 = 9600000 + 144336
+    println("len=" + to_string(L) + " dup=" + to_string(dup) + " bad=" + to_string(bad) + " sum=" + to_string(sum) + " expect=" + to_string(expect))
+    if L != 96 || dup != 0 || bad != 0 || sum != expect {
+        ok = 0
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

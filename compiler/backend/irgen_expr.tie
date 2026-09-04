@@ -493,6 +493,10 @@ func is_builtin_name(nm: string) -> bool {
     if nm == "ch_open" || nm == "ch_send" || nm == "ch_recv" || nm == "ch_close" {
         return true
     }
+    // ---------- WaitGroup 原语（p.6.7.11：wg_new/wg_add/wg_done/wg_wait）----------
+    if nm == "wg_new" || nm == "wg_add" || nm == "wg_done" || nm == "wg_wait" {
+        return true
+    }
     return false
 }
 
@@ -2578,6 +2582,88 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         var avs3: table<i64> = table_new_i64()
         table_push(ats3, T64cc); table_push(avs3, c_v3)
         tig_trmlite_call("trm_lite_chan$ch_close", ats3, avs3, -1)  // void 桥
+        g_builtin_res = tig_int_lit(0)
+        return 0
+    }
+    // ---------- WaitGroup 原语（p.6.7.11：Go sync.WaitGroup 语义，trm_lite_wg$*） ----------
+    // wg_new() → i64 新组句柄。
+    if nm == "wg_new" {
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_wg::wg_new") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_wg_new") >= 0 {
+            sm_err_msg = "wg_new 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var T64w = types.named(TK_I64)
+        g_builtin_res = tig_trmlite_call("trm_lite_wg$wg_new", tig_empty_types(), tig_empty_vals(), T64w)
+        return 0
+    }
+    // wg_add(h, n) → void。
+    if nm == "wg_add" {
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_wg::wg_add") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_wg_add") >= 0 {
+            sm_err_msg = "wg_add 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var ah = call_arg(id, 0)
+        var av = tig_expr(ah)
+        if av < 0 {
+            return -1
+        }
+        var an = call_arg(id, 1)
+        var avv = tig_expr(an)
+        if avv < 0 {
+            return -1
+        }
+        var T64wa = types.named(TK_I64)
+        var atsa: table<i64> = table_new_i64()
+        var avsa: table<i64> = table_new_i64()
+        table_push(atsa, T64wa); table_push(avsa, av)
+        table_push(atsa, T64wa); table_push(avsa, avv)
+        tig_trmlite_call("trm_lite_wg$wg_add", atsa, avsa, -1)
+        g_builtin_res = tig_int_lit(0)
+        return 0
+    }
+    // wg_done(h) → void。
+    if nm == "wg_done" {
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_wg::wg_done") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_wg_done") >= 0 {
+            sm_err_msg = "wg_done 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var dh = call_arg(id, 0)
+        var dv = tig_expr(dh)
+        if dv < 0 {
+            return -1
+        }
+        var T64wd = types.named(TK_I64)
+        var atsd: table<i64> = table_new_i64()
+        var avsd: table<i64> = table_new_i64()
+        table_push(atsd, T64wd); table_push(avsd, dv)
+        tig_trmlite_call("trm_lite_wg$wg_done", atsd, avsd, -1)
+        g_builtin_res = tig_int_lit(0)
+        return 0
+    }
+    // wg_wait(h) → void。
+    if nm == "wg_wait" {
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_wg::wg_wait") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_wg_wait") >= 0 {
+            sm_err_msg = "wg_wait 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var wh = call_arg(id, 0)
+        var wv = tig_expr(wh)
+        if wv < 0 {
+            return -1
+        }
+        var T64ww = types.named(TK_I64)
+        var atsw: table<i64> = table_new_i64()
+        var avsw: table<i64> = table_new_i64()
+        table_push(atsw, T64ww); table_push(avsw, wv)
+        tig_trmlite_call("trm_lite_wg$wg_wait", atsw, avsw, -1)
         g_builtin_res = tig_int_lit(0)
         return 0
     }

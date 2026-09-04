@@ -57,6 +57,34 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [feat] p.6.7.11 结构化并发 WaitGroup（2026-09-04）
+
+- **运行时**（trm-lite）：新增 `core/mnn/wg.tie`（命名空间 trm_lite_wg，Go
+  sync.WaitGroup 语义）——`wg_new/wg_add/wg_done/wg_wait/wg_count`：每组合
+  CS/CV + 计数槽，计数读写全持组锁（U3/U4 纪律），句柄分配持全局分配锁（复合
+  临界区）；wg_done 归零广播唤醒 wg_wait；wg_wait 50ms 限时重查谓词。
+- **语言入口**：新增内置 `wg_new/wg_add/wg_done/wg_wait`（is_builtin_name /
+  builtin_expr / sbuiltin / ensure_builtins 注册；与 import trm-lite 互斥报错，
+  对齐 ch_* 模式）+ 复杂形态 `tl_runtime_ctx.ctx_wg_*` 转发（双入口）。
+- **链接结构**：wg 独立切片 `wg_lib.o` 入 `trm_lite.a`（三成员：tl_runtime.o +
+  tl_chan_lib.o + wg_lib.o）——复杂形态 import 内联 trm_lite_wg 时不提取 .a 成员，
+  零链接期多重定义（与 tl_chan_lib 同策略）。
+- **探针**：`wg_par_probe` + `wg_par_ctx_probe`（3 波 × 4 组 × 8 任务并发
+  wg_done，wg_wait 返回后逐组校验）len=96 无重复、分组和精确
+  （9744336，Σwave*100000*32+Σg*8*1000*3+Σi*4*3）PASS×3；p.6.7 全套 +
+  m6_actor + demos + trm-lite 测试零回归；自举 tiec78→tiec79 字节不动点。
+
+EN: p.6.7.11 WaitGroup structured concurrency (2026-09-04) — new trm-lite
+core/mnn/wg.tie (Go sync.WaitGroup semantics): per-group CS/CV+count under the
+group lock (cursor+data same lock), alloc lock for the handle compound critical
+section, done broadcasts zero-waiters, wait re-checks predicate on 50ms CV. New
+builtins wg_new/wg_add/wg_done/wg_wait (mutually exclusive with import; ctx_wg_*
+forwarding in complex form). wg shipped as its own .a member (3-member archive) so
+complex-form inlined usage never duplicates. Probes wg_par/ctx (3 waves x 4 groups
+x 8 tasks concurrent done, wait then verify): len=96 unique, group sums exact
+(9744336) PASS x3; full p.6.7 suite + m6_actor + demos + trm-lite tests zero
+regression; bootstrap tiec78->tiec79 fixpoint.
+
 ## [feat] p.6.7.10 协作抢占统一：gosched 显式点 + 时间片插桩（2026-09-04）
 
 - **内置**（tiec）：新增 `gosched()`（is_builtin_name / builtin_expr / sbuiltin /
