@@ -1,0 +1,281 @@
+type tie<logic>
+// tests/qr_probe/qr_probe.tie —— p.6.6.14 验收：ext/qr QR 码生成。
+// 全离线确定性探针：
+//   1. RS 纠错码字向量对拍——开发期用 Python 复算 GF(256) RS 并经 python-qrcode
+//      库逐模块对拍全矩阵后，将编码码字/纠错码字写死为期望值；运行时全离线。
+//   2. 版本 1/2 × 纠错等级 L/M/Q/H 的矩阵尺寸（21+4(v-1)）。
+//   3. 功能图形：三个 finder 中心、separator、timing、dark module、v2 alignment、
+//      format info 位（值取自与 python-qrcode 对拍一致的参考矩阵）。
+//   4. render_ascii 可见输出（quiet zone 宽度、finder 图案片段）。
+//   5. 超容量 → -1 + err_msg 非空；非法 ECL → -1。
+//   6. to_png 与 png.decode 回环。
+// 期望全部 PASS / exit 0，最后一行 done。
+import "../../ext/qr/qr.tie" as qr
+import "../../ext/png/png.tie" as png
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ---- 探针工具 ----
+
+// 十六进制字符（字节值）→ 值；非 hex 返回 -1。
+func hexv(c: i64) -> i64 {
+    if c >= 0x30 && c <= 0x39 {
+        return c - 0x30
+    }
+    if c >= 0x61 && c <= 0x66 {
+        return c - 0x61 + 10
+    }
+    if c >= 0x41 && c <= 0x46 {
+        return c - 0x41 + 10
+    }
+    return -1
+}
+
+// 十六进制字符串 → 字节表（忽略空白）。
+func hexbytes(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var nib: i64 = -1
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        var v = hexv(str_byte(s, i))
+        if v >= 0 {
+            if nib < 0 {
+                nib = v
+            } else {
+                table_push(t, nib * 16 + v)
+                nib = -1
+            }
+        }
+        i = i + 1
+    }
+    return t
+}
+
+// 两字节表逐元素相等。
+func bytes_eq(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 取 render 的第 n 行（0 起，不含行尾 '\n'）。
+func line_at(render: string, n: i64) -> string {
+    var sb = string_builder()
+    var idx: i64 = 0
+    var cur: i64 = 0
+    var nlen = str_len(render)
+    while cur < n && idx < nlen {
+        if str_char(render, idx) == "\n" {
+            cur = cur + 1
+        }
+        idx = idx + 1
+    }
+    while idx < nlen {
+        var c = str_char(render, idx)
+        if c == "\n" {
+            break
+        }
+        sb_append(sb, c)
+        idx = idx + 1
+    }
+    return sb_build(sb)
+}
+
+// 行是否全空格。
+func all_spaces(s: string) -> bool {
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        if str_char(s, i) != " " {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 行是否含子串 frag。
+func has_frag(line: string, frag: string) -> bool {
+    var n = str_len(line)
+    var m = str_len(frag)
+    if m == 0 {
+        return true
+    }
+    var i: i64 = 0
+    while i + m <= n {
+        var j: i64 = 0
+        var ok = true
+        while j < m {
+            if str_char(line, i + j) != str_char(frag, j) {
+                ok = false
+                break
+            }
+            j = j + 1
+        }
+        if ok {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ==================== 1) RS 纠错码字向量对拍 ====================
+func section_rs() {
+    // v1-M 经典向量（ISO/IEC 18004 "01234567" 示例的编码码字流）：
+    //   data=10 20 0C 56 61 80 EC 11 EC 11 EC 11 EC 11（16 字节）
+    //   ecc(10)=A5 24 D4 C1 ED 36 C7 87 2C 55
+    var d1 = hexbytes("10 20 0C 56 61 80 EC 11 EC 11 EC 11 EC 11 EC 11")
+    var e1 = qr.rs_ecc(d1, 10)
+    check(bytes_eq(e1, hexbytes("A5 24 D4 C1 ED 36 C7 87 2C 55")), "RS v1-M(10) ISO classic vector")
+    check(len(e1) == 10, "RS v1-M len 10")
+    check(e1[0] == 0xA5 && e1[9] == 0x55, "RS v1-M first/last EC byte")
+
+    // v1-L：19 字节数据（0x01..0x13）→ 7 个纠错码字（开发期复算，python-qrcode 对拍）
+    var d2 = hexbytes("01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13")
+    var e2 = qr.rs_ecc(d2, 7)
+    check(bytes_eq(e2, hexbytes("40 10 FB FA 19 58 10")), "RS v1-L(7) vector")
+    check(len(e2) == 7, "RS v1-L len 7")
+
+    // v2-M：34 字节数据（0x41×16 + 0x42×18）→ 16 个纠错码字
+    var d3 = hexbytes("41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41"
+                      + " 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42")
+    var e3 = qr.rs_ecc(d3, 16)
+    check(bytes_eq(e3, hexbytes("36 C9 13 64 41 26 74 AC D0 F4 0B A1 7B 79 48 F3")), "RS v2-M(16) vector")
+    check(len(e3) == 16, "RS v2-M len 16")
+}
+
+// ==================== 2) 矩阵尺寸（版本 × 纠错等级） ====================
+func section_dims() {
+    check(qr.size(qr.encode("HELLO WORLD", 0)) == 21, "v1-L size 21")
+    check(qr.size(qr.encode("HELLO WORLD", 1)) == 21, "v1-M size 21")
+    check(qr.size(qr.encode("HELLO WORLD", 2)) == 21, "v1-Q size 21")
+    check(qr.size(qr.encode("HELLO", 3)) == 21, "v1-H size 21")
+    check(qr.size(qr.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 0)) == 25, "v2-L size 25")
+    check(qr.size(qr.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 1)) == 25, "v2-M size 25")
+    check(qr.size(qr.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 2)) == 25, "v2-Q size 25")
+    check(qr.size(qr.encode("HELLO WORLD-1", 3)) == 25, "v2-H size 25")
+    check(qr.err_msg() == "", "no error after successful encodes")
+}
+
+// ==================== 3) 功能图形（v1：finder/separator/timing/format/dark） ====================
+func section_func() {
+    var m1 = qr.encode("HELLO WORLD", 0)   // v1-L，21×21
+    check(qr.size(m1) == 21, "func m1 is v1-L")
+    // 三个 finder 中心
+    check(qr.get(m1, 3, 3) == 1, "TL finder center (3,3)")
+    check(qr.get(m1, 17, 3) == 1, "TR finder center (17,3)")
+    check(qr.get(m1, 3, 17) == 1, "BL finder center (3,17)")
+    check(qr.get(m1, 0, 0) == 1, "finder corner (0,0)")
+    // separator（finder 旁 1 模块白边）
+    check(qr.get(m1, 3, 7) == 0, "separator below TL (3,7)")
+    check(qr.get(m1, 7, 3) == 0, "separator right of TL (7,3)")
+    // timing（行 6 / 列 6，偶下标暗）
+    check(qr.get(m1, 8, 6) == 1, "timing row6 col8 dark")
+    check(qr.get(m1, 9, 6) == 0, "timing row6 col9 light")
+    check(qr.get(m1, 6, 8) == 1, "timing col6 row8 dark")
+    check(qr.get(m1, 6, 9) == 0, "timing col6 row9 light")
+    // dark module（(size-8, 8)）
+    check(qr.get(m1, 8, 13) == 1, "dark module (8,13)")
+    // format info 位（v1-L 选掩码 2 → 0x7DAA；开发期与 python-qrcode 对拍）
+    check(qr.get(m1, 8, 5) == 1, "format bit5=1 at (5,8)")
+    check(qr.get(m1, 8, 0) == 0, "format bit0=0 at (0,8)")
+    check(qr.get(m1, 0, 8) == 1, "format bit14=1 at (8,0)")
+}
+
+// ==================== 4) 功能图形（v2：alignment 中心 (18,18)） ====================
+func section_align() {
+    var m2 = qr.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 1)   // v2-M，25×25
+    check(qr.size(m2) == 25, "align m2 is v2-M")
+    check(qr.get(m2, 18, 18) == 1, "v2 alignment center (18,18)")
+    check(qr.get(m2, 16, 16) == 1, "v2 alignment corner (16,16)")
+    check(qr.get(m2, 20, 20) == 1, "v2 alignment corner (20,20)")
+    check(qr.get(m2, 17, 17) == 0, "v2 alignment ring (17,17)")
+    check(qr.get(m2, 18, 17) == 0, "v2 alignment ring (17,18)")
+    check(qr.get(m2, 17, 16) == 1, "v2 alignment outer (16,17)")
+    check(qr.get(m2, 16, 18) == 1, "v2 alignment outer (18,16)")
+    check(qr.get(m2, 20, 18) == 1, "v2 alignment outer (18,20)")
+}
+
+// ==================== 5) render_ascii（quiet zone + finder 图案） ====================
+func section_render() {
+    var m1 = qr.encode("HELLO WORLD", 0)
+    var r1 = qr.render_ascii(m1)
+    // 每行 size+8=29 字符，共 size+8=29 行，行尾 '\n' → 总长 29*30=870
+    check(str_len(r1) == 870, "render v1 total len 29x30=870")
+    var l0 = line_at(r1, 0)
+    check(str_len(l0) == 29 && all_spaces(l0), "render quiet-zone top border = 29 spaces")
+    var l4 = line_at(r1, 4)
+    check(str_len(l4) == 29, "render line width = size+8 (quiet zone 4 each side)")
+    check(has_frag(l4, "#######"), "render shows 7-hash finder row")
+    // v2：每行 33 字符 × 34 行 = 1122
+    var m2 = qr.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 0)
+    check(str_len(qr.render_ascii(m2)) == 1122, "render v2 total len 33x34=1122")
+}
+
+// ==================== 6) 超容量 / 非法 ECL ====================
+func section_errors() {
+    // 26 个字母数字字符 @ H：v1-H 上限 10、v2-H 上限 20 → 超容量
+    var r = qr.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 3)
+    check(r == -1, "over-capacity -> -1 (26 alpha @ H)")
+    check(str_len(qr.err_msg()) > 0, "err_msg non-empty on overflow")
+    // 27 字节（含非字母数字 '!' → 字节模式）@ H：v2-H 字节上限 14 → 超容量
+    var r2 = qr.encode("abcdefghijklmnopqrstuvwxyz!", 3)
+    check(r2 == -1, "over-capacity -> -1 (27 bytes @ H)")
+    // 非法 ECL
+    var r3 = qr.encode("HI", 7)
+    check(r3 == -1 && str_len(qr.err_msg()) > 0, "invalid ECL -> -1")
+}
+
+// ==================== 7) to_png 与 png.decode 回环 ====================
+func section_png() {
+    var m1 = qr.encode("HELLO WORLD", 0)
+    var pb = qr.to_png(m1, 3)
+    check(len(pb) > 8, "to_png non-empty PNG bytes")
+    var img = png.decode(pb)
+    check(img.ok, "to_png decodes as valid PNG")
+    check(img.w == (21 + 8) * 3 && img.h == (21 + 8) * 3, "to_png dims = (size+8)*scale")
+    check(img.color_type == 6, "to_png RGBA")
+    // quiet zone 左上角像素应为白色
+    check(img.pixels[0] == 255 && img.pixels[1] == 255 && img.pixels[2] == 255 && img.pixels[3] == 255,
+          "to_png quiet-zone pixel white")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    section_rs()
+    section_dims()
+    section_func()
+    section_align()
+    section_render()
+    section_errors()
+    section_png()
+    if fails == 0 {
+        println("PASS")
+        println("done")
+        exit(0)
+    } else {
+        println("FAIL count=" + to_string(fails))
+        println("done")
+        exit(1)
+    }
+}
