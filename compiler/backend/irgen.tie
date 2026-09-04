@@ -921,9 +921,93 @@ pub func tig_src(src: string, base_dir: string) -> i64 {
 // tig_global_var / tig_ns / tig_fn_def 三个顶层入口 / 函数生成主逻辑。
 // 归属纠偏：这三个函数原被误移入子文件，现迁回主文件顶层入口分区。
 
+// 顶层标量初始化的**编译期常量折叠**（bounded subset）：
+// 支持 INT_LIT / STR_LIT（经 str_unescape_quoted 去引号反转义）/ UNARY 取负 /
+// BINARY + - * / %（字符串 + 走拼接；整数走算术）。跨全局引用（VAR 节点）不折叠
+// → 返回 has=false（保持既有零值语义，勿在顶层依赖引用表达式初始化）。
+// 返回 (has, is_str, intv, sid)；is_str 时用 sid（纯文本池 id），否则 intv。
+func global_init_fold(id: i64) -> (bool, bool, i64, i64) {
+    if id < 0 {
+        return (false, false, 0, -1)
+    }
+    var tag = s_tags[id]
+    if tag == 0 {
+        // INT_LIT
+        return (true, false, s_vals[id], -1)
+    }
+    if tag == 2 {
+        // STR_LIT：名称 id 存 s_names，先解码（去引号 + 反转义，与 tig_str_lit 一致）
+        return (true, true, 0, str_unescape_quoted(s_names[id]))
+    }
+    if tag == 8 {
+        // UNARY：取负（op=0）
+        var op = s_vals[id]
+        if op == 0 {
+            var (h, hs, iv, sid2) = global_init_fold(sstate.child(id, 0))
+            if h && hs == false {
+                return (true, false, 0 - iv, -1)
+            }
+        }
+        return (false, false, 0, -1)
+    }
+    if tag == 9 {
+        // BINARY：op 在 s_vals；string 加法（B_ADD=0）双目折叠
+        var op2 = s_vals[id]
+        var (l1, ls1, li1, lsd1) = global_init_fold(sstate.child(id, 0))
+        var (l2, ls2, li2, lsd2) = global_init_fold(sstate.child(id, 1))
+        if l1 && l2 {
+            if op2 == 0 {
+                // 字符串拼接（双侧均为字符串字面量）
+                if ls1 && ls2 {
+                    var sb = string_builder()
+                    var b: i64 = 0
+                    var t1 = interner.lookup(lsd1)
+                    while b < str_len(t1) {
+                        sb_append_byte(sb, str_byte(t1, b))
+                        b = b + 1
+                    }
+                    b = 0
+                    var t2 = interner.lookup(lsd2)
+                    while b < str_len(t2) {
+                        sb_append_byte(sb, str_byte(t2, b))
+                        b = b + 1
+                    }
+                    return (true, true, 0, interner.intern(sb_build(sb)))
+                }
+                // 整数加法（字符串+整数语义上不允许，semantic 已拦）
+                if ls1 == false && ls2 == false {
+                    return (true, false, li1 + li2, -1)
+                }
+            } else if op2 == 1 {
+                // B_SUB
+                if ls1 == false && ls2 == false {
+                    return (true, false, li1 - li2, -1)
+                }
+            } else if op2 == 2 {
+                // B_MUL
+                if ls1 == false && ls2 == false {
+                    return (true, false, li1 * li2, -1)
+                }
+            } else if op2 == 3 {
+                // B_DIV（除 0 不折叠 → 零值）
+                if ls1 == false && ls2 == false && li2 != 0 {
+                    return (true, false, li1 / li2, -1)
+                }
+            } else if op2 == 4 {
+                // B_MOD（模 0 不折叠）
+                if ls1 == false && ls2 == false && li2 != 0 {
+                    return (true, false, li1 % li2, -1)
+                }
+            }
+        }
+        return (false, false, 0, -1)
+    }
+    return (false, false, 0, -1)
+}
+
 // 顶层全局变量声明（tag 100）：登记到 llvmgen 全局段。
 // 表全局 → @g = global ptr null（main 入口运行时创建，对齐 T0.4）；
-// 标量全局 → @g = global T <字面量零值>。
+// 标量全局 → @g = global T <折叠初值>。
 func tig_global_var(s: i64) {
     var nm = sstate.name_str(s)
     var ty = sgen.parse_generic_type_node(sstate.child(s, 0))
@@ -936,31 +1020,17 @@ func tig_global_var(s: i64) {
         llvmgen.global_table_reg(nm)
     } else {
         llvmgen.global_scalar_reg(nm, ty)
-        // 标量整数字面量初始值（否则 @g = global i64 0，顶层初值全失效）。
-        // 根治（2026-09-04）：此前仅 const+裸 INT_LIT 被采纳——var 的正/负整数
-        // 字面量初值全部静默丢失；负字面量是 UNARY(取负)@INT_LIT 节点，折叠为 0。
-        var init = sstate.child(s, 1)
-        var litv: i64 = 0
-        var has_lit = false
-        if init >= 0 && s_tags[init] == 0 {
-            // 裸整数字面量（const 与 var 均生效）
-            litv = s_vals[init]
-            has_lit = true
-        } else if init >= 0 && s_tags[init] == 8 {
-            // 一元取负（U_NEG=0）：子节点为整数字面量 → 0 - x
-            var op = s_vals[init]
-            var operand = sstate.child(init, 0)
-            if op == 0 && operand >= 0 && s_tags[operand] == 0 {
-                litv = 0 - s_vals[operand]
-                has_lit = true
+        // 标量初值编译期折叠（否则 @g = global T 零值，顶层初值静默丢失）。
+        // 根治（2026-09-04，三连坑）：①此前仅 const+裸 INT_LIT 被采纳——var 的
+        // 正/负整数初值全丢；②负字面量（UNARY 取负）折叠为 0；③字符串初值直传
+        // 原始 lexeme（带引号未反转义）且拼接/算术表达式不折叠。
+        var (hf, hstr, hv, hsid) = global_init_fold(sstate.child(s, 1))
+        if hf {
+            if hstr {
+                llvmgen.global_str_init(nm, hsid)
+            } else {
+                llvmgen.global_scalar_init(nm, hv)
             }
-        }
-        if has_lit {
-            llvmgen.global_scalar_init(nm, litv)
-        } else if init >= 0 && s_tags[init] == 2 && ty == types.named(TK_STR) {
-            // 顶层字符串全局初始字面量（var/const 均含：如 registry 默认 URL）：
-            // @g = global ptr @.str.N（曾忽略字面量 → @g 恒为空串）
-            llvmgen.global_str_init(nm, s_names[init])
         }
     }
 }

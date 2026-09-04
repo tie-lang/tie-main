@@ -1,13 +1,22 @@
 type tie<logic>
-// tests/probe_global_init.tie —— 全局标量初值回归探针（根治 p.6.6.8 报告的语言缺陷 2026-09-04）
-// 覆盖：var/const × 正/负整数字面量 + 字符串字面量。此前负字面量(UNARY)与非 const
-// 整数初值全部折叠为 0（编译器 irgen.tig_global_var + llvmgen.emit_globals 双处根治）。
+// tests/probe_global_init.tie —— 全局标量初值回归探针（根治 p.6.6.8/p.6.6.19 报告的语言缺陷 2026-09-04）
+// 覆盖：var/const × 正/负整数字面量、整数字面量算术表达式、转义字符串字面量、
+// 字符串字面量拼接。此前：负字面量(UNARY)/非 const 整数初值折叠为 0、转义未解码、
+// 字面量表达式不折叠（编译器 irgen.global_init_fold + llvmgen.emit_globals 根治）。
+// 已知局限：跨全局引用表达式初始化（如 a+"."+b）仍不折叠（文档化，勿依赖）。
 // 期望全部 PASS / exit 0。
 var g_p: i64 = 5
 var g_n: i64 = -15
 var g_s: string = "abc"
 const g_pk: i64 = 7
 const g_kn: i64 = -7
+var g_add: i64 = 3 + 4
+var g_sub: i64 = 30 - 12
+var g_mul: i64 = 6 * 7
+var g_div: i64 = 20 / 5
+var g_q: string = "\""
+var g_nl: string = "a\nb"
+var g_cat: string = "he" + "llo" + "!"
 
 func main() {
     var fails: i64 = 0
@@ -16,5 +25,12 @@ func main() {
     if g_s == "abc" { println("PASS var str abc") } else { println("FAIL var str g_s=" + g_s); fails += 1 }
     if g_pk == 7 { println("PASS const pos 7") } else { println("FAIL const pos g_pk=" + to_string(g_pk)); fails += 1 }
     if g_kn == -7 { println("PASS const neg -7") } else { println("FAIL const neg g_kn=" + to_string(g_kn)); fails += 1 }
+    if g_add == 7 { println("PASS int add 3+4") } else { println("FAIL int add g_add=" + to_string(g_add)); fails += 1 }
+    if g_sub == 18 { println("PASS int sub") } else { println("FAIL int sub g_sub=" + to_string(g_sub)); fails += 1 }
+    if g_mul == 42 { println("PASS int mul") } else { println("FAIL int mul g_mul=" + to_string(g_mul)); fails += 1 }
+    if g_div == 4 { println("PASS int div") } else { println("FAIL int div g_div=" + to_string(g_div)); fails += 1 }
+    if len(g_q) == 1 { println("PASS escaped quote len1") } else { println("FAIL escaped quote len=" + to_string(len(g_q))); fails += 1 }
+    if g_nl == "a\nb" && len(g_nl) == 3 { println("PASS newline escape") } else { println("FAIL newline len=" + to_string(len(g_nl))); fails += 1 }
+    if g_cat == "hello!" { println("PASS string literal concat") } else { println("FAIL concat g_cat=" + g_cat); fails += 1 }
     if fails == 0 { println("done") } else { println("FAIL " + to_string(fails)) }
 }
