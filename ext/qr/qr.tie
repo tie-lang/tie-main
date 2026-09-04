@@ -1,0 +1,1091 @@
+type tie<class>
+// ============================================================================
+// ext/qr/qr.tie —— QR 码生成（命名空间 qr，纯 tie）p.6.6.14
+// QR Code generator (namespace qr, pure-tie).
+//
+// 数据平面（Data plane）：字节/字符串平面。矩阵以 0/1 模块存于模块级平行表
+// （tie 表元素只能存标量，无法存表引用，故仿 std/json 的「扁平登记表 + 区间」
+// 风格）：qr_cells 为所有已编码矩阵的扁平单元格表，qr_offs/qr_sizes 平行记录
+// 每个句柄的起始偏移与边长。encode 每次**追加**（不重置），各句柄长期有效。
+//
+// 接口：
+//   encode(content, ecl) -> i64   编码文本 → 矩阵句柄 id；失败返回 -1 且
+//                                 err_msg() 可查。ecl：0=L 1=M 2=Q 3=H。
+//                                 版本自动选择 1..2（取最小可容纳者），超容量
+//                                 （v2 也放不下）返回 -1。
+//   size(m) -> i64                矩阵边长（模块数，不含 quiet zone）；
+//                                 v 版本 = 21+4(v-1)（v1=21, v2=25）。
+//   get(m, x, y) -> i64           模块值 0/1（x 列、y 行）；句柄/坐标越界返回 -1。
+//   render_ascii(m) -> string     ASCII 渲染：每模块 1 字符，'#'=暗 ' '=亮，
+//                                 四周含 4 模块 quiet zone，行尾 '\n'。
+//   rs_ecc(data, n) -> table<i64> 数据码字 → n 个 GF(256) RS 纠错码字
+//                                 （供探针对拍，也是 encode 内部组件）。
+//   err_msg() -> string           最近一次 encode 失败的错误消息。
+//   to_png(m, scale) -> table<i64> 与 ext/png 联动：矩阵（含 quiet zone）按
+//                                 scale 放大为 RGBA → png.encode 出的 PNG 字节表。
+//
+// 实现要点（Implementation notes）：
+//   - 数据编码：数字/字母数字/字节三模式自动选择（0-9→数字；再试字母数字表
+//     0-9 A-Z 空格 $%*+-./:；否则字节模式按 UTF-8 字节）。
+//   - GF(256) RS：本原多项式 0x11D、本原元 2，exp/log 表惰性构建；生成多项式
+//     ∏(x-α^i), i=0..n-1，综合除法求余。纠错块：版本 1-2 各纠错等级均单块，
+//     无需交织。
+//   - 容量表（数据码字数）：v1 L=19 M=16 Q=13 H=9；v2 L=34 M=28 Q=22 H=16。
+//   - 掩码：8 种 XOR 全部实现，按标准罚分（N1 连行/N2 2x2 同色/N3 类 finder
+//     图案/N4 明暗比）选最低罚分者（与 python-qrcode 逐模块对拍一致）。
+//   - 功能图形：3 finder+separator、timing、alignment（v2 中心 (18,18) 一个）、
+//     format info（BCH(15,5) 多项式 0x537，XOR 0x5412，双份放置）、暗模块。
+//   - 语言约束：namespace 内不声明 var（模块级全局外置文件顶层）；struct 字段
+//     表禁止下标写（本模块未用 struct）；>> 移位计数恒 ≤15（& 掩码守卫），
+//     render_ascii 用 string_builder 逐字节追加（禁止 O(n²) 字符串拼接）。
+// ============================================================================
+
+import "../png/png.tie" as png
+
+// ---- 模块级全局（平行表 + GF 表，命名空间外） ----
+var qr_cells: table<i64>;   // 所有已编码矩阵的扁平单元格表
+var qr_offs: table<i64>;    // 句柄 → 在 qr_cells 中的起始偏移
+var qr_sizes: table<i64>;   // 句柄 → 矩阵边长（模块数）
+var qr_err: string = "";    // 最近一次错误消息
+var qr_exp: table<i64>;     // GF(256) exp 表（惰性构建）
+var qr_log: table<i64>;     // GF(256) log 表
+var qr_gf_ok: i64 = 0;      // GF 表是否已构建
+
+namespace qr {
+
+// ============================================================================
+// 一、GF(256) 算术与 RS 纠错码（本原多项式 0x11D，本原元 2）
+// ============================================================================
+
+// 惰性构建 exp/log 表。exp 覆盖 0..511（乘法 log[a]+log[b] ≤ 508 取余后查表），
+// log[x]=i 满足 exp[i]=x（i∈0..254）。
+func gf_ensure() {
+    if qr_gf_ok == 1 {
+        return
+    }
+    qr_exp = table_new_i64()
+    qr_log = table_new_i64()
+    var i: i64 = 0
+    while i < 512 {
+        table_push(qr_exp, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < 256 {
+        table_push(qr_log, 0)
+        i = i + 1
+    }
+    var x: i64 = 1
+    i = 0
+    while i < 255 {
+        qr_exp[i] = x
+        qr_log[x] = i
+        x = x * 2
+        if x >= 256 {
+            x = x ^ 0x11D
+        }
+        i = i + 1
+    }
+    i = 255
+    while i < 512 {
+        qr_exp[i] = qr_exp[i - 255]
+        i = i + 1
+    }
+    qr_gf_ok = 1
+}
+
+// GF(256) 乘法（0 吸收；否则 exp[log[a]+log[b] mod 255]）。
+func gf_mul(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0
+    }
+    return qr_exp[(qr_log[a] + qr_log[b]) % 255]
+}
+
+// RS 生成多项式（次数 n）：∏(x - α^i), i=0..n-1。返回系数表 g[0] 为最高次
+// 项系数（恒 1），长度 n+1。GF(2^8) 中减法=加法（XOR）。
+func rs_gen(n: i64) -> table<i64> {
+    gf_ensure()
+    var g = table_new_i64()
+    table_push(g, 1)
+    var i: i64 = 0
+    while i < n {
+        var ng = table_new_i64()
+        var k: i64 = 0
+        while k < len(g) + 1 {
+            table_push(ng, 0)
+            k = k + 1
+        }
+        k = 0
+        while k < len(g) {
+            // (x + α^i) 乘入：ng[k] ^= g[k]（g[k]*x 项），ng[k+1] ^= g[k]*α^i
+            ng[k] = ng[k] ^ g[k]
+            ng[k + 1] = ng[k + 1] ^ gf_mul(g[k], qr_exp[i])
+            k = k + 1
+        }
+        g = ng
+        i = i + 1
+    }
+    return g
+}
+
+// 数据码字表 → n 个纠错码字：data || 0^n 对生成多项式做综合除法，取余数。
+func rs_ecc_inner(data: table<i64>, n: i64) -> table<i64> {
+    gf_ensure()
+    var gen = rs_gen(n)
+    var res = table_new_i64()
+    var i: i64 = 0
+    while i < len(data) {
+        table_push(res, data[i])
+        i = i + 1
+    }
+    i = 0
+    while i < n {
+        table_push(res, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < len(data) {
+        var f = res[i]
+        if f != 0 {
+            var j: i64 = 0
+            while j < len(gen) {
+                res[i + j] = res[i + j] ^ gf_mul(gen[j], f)
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    var out = table_new_i64()
+    i = 0
+    while i < n {
+        table_push(out, res[len(data) + i])
+        i = i + 1
+    }
+    return out
+}
+
+// 公开 RS 接口（探针对拍用；数据码字 → n 个纠错码字）。
+pub func rs_ecc(data: table<i64>, n: i64) -> table<i64> {
+    return rs_ecc_inner(data, n)
+}
+
+// ============================================================================
+// 二、数据编码（数字/字母数字/字节模式自动选择）
+// ============================================================================
+
+// 位缓冲：表布局 [0]=累加器 [1]=未消费位数 [2..]=已落盘字节。
+func bb_new() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0)
+    table_push(t, 0)
+    return t
+}
+
+// 已消费总位数。
+func bb_used(bs: table<i64>) -> i64 {
+    return (len(bs) - 2) * 8 + bs[1]
+}
+
+// 追加低 n 位（n∈1..16）。移位计数恒 ≤15（< i64 位宽），无需掩码。
+func bb_put(bs: table<i64>, v: i64, n: i64) {
+    var mask: i64 = 1
+    var k: i64 = 0
+    while k < n {
+        mask = mask << 1
+        k = k + 1
+    }
+    mask = mask - 1
+    bs[0] = (bs[0] << n) | (v & mask)
+    bs[1] = bs[1] + n
+    while bs[1] >= 8 {
+        var sh = bs[1] - 8
+        table_push(bs, (bs[0] >> sh) & 0xFF)
+        bs[1] = sh
+        bs[0] = bs[0] & ((1 << bs[1]) - 1)
+    }
+}
+
+// 剩余不足 1 字节的位左对齐补零落盘。
+func bb_flush(bs: table<i64>) {
+    if bs[1] > 0 {
+        var sh = 8 - bs[1]
+        table_push(bs, (bs[0] << sh) & 0xFF)
+        bs[1] = 0
+        bs[0] = 0
+    }
+}
+
+// 字符码点 → 字母数字值 0..44；不在字母数字表返回 -1。
+func alpha_val(cp: i64) -> i64 {
+    if cp >= 48 && cp <= 57 {
+        return cp - 48
+    }
+    if cp >= 65 && cp <= 90 {
+        return cp - 65 + 10
+    }
+    if cp == 32 {
+        return 36
+    }
+    if cp == 36 {
+        return 37
+    }
+    if cp == 37 {
+        return 38
+    }
+    if cp == 42 {
+        return 39
+    }
+    if cp == 43 {
+        return 40
+    }
+    if cp == 45 {
+        return 41
+    }
+    if cp == 46 {
+        return 42
+    }
+    if cp == 47 {
+        return 43
+    }
+    if cp == 58 {
+        return 44
+    }
+    return -1
+}
+
+// 自动选择模式：0=数字 1=字母数字 2=字节。
+func detect_mode(content: string) -> i64 {
+    var n = str_len(content)
+    var i: i64 = 0
+    var allnum = true
+    while i < n {
+        var cp = char_code(str_char(content, i))
+        if cp < 48 || cp > 57 {
+            allnum = false
+            break
+        }
+        i = i + 1
+    }
+    if allnum {
+        return 0
+    }
+    i = 0
+    while i < n {
+        var cp = char_code(str_char(content, i))
+        if alpha_val(cp) < 0 {
+            return 2
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// 字符串 UTF-8 字节数（字节模式计数用；ASCII 每码点 1 字节）。
+func byte_count(content: string) -> i64 {
+    var n = str_len(content)
+    var total: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var cp = char_code(str_char(content, i))
+        if cp <= 0x7F {
+            total = total + 1
+        } else if cp <= 0x7FF {
+            total = total + 2
+        } else if cp <= 0xFFFF {
+            total = total + 3
+        } else {
+            total = total + 4
+        }
+        i = i + 1
+    }
+    return total
+}
+
+// 编码 n 个数据单元（数字=位数/字母数字=字符数/字节=字节数）所需总位数。
+func need_bits(mode: i64, n: i64) -> i64 {
+    if mode == 0 {
+        var full = (n / 3) * 10
+        var rem = n % 3
+        if rem == 1 {
+            return 4 + 10 + full + 4
+        }
+        if rem == 2 {
+            return 4 + 10 + full + 7
+        }
+        return 4 + 10 + full
+    }
+    if mode == 1 {
+        var full2 = (n / 2) * 11
+        if n % 2 == 1 {
+            return 4 + 9 + full2 + 6
+        }
+        return 4 + 9 + full2
+    }
+    return 4 + 8 + n * 8
+}
+
+// 数据码字数（v1/v2，ecl 任务序 0=L 1=M 2=Q 3=H）。
+func cap_data(v: i64, ecl: i64) -> i64 {
+    if v == 1 {
+        if ecl == 0 {
+            return 19
+        }
+        if ecl == 1 {
+            return 16
+        }
+        if ecl == 2 {
+            return 13
+        }
+        return 9
+    }
+    if ecl == 0 {
+        return 34
+    }
+    if ecl == 1 {
+        return 28
+    }
+    if ecl == 2 {
+        return 22
+    }
+    return 16
+}
+
+// 纠错码字数（v1/v2 均单块，= 每块纠错码字数）。
+func cap_ecc(v: i64, ecl: i64) -> i64 {
+    if v == 1 {
+        if ecl == 0 {
+            return 7
+        }
+        if ecl == 1 {
+            return 10
+        }
+        if ecl == 2 {
+            return 13
+        }
+        return 17
+    }
+    if ecl == 0 {
+        return 10
+    }
+    if ecl == 1 {
+        return 16
+    }
+    if ecl == 2 {
+        return 22
+    }
+    return 28
+}
+
+// 容量检查：need_bits(mode, n) ≤ dc*8。
+func fits(v: i64, ecl: i64, mode: i64, n: i64) -> bool {
+    return need_bits(mode, n) <= cap_data(v, ecl) * 8
+}
+
+// 编码内容 → 恰好 dc 个数据码字（模式+计数+数据+终止+填充）。
+func build_data_cw(content: string, mode: i64, dc: i64) -> table<i64> {
+    var bs = bb_new()
+    if mode == 0 {
+        bb_put(bs, 1, 4)
+        bb_put(bs, str_len(content), 10)
+        var n = str_len(content)
+        var i: i64 = 0
+        while i < n {
+            var nrem = n - i
+            if nrem >= 3 {
+                var d0 = char_code(str_char(content, i)) - 48
+                var d1 = char_code(str_char(content, i + 1)) - 48
+                var d2 = char_code(str_char(content, i + 2)) - 48
+                bb_put(bs, d0 * 100 + d1 * 10 + d2, 10)
+            } else if nrem == 2 {
+                var d0b = char_code(str_char(content, i)) - 48
+                var d1b = char_code(str_char(content, i + 1)) - 48
+                bb_put(bs, d0b * 10 + d1b, 7)
+            } else {
+                var d0c = char_code(str_char(content, i)) - 48
+                bb_put(bs, d0c, 4)
+            }
+            i = i + 3
+        }
+    } else if mode == 1 {
+        bb_put(bs, 2, 4)
+        bb_put(bs, str_len(content), 9)
+        var n = str_len(content)
+        var i: i64 = 0
+        while i < n {
+            var nrem = n - i
+            if nrem >= 2 {
+                var a0 = alpha_val(char_code(str_char(content, i)))
+                var a1 = alpha_val(char_code(str_char(content, i + 1)))
+                bb_put(bs, a0 * 45 + a1, 11)
+            } else {
+                var a0b = alpha_val(char_code(str_char(content, i)))
+                bb_put(bs, a0b, 6)
+            }
+            i = i + 2
+        }
+    } else {
+        bb_put(bs, 4, 4)
+        var nb = byte_count(content)
+        bb_put(bs, nb, 8)
+        var j: i64 = 0
+        while j < nb {
+            bb_put(bs, str_byte(content, j), 8)
+            j = j + 1
+        }
+    }
+    // 终止符：最多 4 个 0 位
+    var limit = dc * 8
+    var rem = limit - bb_used(bs)
+    if rem > 4 {
+        rem = 4
+    }
+    var z: i64 = 0
+    while z < rem {
+        bb_put(bs, 0, 1)
+        z = z + 1
+    }
+    bb_flush(bs)
+    // 交替填充 0xEC/0x11 到 dc 字节
+    var k: i64 = 0
+    while len(bs) - 2 < dc {
+        if k % 2 == 0 {
+            bb_put(bs, 0xEC, 8)
+        } else {
+            bb_put(bs, 0x11, 8)
+        }
+        k = k + 1
+    }
+    // 取 bs[2..2+dc) 为数据码字
+    var out = table_new_i64()
+    var i2: i64 = 2
+    while i2 < 2 + dc {
+        table_push(out, bs[i2])
+        i2 = i2 + 1
+    }
+    return out
+}
+
+// ============================================================================
+// 三、矩阵构建：功能图形 + 数据放置 + 掩码 + 格式信息
+// ============================================================================
+
+// 表深拷贝（掩码评估需要逐掩码试算，不改动原矩阵）。
+func table_copy(src: table<i64>) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < len(src) {
+        table_push(t, src[i])
+        i = i + 1
+    }
+    return t
+}
+
+func set_mod(mods: table<i64>, size: i64, r: i64, c: i64, v: i64) {
+    mods[r * size + c] = v
+}
+
+func mark_f(fm: table<i64>, size: i64, r: i64, c: i64) {
+    fm[r * size + c] = 1
+}
+
+// 画一个 finder（7×7）+ separator（8×8 功能区）。r0,c0 为 finder 左上角。
+func draw_finder(mods: table<i64>, fm: table<i64>, size: i64, r0: i64, c0: i64) {
+    var dr: i64 = -1
+    while dr < 8 {
+        var dc: i64 = -1
+        while dc < 8 {
+            var r = r0 + dr
+            var c = c0 + dc
+            if r >= 0 && r < size && c >= 0 && c < size {
+                mark_f(fm, size, r, c)
+            }
+            dc = dc + 1
+        }
+        dr = dr + 1
+    }
+    dr = 0
+    while dr < 7 {
+        var dc: i64 = 0
+        while dc < 7 {
+            var v: i64 = 0
+            if dr == 0 || dr == 6 || dc == 0 || dc == 6 {
+                v = 1
+            } else if dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4 {
+                v = 1
+            }
+            set_mod(mods, size, r0 + dr, c0 + dc, v)
+            dc = dc + 1
+        }
+        dr = dr + 1
+    }
+}
+
+// 画一个 alignment（5×5，中心 (r,c)）：外环+中心暗，其余亮。
+func draw_align(mods: table<i64>, fm: table<i64>, size: i64, r: i64, c: i64) {
+    var dr: i64 = -2
+    while dr <= 2 {
+        var dc: i64 = -2
+        while dc <= 2 {
+            mark_f(fm, size, r + dr, c + dc)
+            var v: i64 = 0
+            if dr == -2 || dr == 2 || dc == -2 || dc == 2 || (dr == 0 && dc == 0) {
+                v = 1
+            }
+            set_mod(mods, size, r + dr, c + dc, v)
+            dc = dc + 1
+        }
+        dr = dr + 1
+    }
+}
+
+// 铺设全部功能图形并标记功能模块（finder/separator/timing/alignment/format 区）。
+func setup_function_patterns(mods: table<i64>, fm: table<i64>, size: i64, version: i64) {
+    draw_finder(mods, fm, size, 0, 0)
+    draw_finder(mods, fm, size, 0, size - 7)
+    draw_finder(mods, fm, size, size - 7, 0)
+    // alignment：v2 位置 [6,18]，跳过与 finder 重叠者
+    if version >= 2 {
+        var pos = table_new_i64()
+        table_push(pos, 6)
+        table_push(pos, 18)
+        var pi: i64 = 0
+        while pi < 2 {
+            var pj: i64 = 0
+            while pj < 2 {
+                var rr = pos[pi]
+                var cc = pos[pj]
+                var skip = false
+                if rr <= 8 && cc <= 8 {
+                    skip = true
+                } else if rr <= 8 && cc >= size - 9 {
+                    skip = true
+                } else if rr >= size - 9 && cc <= 8 {
+                    skip = true
+                }
+                if skip == false {
+                    draw_align(mods, fm, size, rr, cc)
+                }
+                pj = pj + 1
+            }
+            pi = pi + 1
+        }
+    }
+    // timing：行 6 / 列 6，从 8 到 size-9，偶下标暗
+    var k: i64 = 8
+    while k < size - 8 {
+        mark_f(fm, size, k, 6)
+        if k % 2 == 0 {
+            set_mod(mods, size, k, 6, 1)
+        } else {
+            set_mod(mods, size, k, 6, 0)
+        }
+        mark_f(fm, size, 6, k)
+        if k % 2 == 0 {
+            set_mod(mods, size, 6, k, 1)
+        } else {
+            set_mod(mods, size, 6, k, 0)
+        }
+        k = k + 1
+    }
+    // format 信息区（双份 15 位 + 暗模块）标记为功能模块
+    var r: i64 = 0
+    while r < 6 {
+        mark_f(fm, size, r, 8)
+        r = r + 1
+    }
+    mark_f(fm, size, 7, 8)
+    mark_f(fm, size, 8, 8)
+    r = size - 7
+    while r < size {
+        mark_f(fm, size, r, 8)
+        r = r + 1
+    }
+    var c: i64 = 0
+    while c < 6 {
+        mark_f(fm, size, 8, c)
+        c = c + 1
+    }
+    mark_f(fm, size, 8, 7)
+    mark_f(fm, size, 8, 8)
+    c = size - 8
+    while c < size {
+        mark_f(fm, size, 8, c)
+        c = c + 1
+    }
+    mark_f(fm, size, size - 8, 8)
+}
+
+// 数据（含纠错码字）按之字形放置到非功能模块。v1/v2 无余位（剩余位=0）。
+func place_data(mods: table<i64>, fm: table<i64>, size: i64, data: table<i64>) {
+    var total_bits = len(data) * 8
+    var bit_index: i64 = 0
+    var inc: i64 = -1
+    var row = size - 1
+    var col = size - 1
+    while col >= 1 {
+        var cc = col
+        if cc <= 6 {
+            cc = cc - 1
+        }
+        var done = false
+        while done == false {
+            var off: i64 = 0
+            while off < 2 {
+                var c = cc - off
+                if fm[row * size + c] == 0 {
+                    if bit_index < total_bits {
+                        var b = (data[bit_index / 8] >> (7 - (bit_index % 8))) & 1
+                        mods[row * size + c] = b
+                        bit_index = bit_index + 1
+                    }
+                }
+                off = off + 1
+            }
+            row = row + inc
+            if row < 0 || row >= size {
+                row = row - inc
+                inc = -inc
+                done = true
+            }
+        }
+        col = col - 2
+    }
+}
+
+// 掩码函数：mid∈0..7，(r,c) 是否翻转。
+func mask_on(mid: i64, r: i64, c: i64) -> bool {
+    if mid == 0 {
+        return (r + c) % 2 == 0
+    }
+    if mid == 1 {
+        return r % 2 == 0
+    }
+    if mid == 2 {
+        return c % 3 == 0
+    }
+    if mid == 3 {
+        return (r + c) % 3 == 0
+    }
+    if mid == 4 {
+        return ((r / 2) + (c / 3)) % 2 == 0
+    }
+    if mid == 5 {
+        return (r * c) % 2 + (r * c) % 3 == 0
+    }
+    if mid == 6 {
+        return ((r * c) % 2 + (r * c) % 3) % 2 == 0
+    }
+    return ((r + c) % 2 + (r * c) % 3) % 2 == 0
+}
+
+// 对非功能模块应用掩码（XOR 翻转）。
+func apply_mask(mods: table<i64>, fm: table<i64>, size: i64, mid: i64) {
+    var r: i64 = 0
+    while r < size {
+        var c: i64 = 0
+        while c < size {
+            if fm[r * size + c] == 0 && mask_on(mid, r, c) {
+                mods[r * size + c] = 1 - mods[r * size + c]
+            }
+            c = c + 1
+        }
+        r = r + 1
+    }
+}
+
+// 行内 11 模块窗口是否类 finder 图案（10111010000 / 00001011101）。
+func finder_like_row(mods: table<i64>, size: i64, r: i64, c: i64) -> bool {
+    var v0 = mods[r * size + c]
+    var v1 = mods[r * size + c + 1]
+    var v2 = mods[r * size + c + 2]
+    var v3 = mods[r * size + c + 3]
+    var v4 = mods[r * size + c + 4]
+    var v5 = mods[r * size + c + 5]
+    var v6 = mods[r * size + c + 6]
+    var v7 = mods[r * size + c + 7]
+    var v8 = mods[r * size + c + 8]
+    var v9 = mods[r * size + c + 9]
+    var v10 = mods[r * size + c + 10]
+    if v1 == 0 && v4 == 1 && v5 == 0 && v6 == 1 && v9 == 0 {
+        if v0 == 1 && v2 == 1 && v3 == 1 && v7 == 0 && v8 == 0 && v10 == 0 {
+            return true
+        }
+        if v0 == 0 && v2 == 0 && v3 == 0 && v7 == 1 && v8 == 1 && v10 == 1 {
+            return true
+        }
+    }
+    return false
+}
+
+// 列内 11 模块窗口是否类 finder 图案。
+func finder_like_col(mods: table<i64>, size: i64, c: i64, r: i64) -> bool {
+    var v0 = mods[(r + 0) * size + c]
+    var v1 = mods[(r + 1) * size + c]
+    var v2 = mods[(r + 2) * size + c]
+    var v3 = mods[(r + 3) * size + c]
+    var v4 = mods[(r + 4) * size + c]
+    var v5 = mods[(r + 5) * size + c]
+    var v6 = mods[(r + 6) * size + c]
+    var v7 = mods[(r + 7) * size + c]
+    var v8 = mods[(r + 8) * size + c]
+    var v9 = mods[(r + 9) * size + c]
+    var v10 = mods[(r + 10) * size + c]
+    if v1 == 0 && v4 == 1 && v5 == 0 && v6 == 1 && v9 == 0 {
+        if v0 == 1 && v2 == 1 && v3 == 1 && v7 == 0 && v8 == 0 && v10 == 0 {
+            return true
+        }
+        if v0 == 0 && v2 == 0 && v3 == 0 && v7 == 1 && v8 == 1 && v10 == 1 {
+            return true
+        }
+    }
+    return false
+}
+
+// 掩码罚分（ISO 标准四规则，与 python-qrcode util.lost_point 一致）。
+func lost_point(mods: table<i64>, size: i64) -> i64 {
+    var lp: i64 = 0
+    // N1：行/列 ≥5 连续同色，每段 len-2
+    var r: i64 = 0
+    while r < size {
+        var run: i64 = 1
+        var c: i64 = 1
+        while c < size {
+            if mods[r * size + c] == mods[r * size + c - 1] {
+                run = run + 1
+            } else {
+                if run >= 5 {
+                    lp = lp + run - 2
+                }
+                run = 1
+            }
+            c = c + 1
+        }
+        if run >= 5 {
+            lp = lp + run - 2
+        }
+        r = r + 1
+    }
+    var c2: i64 = 0
+    while c2 < size {
+        var run2: i64 = 1
+        var r2: i64 = 1
+        while r2 < size {
+            if mods[r2 * size + c2] == mods[(r2 - 1) * size + c2] {
+                run2 = run2 + 1
+            } else {
+                if run2 >= 5 {
+                    lp = lp + run2 - 2
+                }
+                run2 = 1
+            }
+            r2 = r2 + 1
+        }
+        if run2 >= 5 {
+            lp = lp + run2 - 2
+        }
+        c2 = c2 + 1
+    }
+    // N2：2×2 同色块 +3
+    var r3: i64 = 0
+    while r3 < size - 1 {
+        var c3: i64 = 0
+        while c3 < size - 1 {
+            var a = mods[r3 * size + c3]
+            if a == mods[(r3 + 1) * size + c3] && a == mods[r3 * size + c3 + 1] &&
+               a == mods[(r3 + 1) * size + c3 + 1] {
+                lp = lp + 3
+            }
+            c3 = c3 + 1
+        }
+        r3 = r3 + 1
+    }
+    // N3：类 finder 图案（行/列 11 模块窗口）每处 +40
+    var r4: i64 = 0
+    while r4 < size {
+        var c4: i64 = 0
+        while c4 < size - 10 {
+            if finder_like_row(mods, size, r4, c4) {
+                lp = lp + 40
+            }
+            c4 = c4 + 1
+        }
+        r4 = r4 + 1
+    }
+    var c5: i64 = 0
+    while c5 < size {
+        var r5: i64 = 0
+        while r5 < size - 10 {
+            if finder_like_col(mods, size, c5, r5) {
+                lp = lp + 40
+            }
+            r5 = r5 + 1
+        }
+        c5 = c5 + 1
+    }
+    // N4：明暗比偏离 50% 每 5% 记 10（整数精确计算，等价 float 版本）
+    var dark: i64 = 0
+    var i: i64 = 0
+    while i < size * size {
+        dark = dark + mods[i]
+        i = i + 1
+    }
+    var numer = dark * 100 - 50 * size * size
+    if numer < 0 {
+        numer = -numer
+    }
+    var den = 5 * size * size
+    lp = lp + (numer / den) * 10
+    return lp
+}
+
+// 选最佳掩码（罚分最低，平局取较小掩码号——与 qrcode 库一致）。
+func best_mask(mods: table<i64>, fm: table<i64>, size: i64) -> i64 {
+    var best: i64 = 0
+    var best_lp: i64 = -1
+    var mid: i64 = 0
+    while mid < 8 {
+        var trial = table_copy(mods)
+        apply_mask(trial, fm, size, mid)
+        var lp = lost_point(trial, size)
+        if best_lp < 0 || lp < best_lp {
+            best_lp = lp
+            best = mid
+        }
+        mid = mid + 1
+    }
+    return best
+}
+
+// 非负整数二进制位长。
+func bit_len(v: i64) -> i64 {
+    var n: i64 = 0
+    while v != 0 {
+        n = n + 1
+        v = v >> 1
+    }
+    return n
+}
+
+// 15 位格式信息：5 位数据（ECL 2 位 + 掩码 3 位）经 BCH(15,5)（生成多项式 0x537）
+// 扩展 10 位纠错，整体 XOR 0x5412。
+func format_info_bits(data5: i64) -> i64 {
+    var d = data5 << 10
+    while bit_len(d) >= 11 {
+        var sh = bit_len(d) - 11
+        d = d ^ (0x537 << sh)
+    }
+    return ((data5 << 10) | d) ^ 0x5412
+}
+
+// 任务序 ECL（0=L 1=M 2=Q 3=H）→ 规范 ECL 位（L=01 M=00 Q=11 H=10）。
+func spec_ecl(ecl: i64) -> i64 {
+    if ecl == 0 {
+        return 1
+    }
+    if ecl == 1 {
+        return 0
+    }
+    if ecl == 2 {
+        return 3
+    }
+    return 2
+}
+
+// 双份放置 15 位格式信息 + 暗模块（位 i 的 LSB 序与 qrcode 库一致）。
+func draw_format(mods: table<i64>, size: i64, fi: i64) {
+    var i: i64 = 0
+    while i < 15 {
+        var bit = (fi >> i) & 1
+        // 第一份：列 8 竖排 bits 0-7 + 行 8 横排 bits 8-14（绕左上 finder）
+        var r: i64 = 0
+        var c: i64 = 8
+        if i < 6 {
+            r = i
+        } else if i < 8 {
+            r = i + 1
+        } else {
+            r = size - 15 + i
+        }
+        set_mod(mods, size, r, c, bit)
+        // 第二份：行 8 右侧 bits 0-7 + 列 8 底部 bits 8-14
+        var r2: i64 = 8
+        var c2: i64 = 0
+        if i < 8 {
+            c2 = size - i - 1
+        } else if i < 9 {
+            c2 = 15 - i - 1 + 1
+        } else {
+            c2 = 15 - i - 1
+        }
+        set_mod(mods, size, r2, c2, bit)
+        i = i + 1
+    }
+    set_mod(mods, size, size - 8, 8, 1)   // 暗模块
+}
+
+// ============================================================================
+// 四、公开接口
+// ============================================================================
+
+// 编码文本 → 矩阵句柄 id（≥0）；失败返回 -1 且 qr_err 置消息。
+// 版本自动选择 1..2（取最小可容纳者）；超出 v2 容量返回 -1。
+// 说明：句柄追加登记（不重置），多次 encode 的句柄均长期有效。
+pub func encode(content: string, ecl: i64) -> i64 {
+    qr_err = ""
+    if ecl < 0 || ecl > 3 {
+        qr_err = "invalid ECL: use 0=L 1=M 2=Q 3=H"
+        return -1
+    }
+    var mode = detect_mode(content)
+    var ncount = str_len(content)
+    if mode == 2 {
+        ncount = byte_count(content)
+    }
+    var version: i64 = 0
+    if fits(1, ecl, mode, ncount) {
+        version = 1
+    } else if fits(2, ecl, mode, ncount) {
+        version = 2
+    } else {
+        qr_err = "data too long for version 1-2 at ECL " + to_string(ecl)
+        return -1
+    }
+    var dc = cap_data(version, ecl)
+    var ecc_n = cap_ecc(version, ecl)
+    var data_cw = build_data_cw(content, mode, dc)
+    var ecc_cw = rs_ecc_inner(data_cw, ecc_n)
+    // 完整码字流 = 数据码字 || 纠错码字
+    var total = table_new_i64()
+    var i: i64 = 0
+    while i < len(data_cw) {
+        table_push(total, data_cw[i])
+        i = i + 1
+    }
+    i = 0
+    while i < len(ecc_cw) {
+        table_push(total, ecc_cw[i])
+        i = i + 1
+    }
+    // 矩阵构建
+    var size = 21 + 4 * (version - 1)
+    var mods = table_new_i64()
+    var fm = table_new_i64()
+    i = 0
+    while i < size * size {
+        table_push(mods, 0)
+        table_push(fm, 0)
+        i = i + 1
+    }
+    setup_function_patterns(mods, fm, size, version)
+    place_data(mods, fm, size, total)
+    var mask = best_mask(mods, fm, size)
+    apply_mask(mods, fm, size, mask)
+    draw_format(mods, size, format_info_bits((spec_ecl(ecl) << 3) | mask))
+    // 登记到平行表并返回句柄
+    var handle = len(qr_offs)
+    table_push(qr_offs, len(qr_cells))
+    table_push(qr_sizes, size)
+    i = 0
+    while i < size * size {
+        table_push(qr_cells, mods[i])
+        i = i + 1
+    }
+    return handle
+}
+
+// 矩阵边长（模块数，不含 quiet zone；无效句柄返回 -1）。
+pub func size(m: i64) -> i64 {
+    if m < 0 || m >= len(qr_sizes) {
+        return -1
+    }
+    return qr_sizes[m]
+}
+
+// 模块值 0/1（x 列 y 行）；句柄/坐标越界返回 -1。
+pub func get(m: i64, x: i64, y: i64) -> i64 {
+    if m < 0 || m >= len(qr_sizes) {
+        return -1
+    }
+    var s = qr_sizes[m]
+    if x < 0 || y < 0 || x >= s || y >= s {
+        return -1
+    }
+    return qr_cells[qr_offs[m] + y * s + x]
+}
+
+// ASCII 渲染：每模块 1 字符（'#'=暗 ' '=亮），四周 4 模块 quiet zone，行尾 '\n'。
+pub func render_ascii(m: i64) -> string {
+    if m < 0 || m >= len(qr_sizes) {
+        return ""
+    }
+    var s = qr_sizes[m]
+    var sb = string_builder()
+    var r: i64 = -4
+    while r < s + 4 {
+        var c: i64 = -4
+        while c < s + 4 {
+            var v: i64 = 0
+            if r >= 0 && r < s && c >= 0 && c < s {
+                v = qr_cells[qr_offs[m] + r * s + c]
+            }
+            if v == 1 {
+                sb_append_byte(sb, 35)
+            } else {
+                sb_append_byte(sb, 32)
+            }
+            c = c + 1
+        }
+        sb_append_byte(sb, 10)
+        r = r + 1
+    }
+    return sb_build(sb)
+}
+
+// 与 ext/png 联动：矩阵（含 quiet zone）按 scale 放大为黑白 RGBA → PNG 字节表。
+// 可选能力取舍：png.encode 接受 RGBA 字节表 + 宽高，便于直接调用，故提供之。
+pub func to_png(m: i64, scale: i64) -> table<i64> {
+    if m < 0 || m >= len(qr_sizes) {
+        return table_new_i64()
+    }
+    var sc = scale
+    if sc < 1 {
+        sc = 1
+    }
+    var s = qr_sizes[m]
+    var dim = (s + 8) * sc
+    var rgba = table_new_i64()
+    var r: i64 = 0
+    while r < dim {
+        var c: i64 = 0
+        while c < dim {
+            var mr = r / sc - 4
+            var mc = c / sc - 4
+            var v: i64 = 0
+            if mr >= 0 && mr < s && mc >= 0 && mc < s {
+                v = qr_cells[qr_offs[m] + mr * s + mc]
+            }
+            if v == 1 {
+                table_push(rgba, 0)
+                table_push(rgba, 0)
+                table_push(rgba, 0)
+                table_push(rgba, 255)
+            } else {
+                table_push(rgba, 255)
+                table_push(rgba, 255)
+                table_push(rgba, 255)
+                table_push(rgba, 255)
+            }
+            c = c + 1
+        }
+        r = r + 1
+    }
+    return png.encode(rgba, dim, dim)
+}
+
+// 最近一次 encode 的错误消息（成功时为空串）。
+pub func err_msg() -> string {
+    return qr_err
+}
+
+}   // namespace qr
