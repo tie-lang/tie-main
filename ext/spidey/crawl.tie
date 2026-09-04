@@ -1,0 +1,309 @@
+type tie<class>
+// ============================================================================
+// crawl.tie：ext/spidey——爬虫编排器（命名空间 crawl，纯 tie）p.6.6.6.3
+// Crawler orchestrator (BFS frontier + robots + politeness + dedup). p.6.6.6.3
+//
+// 数据平面：URL 与正文均为 string（HTML 解析沿用 ext/html 的 string 平面）；
+// 抓取协议抽象为两个原始类型函数参数（规避跨模块 struct 返回类型）：
+//   fetcher(url) -> i64     HTTP 状态码（0 = 失败/不可达；非 0 视为成功）
+//   loader(url) -> string   正文文本（失败时可为空串）
+// 默认实现见 spidey.tie（httpc.get 封装）；探针可注入本地假抓取，完全离线确定。
+//
+// 编排语义（Orchestration）：
+//   - BFS 前沿（FIFO 游标，不弹窗面板），从 seeds 开始逐层展开；
+//   - 去重：入队即过 seen 集（xxh3 64 位双重校验），重复 URL 计数并入队跳过；
+//   - robots：每主机首次触达时经同一 fetcher/loader 拉取 /robots.txt 并缓存原文，
+//     allowed() 按爬虫 UA 判定；robots.txt 拉取失败 → 「失稳即放宽」放行；
+//   - 限速：每主机节流 = max(cfg.delay_ms, robots Crawl-delay)，经 polite 推进
+//     （真 Sleep；时间原语为秒级，节流粒度为秒，文档化）；
+//   - 同域过滤：cfg.same_host=1 时仅收录与首个 seed 同主机的链接；
+//   - 深度限制：cfg.max_depth ≤ 0 表示不限；页数上限 cfg.max_pages ≤ 0 表示不限。
+//
+// 统计（Statistics）：CrawlStats 聚合 抓取/成功/失败/拒绝/去重/链接/主机/等待。
+//
+// 语言约束：模块级全局仅 robots 原文缓存（g_rh/g_rt，run 首行重建）；struct 字段
+// 收集期局部变量、结尾建 struct。
+// ============================================================================
+
+import "../html/html.tie" as html
+import "../../std/time.tie" as tm
+import "./polite.tie" as polite
+import "./seen.tie" as seen
+import "./robots.tie" as robots
+
+// ---- CrawlCfg：一次爬取配置 ----
+struct CrawlCfg {
+    var max_pages: i64 = 100     // 抓取页数上限（≤0 不限）
+    var max_depth: i64 = 3       // 深度上限（≤0 不限；seed=0）
+    var delay_ms: i64 = 500      // 每主机礼貌间隔（秒级粒度；与 robots 取大）
+    var robots_on: i64 = 1       // 是否执行 robots.txt 治理
+    var same_host: i64 = 1       // 是否仅爬同域（首个 seed 的主机）
+    var user_agent: string = "tie-spidey/1.0"
+}
+
+// ---- CrawlStats：爬取统计 ----
+struct CrawlStats {
+    var fetched: i64 = 0         // 已执行抓取的页数
+    var ok: i64 = 0              // 成功页（status 非 0）
+    var failed: i64 = 0          // 失败页（status 0）
+    var disallowed: i64 = 0      // robots 拒绝
+    var dup: i64 = 0             // 去重跳过（入队期）
+    var links: i64 = 0           // 提取到的链接总数
+    var queued: i64 = 0          // 总入队数（含种子）
+    var hosts: i64 = 0           // 触达主机数（含 robots 拉取）
+    var robots_fetch: i64 = 0    // robots.txt 拉取次数
+    var waits_ms: i64 = 0        // 累计礼貌等待（ms）
+}
+
+// 模块级全局：主机 → robots.txt 原文缓存（run 首行重建）
+var g_rh: table<string> = []
+var g_rt: table<string> = []
+
+namespace crawl {
+
+// 主机下标（线性，域规模内可接受）；-1 = 未缓存。
+func rob_idx(host: string) -> i64 {
+    var k: i64 = 0
+    var n = len(g_rh)
+    while k < n {
+        if g_rh[k] == host {
+            return k
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// 拆 URL：["scheme","host","path"]（去 port/query/fragment）。
+func split_url(url: string) -> table<string> {
+    var parts: table<string> = table_new_string()
+    var L = str_len(url)
+    var scheme_end: i64 = -1
+    var i: i64 = 0
+    while i + 2 < L {
+        if str_char(url, i) == ":" && str_char(url, i + 1) == "/" && str_char(url, i + 2) == "/" {
+            scheme_end = i
+            break
+        }
+        i = i + 1
+    }
+    var host_start = scheme_end + 3
+    if scheme_end < 0 {
+        host_start = 0
+    }
+    var host_end = host_start
+    while host_end < L {
+        var c = str_char(url, host_end)
+        if c == "/" || c == ":" || c == "?" || c == "#" {
+            break
+        }
+        host_end = host_end + 1
+    }
+    // path = host 之后全部（含 '/'）；剥 query/fragment 前置于顺序截断
+    var path_end = L
+    var i2 = host_end
+    while i2 < L {
+        var c = str_char(url, i2)
+        if c == "?" || c == "#" {
+            path_end = i2
+            break
+        }
+        i2 = i2 + 1
+    }
+    var path = "/"
+    if host_end < path_end {
+        path = str_sub_bytes(url, host_end, path_end)
+    }
+    var scheme = "http"
+    if scheme_end > 0 {
+        scheme = str_sub_bytes(url, 0, scheme_end)
+    }
+    var host = str_sub_bytes(url, host_start, host_end)
+    table_push(parts, scheme)
+    table_push(parts, host)
+    table_push(parts, path)
+    return parts
+}
+
+// robots 原文缓存（run 首行重建）
+func reset_robots_cache() {
+    g_rh = table_new_string()
+    g_rt = table_new_string()
+}
+
+// 拉取并缓存某主机 robots.txt（失败 → 缓存空原文 → 视为无规则放行）。
+func ensure_robots(host: string, scheme: string, fetcher: fn(string) -> i64, loader: fn(string) -> string) {
+    if rob_idx(host) >= 0 {
+        return
+    }
+    var rurl = scheme + "://" + host + "/robots.txt"
+    var st = fetcher(rurl)
+    var tx = ""
+    if st != 0 {
+        tx = loader(rurl)
+    }
+    table_push(g_rh, host)
+    table_push(g_rt, tx)
+}
+
+// 该 URL 是否被 robots 允许（robots_on=0 → 恒放行）。
+func robots_allowed(url: string, robots_on: i64, user_agent: string, fetcher: fn(string) -> i64, loader: fn(string) -> string) -> i64 {
+    if robots_on == 0 {
+        return 1
+    }
+    var parts = split_url(url)
+    var host = parts[1]
+    var path = parts[2]
+    ensure_robots(host, parts[0], fetcher, loader)
+    var idx = rob_idx(host)
+    if idx < 0 {
+        return 1
+    }
+    var r = robots.parse(g_rt[idx], user_agent)
+    var allowed = robots.allowed(r, path)
+    return allowed
+}
+
+// 该 URL 的有效礼貌间隔（ms）：max(delay_ms, robots Crawl-delay)。
+func host_delay(url: string, delay_ms: i64, robots_on: i64, user_agent: string) -> i64 {
+    var m = delay_ms
+    if delay_ms <= 0 {
+        m = 1
+    }
+    if robots_on == 0 {
+        return m
+    }
+    var parts = split_url(url)
+    var idx = rob_idx(parts[1])
+    if idx < 0 {
+        return m
+    }
+    var r = robots.parse(g_rt[idx], user_agent)
+    var gd = robots.group_delay(r, user_agent)
+    if gd > m {
+        return gd
+    }
+    return m
+}
+
+// BFS 爬取：seeds → 统计。fetcher/loader 见文件头协议。
+pub func run(seeds: table<string>, max_pages: i64, max_depth: i64, delay_ms: i64, robots_on: i64, same_host: i64, user_agent: string, fetcher: fn(string) -> i64, loader: fn(string) -> string) -> CrawlStats {
+    // 状态重建（每轮独立）
+    reset_robots_cache()
+    polite.reset()
+    var cap: i64 = 100
+    if max_pages > 0 {
+        cap = max_pages * 8
+    }
+    seen.new(cap)
+    // 前沿（FIFO 游标，无出队拷贝）
+    var fu: table<string> = table_new_string()
+    var fd: table<i64> = table_new_i64()
+    // 同域基准 = 首个 seed 的主机
+    var base_host = ""
+    if same_host == 1 && len(seeds) > 0 {
+        var bp = split_url(seeds[0])
+        base_host = bp[1]
+    }
+    // 种子入队（去重计 dup）
+    var k: i64 = 0
+    while k < len(seeds) {
+        if seen.mark(seeds[k]) == 1 {
+            // 种子重复：不计入 dup（起点常显式给出），直接跳过
+        } else {
+            table_push(fu, seeds[k])
+            table_push(fd, 0)
+        }
+        k = k + 1
+    }
+    // 统计累计量
+    var c_fetched: i64 = 0
+    var c_ok: i64 = 0
+    var c_failed: i64 = 0
+    var c_disallowed: i64 = 0
+    var c_dup: i64 = 0
+    var c_links: i64 = 0
+    var c_queued: i64 = len(fu)
+    var c_hosts: i64 = 0
+    var c_rf: i64 = 0
+    var c_waits: i64 = 0
+    var head: i64 = 0
+    while head < len(fu) {
+        if max_pages > 0 && c_fetched >= max_pages {
+            break
+        }
+        var url = fu[head]
+        var depth = fd[head]
+        head = head + 1
+        // robots 治理（含 robots.txt 拉取与缓存）
+        if robots_allowed(url, robots_on, user_agent, fetcher, loader) == 0 {
+            c_disallowed = c_disallowed + 1
+            continue
+        }
+        // 限速
+        var dly = host_delay(url, delay_ms, robots_on, user_agent)
+        var now = tm.now_ms()
+        c_waits = c_waits + polite.wait(host_of(url), dly, now)
+        // 抓取
+        var st = fetcher(url)
+        var tx = ""
+        if st != 0 {
+            tx = loader(url)
+        }
+        c_fetched = c_fetched + 1
+        if st == 0 {
+            c_failed = c_failed + 1
+        } else {
+            c_ok = c_ok + 1
+        }
+        // 链接提取与入队（成功页且未到深度上限）
+        if st != 0 && (max_depth <= 0 || depth < max_depth) {
+            var d = html.parse(tx)
+            var ls = html.links(d, url)
+            var n = len(ls)
+            c_links = c_links + n
+            var j: i64 = 0
+            while j < n {
+                var link = ls[j]
+                if same_host == 1 && base_host != "" {
+                    var lp = split_url(link)
+                    if lp[1] != base_host {
+                        j = j + 1
+                        continue
+                    }
+                }
+                if seen.mark(link) == 1 {
+                    c_dup = c_dup + 1
+                } else {
+                    table_push(fu, link)
+                    table_push(fd, depth + 1)
+                }
+                j = j + 1
+            }
+        }
+    }
+    c_queued = len(fu)
+    c_hosts = polite.hosts()
+    c_rf = len(g_rh)
+    // 组装统计
+    var s = CrawlStats()
+    s.fetched = c_fetched
+    s.ok = c_ok
+    s.failed = c_failed
+    s.disallowed = c_disallowed
+    s.dup = c_dup
+    s.links = c_links
+    s.queued = c_queued
+    s.hosts = c_hosts
+    s.robots_fetch = c_rf
+    s.waits_ms = c_waits
+    return s
+}
+
+// 主机名（供限速键；拆 URL 取 host）。
+func host_of(url: string) -> string {
+    var parts = split_url(url)
+    return parts[1]
+}
+
+}   // namespace crawl
