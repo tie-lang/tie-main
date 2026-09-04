@@ -1,0 +1,96 @@
+type tie<class>
+// ============================================================================
+// polite.tie：ext/spidey——爬虫礼貌限速（命名空间 polite，纯 tie）p.6.6.6.2
+// Crawler politeness / per-host rate limiting (namespace polite). p.6.6.6.2
+//
+// 数据平面：主机名与时刻均为标量。时刻一律 **Unix 纪元毫秒**（i64，经
+// std/time.now_ms 或调用方注入的"假时钟"），保证探针完全确定（无真 sleep）。
+//
+// 接口（Interface）：
+//   Sleep(ms) 原语          kernel32 真休眠（extern，默认自动链入；探针用假时钟
+//     + 注入 now 时绕开，不触碰它）
+//   reset()                清空主机表（每轮爬取开始前调用）
+//   decide(host, delay, now) -> i64   需等待毫秒（0 = 可立即发起；纯计算不推进）
+//   wait(host, delay, now) -> i64     按现状推进并真 sleep；返回本次实际等待毫秒
+//   hosts() -> i64                    已登记主机数
+//
+// 语义（Semantics）：
+//   - 每主机独立节流：两次请求间隔至少 delay_ms（主机首次请求立即放行）。
+//   - decide 只读，wait 读改写（先 decide 再对 g_next 推进），两者共享同一定时
+//     状态，可被编排器按需求二选一（离线验证用 decide+注入时钟，实跑用 wait）。
+//   - delay ≤ 0 → 不节流（每请求都放行，仍登记主机）。
+//
+// 语言约束：模块级全局表（非 struct 字段）允许直接 table_push / 下标写（同
+// std/json 对 j_* 全局的写法）；namespace 内不允许声明 var，故状态外置顶层。
+// ============================================================================
+
+import "../../std/time.tie" as tm
+
+// ---- kernel32 真休眠（Win 语义；i64 形参直通 DWORD 低 32 位）----
+unsafe extern fn Sleep(dwMilliseconds: i64) -> i32
+
+// 模块级全局：主机 → 下一允许时刻（ms）
+var g_hosts: table<string> = []
+var g_next: table<i64> = []
+
+namespace polite {
+
+// 主机下标（-1 = 未登记）。主机数少（爬取域规模），线性查找即可。
+func idx_of(host: string) -> i64 {
+    var k: i64 = 0
+    var n = len(g_hosts)
+    while k < n {
+        if g_hosts[k] == host {
+            return k
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// 清空节流状态（新一轮爬取前调用）。
+pub func reset() {
+    g_hosts = table_new_string()
+    g_next = table_new_i64()
+}
+
+// 距离下一次允许的距离（毫秒）；未登记主机立即放行（0）。纯计算不推进状态。
+pub func decide(host: string, delay_ms: i64, now: i64) -> i64 {
+    var idx = idx_of(host)
+    if idx < 0 || delay_ms <= 0 {
+        return 0
+    }
+    var w = g_next[idx] - now
+    if w < 0 {
+        return 0
+    }
+    return w
+}
+
+// 推进 + 真 sleep：返回本次实际等待毫秒（0 = 立即放行）。
+pub func wait(host: string, delay_ms: i64, now: i64) -> i64 {
+    var idx = idx_of(host)
+    if idx < 0 {
+        // 首次请求：立即放行但登记门槛
+        table_push(g_hosts, host)
+        table_push(g_next, now + delay_ms)
+        return 0
+    }
+    var w = g_next[idx] - now
+    if w > 0 {
+        unsafe {
+            Sleep(w)
+        }
+    } else {
+        w = 0
+    }
+    g_next[idx] = now + w + delay_ms
+    return w
+}
+
+// 已登记主机数（观察量）。
+pub func hosts() -> i64 {
+    return len(g_hosts)
+}
+
+}   // namespace polite

@@ -1,0 +1,142 @@
+type tie<class>
+// ============================================================================
+// seen.tie：ext/spidey——URL 去重集合（命名空间 seen，纯 tie）p.6.6.6.2
+// URL dedup set (namespace seen, pure-tie). p.6.6.6.2
+//
+// 数据平面：URL 为 string；唯一键 = URL 原始字节 + xxh3_64 哈希（64 位防伪双查）。
+//
+// 接口（Interface）：
+//   new(hint)             初始化容量（≥ 2×hint 的 2 的幂，惰性建库）
+//   reset()               清空去重状态
+//   mark(url) -> i64      0=新收录 / 1=重复（布隆级无删改，纯追加）
+//   count() -> i64        已收录 URL 数
+//   cap() -> i64          当前桶容量
+//
+// 实现（Implementation）：
+//   - 开地址线性探测（无删除），桶 = 平行表 g_h（哈希）/ g_u（原文）；
+//     empty 标记 = 哈希 0（xxh3 结果按 |1 归一，永不 0）。
+//   - 命中双重校验：哈希相等且原文相等才算重复，哈希冲突原文不同 → 顺延探测。
+//   - 装载因子 > 0.7 时整表扩容翻倍重建（amortized O(1) push）。
+//   - 复杂度：均摊 O(1) / URL，无 O(n^2)。
+//
+// 语言约束：模块级全局表允许 table_push / 下标写（同 std/json j_* 惯例）；
+// 重建时局部表构建 → 整表赋回。
+// ============================================================================
+
+import "../../std/xxh3.tie" as xxh3
+
+var g_h: table<i64> = []              // 桶哈希（0 = 空位）
+var g_u: table<string> = []           // 桶原文
+var g_cap: i64 = 0
+var g_cnt: i64 = 0
+var g_mask: i64 = 0
+
+namespace seen {
+
+// 非零化 64 位哈希：xxh3 结果与索引运算共用 i64 位宽；|1 归一避开 0 空位标记。
+func hval(url: string) -> i64 {
+    var hv = xxh3.xxh3_64(url)
+    if hv == 0 {
+        return 1
+    }
+    return hv
+}
+
+// 以 hint 为期望容量建桶（2 的幂，惰性；hint ≤ 0 → 8）。
+pub func new(hint: i64) {
+    var cap: i64 = 8
+    var need = hint * 2
+    if need > 0 {
+        while cap < need {
+            cap = cap * 2
+        }
+    }
+    var h2: table<i64> = table_new_i64()
+    var u2: table<string> = table_new_string()
+    var k: i64 = 0
+    while k < cap {
+        table_push(h2, 0)
+        table_push(u2, "")
+        k = k + 1
+    }
+    g_h = h2
+    g_u = u2
+    g_cap = cap
+    g_cnt = 0
+    g_mask = cap - 1
+}
+
+// 清空（等价 new(0)）。
+pub func reset() {
+    new(0)
+}
+
+// 翻倍重建（装载因子 > 0.7 触发）。
+func grow() {
+    var h2: table<i64> = table_new_i64()
+    var u2: table<string> = table_new_string()
+    var k: i64 = 0
+    while k < g_cap * 2 {
+        table_push(h2, 0)
+        table_push(u2, "")
+        k = k + 1
+    }
+    var new_cap = g_cap * 2
+    var new_mask = new_cap - 1
+    k = 0
+    while k < g_cap {
+        if g_h[k] != 0 {
+            var hv = g_h[k]
+            var idx = hv & new_mask
+            while h2[idx] != 0 {
+                idx = (idx + 1) & new_mask
+            }
+            h2[idx] = hv
+            u2[idx] = g_u[k]
+        }
+        k = k + 1
+    }
+    g_h = h2
+    g_u = u2
+    g_cap = new_cap
+    g_mask = new_mask
+}
+
+// 收录/判定：0=新 URL（已入集）/ 1=重复 URL。
+pub func mark(url: string) -> i64 {
+    if g_cap == 0 {
+        new(8)
+    }
+    var hv = hval(url)
+    var idx = hv & g_mask
+    while true {
+        var eh = g_h[idx]
+        if eh == 0 {
+            // 空位 → 插入
+            g_h[idx] = hv
+            g_u[idx] = url
+            g_cnt = g_cnt + 1
+            // 装载 > 0.7 → 扩容
+            if g_cnt * 10 > g_cap * 7 {
+                grow()
+            }
+            return 0
+        }
+        if eh == hv && g_u[idx] == url {
+            return 1
+        }
+        idx = (idx + 1) & g_mask
+    }
+}
+
+// 已收录 URL 数。
+pub func count() -> i64 {
+    return g_cnt
+}
+
+// 桶容量（观察量）。
+pub func cap() -> i64 {
+    return g_cap
+}
+
+}   // namespace seen
