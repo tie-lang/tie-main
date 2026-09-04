@@ -1,0 +1,228 @@
+type tie<logic>
+// tests/llm_probe/llm_probe.tie —— p.6.6.22 验收：std/llm OpenAI 兼容 LLM 客户端。
+// 全离线确定性探针（不连真实网络）：脚本化假服务器经注入收发函数对驱动 complete，
+// 覆盖请求 JSON 构造精确断言 / SSE 行解析 / content 提取（流式+非流式）/ 注入完整
+// 会话成功拼接 / 非 200 与坏 JSON 失败负码。
+import "../../std/string.tie" as str
+import "../../std/json.tie" as json
+import "../../std/llm.tie" as llm
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ==================== 脚本化假服务器（仿 smtp_probe）====================
+var g_resp: table<string> = []
+var g_rp: i64 = 0
+var g_expect: table<string> = []
+var g_xp: i64 = 0
+var g_sent: table<string> = []
+var g_sent_ok: i64 = 1
+
+func script_new() {
+    g_resp = table_new_string()
+    g_expect = table_new_string()
+    g_sent = table_new_string()
+    g_rp = 0
+    g_xp = 0
+    g_sent_ok = 1
+}
+func srecv(line: string) {
+    table_push(g_resp, line)
+}
+func sexpect(s: string) {
+    table_push(g_expect, s)
+}
+func fake_rd() -> string {
+    if g_rp < len(g_resp) {
+        var r = g_resp[g_rp]
+        g_rp = g_rp + 1
+        return r
+    }
+    return ""
+}
+func fake_wr(s: string) -> i64 {
+    table_push(g_sent, s)
+    if g_sent_ok == 1 {
+        if g_xp >= len(g_expect) || g_expect[g_xp] != s {
+            g_sent_ok = 0
+        }
+    }
+    g_xp = g_xp + 1
+    return len(s)
+}
+func seq_ok() -> bool {
+    if g_sent_ok != 1 {
+        return false
+    }
+    if g_rp != len(g_resp) {
+        return false
+    }
+    if g_xp != len(g_expect) {
+        return false
+    }
+    return true
+}
+
+// ==================== 场景 A：请求 JSON 构造向量 ====================
+func b1_body() {
+    // A1 单消息 + model
+    var msgs1 = table_new_string()
+    table_push(msgs1, "{\"role\":\"user\",\"content\":\"hi\"}")
+    var o1 = table_new_string()
+    table_push(o1, "model=gpt-x")
+    var body1 = llm.build_chat_body(msgs1, o1)
+    check(body1 == "{\"model\":\"gpt-x\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+          "b1 single message body exact")
+
+    // A2 多消息 + temperature + stream
+    var msgs2 = table_new_string()
+    table_push(msgs2, "{\"role\":\"system\",\"content\":\"be concise\"}")
+    table_push(msgs2, "{\"role\":\"user\",\"content\":\"hi\"}")
+    var o2 = table_new_string()
+    table_push(o2, "model=gpt-x")
+    table_push(o2, "temperature=0.7")
+    table_push(o2, "stream=true")
+    var body2 = llm.build_chat_body(msgs2, o2)
+    check(body2 == "{\"model\":\"gpt-x\",\"temperature\":0.7,\"stream\":true,\"messages\":[{\"role\":\"system\",\"content\":\"be concise\"},{\"role\":\"user\",\"content\":\"hi\"}]}",
+          "b1 multi msg + temperature + stream exact")
+
+    // A3 stream="1" -> true
+    var o3 = table_new_string()
+    table_push(o3, "model=m")
+    table_push(o3, "stream=1")
+    var body3 = llm.build_chat_body(msgs1, o3)
+    check(str.contains(body3, "\"stream\":true,\"messages\":") == true, "b1 stream=1 -> true")
+
+    // A4 stream="0" -> false
+    var o4 = table_new_string()
+    table_push(o4, "model=m")
+    table_push(o4, "stream=0")
+    var body4 = llm.build_chat_body(msgs1, o4)
+    check(str.contains(body4, "\"stream\":false,\"messages\":") == true, "b1 stream=0 -> false")
+
+    // A5 无 temperature/stream 时省略字段
+    check(str.contains(body1, "temperature") == false && str.contains(body1, "\"stream\"") == false,
+          "b1 no temp/stream fields when absent")
+
+    // A6 JSON 可被 json.parse 往返、字段值正确
+    var root = json.parse(body2)
+    check(root >= 0, "b1 body parseable by json")
+    check(json.str_val(json.obj_get(root, "model")) == "gpt-x", "b1 model field gpt-x")
+    var msgs = json.obj_get(root, "messages")
+    check(json.arr_len(msgs) == 2, "b1 messages len 2")
+    var m0 = json.arr_at(msgs, 0)
+    check(json.str_val(json.obj_get(m0, "role")) == "system", "b1 messages[0].role system")
+    check(json.str_val(json.obj_get(m0, "content")) == "be concise", "b1 messages[0].content")
+    check(json.is_float(json.obj_get(root, "temperature")), "b1 temperature is float")
+    var st = json.obj_get(root, "stream")
+    check(json.is_bool(st) == true && json.int_val(st) == 1, "b1 stream is true bool")
+}
+
+// ==================== 场景 B：SSE 行解析 ====================
+func b2_sse() {
+    check(llm.parse_sse_data("data: {\"a\":1}") == "{\"a\":1}", "b2 strip prefix")
+    check(llm.parse_sse_data("data: {\"a\":1}\r\n") == "{\"a\":1}", "b2 strip leading space + trailing crlf")
+    check(llm.parse_sse_data("data:{x}") == "{x}", "b2 no-space prefix")
+    check(llm.parse_sse_data("data: [DONE]") == "[DONE]", "b2 DONE sentinel")
+    check(llm.parse_sse_data(": comment") == "", "b2 comment line -> empty")
+    check(llm.parse_sse_data("") == "", "b2 blank line -> empty")
+    check(llm.parse_sse_data("event: msg") == "", "b2 non-data field -> empty")
+    check(llm.parse_sse_data("hello") == "", "b2 garbage -> empty")
+}
+
+// ==================== 场景 C：content 提取 ====================
+func b3_extract() {
+    check(llm.extract_content("{\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}") == "Hel",
+          "b3 streaming delta content")
+    check(llm.extract_content("{\"choices\":[{\"message\":{\"content\":\"full answer\"}}]}") == "full answer",
+          "b3 non-stream message content")
+    check(llm.extract_content("{\"choices\":[{\"delta\":{}}]}") == "",
+          "b3 missing content -> empty")
+}
+
+// ==================== 场景 D：complete 注入成功会话 ====================
+func d_success() {
+    script_new()
+    var msgs = table_new_string()
+    table_push(msgs, "{\"role\":\"user\",\"content\":\"hi\"}")
+    var opts = table_new_string()
+    table_push(opts, "model=gpt-x")
+    table_push(opts, "stream=true")
+    var body = llm.build_chat_body(msgs, opts)
+    sexpect("POST /v1/chat/completions HTTP/1.1\r\n")
+    sexpect("Host: api.openai.com\r\n")
+    sexpect("Authorization: Bearer k123\r\n")
+    sexpect("Content-Type: application/json\r\n")
+    sexpect("Content-Length: " + to_string(str_len(body)) + "\r\n")
+    sexpect("Connection: close\r\n")
+    sexpect("\r\n")
+    sexpect(body)
+    // 假服务器：200 + 头 + 空行 + 两条增量 data + [DONE]
+    srecv("HTTP/1.1 200 OK\r\n")
+    srecv("Content-Type: text/event-stream\r\n")
+    srecv("Cache-Control: no-cache\r\n")
+    srecv("\r\n")
+    srecv("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\r\n")
+    srecv("data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\r\n")
+    srecv("data: [DONE]\r\n")
+    var rc = llm.complete("gpt-x", "k123", msgs, opts, fake_rd, fake_wr)
+    check(rc == 0, "d success rc 0")
+    check(llm.last_err() == "", "d last_err empty")
+    check(llm.last_out() == "Hello world", "d content concatenated")
+    check(seq_ok(), "d request/response sequence exact")
+}
+
+// ==================== 场景 E：非 200 失败 ====================
+func e_unauthorized() {
+    script_new()
+    srecv("HTTP/1.1 401 Unauthorized\r\n")
+    srecv("\r\n")
+    var msgs = table_new_string()
+    table_push(msgs, "{\"role\":\"user\",\"content\":\"hi\"}")
+    var opts = table_new_string()
+    table_push(opts, "model=gpt-x")
+    var rc = llm.complete("gpt-x", "k", msgs, opts, fake_rd, fake_wr)
+    check(rc == -32, "e non-200 -> -32")
+    check(str_len(llm.last_err()) > 0, "e last_err nonempty")
+}
+
+// ==================== 场景 F：坏 JSON chunk ====================
+func f_badjson() {
+    script_new()
+    srecv("HTTP/1.1 200 OK\r\n")
+    srecv("Content-Type: application/json\r\n")
+    srecv("\r\n")
+    srecv("data: {not json}\r\n")
+    var msgs = table_new_string()
+    table_push(msgs, "{\"role\":\"user\",\"content\":\"hi\"}")
+    var opts = table_new_string()
+    table_push(opts, "model=gpt-x")
+    var rc = llm.complete("gpt-x", "k", msgs, opts, fake_rd, fake_wr)
+    check(rc == -33, "f bad json chunk -> -33")
+    check(str_len(llm.last_err()) > 0, "f last_err nonempty")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    b1_body()
+    b2_sse()
+    b3_extract()
+    d_success()
+    e_unauthorized()
+    f_badjson()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}

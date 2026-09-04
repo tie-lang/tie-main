@@ -1,0 +1,451 @@
+type tie<class>
+// ============================================================================
+// llm.tie：标准库——LLM 调用库（OpenAI 兼容客户端，命名空间 llm，纯 tie）p.6.6.22
+// LLM chat-client for OpenAI-compatible chat completions endpoints.
+//
+// 定位（Positioning）：在 std/httpc POST（p.6.6.2）之上封装 OpenAI 兼容的
+// chat/completions 请求构造与响应解析；SSE 行级解码语义对齐 std/sse（p.6.6.3），
+// 但因 llm 的传输注入点是「行级 rd/wr 函数对」（仿 std/smtp session），且 sse 的
+// 内部解析非 pub，本模块在 parse_sse_data 内自持最小副本并注释（见下）。依赖方向
+// tls → httpc → llm。
+//
+// 数据面（Data plane）：请求体为 JSON 文本（string）；SSE 行也为 string（ASCII 段）。
+// 流式对话的增量 content 为可打印文本，适合 string 平面，与本库定位一致。
+//
+// 接口（Interface）：
+//   - build_chat_body(messages, opts) -> string  请求体 JSON（pub，可精确断言）
+//       messages: table<string>，每元素一条 JSON 消息对象文本，如
+//         {"role":"user","content":"hi"}（逐字并入请求体 messages 数组）。
+//       opts: table<string>，每元素一条 "key=value" 键值对。约定：
+//         model=<name>        模型名；优先级：opts 中若有则优先，否则在
+//                             complete/chat 入口由 model 参数补进 opts。
+//         temperature=<num>   采样温度，值原样写入（如 "0.7"）。无则省略字段。
+//         stream=<1|0|true|false>  是否流式；"1" 或 "true" -> "stream":true，
+//                             "0" 或 "false" -> "stream":false。无则省略字段。
+//         url=<endpoint>      完整端点 URL（仅 chat() 读取；缺省用默认端点）。
+//       输出固定顺序：{"model":..,"temperature":..,"stream":..,"messages":[...]}
+//       （标量键前置、嵌套数组 messages 置末尾，见函数内注），可被 json.parse 往返。
+//   - parse_sse_data(line) -> string  剥离 "data:" 前缀返回数据载荷（pub）
+//       注释行（':' 开头）/ 空行 / 非 data 字段行 -> 返回 ""（无数据事件）；
+//       "data: [DONE]" -> 返回 "[DONE]"（哨兵，调用方据此收尾）；
+//       "data: {...}" -> 返回 {...}（剥一个前导空格 + 尾随 \r\n）。
+//   - extract_content(json_text) -> string  提取文本（pub）
+//       流式 chunk：choices[0].delta.content；非流式：choices[0].message.content。
+//       用 std/json 句柄 API 实现；字段缺失/JSON 非法返回 ""。
+//   - complete(model, api_key, messages, opts, rd, wr) -> i64  传输可注入
+//       rd: fn() -> string  取一行（含行尾；空串 = 连接关闭）
+//       wr: fn(string) -> i64  发一行（返回发送字节数；<0 = 发送失败）
+//       仿 std/smtp session 范式：调用方已建立底层连接，complete 负责封装完整
+//       HTTP 请求（请求行 + 头 + 正文逐行 wr）+ 响应状态/头读取 + SSE 行级收流。
+//       成功后文本存入模块级 g_out（last_out() 取回）；失败返回负码（见 RC_*），
+//       原因经 llm.last_err() 取回。
+//   - chat(model, api_key, messages, opts) -> i64  真实网络封装
+//       内部用 httpc POST 发请求体、按 opts "stream" 决定流式；流式时对 httpc
+//       drained 正文做逐行 SSE 解析累积。失败负码 + last_err。
+//
+// 真实网络说明（Live networking）：
+//   探针为全离线确定性，只注入假 rd/wr 驱动 complete。chat 的真实网络路径默认
+//   **不自动联网**（tie 无环境变量读取原语，TIE_LLM_LIVE gate 未实现）；真实传输
+//   由调用方自行按 need 接入——即调用方按 HTTP 语义自建连（如 std/net 直连并回发
+//   HTTP/1.1 报文，或直接调用 httpc.post）后将字节流转成行级 rd/wr 喂给 complete。
+//   chat 仅作为「httpc 已封装传输」的便捷封装供参考/按需使用。验收以注入假传输的
+//   complete 会话为准。
+//
+// 语言约束（Language constraints）：
+//   - 请求体 / SSE 文本累积一律用 string_builder 单遍构建（禁止逐字节字符串
+//     拼接，O(n^2)）；
+//   - `text`、`port`、`code`、`impl` 是 tie 保留字，命名回避；
+//   - 跨模块 struct（httpc.Response / StreamConn）字段读取在 tie 中支持（见
+//     std/sse 访问 httpc.StreamConn），llm 亦只读不写；
+//   - 模块级全局 g_err / g_out 外置文件顶层（仿 smtp g_err）。
+// ============================================================================
+
+import "./httpc.tie" as httpc
+import "./json.tie" as json
+import "./string.tie" as str
+
+// ---- 模块级全局：最近一次错误信息 与 对话结果文本（顶层持久变量，仿 smtp g_err）----
+var g_err: string = ""
+var g_out: string = ""
+
+// ---- 失败返回码（complete 负码；chat 负码）----
+// 注：tie 的 const/模块级 var 对【负字面量】初始化折叠为 0，故代码内一律内联负
+// 字面量，此处仅作文档映射：
+//   complete：
+//     -30 wr 发送请求头 / 正文失败（返回 <0）
+//     -31 读状态行 / 响应头时连接关闭（rd 返回空串）或状态行非法
+//     -32 HTTP 状态非 200
+//     -33 某个 SSE data chunk 的 JSON 非法
+//   chat：
+//     -40 httpc.post 请求失败（resp.ok=false）
+
+namespace llm {
+
+// ============================================================================
+// 一、opts 工具（"key=value" 表）
+// ============================================================================
+
+// opts 中按键取值；不存在返回空串。
+func opt_find(opts: table<string>, key: string) -> string {
+    var pre = key + "="
+    var i: i64 = 0
+    while i < len(opts) {
+        if str.starts_with(opts[i], pre) {
+            return str.slice(opts[i], str_len(pre), str_len(opts[i]))
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// opts 是否含某键。
+func opt_has(opts: table<string>, key: string) -> bool {
+    return opt_find(opts, key) != ""
+}
+
+// 保证 opts 含 model：缺失时返回新表追加 "model=<model>"；已有则不改变。
+func ensure_model(opts: table<string>, model: string) -> table<string> {
+    if opt_has(opts, "model") {
+        return opts
+    }
+    var t = table_new_string()
+    var i: i64 = 0
+    while i < len(opts) {
+        table_push(t, opts[i])
+        i = i + 1
+    }
+    table_push(t, "model=" + model)
+    return t
+}
+
+// ============================================================================
+// 二、请求构造（pub，可精确断言）
+// ============================================================================
+
+// messages 并入 JSON 数组（置于**末尾**）；model 取 opts.model；temperature/stream
+// 若在 opts 中则依次置于 messages 之前。输出固定顺序：
+//   {"model":..,"temperature":..,"stream":..,"messages":[...]}
+// 注意：std/json 的 parse 在「对象内嵌套数组/对象之后还跟标量键」时会把内层键压进
+// 外层键区间导致后续键丢失（见探针踩坑），故这里刻意把嵌套的 messages 放在末尾，
+// 保证本库产出的请求体能被 json.parse 完整往返。返回紧凑 JSON 文本。
+pub func build_chat_body(messages: table<string>, opts: table<string>) -> string {
+    var sb = string_builder()
+    sb_append(sb, "{\"model\":\"")
+    sb_append(sb, opt_find(opts, "model"))
+    sb_append(sb, "\"")
+    var tv = opt_find(opts, "temperature")
+    if str_len(tv) > 0 {
+        sb_append(sb, ",\"temperature\":")
+        sb_append(sb, tv)
+    }
+    var sv = opt_find(opts, "stream")
+    if str_len(sv) > 0 {
+        sb_append(sb, ",\"stream\":")
+        if sv == "1" || sv == "true" {
+            sb_append(sb, "true")
+        } else {
+            sb_append(sb, "false")
+        }
+    }
+    sb_append(sb, ",\"messages\":[")
+    var i: i64 = 0
+    while i < len(messages) {
+        if i > 0 {
+            sb_append(sb, ",")
+        }
+        sb_append(sb, messages[i])
+        i = i + 1
+    }
+    sb_append(sb, "]}")
+    return sb_build(sb)
+}
+
+// ============================================================================
+// 三、SSE 行解析与 content 提取（pub）
+// ============================================================================
+
+// "data:" 前缀剥离 + 内容返回。注释行 / 空行 / 非 data 字段行 -> "";
+// "data: [DONE]" -> "[DONE]"；"data: {...}" -> "{...}"（剥一个前导空格 + 尾 \r\n）。
+// 语义对齐 std/sse：空行 flush、':' 注释、data 字段大小写敏感小写。因 sse 内部
+// 解析非 pub 且 llm 按「行级」而非「字节流级」工作，此处自持最小副本。
+pub func parse_sse_data(line: string) -> string {
+    if str_len(line) < 5 {
+        return ""
+    }
+    if str.slice(line, 0, 5) != "data:" {
+        return ""
+    }
+    var rest = str.slice(line, 5, str_len(line))
+    // 剥一个前导空格
+    if str_len(rest) > 0 && str_char(rest, 0) == " " {
+        rest = str.slice(rest, 1, str_len(rest))
+    }
+    // 剥尾随 \r / \n
+    while str_len(rest) > 0 {
+        var last = str_char(rest, str_len(rest) - 1)
+        if last == "\n" || last == "\r" {
+            rest = str.slice(rest, 0, str_len(rest) - 1)
+        } else {
+            break
+        }
+    }
+    return rest
+}
+
+// 流式 chunk：choices[0].delta.content；非流式：choices[0].message.content。
+// 用 std/json 句柄 API（parse/obj_get/arr_at/str_val/is_str）。
+pub func extract_content(json_text: string) -> string {
+    var root = json.parse(json_text)
+    if root < 0 {
+        return ""
+    }
+    var choices = json.obj_get(root, "choices")
+    var c0 = json.arr_at(choices, 0)
+    if c0 < 0 {
+        return ""
+    }
+    var delta = json.obj_get(c0, "delta")
+    if delta >= 0 {
+        var dc = json.obj_get(delta, "content")
+        if json.is_str(dc) {
+            return json.str_val(dc)
+        }
+    }
+    var msg = json.obj_get(c0, "message")
+    if msg >= 0 {
+        var mc = json.obj_get(msg, "content")
+        if json.is_str(mc) {
+            return json.str_val(mc)
+        }
+    }
+    return ""
+}
+
+// ============================================================================
+// 四、HTTP 行级解析工具（complete 内部）
+// ============================================================================
+
+// 状态行 "HTTP/1.1 200 OK\r\n" -> 状态码；非法返回 -1。
+func http_status(line: string) -> i64 {
+    var n = str_len(line)
+    var sp = str.find(line, " ")
+    if sp < 0 {
+        return -1
+    }
+    var i: i64 = sp
+    while i < n && str_char(line, i) == " " {
+        i = i + 1
+    }
+    if i + 2 >= n {
+        return -1
+    }
+    var a = char_code(str_char(line, i))
+    var b = char_code(str_char(line, i + 1))
+    var c = char_code(str_char(line, i + 2))
+    if a < 48 || a > 57 || b < 48 || b > 57 || c < 48 || c > 57 {
+        return -1
+    }
+    return (a - 48) * 100 + (b - 48) * 10 + (c - 48)
+}
+
+// 行是否仅含空白（响应头区空行判定；"\r\n" / 空行）。
+func blank_line(line: string) -> bool {
+    var n = str_len(line)
+    var i: i64 = 0
+    while i < n {
+        var ch = str_char(line, i)
+        if ch != " " && ch != "\t" && ch != "\r" && ch != "\n" {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// ============================================================================
+// 五、传输可注入的完整会话（仿 smtp session；探针驱动这里）
+// ============================================================================
+
+// rd/wr 由调用方提供（行级传输注入）。complete 负责把一次 chat/completions 请求
+// 完整发出（请求行 + 头 + 正文逐行 wr），读响应状态行/头，再逐行收 SSE data 流并
+// 累积 content 到 g_out。成功 0；失败负码（见 RC_*）且 last_err 带原因。
+pub func complete(model: string, api_key: string, messages: table<string>,
+                  opts: table<string>, rd: fn() -> string, wr: fn(string) -> i64) -> i64 {
+    g_err = ""
+    g_out = ""
+    var o = ensure_model(opts, model)
+    var body = build_chat_body(messages, o)
+
+    // ---- 发送请求头与正文（逐行 wr）----
+    if wr("POST /v1/chat/completions HTTP/1.1\r\n") < 0 {
+        g_err = "send request line failed"
+        return -30
+    }
+    if wr("Host: api.openai.com\r\n") < 0 {
+        g_err = "send Host failed"
+        return -30
+    }
+    if wr("Authorization: Bearer " + api_key + "\r\n") < 0 {
+        g_err = "send Authorization failed"
+        return -30
+    }
+    if wr("Content-Type: application/json\r\n") < 0 {
+        g_err = "send Content-Type failed"
+        return -30
+    }
+    if wr("Content-Length: " + to_string(str_len(body)) + "\r\n") < 0 {
+        g_err = "send Content-Length failed"
+        return -30
+    }
+    if wr("Connection: close\r\n") < 0 {
+        g_err = "send Connection failed"
+        return -30
+    }
+    if wr("\r\n") < 0 {
+        g_err = "send header terminator failed"
+        return -30
+    }
+    if wr(body) < 0 {
+        g_err = "send request body failed"
+        return -30
+    }
+
+    // ---- 读响应状态行 ----
+    var status_line = rd()
+    if str_len(status_line) == 0 {
+        g_err = "connection closed at status line"
+        return -31
+    }
+    var st = http_status(status_line)
+    if st < 0 {
+        g_err = "unparseable status line"
+        return -31
+    }
+    if st != 200 {
+        g_err = "http status " + to_string(st)
+        return -32
+    }
+
+    // ---- 读响应头直到空行 ----
+    var g: i64 = 0
+    while g < 1000000 {
+        var hl = rd()
+        if str_len(hl) == 0 {
+            g_err = "connection closed in response headers"
+            return -31
+        }
+        if blank_line(hl) {
+            break
+        }
+        g = g + 1
+    }
+
+    // ---- 读 SSE data 行，累积 content（string_builder 单遍）----
+    var sb = string_builder()
+    while true {
+        var line = rd()
+        if str_len(line) == 0 {
+            break   // 连接关闭
+        }
+        var d = parse_sse_data(line)
+        if str_len(d) == 0 {
+            continue
+        }
+        if d == "[DONE]" {
+            break
+        }
+        var node = json.parse(d)
+        if node < 0 {
+            g_err = "bad json chunk: " + d
+            g_out = sb_build(sb)
+            return -33
+        }
+        sb_append(sb, extract_content(d))
+    }
+    g_out = sb_build(sb)
+    return 0
+}
+
+// ============================================================================
+// 六、真实网络封装（httpc POST；流式对 drained 正文逐行解析）
+// ============================================================================
+// 真实网络默认不自动联网（tie 无环境变量原语，TIE_LLM_LIVE gate 未实现）；本函数
+// 作为「httpc 已封装传输」的便捷封装供按需使用，验收不依赖此路径。
+
+// 字符串按字节追加进字节表（请求体转字节）。
+func append_body_bytes(t: table<i64>, s: string) {
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+}
+
+// POST chat/completions。opts "stream=1|true" 决定流式：流式对 httpc drained 的
+// 正文做逐行 SSE 解析累积 content；非流式直接 extract_content。成功 0；失败 -40。
+pub func chat(model: string, api_key: string, messages: table<string>, opts: table<string>) -> i64 {
+    g_err = ""
+    g_out = ""
+    var o = ensure_model(opts, model)
+    var body = build_chat_body(messages, o)
+    var url = opt_find(opts, "url")
+    if str_len(url) == 0 {
+        url = "https://api.openai.com/v1/chat/completions"
+    }
+    var headers = table_new_string()
+    table_push(headers, "Authorization: Bearer " + api_key)
+    table_push(headers, "Content-Type: application/json")
+    var bodyb = table_new_i64()
+    append_body_bytes(bodyb, body)
+    var sv = opt_find(opts, "stream")
+    var stream = (sv == "1") || (sv == "true")
+    var resp = httpc.post(url, bodyb, headers)
+    if resp.ok == false {
+        g_err = resp.err
+        if str_len(g_err) == 0 {
+            g_err = "http request failed"
+        }
+        return -40
+    }
+    var rtext = httpc.body_text(resp)
+    if stream {
+        // 逐行解析 SSE，累积 content
+        var sb = string_builder()
+        var n = str_len(rtext)
+        var p: i64 = 0
+        while p < n {
+            var ln = string_builder()
+            while p < n && str_char(rtext, p) != "\n" {
+                sb_append(ln, str_char(rtext, p))
+                p = p + 1
+            }
+            p = p + 1   // 跳过 \n
+            var sl = sb_build(ln)
+            var d = parse_sse_data(sl)
+            if str_len(d) > 0 && d != "[DONE]" {
+                sb_append(sb, extract_content(d))
+            }
+        }
+        g_out = sb_build(sb)
+    } else {
+        g_out = extract_content(rtext)
+    }
+    return 0
+}
+
+// ============================================================================
+// 七、对外访问器
+// ============================================================================
+
+// 最近一次错误信息（成功时为空串）。
+pub func last_err() -> string {
+    return g_err
+}
+
+// 最近一次成功会话的对话结果文本（注入传输 / chat 均写入）。
+pub func last_out() -> string {
+    return g_out
+}
+
+}   // namespace llm
