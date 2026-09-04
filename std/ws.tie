@@ -1,0 +1,475 @@
+type tie<class>
+// ============================================================================
+// ws.tie：标准库——WebSocket 客户端（命名空间 ws，纯 tie）p.6.6.7
+// WebSocket client (namespace ws, pure-tie).
+//
+// 定位（Positioning）：在 std/httpc.open_stream（请求/响应头已就绪、连接保持
+// 打开）+ sha1（握手 accept）之上实现 RFC 6455 客户端：Upgrade 握手、帧编解码
+// （客户端帧强制掩码）、分片友好/控制帧收发。依赖方向 tls → httpc+sse → ws，
+// 以及 sha1/random/net。
+//
+// 数据平面（Data plane）：
+//   WebSocket 帧与密钥全链路以 table<i64>（0..255）承载原始字节；tie 字符串不能
+//   承载 ≥0x80 原始字节，故 Sec-WebSocket-Key / Accept 仅以「文本串」出现于请求/
+//   响应头与 accept 计算（base64 输出 = 可打印 ASCII）。帧的 4 字节掩码 + 载荷
+//   XOR 在字节域完成。
+//
+// 接口（Interface）：
+//   - connect(url, headers) -> WsConn         Upgrade 握手并校验 101 + Accept
+//   - ws_send(c, opcode, payload) -> i64      发一帧（客户端强制掩码）
+//   - ws_recv(c) -> (i64, table<i64>)         收一帧，返回 (opcode, payload)
+//   - ws_close(c)                             发 close 帧 + 尽力读对端 close + 关传输
+//   - compute_accept(key_b64) -> string       RFC 6455 接受键（纯函数，探针用）
+//   - b64_encode_bytes / b64_decode_bytes     字节表↔base64（pub，探针用）
+//   - mk_frame(key, opcode, payload)          构造客户端帧（注入掩码键，探针用）
+//   - parse_frame(bytes, off) -> (op,payload,next_off)  帧解析（pub，探针用）
+//
+// 握手（Handshake）：
+//   16 字节掩码/Key 随机生成 → 字节表 base64 作 Sec-WebSocket-Key；外加
+//   Connection/Upgrade/Version 标准头；URL 的 ws→http、wss→https 后再交
+//   httpc.open_stream（httpc 以 sch!="https" 判别明文/TLS；wss 换 https 使其
+//   走 tls，且 conn_port 默认 443）。响应须 status==101 且
+//   Sec-WebSocket-Accept == base64(sha1(key + GUID))，否则 err 带原因（不抛异常）。
+//
+// 帧（Frame，RFC 6455 §5）：
+//   客户端帧强制 MASK=1：字节0 F|RSV|opcode、字节1 MASK+长度；长度三档
+//   （<126 直接 / ≤65535 走 126+16 位 BE / 更大走 127+64 位 BE）；4 字节掩码；
+//   载荷逐字节与掩码 XOR（(i&3) 索引掩码）。服务端帧无掩码（MASK=0）。
+//   控制帧 opcode：8=close、9=ping（可选回 pong）、10=pong。
+//
+// 语言约束（Language constraints）：
+//   - tie struct 为值类型，跨调用可变状态一律放 WsConn 表字段（共享引用）：
+//     state=[eof, rpos]（消费位）；连接本身借 httpc.StreamConn（conn.buf 缓冲 +
+//     st 状态），同 sse 先例（SseConn.conn.buf）。
+//   - 取值类型字段表禁直接 table_push/下标写；初始化由默认构造建好引用后读入
+//     局部再 push/write。
+//   - 读帧带读次数守卫（上限 1e6），无 EOF 判定不死循环。
+//   - 性能：帧/载荷构建一律 table_push 单遍；hex/base64 用查表法；禁止 str_char
+//     全串重复扫描与逐字节字符串拼接。
+//   - `text`、`port` 是 tie 保留字（本模块参数用 doc/pport/... 规避）。
+//
+// 局限（Limits）：
+//   - 不做分片重组 / 协议级文本帧聚合（控制帧直通返回，分片 FIN=0 由调用方组合）；
+//   - 单线程阻塞模型（同 SSE）；
+//   - connect 依赖 httpc.open_stream 强制 "Connection: close"（与 Upgrade 取向
+//     不同；多数服务器容忍，属 httpc 已知行为，不在本模块改）。
+// ============================================================================
+
+import "./httpc.tie" as httpc
+import "./sha1.tie" as sha1
+import "./string.tie" as str
+import "./net.tie" as net
+import "../ext/tls/tls.tie" as tls
+
+// ---- WsConn：一条 WebSocket 连接 ----
+// conn：httpc 流式连接（原始字节层；conn.buf 为接收缓冲，conn.kind 判别明文/TLS）。
+// state 状态向量（表共享引用，跨调用持久）：
+//   [0] eof    对端已收尾 / close 已收（0/1）
+//   [1] rpos   conn.buf 中被帧解析消费到的位移
+struct WsConn {
+    var conn: StreamConn = StreamConn()   // 传输层（httpc 流式连接；struct 名跨文件裸用）
+    var state: table<i64> = table_new_i64()  // [eof, rpos] 共享引用
+    var err: string = ""     // 连接级失败原因（connect 阶段设定）
+    var final_url: string = ""  // 实际 URL（原样，含 ws/wss scheme）
+}
+
+namespace ws {
+
+// ============================================================================
+// 一、字节工具（httpc 内部函数非 pub，本地各持最小副本；hex/base64 查表法）
+// ============================================================================
+
+// b64 字符表（标准，查表法）。
+func b64_chars() -> string {
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+}
+
+// 单字符 → base64 索引（0..63）；非字符表字符返回 -1。
+func b64_idx(c: string) -> i64 {
+    var chars = b64_chars()
+    var m: i64 = str_len(chars)
+    var j: i64 = 0
+    while j < m {
+        if str_char(chars, j) == c {
+            return j
+        }
+        j = j + 1
+    }
+    return -1
+}
+
+// 字节表 → base64 字符串（任意原始字节 0..255，3 字节一组 + 填充；查表法）。
+pub func b64_encode_bytes(b: table<i64>) -> string {
+    var chars = b64_chars()
+    var sb = string_builder()
+    var n = len(b)
+    var i: i64 = 0
+    while i + 2 < n {
+        var v = (b[i] << 16) | (b[i + 1] << 8) | b[i + 2]
+        sb_append(sb, str_char(chars, (v >> 18) & 0x3F))
+        sb_append(sb, str_char(chars, (v >> 12) & 0x3F))
+        sb_append(sb, str_char(chars, (v >> 6) & 0x3F))
+        sb_append(sb, str_char(chars, v & 0x3F))
+        i = i + 3
+    }
+    if n - i == 1 {
+        var b0 = b[i]
+        sb_append(sb, str_char(chars, b0 >> 2))
+        sb_append(sb, str_char(chars, (b0 & 0x03) << 4))
+        sb_append(sb, "==")
+    } else if n - i == 2 {
+        var b0 = b[i]
+        var b1 = b[i + 1]
+        sb_append(sb, str_char(chars, b0 >> 2))
+        sb_append(sb, str_char(chars, ((b0 & 0x03) << 4) | (b1 >> 4)))
+        sb_append(sb, str_char(chars, (b1 & 0x0F) << 2))
+        sb_append(sb, "=")
+    }
+    return sb_build(sb)
+}
+
+// base64 字符串 → 字节表（逆过程；逐组解 24 位整数按 &0xFF 拆 3 字节）。
+pub func b64_decode_bytes(s: string) -> table<i64> {
+    var out = table_new_i64()
+    var n = str_len(s)
+    var i: i64 = 0
+    while i + 3 < n {
+        var c0 = str_char(s, i)
+        var c1 = str_char(s, i + 1)
+        var c2 = str_char(s, i + 2)
+        var c3 = str_char(s, i + 3)
+        var i0 = b64_idx(c0)
+        var i1 = b64_idx(c1)
+        if i0 < 0 || i1 < 0 {
+            break
+        }
+        if c3 != "=" {
+            var i2 = b64_idx(c2)
+            var i3 = b64_idx(c3)
+            var v = (i0 << 18) | (i1 << 12) | (i2 << 6) | i3
+            table_push(out, (v >> 16) & 0xFF)
+            table_push(out, (v >> 8) & 0xFF)
+            table_push(out, v & 0xFF)
+        } else if c2 != "=" {
+            var i2 = b64_idx(c2)
+            var v = (i0 << 18) | (i1 << 12) | (i2 << 6)
+            table_push(out, (v >> 16) & 0xFF)
+            table_push(out, (v >> 8) & 0xFF)
+        } else {
+            var v = (i0 << 18) | (i1 << 12)
+            table_push(out, (v >> 16) & 0xFF)
+        }
+        i = i + 4
+    }
+    return out
+}
+
+// 十六进制字符 nibble 值（0..15）；非法返回 0（hex 串由 sha1_hex 保证合法）。
+func hex_nib(c: i64) -> i64 {
+    if c >= 0x30 && c <= 0x39 {
+        return c - 0x30
+    }
+    if c >= 0x61 && c <= 0x66 {
+        return c - 0x61 + 10
+    }
+    if c >= 0x41 && c <= 0x46 {
+        return c - 0x41 + 10
+    }
+    return 0
+}
+
+// 十六进制字符串 → 字节表（每两位 → 1 字节）。
+func hex_to_bytes(h: string) -> table<i64> {
+    var out = table_new_i64()
+    var n = str_len(h)
+    var i: i64 = 0
+    while i + 1 < n {
+        var hi = hex_nib(str_byte(h, i))
+        var lo = hex_nib(str_byte(h, i + 1))
+        table_push(out, (hi << 4) | lo)
+        i = i + 2
+    }
+    return out
+}
+
+// ============================================================================
+// 二、握手接受键 / URL scheme 归一
+// ============================================================================
+
+// RFC 6455 接受键：base64(sha1(key + GUID))。key 为已编码的
+// Sec-WebSocket-Key（可打印 ASCII 串），GUID 常量拼接后进 sha1，hex→字节→base64。
+pub func compute_accept(key_b64: string) -> string {
+    var guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    var hexd = sha1.sha1_hex(key_b64 + guid)
+    var digest = hex_to_bytes(hexd)
+    return b64_encode_bytes(digest)
+}
+
+// ws 将 scheme 归一：ws→http、wss→https，其余原样（httpc 以 sch!="https" 判
+// 明文/TLS；wss 换 https 后走 tls 且默认端口 443）。
+func scheme_http(url: string) -> string {
+    var use: string = url
+    if str.find(url, "ws://") == 0 {
+        use = "http" + str.slice(url, 2, str_len(url))
+    } else if str.find(url, "wss://") == 0 {
+        use = "https" + str.slice(url, 3, str_len(url))
+    }
+    return use
+}
+
+// ============================================================================
+// 三、帧编解码（客户端帧强制掩码）
+// ============================================================================
+
+// 构造客户端数据帧（FIN=1，MASK=1，掩码键由调用方注入）。纯函数，探针用固定键。
+// 长度三档：<126 直接 / ≤65535 走 126+16 位 BE / 更大走 127+64 位 BE。
+pub func mk_frame(key: table<i64>, opcode: i64, payload: table<i64>) -> table<i64> {
+    var f = table_new_i64()
+    table_push(f, 0x80 | (opcode & 0x0F))
+    var plen = len(payload)
+    if plen < 126 {
+        table_push(f, 0x80 | plen)
+    } else if plen <= 65535 {
+        table_push(f, 0x80 | 126)
+        table_push(f, (plen >> 8) & 0xFF)
+        table_push(f, plen & 0xFF)
+    } else {
+        table_push(f, 0x80 | 127)
+        var sh: i64 = 56
+        while sh >= 0 {
+            table_push(f, (plen >> sh) & 0xFF)
+            sh = sh - 8
+        }
+    }
+    var i: i64 = 0
+    while i < 4 {
+        table_push(f, key[i])
+        i = i + 1
+    }
+    i = 0
+    while i < plen {
+        table_push(f, payload[i] ^ key[i & 3])
+        i = i + 1
+    }
+    return f
+}
+
+// 解析 off 起一帧：（opcode, payload, next_off）。自动处理掩码（服务端帧无掩码、
+// 客户端帧有掩码，均还原原文）。前提：调用方保证 off 起有完整帧。
+pub func parse_frame(b: table<i64>, off: i64) -> (i64, table<i64>, i64) {
+    var b0 = b[off]
+    var opcode = b0 & 0x0F
+    var b1 = b[off + 1]
+    var masked = (b1 >> 7) & 1
+    var l7 = b1 & 0x7F
+    var p = off + 2
+    var plen: i64 = 0
+    if l7 < 126 {
+        plen = l7
+    } else if l7 == 126 {
+        plen = (b[p] << 8) | b[p + 1]
+        p = p + 2
+    } else {
+        var i: i64 = 0
+        while i < 8 {
+            plen = (plen << 8) | b[p + i]
+            i = i + 1
+        }
+        p = p + 8
+    }
+    var key = table_new_i64()
+    if masked == 1 {
+        var i2: i64 = 0
+        while i2 < 4 {
+            table_push(key, b[p + i2])
+            i2 = i2 + 1
+        }
+        p = p + 4
+    }
+    var payload = table_new_i64()
+    var j: i64 = 0
+    while j < plen {
+        var vb = b[p + j]
+        if masked == 1 {
+            vb = vb ^ key[j & 3]
+        }
+        table_push(payload, vb)
+        j = j + 1
+    }
+    return (opcode, payload, p + plen)
+}
+
+// ============================================================================
+// 四、公共 API
+// ============================================================================
+
+// 发起 Upgrade 握手并校验 101 + Accept。失败在连接上带 err（不抛异常）。
+pub func connect(url: string, headers: table<string>) -> WsConn {
+    var c = WsConn()
+    c.final_url = url
+    // 16 字节掩码/Key：rand_range 生成 → base64
+    var key_bytes = table_new_i64()
+    var k: i64 = 0
+    while k < 16 {
+        table_push(key_bytes, rand_range(0, 256))
+        k = k + 1
+    }
+    var key_b64 = b64_encode_bytes(key_bytes)
+    // 请求头：用户头 + WebSocket 选修头（Connection/Upgrade/Version 为服务器要求）
+    var hdrs = table_new_string()
+    var i: i64 = 0
+    while i < len(headers) {
+        table_push(hdrs, headers[i])
+        i = i + 1
+    }
+    table_push(hdrs, "Connection: Upgrade")
+    table_push(hdrs, "Upgrade: websocket")
+    table_push(hdrs, "Sec-WebSocket-Version: 13")
+    table_push(hdrs, "Sec-WebSocket-Key: " + key_b64)
+    var sc = httpc.open_stream(scheme_http(url), hdrs)
+    c.conn = sc
+    if len(sc.err) > 0 {
+        c.err = sc.err
+        return c
+    }
+    var st = sc.st
+    if len(st) < 6 {
+        c.err = "malformed response headers"
+        return c
+    }
+    var status = st[0]
+    var he = st[1]
+    if status != 101 {
+        c.err = "handshake status " + to_string(status)
+        return c
+    }
+    var accept = hdr_val(sc.head, "Sec-WebSocket-Accept")
+    if accept != compute_accept(key_b64) {
+        c.err = "Sec-WebSocket-Accept mismatch"
+        return c
+    }
+    // 初始化状态：[eof=0, rpos=头结束+4]（跳过响应头区）
+    var ps = c.state
+    table_push(ps, 0)
+    table_push(ps, he + 4)
+    return c
+}
+
+// 发送一客户端帧（强制掩码；密钥 rand_range 生成）。返回发送字节数（明文）或
+// 1/0（TLS 成败）。payload 为原始字节表。
+pub func ws_send(c: WsConn, opcode: i64, payload: table<i64>) -> i64 {
+    var key = table_new_i64()
+    var k: i64 = 0
+    while k < 4 {
+        table_push(key, rand_range(0, 256))
+        k = k + 1
+    }
+    var frame = mk_frame(key, opcode, payload)
+    if c.conn.kind == 1 {
+        if tls.send(c.conn.tlsx, frame) == true {
+            return 1
+        }
+        return 0
+    }
+    return net.tcp_send_bytes(c.conn.handle, frame)
+}
+
+// 阻塞收一帧，返回 (opcode, payload)。payload 为解掩码后原文；opcode 8=close
+// （置 eof）、9=ping（自动回 pong）。流尾/失败返回 (0, 空表)。读次数上限 1e6。
+pub func ws_recv(c: WsConn) -> (i64, table<i64>) {
+    var st = c.state
+    var g: i64 = 0
+    while g < 1000000 {
+        g = g + 1
+        var rp = st[1]
+        var buf = c.conn.buf
+        if len(buf) - rp >= 2 {
+            var b1 = buf[rp + 1]
+            var masked = (b1 >> 7) & 1
+            var l7 = b1 & 0x7F
+            var hdr: i64 = 2
+            var plen: i64 = 0
+            var have = false
+            if l7 < 126 {
+                plen = l7
+                have = true
+            } else if l7 == 126 {
+                hdr = 4
+                if len(buf) - rp >= 4 {
+                    plen = (buf[rp + 2] << 8) | buf[rp + 3]
+                    have = true
+                }
+            } else {
+                hdr = 10
+                if len(buf) - rp >= 10 {
+                    var t: i64 = 0
+                    while t < 8 {
+                        plen = (plen << 8) | buf[rp + 2 + t]
+                        t = t + 1
+                    }
+                    have = true
+                }
+            }
+            var mlen: i64 = 0
+            if masked == 1 {
+                mlen = 4
+            }
+            if have && len(buf) - rp >= hdr + mlen + plen {
+                var (opcode, payload, next) = parse_frame(buf, rp)
+                st[1] = next
+                if opcode == 8 {
+                    st[0] = 1
+                } else if opcode == 9 {
+                    // ping → 自动回 pong（可选；携带同载）
+                    ws_send(c, 10, payload)
+                }
+                return (opcode, payload)
+            }
+        }
+        // 完整帧未就绪：补数据或收尾
+        if st[0] == 1 {
+            return (0, table_new_i64())
+        }
+        var got = httpc.stream_recv(c.conn)
+        if got == 0 {
+            st[0] = 1
+        }
+    }
+    return (0, table_new_i64())
+}
+
+// 关闭连接：发 close 帧（opcode 8，携带 1000 正常关闭原因）→ 尽力读对端 close →
+// 关底层传输。
+pub func ws_close(c: WsConn) {
+    var reason = table_new_i64()
+    table_push(reason, 0x03)
+    table_push(reason, 0xE8)
+    ws_send(c, 8, reason)
+    var g: i64 = 0
+    while g < 10 {
+        var (op, _pl) = ws_recv(c)
+        if op == 8 || op == 0 {
+            break
+        }
+        g = g + 1
+    }
+    httpc.stream_close(c.conn)
+}
+
+// 头行表按名字取值（忽略大小写；httpc 内部函数非 pub，本地最小副本）。
+func hdr_val(hs: table<string>, name: string) -> string {
+    var i: i64 = 0
+    while i < len(hs) {
+        var colon = str.find(hs[i], ":")
+        if colon > 0 {
+            var k = str.trim(str.slice(hs[i], 0, colon))
+            if str.to_lower(k) == str.to_lower(name) {
+                return str.trim(str.slice(hs[i], colon + 1, str_len(hs[i])))
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+}   // namespace ws
