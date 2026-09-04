@@ -1,0 +1,827 @@
+type tie<class>
+// ============================================================================
+// tpl.tie：标准库——模板引擎（命名空间 tpl，纯 tie）p.6.6.16
+// Template engine (namespace tpl, pure-tie).
+//
+// 定位（Positioning）：在 string 平面做「{{ }} 模板」渲染，替换变量、求值
+// 表达式、执行 if/for 控制结构。输入输出都是字符串，无 IO、无外部依赖，
+// 单次 render 调用完成（不跨调用状态、无副作用，故无 struct/全局状态）。
+//
+// 数据平面（Data plane）：
+//   模板按**字节**单遍扫描（str_byte + len(s)，O(1)/字节）。`{{`、`}}`、运算符
+//   均为 ASCII（0x7B/0x7D/0x26/0x7C 等），与多字节 UTF-8 字节（≥0x80）不碰撞，
+//   故字节扫描对任意 UTF-8 模板文本安全；结构外的正文逐字节透传（二进制安全）。
+//   单位：len(s) 为字节数，str_byte(s,i) 取第 i 字节。输出一律累积进
+//   string_builder（sb_append / sb_append_byte / sb_build），禁止逐字节
+//   `out = out + x` 字符串拼接（O(n²)，200KB 红线；p.6.3 教训）。
+//
+// 语法（Syntax）——`{{ ... }}` 内部：
+//   变量   {{name}}             —— 取 vars["name"]，缺键视为 ""（缺值容错）
+//   字面量 整数 / '串' / "串" / true / false
+//   比较   ==  !=  <  >        —— 两侧均整数字符串则数值比较，否则逐字节串比较
+//   逻辑   &&  ||（短路）      —— 短路在求值器内以控制流显式实现
+//   控制   {{if EXPR}} ... {{else}} ... {{ifend}}
+//           {{for ITEM in LIST}} ... {{forend}}
+//   {{item}} 绑定当前元素；{{item.index}} 绑定当前下标（0 起，可选提供）。
+//
+// for 的 list 编码约定（vars 只能是 table<string>）：
+//   list 用特殊键携带——vars["<list>.len"] 给出元素个数 n（缺该键视为 0 次循环，
+//   不渲染），vars["<list>.0"]..vars["<list>.N-1"] 给出各元素值。元素取值
+//   `{{item}}` 输出值本身；`{{item.index}}` 输出下标。
+//
+// vars 编码：table<string>，每元素 "key=value"（首个 '=' 前为键，其后为值；
+//   值可含 '='）。线性按 key 查找（同 std/httpc 的 cookie jar 惯例）。
+//
+// 畸形容错（Malformed tolerance）：
+//   - 未闭合 `{{`（找不到 `}}`）原样输出 `{{`，其后文本照常透传；
+//   - 未匹配的 `{{else}}` / `{{ifend}}` / `{{forend}}` 原样忽略（不输出、不报错）；
+//   - 缺 ifend 的 if：按条件渲染 then 块到末尾（或跳过），不崩；
+//   - 嵌套 if/for 支持（终止匹配用 depth 计数，即「栈」）；
+//   - `{{` 与变量名之间允许空白。
+//
+// 性能（Performance，硬性红线 200KB sub-second）：
+//   单遍扫描：tpl 按下标以 str_byte 推进（每字节至多访问一次），正文累积进
+//   string_builder；仅结构/表达式 token 内容做局部扫描；不做 str.find 全扫、
+//   不做逐字节字符串拼接。for 体每次迭代重扫其 token（输出本就 O(N·|body|)）。
+//   字面量/简单模板恰为 O(n)。
+//
+// 语言约束（Language constraints）：
+//   - `text` 是保留字，本模块规避；顶层不放通用短名（find/loc 等），全放
+//     namespace tpl 内。
+//   - 命名空间内互调为裸调用；pub func 显式导出（Harbor M2.1.6）。
+//   - 逻辑短路以显式控制流实现（不依赖 tie 的 && / || 两侧求值行为）。
+// ============================================================================
+
+// TplVal：表达式求值结果。s 为值串；b 标记是否「布尔型」结果（比较/逻辑/
+// true/false 产生 "1"/"0"，b=true；普通变量/字面量 b=false）。
+// 条件真值规则：布尔型 → s=="1"；原始值 → 非空即真（flag=""→假，"1"→真）。
+struct TplVal {
+    var s: string = ""
+    var b: bool = false
+}
+
+namespace tpl {
+
+// 字节取（O(1)），读模板或字符串的第 k 字节。
+func bch(s: string, k: i64) -> i64 {
+    return str_byte(s, k)
+}
+
+// 字符是否为标识符字节（字母/数字/下划线）。
+func is_idc(c: i64) -> bool {
+    if c >= 48 && c <= 57 {
+        return true
+    }
+    if c >= 65 && c <= 90 {
+        return true
+    }
+    if c >= 97 && c <= 122 {
+        return true
+    }
+    if c == 95 {
+        return true
+    }
+    return false
+}
+
+// 字节是否空白（空格/制表/换行/回车）。
+func is_wsb(c: i64) -> bool {
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+        return true
+    }
+    return false
+}
+
+// 跳过 [k,e) 内前导空白，返回首个非空白字节下标。
+func skip_ws(s: string, k: i64, e: i64) -> i64 {
+    var p: i64 = k
+    while p < e && is_wsb(bch(s, p)) {
+        p = p + 1
+    }
+    return p
+}
+
+// 从 s 起找下一个 `{{` 的字节下标；未找到返回 -1。
+// 单遍向前扫描；`{` 为 ASCII 0x7B，与多字节 UTF-8 不碰撞。
+func next_open(s: string, p: i64, e: i64) -> i64 {
+    var k: i64 = p
+    while k < e {
+        if bch(s, k) == 123 {
+            if k + 1 < e && bch(s, k + 1) == 123 {
+                return k
+            }
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// 从 s（== 紧跟着 `{{` 的位置）起找 `}}` 的首个 '}' 下标；未找到返回 -1。
+func content_end(s: string, p: i64, e: i64) -> i64 {
+    var k: i64 = p
+    while k + 1 < e {
+        if bch(s, k) == 125 && bch(s, k + 1) == 125 {
+            return k
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// 字节区间 [a,b) 逐字节追加进 sb。
+func append_bytes(s: string, a: i64, b: i64, sb: i64) {
+    var k: i64 = a
+    while k < b {
+        sb_append_byte(sb, bch(s, k))
+        k = k + 1
+    }
+}
+
+// [a,b) 是否恰等于 ASCII 串 w。
+func match_word(s: string, a: i64, b: i64, w: string) -> bool {
+    var m: i64 = len(w)
+    if a + m > b {
+        return false
+    }
+    var i: i64 = 0
+    while i < m {
+        if bch(s, a + i) != bch(w, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// [a,b) 提取标识符串。
+func ident_at(s: string, a: i64, b: i64) -> string {
+    var sb = string_builder()
+    var k: i64 = a
+    while k < b {
+        sb_append_byte(sb, bch(s, k))
+        k = k + 1
+    }
+    return sb_build(sb)
+}
+
+// vars（"k=v" 对表）按 key 取值；未找到返回 ""。
+func var_get(vars: table<string>, key: string) -> string {
+    var i: i64 = 0
+    while i < len(vars) {
+        var el = vars[i]
+        var eln = len(el)
+        var eq: i64 = -1
+        var j: i64 = 0
+        while j < eln {
+            if bch(el, j) == 61 {
+                eq = j
+                break
+            }
+            j = j + 1
+        }
+        if eq >= 0 && eq == len(key) {
+            var mm = true
+            var q: i64 = 0
+            while q < eq {
+                if bch(el, q) != bch(key, q) {
+                    mm = false
+                }
+                q = q + 1
+            }
+            if mm {
+                var sb = string_builder()
+                var v: i64 = eq + 1
+                while v < eln {
+                    sb_append_byte(sb, bch(el, v))
+                    v = v + 1
+                }
+                return sb_build(sb)
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// 是否纯非空十进制数字串。
+func is_all_digits(v: string) -> bool {
+    var n = len(v)
+    if n == 0 {
+        return false
+    }
+    var i: i64 = 0
+    while i < n {
+        var c = bch(v, i)
+        if c < 48 || c > 57 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 数字串 -> i64（仅收集数字位）。
+func dec_i64(v: string) -> i64 {
+    var r: i64 = 0
+    var n = len(v)
+    var i: i64 = 0
+    while i < n {
+        var c = bch(v, i)
+        if c >= 48 && c <= 57 {
+            r = r * 10 + (c - 48)
+        }
+        i = i + 1
+    }
+    return r
+}
+
+// 两值比较：两侧均整数字符串则数值比较，否则逐字节串比较。返回 -1/0/1。
+func cmp_strs(a: string, b: string) -> i64 {
+    if is_all_digits(a) && is_all_digits(b) {
+        var va = dec_i64(a)
+        var vb = dec_i64(b)
+        if va < vb {
+            return -1
+        }
+        if va > vb {
+            return 1
+        }
+        return 0
+    }
+    var na = len(a)
+    var nb = len(b)
+    var i: i64 = 0
+    while i < na && i < nb {
+        var ca = bch(a, i)
+        var cb = bch(b, i)
+        if ca < cb {
+            return -1
+        }
+        if ca > cb {
+            return 1
+        }
+        i = i + 1
+    }
+    if na < nb {
+        return -1
+    }
+    if na > nb {
+        return 1
+    }
+    return 0
+}
+
+// 条件真值：布尔型 → s=="1"；原始值 → 非空即真。
+func truthy(v: TplVal) -> bool {
+    if v.b == true {
+        return v.s == "1"
+    }
+    if v.s == "" {
+        return false
+    }
+    return true
+}
+
+// ---- 绑定栈（bnames / bvals / bidxs，沿递归线程化）----
+// for 循环把当前元素绑定为「对应循环变量名」进栈；嵌套 for 各成一层，内层仍可
+// 引用外层条目变量（按名从栈顶向下搜索）。渲染顶层为空栈。
+
+// string 表深拷贝。
+func s_copy(t: table<string>) -> table<string> {
+    var r = table_new_string()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(r, t[i])
+        i = i + 1
+    }
+    return r
+}
+
+// i64 表深拷贝。
+func i_copy(t: table<i64>) -> table<i64> {
+    var r = table_new_i64()
+    var i: i64 = 0
+    while i < len(t) {
+        table_push(r, t[i])
+        i = i + 1
+    }
+    return r
+}
+
+// 按名在绑定栈中搜索元素值；返回 [found, value]（未找到 found="0"）。
+func bind_val(bnames: table<string>, bvals: table<string>, name: string) -> table<string> {
+    var out = table_new_string()
+    table_push(out, "0")
+    table_push(out, "")
+    var k = len(bnames) - 1
+    while k >= 0 {
+        if bnames[k] == name {
+            out[0] = "1"
+            out[1] = bvals[k]
+            return out
+        }
+        k = k - 1
+    }
+    return out
+}
+
+// 按名在绑定栈中搜索条目下标；返回 [found, index]。
+func bind_idx(bnames: table<string>, bidxs: table<i64>, name: string) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, 0)
+    table_push(out, 0)
+    var k = len(bnames) - 1
+    while k >= 0 {
+        if bnames[k] == name {
+            out[0] = 1
+            out[1] = bidxs[k]
+            return out
+        }
+        k = k - 1
+    }
+    return out
+}
+
+// ---- 表达式递归下降求值（在 {{ }} 内容字节区间 [cs,ce) 内）----
+// cur 为单元素表承载游标（读当前位置 / 写推进后位置）。
+
+// 求值首要元素：字符串/数字字面量、true/false、变量 / 条目.item.index。
+func eval_primary(s: string, ce: i64, cur: table<i64>,
+                  vars: table<string>, bnames: table<string>,
+                  bvals: table<string>, bidxs: table<i64>) -> TplVal {
+    var r = TplVal()
+    var k = skip_ws(s, cur[0], ce)
+    if k >= ce {
+        cur[0] = k
+        return r
+    }
+    var c = bch(s, k)
+    // 字符串字面量（' 或 " 包裹）
+    if c == 39 || c == 34 {
+        var q = c
+        var p = k + 1
+        var sb = string_builder()
+        var closed = false
+        while p < ce && closed == false {
+            var cc = bch(s, p)
+            if cc == q {
+                closed = true
+            } else {
+                sb_append_byte(sb, cc)
+                p = p + 1
+            }
+        }
+        if closed {
+            p = p + 1
+        }
+        r.s = sb_build(sb)
+        r.b = false
+        cur[0] = p
+        return r
+    }
+    // 数字字面量（可选前导 '-'）
+    if (c >= 48 && c <= 57) || c == 45 {
+        var p = k
+        var sb2 = string_builder()
+        if c == 45 {
+            sb_append_byte(sb2, 45)
+            p = p + 1
+        }
+        var go = true
+        while go && p < ce {
+            var cc = bch(s, p)
+            if cc >= 48 && cc <= 57 {
+                sb_append_byte(sb2, cc)
+                p = p + 1
+            } else {
+                go = false
+            }
+        }
+        r.s = sb_build(sb2)
+        r.b = false
+        cur[0] = p
+        return r
+    }
+    // 标识符（true/false/变量/条目绑定）
+    var idend = k
+    while idend < ce && is_idc(bch(s, idend)) {
+        idend = idend + 1
+    }
+    var word = ident_at(s, k, idend)
+    cur[0] = idend
+    if word == "true" {
+        r.s = "1"
+        r.b = true
+        return r
+    }
+    if word == "false" {
+        r.s = "0"
+        r.b = true
+        return r
+    }
+    // 条目绑定：{{ITM}} / {{ITM.index}}
+    var bf = bind_val(bnames, bvals, word)
+    if bf[0] == "1" {
+        var nk = skip_ws(s, cur[0], ce)
+        if nk < ce && bch(s, nk) == 46 {
+            if match_word(s, nk + 1, ce, "index") == true {
+                var bi = bind_idx(bnames, bidxs, word)
+                if bi[0] == 1 {
+                    r.s = to_string(bi[1])
+                    r.b = false
+                    cur[0] = nk + 5
+                    return r
+                }
+            }
+        }
+        r.s = bf[1]
+        r.b = false
+        return r
+    }
+    // vars 取值（缺值 → ""）
+    r.s = var_get(vars, word)
+    r.b = false
+    return r
+}
+
+// 比较层：primary (== | != | < | >) primary?；无操作数则返回 primary。
+func eval_cmp(s: string, ce: i64, cur: table<i64>,
+              vars: table<string>, bnames: table<string>,
+              bvals: table<string>, bidxs: table<i64>) -> TplVal {
+    var l = eval_primary(s, ce, cur, vars, bnames, bvals, bidxs)
+    var k = skip_ws(s, cur[0], ce)
+    var op: i64 = -1
+    if k < ce {
+        var c = bch(s, k)
+        if c == 61 && k + 1 < ce && bch(s, k + 1) == 61 {
+            op = 0
+            cur[0] = k + 2
+        } else if c == 33 && k + 1 < ce && bch(s, k + 1) == 61 {
+            op = 1
+            cur[0] = k + 2
+        } else if c == 60 {
+            op = 2
+            cur[0] = k + 1
+        } else if c == 62 {
+            op = 3
+            cur[0] = k + 1
+        }
+    }
+    if op >= 0 {
+        var r = eval_primary(s, ce, cur, vars, bnames, bvals, bidxs)
+        var rr = TplVal()
+        rr.b = true
+        var c2 = cmp_strs(l.s, r.s)
+        if op == 0 {
+            if c2 == 0 {
+                rr.s = "1"
+            } else {
+                rr.s = "0"
+            }
+        } else if op == 1 {
+            if c2 == 0 {
+                rr.s = "0"
+            } else {
+                rr.s = "1"
+            }
+        } else if op == 2 {
+            if c2 < 0 {
+                rr.s = "1"
+            } else {
+                rr.s = "0"
+            }
+        } else {
+            if c2 > 0 {
+                rr.s = "1"
+            } else {
+                rr.s = "0"
+            }
+        }
+        return rr
+    }
+    return l
+}
+
+// 逻辑与层：cmp (&& cmp)*；左假则短路（不 eval 右侧）。
+func eval_and(s: string, ce: i64, cur: table<i64>,
+              vars: table<string>, bnames: table<string>,
+              bvals: table<string>, bidxs: table<i64>) -> TplVal {
+    var v = eval_cmp(s, ce, cur, vars, bnames, bvals, bidxs)
+    var go = true
+    while go {
+        go = false
+        var k = skip_ws(s, cur[0], ce)
+        if k + 1 < ce && bch(s, k) == 38 && bch(s, k + 1) == 38 {
+            if truthy(v) == false {
+                var rr = TplVal()
+                rr.s = "0"
+                rr.b = true
+                cur[0] = k + 2
+                return rr
+            }
+            cur[0] = k + 2
+            var r2 = eval_cmp(s, ce, cur, vars, bnames, bvals, bidxs)
+            if truthy(r2) {
+                v.s = "1"
+            } else {
+                v.s = "0"
+            }
+            v.b = true
+            go = true
+        }
+    }
+    return v
+}
+
+// 逻辑或层：and (|| and)*；左真则短路（不 eval 右侧）。
+func eval_or(s: string, ce: i64, cur: table<i64>,
+             vars: table<string>, bnames: table<string>,
+             bvals: table<string>, bidxs: table<i64>) -> TplVal {
+    var v = eval_and(s, ce, cur, vars, bnames, bvals, bidxs)
+    var go = true
+    while go {
+        go = false
+        var k = skip_ws(s, cur[0], ce)
+        if k + 1 < ce && bch(s, k) == 124 && bch(s, k + 1) == 124 {
+            if truthy(v) == true {
+                var rr = TplVal()
+                rr.s = "1"
+                rr.b = true
+                cur[0] = k + 2
+                return rr
+            }
+            cur[0] = k + 2
+            var r2 = eval_and(s, ce, cur, vars, bnames, bvals, bidxs)
+            if truthy(r2) {
+                v.s = "1"
+            } else {
+                v.s = "0"
+            }
+            v.b = true
+            go = true
+        }
+    }
+    return v
+}
+
+// ---- 结构终止扫描（depth 计数 = 栈）----
+// 从 p 扫到 e，找到 depth==0 的 else/ifend/forend token（按 want* 选择性要），
+// 返回 [found, startIdxOfTerm, afterIdx, kind]（kind:1=else 2=ifend 3=forend）。
+// 嵌套的 if/for 用 depth 计数跳过（else 不改变 depth，仅 if/ifend 与 for/forend 配对）。
+func scan_until_term(s: string, p: i64, e: i64,
+                     wantElse: bool, wantIfend: bool, wantForend: bool) -> table<i64> {
+    var out = table_new_i64()
+    table_push(out, 0)
+    table_push(out, 0)
+    table_push(out, 0)
+    table_push(out, 0)
+    var pos: i64 = p
+    var depth: i64 = 0
+    while pos < e {
+        var o = next_open(s, pos, e)
+        if o < 0 {
+            return out
+        }
+        var ce2 = content_end(s, o + 2, e)
+        if ce2 < 0 {
+            return out
+        }
+        var kk = skip_ws(s, o + 2, ce2)
+        var idend = kk
+        while idend < ce2 && is_idc(bch(s, idend)) {
+            idend = idend + 1
+        }
+        var word = ident_at(s, kk, idend)
+        if depth == 0 {
+            if wantElse == true && word == "else" {
+                out[0] = 1
+                out[1] = o
+                out[2] = ce2 + 2
+                out[3] = 1
+                return out
+            }
+            if wantIfend == true && word == "ifend" {
+                out[0] = 1
+                out[1] = o
+                out[2] = ce2 + 2
+                out[3] = 2
+                return out
+            }
+            if wantForend == true && word == "forend" {
+                out[0] = 1
+                out[1] = o
+                out[2] = ce2 + 2
+                out[3] = 3
+                return out
+            }
+        }
+        if word == "if" || word == "for" {
+            depth = depth + 1
+        } else if word == "ifend" || word == "forend" {
+            if depth > 0 {
+                depth = depth - 1
+            }
+        }
+        pos = ce2 + 2
+    }
+    return out
+}
+
+// 解析 {{for ITEM in LIST}} 绑定；返回 [item, list]（畸形式 item 空）。
+func parse_for(s: string, cs: i64, ce2: i64) -> table<string> {
+    var out = table_new_string()
+    table_push(out, "")
+    table_push(out, "")
+    var p = skip_ws(s, cs, ce2)
+    // 跳过 "for"
+    var idend = p
+    while idend < ce2 && is_idc(bch(s, idend)) {
+        idend = idend + 1
+    }
+    p = skip_ws(s, idend, ce2)
+    // item = 下一个标识符
+    var i1 = p
+    var i1e = p
+    while i1e < ce2 && is_idc(bch(s, i1e)) {
+        i1e = i1e + 1
+    }
+    if i1e == p {
+        return out
+    }
+    // 期望 "in"
+    var p2 = skip_ws(s, i1e, ce2)
+    if match_word(s, p2, ce2, "in") == false {
+        return out
+    }
+    // list = 再下一个标识符
+    var p3 = skip_ws(s, p2 + 2, ce2)
+    var l1 = p3
+    var l1e = p3
+    while l1e < ce2 && is_idc(bch(s, l1e)) {
+        l1e = l1e + 1
+    }
+    if l1e == p3 {
+        return out
+    }
+    out[0] = ident_at(s, i1, i1e)
+    out[1] = ident_at(s, l1, l1e)
+    return out
+}
+
+// 渲染 if 结构（caller 已在 run 内输出正文前缀并求出 cond）。
+// 从 then-block 起点扫描到 else/ifend；按 cond 渲染 then（或跳过），
+// 需要时渲染 else 块；返回 ifend 之后的游标。
+func handle_if(s: string, bodyStart: i64, e: i64, vars: table<string>,
+               bnames: table<string>, bvals: table<string>, bidxs: table<i64>,
+               cond: bool, sb: i64) -> i64 {
+    var r1 = scan_until_term(s, bodyStart, e, true, true, false)
+    if r1[0] == 0 {
+        // 缺 ifend：按条件渲染 then 块到末尾（容错）
+        if cond {
+            run(s, bodyStart, e, vars, bnames, bvals, bidxs, sb)
+        }
+        return e
+    }
+    var thenEnd = r1[1]
+    var after = r1[2]
+    if r1[3] == 1 {
+        // 有 else
+        if cond {
+            run(s, bodyStart, thenEnd, vars, bnames, bvals, bidxs, sb)
+        }
+        // else 块结束 = 后续 ifend
+        var r2 = scan_until_term(s, after, e, false, true, false)
+        if r2[0] == 1 {
+            if cond == false {
+                run(s, after, r2[1], vars, bnames, bvals, bidxs, sb)
+            }
+            return r2[2]
+        }
+        if cond == false {
+            run(s, after, e, vars, bnames, bvals, bidxs, sb)
+        }
+        return e
+    }
+    // 无 else：ifend 位置
+    if cond {
+        run(s, bodyStart, thenEnd, vars, bnames, bvals, bidxs, sb)
+    }
+    return after
+}
+
+// 渲染 for 结构：解析绑定，扫描 forend，按 list.len 迭代渲染 body；
+// 每次迭代把当前元素绑定进「新一层」绑定栈（内层 for 可引用外层条目变量）。
+func handle_for(s: string, cs: i64, ce2: i64, e: i64, vars: table<string>,
+                bnames: table<string>, bvals: table<string>, bidxs: table<i64>,
+                sb: i64) -> i64 {
+    var bind = parse_for(s, cs, ce2)
+    var bodyStart = ce2 + 2
+    var it = bind[0]
+    if len(it) == 0 {
+        // 畸形 for：不渲染内部，游标停在 body 起点
+        return bodyStart
+    }
+    var lst = bind[1]
+    var r = scan_until_term(s, bodyStart, e, false, false, true)
+    if r[0] == 0 {
+        // 缺 forend：不渲染（容错），游标到末尾
+        return e
+    }
+    var bodyEnd = r[1]
+    var after = r[2]
+    var n: i64 = 0
+    var nstr = var_get(vars, lst + ".len")
+    if is_all_digits(nstr) {
+        n = dec_i64(nstr)
+    }
+    var i: i64 = 0
+    while i < n {
+        var value = var_get(vars, lst + "." + to_string(i))
+        // 新一层绑定：深拷贝栈 + 追加当前条目
+        var nb = s_copy(bnames)
+        table_push(nb, it)
+        var nv = s_copy(bvals)
+        table_push(nv, value)
+        var nb2 = i_copy(bidxs)
+        table_push(nb2, i)
+        run(s, bodyStart, bodyEnd, vars, nb, nv, nb2, sb)
+        i = i + 1
+    }
+    return after
+}
+
+// 核心线性渲染器：处理 [start,e) 区间，输出到 sb，返回处理到的游标。
+// 控制结构（if/for）由 handle_* 递归消费；悬空的 else/ifend/forend 原样忽略。
+func run(s: string, start: i64, e: i64, vars: table<string>,
+         bnames: table<string>, bvals: table<string>, bidxs: table<i64>,
+         sb: i64) -> i64 {
+    var pos: i64 = start
+    var lit: i64 = start
+    while pos < e {
+        var o = next_open(s, pos, e)
+        if o < 0 {
+            append_bytes(s, lit, e, sb)
+            return e
+        }
+        var ce2 = content_end(s, o + 2, e)
+        if ce2 < 0 {
+            // 未闭合 {{：原样输出 "{{"，其后照常透传
+            append_bytes(s, lit, o, sb)
+            sb_append(sb, "{{")
+            pos = o + 2
+            lit = pos
+            continue
+        }
+        var kk = skip_ws(s, o + 2, ce2)
+        var idend = kk
+        while idend < ce2 && is_idc(bch(s, idend)) {
+            idend = idend + 1
+        }
+        var word = ident_at(s, kk, idend)
+        if word == "if" {
+            append_bytes(s, lit, o, sb)
+            var cur = table_new_i64()
+            table_push(cur, skip_ws(s, idend, ce2))
+            var cond = truthy(eval_or(s, ce2, cur, vars, bnames, bvals, bidxs))
+            pos = handle_if(s, ce2 + 2, e, vars, bnames, bvals, bidxs, cond, sb)
+            lit = pos
+            continue
+        }
+        if word == "for" {
+            append_bytes(s, lit, o, sb)
+            pos = handle_for(s, kk, ce2, e, vars, bnames, bvals, bidxs, sb)
+            lit = pos
+            continue
+        }
+        if word == "else" || word == "ifend" || word == "forend" {
+            // 悬空终止符：原样忽略（不输出）
+            append_bytes(s, lit, o, sb)
+            pos = ce2 + 2
+            lit = pos
+            continue
+        }
+        // 值表达式：{{name}} / {{item}} / 字面量 / 比较（输出其字符串结果）
+        append_bytes(s, lit, o, sb)
+        var cur2 = table_new_i64()
+        table_push(cur2, kk)
+        var val = eval_or(s, ce2, cur2, vars, bnames, bvals, bidxs)
+        sb_append(sb, val.s)
+        pos = ce2 + 2
+        lit = pos
+        continue
+    }
+    append_bytes(s, lit, e, sb)
+    return e
+}
+
+// 渲染模板 tpl（字节单遍），vars 为 "k=v" 键值对表；返回渲染结果字符串。
+pub func render(tpl: string, vars: table<string>) -> string {
+    var sb = string_builder()
+    var on = table_new_string()   // 空绑定栈（渲染顶层无条目变量）
+    var ov = table_new_string()
+    var oi = table_new_i64()
+    run(tpl, 0, len(tpl), vars, on, ov, oi, sb)
+    return sb_build(sb)
+}
+
+}   // namespace tpl
