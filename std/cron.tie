@@ -1,0 +1,442 @@
+type tie<class>
+// ============================================================================
+// cron.tie：标准库——cron 调度（命名空间 cron，纯 tie）p.6.6.18
+// cron schedule evaluation (namespace cron, pure-tie).
+//
+// 定位（Positioning）：std/time 原生原语只有 Unix 纪元秒（time_now），没有
+// 日期拆分/合成能力。本模块在纪元秒之上内置 civil（公历）日历逆推/正推，
+// 实现经典 5 字段 cron 表达式解析（parse）与「下一次触发时刻」求解（next）。
+//
+// 时区约定（Timezone convention）：cron 语义按 **UTC 日期** 推进——纪元秒是
+// 绝对时刻，civil 分解层恒用 UTC（epoch_sec = days_since_1970*86400 + 当日秒，
+// 不做任何本地时区偏移）。这使模块与运行进程的本地时区完全无关；调用方只需
+// 把「目标时刻」换算成 UTC 纪元秒传入 after_epoch_s 即可（探针期望值即按 UTC
+// 生成）。星期/日期全部由 UTC 日历推导。
+//
+// 接口（Interface）：
+//   - parse(expr) -> i64       解析成功 1 / 失败 0（失败可用 last_err() 查原因，
+//                              错误信息含表达式原文）。
+//   - next(expr, after_epoch_s) -> i64  严格大于 after 的下一次触发 UTC 纪元秒。
+//                              永不返回 -1：parse 失败或情况永不触发（如非法日期
+//                              2 月 30 日）返回哨兵 g_sentinel（2103-01-01 的纪元
+//                              秒，固定大整数；调用方据此判定「永不/找不到」）。
+//   - weekday(epoch_s) -> i64  星期（0=Sunday..6=Saturday，与 cron dow 对齐）。
+//                              （诊断性辅助，使探针可直接校验星期换算。）
+//   - last_err() -> string     最近一次 parse 的错误信息（成功时空串）。
+//
+// 字段语法（5 字段：min hour dom month dow；支持子集）：
+//   * ；单值 a ；区间 a-b ；逗号列表 a,b,c（任意组合）；步进 */n 与 a-b/n；
+//   多元素可混合，如 "1-5/2,7"。dom∈[1,31]、month∈[1,12]、dow∈[0,7]，
+//   0 与 7 都表示周日。非法输入（越界/非数字/空元素/字段数≠5）→ parse 0。
+//   可选扩展：month 名字 jan..dec / dow 名字 sun..sat（大小写不敏感）——本模块
+//   未实现，仅支持纯数字；不影响核心验收，调用方需传数字。
+//
+// dom 与 dow 同受限语义（标准 cron quirk）：两者均为受限（非 *）集合时取**并集**
+// （OR）——任一匹配即命中当天；仅一方受限时取该方；两方全 * 时自然每天。
+// 经典推论：`0 0 29 2 *` = 每闰年 2 月 29 日（非闰年该日作为日历日不存在，
+// 自然无法命中）；`0 0 30 2 *` 因 2 月 30 日永不存在而永不触发 → next 返回哨兵。
+//
+// next 搜索策略（纯算术，不许逐分钟扫多年）：
+//   after 规整到 (y,m,d,h,min)，秒取整。进入「取天循环」：day_matches 用位图
+//   O(1) 判断该日 y/m/d/dow 是否命中；命中则在本日从当前 (h,min) 起按现成小时/分钟
+//   位图找首个（>= 当前且严格 > after）的命中次数（分钟位图至多 60 个/小时，单日
+//   至多 1440 候选）；未命中（或当日已无更晚时刻）则下一天。天推进朴素逐日 +86400，
+//   4 年即 1460 次 O(1) 判定，sub-second 完成（无需「跳月/跳年」优化）。兜底：
+//   超过 2920 天（≈8 年）仍未命中即返回哨兵（注释：非法日期类表达式的收敛边界）。
+//
+// 语言约束（Language constraints）：
+//   - 字段集合用 i64 位图（1<<v）表达（min 0-59 / hour 0-23 / dom 1-31 /
+//     month 1-12 / dow 0-6），成员判定 O(1)（bit_in），并集即按位或。
+//   - 顶层只放模块级全局（g_err/g_expr/g_ok/g_* 位图/哨兵）与 import；通用短名
+//     （is_ws/is_digits/...）全在 namespace 内，`text` 为保留字不用。
+//   - namespace 内互调裸调用（无 cron. 前缀）。
+// ============================================================================
+
+import "./string.tie" as str
+
+// ---- 模块级全局：最近一次解析上下文与结果位图（参照 httpc 的 g_jar 模式）----
+var g_ok: i64 = 0           // 最近一次 parse 的成败：1 成功 / 0 失败
+var g_expr: string = ""     // 最近一次解析的表达式原文（错误信息用）
+var g_err: string = ""      // 最近一次 parse 的错误信息（成功时空串）
+var g_min: i64 = 0          // 分钟位图（bit v = 允许分钟 v，v∈[0,59]）
+var g_hour: i64 = 0         // 小时位图（v∈[0,23]）
+var g_dom: i64 = 0          // 日位图（v∈[1,31]）
+var g_month: i64 = 0        // 月位图（v∈[1,12]）
+var g_dow: i64 = 0          // 星期位图（v∈[0,6]；dow 7 已归一化为 0=周日）
+var g_sentinel: i64 = 4197052800   // 哨兵 = 2103-01-01 00:00:00 UTC 纪元秒
+//                                  （parse 失败或永不触发时 next 返回此值）
+
+namespace cron {
+
+// ---- 位图/全位图常量 ----
+// DOM 全位：bits 1..31；MON 全位：bits 1..12；DOW 全位：bits 0..6
+func bit_in(mask: i64, v: i64) -> bool {
+    return ((mask >> v) & 1) == 1
+}
+
+// ============================================================================
+// 一、字符串小工具（namespace 内私有；string 模块的 is_whitespace 非 pub，就地拷贝）
+// ============================================================================
+
+func is_ws(c: string) -> bool {
+    if c == " " {
+        return true
+    }
+    if c == "\t" {
+        return true
+    }
+    if c == "\n" {
+        return true
+    }
+    if c == "\r" {
+        return true
+    }
+    return false
+}
+
+// 字符串是否全为数字（非空）。用 find 在十进制字符表内定位，避开字符算术。
+func is_digits(s: string) -> bool {
+    var n: i64 = str_len(s)
+    if n == 0 {
+        return false
+    }
+    var i: i64 = 0
+    while i < n {
+        if str.find("0123456789", str_char(s, i)) < 0 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 按任意空白序列切分表达式为 token 表（空白为空格/制表/换行/回车；过滤空 token）。
+func split_ws(s: string) -> table<string> {
+    var out = table_new_string()
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    var cur: string = ""
+    while i < n {
+        var c = str_char(s, i)
+        if is_ws(c) {
+            if str_len(cur) > 0 {
+                table_push(out, cur)
+                cur = ""
+            }
+        } else {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    if str_len(cur) > 0 {
+        table_push(out, cur)
+    }
+    return out
+}
+
+// 记录解析失败：置 g_ok=0、错误信息含表达式原文、清空各结果位图。
+func fail(expr: string, msg: string) {
+    g_ok = 0
+    g_expr = expr
+    g_err = msg + " [expr: " + expr + "]"
+    g_min = 0
+    g_hour = 0
+    g_dom = 0
+    g_month = 0
+    g_dow = 0
+}
+
+// ============================================================================
+// 二、字段语法解析（位图构建）
+// ============================================================================
+
+// 解析单个字段 token → 位图。支持子集：* / a / a-b / a,b,...（任意组合）/
+// */n / a-b/n（多元素可混合）。Lo/hi 为字段合法值域；dowfield=1 表示 dow 字段
+// （7 → 归一化为 bit0）。失败置 g_ok=0 并返回 0。
+func parse_field(tok: string, lo: i64, hi: i64, dowfield: bool, expr: string) -> i64 {
+    var mask: i64 = 0
+    var parts = str.split(tok, ",")
+    var i: i64 = 0
+    while i < len(parts) {
+        var p = str.trim(parts[i])
+        if str_len(p) == 0 {
+            fail(expr, "empty element in list field")
+            return 0
+        }
+        mask = mask | parse_elem(p, lo, hi, dowfield, expr)
+        if g_ok == 0 {
+            return 0
+        }
+        i = i + 1
+    }
+    return mask
+}
+
+// 解析单个列表元素（可为 a / a-b / a / a-b/n / */n）→ 位图。失败置 g_ok=0。
+func parse_elem(p: string, lo: i64, hi: i64, dowfield: bool, expr: string) -> i64 {
+    var base = p
+    var step: i64 = 1
+    var sl = str.find(p, "/")
+    if sl >= 0 {
+        base = str.slice(p, 0, sl)
+        var steps = str.trim(str.slice(p, sl + 1, str_len(p)))
+        if is_digits(steps) == false {
+            fail(expr, "bad step in field element: " + p)
+            return 0
+        }
+        step = parse_int(steps)
+        if step < 1 {
+            fail(expr, "step must be >= 1: " + p)
+            return 0
+        }
+    }
+    var a: i64 = 0
+    var b: i64 = 0
+    var base_is_star = false
+    if str_len(base) == 1 && str_char(base, 0) == "*" {
+        a = lo
+        b = hi
+        base_is_star = true
+    } else {
+        var dash = str.find(base, "-")
+        if dash >= 0 {
+            var sa = str.trim(str.slice(base, 0, dash))
+            var sb = str.trim(str.slice(base, dash + 1, str_len(base)))
+            if is_digits(sa) == false || is_digits(sb) == false {
+                fail(expr, "bad range in field element: " + p)
+                return 0
+            }
+            a = parse_int(sa)
+            b = parse_int(sb)
+            if a > b {
+                fail(expr, "range start > end: " + p)
+                return 0
+            }
+            if a < lo || a > hi || b < lo || b > hi {
+                fail(expr, "range out of bounds: " + p)
+                return 0
+            }
+        } else {
+            if is_digits(base) == false {
+                fail(expr, "bad value in field element: " + p)
+                return 0
+            }
+            a = parse_int(base)
+            b = a
+            if a < lo || a > hi {
+                fail(expr, "value out of bounds: " + p)
+                return 0
+            }
+        }
+    }
+    // 由 [a,b] 按 step 建位图；dow 的 7 归一化为 bit0（=周日）
+    var mask: i64 = 0
+    var v = a
+    while v <= b {
+        var bv = v
+        if dowfield && v == 7 {
+            bv = 0
+        }
+        mask = mask | (1 << bv)
+        v = v + step
+    }
+    return mask
+}
+
+// ============================================================================
+// 三、civil（公历）日历换算（Hinnant 400 年周期算法；days 1970-01-01 起算）
+// ============================================================================
+
+// (y,m,d) → 自 1970-01-01 起的天数。y 取 1 月为 year-1、月份并入 3..14。
+func days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    var yy = y
+    var mm = m
+    if mm <= 2 {
+        yy = yy - 1
+        mm = mm + 12
+    }
+    var era = yy / 400
+    var yoe = yy - era * 400
+    var doy = (153 * (mm - 3) + 2) / 5 + d - 1
+    var doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+
+// 天数 → (y,m,d)，返回表 [y,m,d]（Hinnant 逆算法）。
+func civil_from_days(z: i64) -> table<i64> {
+    var out = table_new_i64()
+    var zz = z + 719468
+    var era = zz / 146097
+    var doe = zz - era * 146097
+    var yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    var yy = yoe + era * 400
+    var doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    var mp = (5 * doy + 2) / 153
+    var d = doy - (153 * mp + 2) / 5 + 1
+    var m: i64 = 0
+    if mp < 10 {
+        m = mp + 3
+    } else {
+        m = mp - 9
+    }
+    if m <= 2 {
+        yy = yy + 1
+    }
+    table_push(out, yy)
+    table_push(out, m)
+    table_push(out, d)
+    return out
+}
+
+// 天数 → 星期（0=Sunday..6=Saturday）。1970-01-01 为周四(start=4,0=Sunday)。
+func weekday_from_days(days: i64) -> i64 {
+    return (days + 4) % 7
+}
+
+// (y,m,d,h,min) → 纪元秒（UTC 定义：日 epoch + 当日秒）。
+func to_epoch(y: i64, m: i64, d: i64, h: i64, mi: i64) -> i64 {
+    return days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60
+}
+
+// 纪元秒 → 表 [y,m,d,h,min,sec]（UTC civil 分解）。
+func civil_from_epoch_s(e: i64) -> table<i64> {
+    var out = table_new_i64()
+    var secs = e % 86400
+    var dd = e / 86400
+    var c = civil_from_days(dd)
+    table_push(out, c[0])
+    table_push(out, c[1])
+    table_push(out, c[2])
+    table_push(out, secs / 3600)
+    table_push(out, (secs % 3600) / 60)
+    table_push(out, secs % 60)
+    return out
+}
+
+// ============================================================================
+// 四、日期命中判定（含 dom/dow 并集 quirk）
+// ============================================================================
+
+// 某日 (y,m,d) 是否命中 g_dom/g_month/g_dow（dom 与 dow 同受限时取并集）。
+func day_matches(y: i64, m: i64, d: i64) -> bool {
+    if bit_in(g_month, m) == false {
+        return false
+    }
+    var dom_r = g_dom != (((1 << 31) - 1) << 1)   // dom 受限（非全 1..31）
+    var dow_r = g_dow != ((1 << 7) - 1)           // dow 受限（非全 0..6）
+    var wd = weekday_from_days(days_from_civil(y, m, d))
+    var in_dom = bit_in(g_dom, d)
+    var in_dow = bit_in(g_dow, wd)
+    if dom_r {
+        if dow_r {
+            return in_dom || in_dow   // 并集：任一命中即当天
+        }
+        return in_dom
+    }
+    if dow_r {
+        return in_dow
+    }
+    return true   // 两方全 *：每天都命中
+}
+
+// ============================================================================
+// 五、公共 API
+// ============================================================================
+
+// 解析 cron 表达式（5 字段）。成功 1 并把结果位图缓存到模块级 g_*；失败 0 置
+// g_err（含表达式原文）并清空位图。
+pub func parse(expr: string) -> i64 {
+    var fields = split_ws(expr)
+    if len(fields) != 5 {
+        fail(expr, "expected exactly 5 cron fields (min hour dom month dow)")
+        return 0
+    }
+    g_ok = 1                 // 先置成功态；其后的 fail() 会将其翻 0
+    g_min = parse_field(fields[0], 0, 59, false, expr)
+    if g_ok == 0 {
+        return 0
+    }
+    g_hour = parse_field(fields[1], 0, 23, false, expr)
+    if g_ok == 0 {
+        return 0
+    }
+    g_dom = parse_field(fields[2], 1, 31, false, expr)
+    if g_ok == 0 {
+        return 0
+    }
+    g_month = parse_field(fields[3], 1, 12, false, expr)
+    if g_ok == 0 {
+        return 0
+    }
+    g_dow = parse_field(fields[4], 0, 7, true, expr)
+    if g_ok == 0 {
+        return 0
+    }
+    g_expr = expr
+    g_ok = 1
+    g_err = ""
+    return 1
+}
+
+// 严格大于 after_epoch_s 的下一次触发纪元秒。parse 失败或永不触发（如非法日期
+// 2 月 30 日）→ 返回哨兵 g_sentinel（2103-01-01 纪元秒；永不返回 -1）。
+pub func next(expr: string, after_epoch_s: i64) -> i64 {
+    var ok = parse(expr)
+    if ok == 0 {
+        return g_sentinel
+    }
+    var cur = civil_from_epoch_s(after_epoch_s)
+    var y = cur[0]
+    var m = cur[1]
+    var d = cur[2]
+    var h = cur[3]
+    var mi = cur[4]
+    var days_elapsed: i64 = 0
+    while days_elapsed <= 2920 {
+        if day_matches(y, m, d) {
+            // 本日命中：从当前时刻起找最早的命中分钟（严格 > after）
+            var hh = h
+            while hh <= 23 {
+                if bit_in(g_hour, hh) {
+                    var mm0: i64 = 0
+                    if hh == h {
+                        mm0 = mi
+                    }
+                    var mm = mm0
+                    while mm <= 59 {
+                        if bit_in(g_min, mm) {
+                            var cand = to_epoch(y, m, d, hh, mm)
+                            if cand > after_epoch_s {   // 严格大于，秒取整后才算
+                                return cand
+                            }
+                        }
+                        mm = mm + 1
+                    }
+                }
+                hh = hh + 1
+            }
+        }
+        // 未命中或当日已无更晚命中：推进到下一天，自 00:00 起扫
+        var de = to_epoch(y, m, d, 0, 0) + 86400
+        var nx = civil_from_epoch_s(de)
+        y = nx[0]
+        m = nx[1]
+        d = nx[2]
+        h = 0
+        mi = 0
+        days_elapsed = days_elapsed + 1
+    }
+    return g_sentinel   // 8 年无命中：视为永不触发
+}
+
+// 最近一次 parse 的错误信息；成功解析后为空串。
+pub func last_err() -> string {
+    return g_err
+}
+
+// 纪元秒 → 星期（0=Sunday..6=Saturday）。诊断辅助，探针直接校验星期换算。
+pub func weekday(epoch_s: i64) -> i64 {
+    return weekday_from_days(epoch_s / 86400)
+}
+
+}   // namespace cron
