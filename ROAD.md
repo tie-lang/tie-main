@@ -209,23 +209,23 @@ neither continues the other**.
 
 **库补全（p.6.6，一库一子项；前置 p.6.4 原语全面 tie 化完成后启动；设计见 docs/superpowers/specs/2026-09-01-p66-library-completion-design.md）**
 
-- [ ] p.6.6.1 ext/tls：TLS 1.3 + 1.2 客户端（纯 tie）、X.509 解析与完整链校验、字节级网络 IO（p.6.4.5 承接）
+- [x] p.6.6.1 ext/tls：TLS 1.3 + 1.2 客户端（纯 tie）、X.509 解析与完整链校验、字节级网络 IO（p.6.4.5 承接）
 
-- [ ] p.6.6.2 std/http 升级：完整 HTTP 客户端（https/POST/headers/cookies/重定向），命名空间 httpc，旧 http.get 保留兼容
+- [x] p.6.6.2 std/http 升级：完整 HTTP 客户端（https/POST/headers/cookies/重定向），命名空间 httpc，旧 http.get 保留兼容
 
-- [ ] p.6.6.3 std/sse：SSE 流式解码（event/data/id/retry；LLM/WebSocket/Web 框架前置件）
+- [x] p.6.6.3 std/sse：SSE 流式解码（event/data/id/retry；LLM/WebSocket/Web 框架前置件）
 
-- [ ] p.6.6.4 ext/html：HTML 分词 + DOM 树 + 选择器抽取 + 链接提取 + HTML→纯文本
+- [x] p.6.6.4 ext/html：HTML 分词 + DOM 树 + 选择器抽取 + 链接提取 + HTML→纯文本
 
-- [ ] p.6.6.5 ext/xml：XML 分词 + 解析（与 html 共用标记语言分词底座；供 svg/配置消费）
+- [x] p.6.6.5 ext/xml：XML 分词 + 解析（与 html 共用标记语言分词底座；供 svg/配置消费）
 
 - [x] p.6.6.6 ext/spidey：爬虫治理（robots.txt + 限速 + URL 去重 + 编排，依赖 p.6.6.4）
 
-- [ ] p.6.6.7 std/ws：WebSocket 客户端（握手 + 帧编解码 + 掩码，依赖 p.6.6.2）
+- [x] p.6.6.7 std/ws：WebSocket 客户端（握手 + 帧编解码 + 掩码，依赖 p.6.6.2）
 
-- [ ] p.6.6.8 std/smtp：SMTP 发信（EHLO/AUTH/MAIL/RCPT/DATA，可配 STARTTLS，依赖 p.6.6.1）
+- [x] p.6.6.8 std/smtp：SMTP 发信（EHLO/AUTH/MAIL/RCPT/DATA，可配 STARTTLS，依赖 p.6.6.1）
 
-- [ ] p.6.6.9 std/dns：DNS 解析（A/AAAA/TXT/MX 查询，依赖 std/net UDP）
+- [x] p.6.6.9 std/dns：DNS 解析（A/AAAA/TXT/MX 查询，依赖 std/net UDP）
 
 - [ ] p.6.6.10 std/yaml：YAML 解析（块缩进/流式/标量类型 → 平行表）
 
@@ -233,7 +233,7 @@ neither continues the other**.
 
 - [ ] p.6.6.12 std/markdown：markdown 解析（块级元素/行内标记 → 结构表）
 
-- [ ] p.6.6.13 ext/png：PNG 编解码（chunk 遍历 + 滤波 + 位深/色彩类型）
+- [x] p.6.6.13 ext/png：PNG 编解码（chunk 遍历 + 滤波 + 位深/色彩类型）
 
 - [ ] p.6.6.14 ext/qr：QR 码生成（RS 纠错 + 矩阵布局 + 版本/掩码）
 
@@ -249,7 +249,7 @@ neither continues the other**.
 
 - [ ] p.6.6.20 std/sqlite：SQLite 驱动（C ABI 桥，参考 ext/ecdsa extern 范式）
 
-- [ ] p.6.6.21 Web 服务框架：std/http\_server 升级（路由表 / keep-alive / 静态文件 / SSE 推送 / JWT 会话）
+- [x] p.6.6.21 Web 服务框架：std/http\_server 升级（路由表 / keep-alive / 静态文件 / SSE 推送 / JWT 会话）
 
 - [ ] p.6.6.22 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式，依赖 p.6.6.2/p.6.6.3）
 
