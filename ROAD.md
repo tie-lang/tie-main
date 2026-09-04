@@ -219,7 +219,7 @@ neither continues the other**.
 
 - [ ] p.6.6.5 ext/xml：XML 分词 + 解析（与 html 共用标记语言分词底座；供 svg/配置消费）
 
-- [ ] p.6.6.6 ext/spidey：爬虫治理（robots.txt + 限速 + URL 去重 + 编排，依赖 p.6.6.4）
+- [x] p.6.6.6 ext/spidey：爬虫治理（robots.txt + 限速 + URL 去重 + 编排，依赖 p.6.6.4）
 
 - [ ] p.6.6.7 std/ws：WebSocket 客户端（握手 + 帧编解码 + 掩码，依赖 p.6.6.2）
 

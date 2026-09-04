@@ -57,6 +57,42 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [feat] ext/spidey 爬虫治理库：robots/限速/去重/编排（p.6.6.6.1-4）（2026-09-04）
+
+- 新 ext/spidey 包（纯 tie，string/UTF-8 数据平面）补全 p.6.6 "fetch→parse" 管线的
+  消费端（被 p.6.9.12 前后爬虫、文档站采集消费）：
+  - `robots.tie`（namespace robots，p.6.6.6.1）：robots.txt 解析 + UA 组选择（大小写
+    不敏感、最长前缀命中、"*" 兜底）+ Allow/Disallow 通配匹配（`*` 通配、尾部 `$`
+    锚定、最长匹配优先、并列 Allow 胜）+ Crawl-delay（小数秒→毫秒）+ Sitemap 收集；
+    「失稳即放宽」——解析不出合法组一律放行。22 项断言。
+  - `polite.tie`（namespace polite，p.6.6.6.2）：每主机限速——decide 纯计算（注入假
+    时钟可离线断言）+ wait 真推进（kernel32 `Sleep` extern 原语，unsafe 块）+ 首次
+    放行语义。8 项断言。
+  - `seen.tie`（namespace seen，p.6.6.6.2）：URL 去重——xxh3_64 开地址线性探测、
+    哈希/原文双重校验、装载 > 0.7 翻倍重建；均摊 O(1)。9 项断言（含 200 条扩容）。
+  - `crawl.tie`（namespace crawl，p.6.6.6.3）：BFS 编排器——FIFO 前沿游标、入队去重、
+    每主机 robots 闸（robots.txt 经同一抓取协议拉取缓存，失败放行）、限速 = max
+    （delay_ms, Crawl-delay）、同域过滤、深度/页数上限、CrawlStats 统计；抓取协议
+    抽象为 fetcher/loader 两个原始类型 fn（规避跨模块 struct 返回）。4 场景 14 项断言
+    （全离线假抓取）。
+  - `spidey.tie`（namespace spidey，p.6.6.6.4）：统一入口——默认 httpc 抓取
+    （http_fetch/http_loader + set_ua）+ net_run 一行接线 + version。
+- 验收：tests/spidey_probe/spidey_probe.tie 44/44 PASS，全离线确定性；html/xml 探针
+  回归 PASS；无 O(n²)（行扫描/下标推进单遍）。
+
+EN: ext/spidey crawler-governance library (p.6.6.6.1-4, 2026-09-04) — new pure-tie package on
+the string/UTF-8 plane completing the fetch→parse consumption side: robots.txt parsing +
+UA-group selection + wildcard path matching (longest-match wins, Allow on tie) +
+crawl-delay (6.6.6.1); per-host politeness — pure decide with injectable clock + real Sleep
+via kernel32 extern, and xxh3 open-addressing URL dedup with hash+text double check (6.6.6.2);
+BFS orchestrator — FIFO frontier cursor, enqueue dedup, per-host robots gate (robots.txt
+fetched via the same fetch protocol and cached, failures relax to allow), pacing = max
+(delay_ms, Crawl-delay), same-host filter, depth/page caps, CrawlStats; fetch protocol
+abstracted as two primitive-typed fns (6.6.6.3); unified entry — httpc-based fetch
+(http_fetch/http_loader + set_ua), net_run one-liner + version (6.6.6.4). Acceptance:
+tests/spidey_probe 45/45 PASS, fully offline-deterministic; html/xml probes regression PASS;
+no O(n^2) residual.
+
 ## [docs] p.6.7.14 trm-lite 并行体系收尾：preview.3 双语文档 + 已知限制（2026-09-04）
 
 - **trm-lite README 升 preview.3**：状态行 + API 全景更新——简单形态新增
