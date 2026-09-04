@@ -1,0 +1,167 @@
+type tie<logic>
+// ============================================================================
+// toml_probe.tie：ext/config TOML 支持探针（p.6.6.11，离线确定性）。
+//
+// 覆盖（Coverage）：
+//   - 嵌套表 [a.b]：点路径键名 a.b.x；
+//   - 数组表 [[server]] 多元素：server.0 / server.1（下标从 0），键值区分；
+//   - 内联表 {x=1, y="s"}：键 p.x / p.y；嵌套内联、值数组 arr.i；
+//   - 类型判定：get_int / get_bool / get（int、float、bool、string 各自命中）；
+//   - 注释剥离：# 整行与行尾 #（引号内 # 保留）；
+//   - 坏文档容错：未闭合字符串/表/节头 → 返回空表 + toml.last_err() 非空；
+//   - 统一查询 API：同一 get/get_int/get_bool 对 KV/INI/TOML 三格式同行为；
+//   - 既有 KV/INI 回归：parse_kv/parse_ini/parse_file 行为完全不变。
+// ============================================================================
+import "../../ext/config.tie" as cfg
+import "../../ext/config/toml.tie" as toml
+
+var g_count: i64 = 0
+
+// ---- 断言工具 ----（PASS 打印；FAIL 打印实际值并 exit(1)；最后一行 done 由 main 打）
+func chk(name: string, got: string, want: string) {
+    g_count = g_count + 1
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=[" + got + "] want=[" + want + "]")
+        exit(1)
+    }
+}
+
+func chk_i64(name: string, got: i64, want: i64) {
+    g_count = g_count + 1
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func chk_bool(name: string, got: bool, want: bool) {
+    g_count = g_count + 1
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got ? 1 : 0) + " want=" + to_string(want ? 1 : 0))
+        exit(1)
+    }
+}
+
+func chk_gt0(name: string, got: i64) {
+    g_count = g_count + 1
+    if got > 0 {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want>0")
+        exit(1)
+    }
+}
+
+// 统一查询 API：三格式用同一组 get/get_int/get_bool，行为必须一致。
+func chk_unified() {
+    // KV
+    var kv = cfg.parse_kv("name=Alice\n[db]\nhost=localhost\nport=80\nverbose=true")
+    var ini = cfg.parse_ini("[db]\nhost=localhost\nport=80\nverbose=true")
+    var toml_t = toml.parse("[db]\nhost=\"localhost\"\nport=80\nverbose=true")
+    // get 字符串
+    chk("uni_get_kv", cfg.get(kv, "db.host", ""), "localhost")
+    chk("uni_get_ini", cfg.get(ini, "db.host", ""), "localhost")
+    chk("uni_get_toml", cfg.get(toml_t, "db.host", ""), "localhost")
+    chk("uni_get_kv_name", cfg.get(kv, "name", ""), "Alice")
+    chk("uni_get_toml_missing", cfg.get(toml_t, "nope", "DEF"), "DEF")
+    // get_int
+    chk_i64("uni_int_toml", cfg.get_int(toml_t, "db.port", 0), 80)
+    chk_i64("uni_int_ini", cfg.get_int(ini, "db.port", 0), 80)
+    // 非整数 → 默认值（类型判定之一）
+    chk_i64("uni_int_bad_toml", cfg.get_int(toml_t, "db.host", 0), 0)
+    // get_bool
+    chk_bool("uni_bool_toml", cfg.get_bool(toml_t, "db.verbose", false), true)
+    chk_bool("uni_bool_kv", cfg.get_bool(kv, "db.verbose", false), true)
+    // has
+    chk_bool("uni_has_toml", cfg.has(toml_t, "db.port"), true)
+    chk_bool("uni_has_toml_no", cfg.has(toml_t, "db.zz"), false)
+    // parse_toml 入口（经 cfg 委托）与 toml.parse 结果一致
+    var cfg_t = cfg.parse_toml("[db]\nhost=\"x\"\nport=80")
+    chk("uni_cfg_parse_toml", cfg.get(cfg_t, "db.host", ""), "x")
+    chk_i64("uni_cfg_parse_toml_int", cfg.get_int(cfg_t, "db.port", 0), 80)
+}
+
+func main() {
+    // ---- 嵌套表 [a.b] ----
+    var t1 = toml.parse("[a.b]\nx=1\ny=\"s\"\n[a.c]\nz=2")
+    chk("nest_a_b_x", cfg.get(t1, "a.b.x", ""), "1")
+    chk("nest_a_b_y", cfg.get(t1, "a.b.y", ""), "s")
+    chk("nest_a_c_z", cfg.get(t1, "a.c.z", ""), "2")
+    chk("nest_a_missing", cfg.get(t1, "a.x", "NO"), "NO")
+
+    // ---- 数组表 [[server]] 多元素 ----
+    var t2 = toml.parse("[[server]]\nname=\"web1\"\nport=80\n[[server]]\nname=\"web2\"\nport=8080")
+    chk("arr_srv0_name", cfg.get(t2, "server.0.name", ""), "web1")
+    chk("arr_srv0_port", cfg.get(t2, "server.0.port", ""), "80")
+    chk("arr_srv1_name", cfg.get(t2, "server.1.name", ""), "web2")
+    chk("arr_srv1_port", cfg.get(t2, "server.1.port", ""), "8080")
+    chk_i64("arr_srv1_port_int", cfg.get_int(t2, "server.1.port", 0), 8080)
+    chk("arr_srv2_missing", cfg.get(t2, "server.2.name", "NONE"), "NONE")
+
+    // ---- 内联表 + 值数组 ----
+    var t3 = toml.parse("point={x=1, y=\"s\"}\nmeta={name=\"t\", tags=[\"a\",\"b\"]}\nlist=[1,2,3]\nflag=true")
+    chk("inline_point_x", cfg.get(t3, "point.x", ""), "1")
+    chk("inline_point_y", cfg.get(t3, "point.y", ""), "s")
+    chk_i64("inline_point_x_int", cfg.get_int(t3, "point.x", 0), 1)
+    chk("inline_meta_tags0", cfg.get(t3, "meta.tags.0", ""), "a")
+    chk("inline_meta_tags1", cfg.get(t3, "meta.tags.1", ""), "b")
+    chk("arr_list2", cfg.get(t3, "list.2", ""), "3")
+
+    // ---- 类型判定 ----
+    var t4 = toml.parse("i=42\nf=1.5\nb=true\nc=false\ns=\"hello\"")
+    chk_i64("type_int", cfg.get_int(t4, "i", 0), 42)
+    chk_i64("type_float_as_int", cfg.get_int(t4, "f", 99), 99)     // float 非整数 → def
+    chk_bool("type_bool_true", cfg.get_bool(t4, "b", false), true)
+    chk_bool("type_bool_false", cfg.get_bool(t4, "c", true), false)
+    chk("type_string", cfg.get(t4, "s", ""), "hello")
+    chk("type_float_raw", cfg.get(t4, "f", ""), "1.5")
+
+    // ---- 注释剥离 ----
+    var t5 = toml.parse("# 整行注释\n[db] # 行尾注释\nhost=\"localhost\" # 尾注\nport=80#inlinecomment\nurl=\"http://x#y\"")
+    chk("cmt_host", cfg.get(t5, "db.host", ""), "localhost")
+    chk("cmt_port", cfg.get(t5, "db.port", ""), "80")
+    chk("cmt_hash_in_str", cfg.get(t5, "db.url", ""), "http://x#y")   // 引号内 # 保留
+
+    // ---- 坏文档容错 ----
+    var t6 = toml.parse("[a\nx=1")                       // 节头未闭合
+    chk_i64("bad_header_empty", len(t6), 0)
+    chk_gt0("bad_header_err", str_len(toml.last_err()))
+    var t7 = toml.parse("key=\"unterminated")            // 字符串未闭合
+    chk_i64("bad_str_empty", len(t7), 0)
+    chk_gt0("bad_str_err", str_len(toml.last_err()))
+    var t8 = toml.parse("p={x=1")                        // 内联表未闭合
+    chk_i64("bad_inline_empty", len(t8), 0)
+    chk_gt0("bad_inline_err", str_len(toml.last_err()))
+    var t9 = toml.parse("bareline no equals")            // 游离行
+    chk_i64("bad_freeline_empty", len(t9), 0)
+    chk_gt0("bad_freeline_err", str_len(toml.last_err()))
+    // 空输入：返回空表且无错
+    var t10 = toml.parse("")
+    chk_i64("empty_input_len", len(t10), 0)
+    chk("empty_input_nore", toml.last_err(), "")
+
+    // ---- 统一查询 API（三格式）----
+    chk_unified()
+
+    // ---- 既有 KV/INI 回归（行为完全不变）----
+    var k1 = cfg.parse_kv("name=Alice\n[db]\nhost=localhost")
+    chk("reg_kv_name", cfg.get(k1, "name", ""), "Alice")
+    chk("reg_kv_dbhost", cfg.get(k1, "db.host", ""), "localhost")
+    chk("reg_kv_missing", cfg.get(k1, "x", "D"), "D")
+    chk_i64("reg_kv_dup_last", cfg.get_int(cfg.parse_kv("k=1\nk=2"), "k", 0), 2)  // 后者覆盖
+    var k2 = cfg.parse_ini("[s]\na=5\nb=true")
+    chk("reg_ini_a", cfg.get(k2, "s.a", ""), "5")
+    chk_bool("reg_ini_b", cfg.get_bool(k2, "s.b", false), true)
+    chk("reg_ini_missing", cfg.get(k2, "s.zz", "M"), "M")
+    chk_i64("reg_ini_int", cfg.get_int(k2, "s.a", 0), 5)
+
+    println("toml 探针全部通过 / toml probe all PASS, total=" + to_string(g_count))
+    println("done")
+    exit(0)
+}
