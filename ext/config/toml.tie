@@ -1,0 +1,414 @@
+type tie<class>
+// ============================================================================
+// toml.tie：ext/config——TOML 子集解析器（命名空间 toml，零依赖自实现）。
+// TOML parser (namespace toml, zero-dependency). p.6.6.11
+//
+// 设计选择（方案 a——交错表，与 INI/KV 同一查询入口）：
+//   返回 table<string> 按 [键, 值, 键, 值...] 交错存放；键用「点路径」统一表达
+//   层级，因此可直接复用 cfg.get / cfg.get_int / cfg.get_bool / cfg.has：
+//     - 嵌套表  [a.b]        → 键 "a.b.x"
+//     - 数组表  [[server]]   → 键 "server.0.host"、"server.1.host"（下标从 0）
+//     - 内联表  p={x=1}      → 键 "p.x"
+//     - 值数组  arr=[1,2]    → 键 "arr.0"、"arr.1"
+//   这样三方格式（KV/INI/TOML）共用一个查询 API，无第二个并行表结构。
+//
+// 支持的 TOML 子集：
+//   - [a.b] 嵌套表头（点路径，键名允许含点）
+//   - [[a]] / [[a.b]] 数组表（每个 [[..]] 新建一个带递增下标的元素）
+//   - 内联表 {name = value, ...}（支持嵌套内联表/数组，值可字符串/数值/布尔）
+//   - 值数组 [v1, v2, ...]（混合类型亦可，元素下标为 key.i）
+//   - 基础键值 key = value：字符串 "..." / int / float / bool true|false
+//   - 注释：# 整行注释，以及值后跟的 # 行尾注释（引号内 # 视为字符串内容保留）
+//
+// 明确不实现（文件头取舍）：
+//   - 多行字符串 """ ... """（不实现；线级解析保持简单、无状态横跨多行的读取）
+//   - 日期/时间字面量（按裸标量存原文，不做类型识别）
+//   - \uXXXX 等花哨转义（仅支持 \n \t \r \" \\，未知转义保留原字符）
+//   - 引号化的表头键 ["a.b"] / 长点路径解析的严格校验（键直接按文本拼接）
+//
+// 坏文档容错：任何未闭合（字符串/表/数组/节头）、缺等号、空键名、游离行
+// 都被视为坏文档 → parse 返回 **空表** 且 g_err 记录首条错误，
+// toml.last_err() 可查；不会崩溃。混用数组表/普通表（如 [a] 后又 [[a]]）
+// 行为未定义（不保证）。空输入返回空表且 g_err 为空串。
+//
+// 命名规范：模块级全局 g_err 外置文件顶层（namespace 内不允许声明 var）；
+// namespace 内互调为裸调用；pub 函数为对外接口。
+// ============================================================================
+
+// 模块级全局：最近一次解析的错误信息（空串 = 无错）。namespace 内可直接读写。
+var g_err: string = ""
+
+namespace toml {
+
+// 解析 TOML 文本 → 交错表 [k1,v1,k2,v2...]；坏文档返回空表（g_err 有值）。
+pub func parse(content: string) -> table<string> {
+    g_err = ""
+    var out = table_new_string()
+    var arrc = table_new_string()    // 数组表基路径 → 已建元素数
+    var cur: string = ""             // 当前表前缀（根 = ""）
+    var lines = split_lines(content)
+    var n = len(lines)
+    var i: i64 = 0
+    while i < n {
+        var tri = trim(lines[i])
+        if str_len(tri) == 0 || str_char(tri, 0) == "#" {
+            // 空行 / 整行注释
+            i = i + 1
+            continue
+        }
+        var linec = trim(uncomment(lines[i]))
+        if str_len(linec) == 0 {
+            // 整行都是行尾注释
+            i = i + 1
+            continue
+        }
+        if str_char(linec, 0) == "[" {
+            // 表头 / 数组表头（绝对点路径）
+            var (cur2, hok) = parse_header(linec, arrc)
+            if !hok {
+                return table_new_string()
+            }
+            cur = cur2
+            i = i + 1
+            continue
+        }
+        // 基础键值 key = value
+        var eq = find_char(linec, "=")
+        if eq < 0 {
+            set_err("非注释行缺 '=': " + linec)
+            return table_new_string()
+        }
+        var key = trim(slice(linec, 0, eq))
+        if str_len(key) == 0 {
+            set_err("空键名")
+            return table_new_string()
+        }
+        var rhs = trim(slice(linec, eq + 1, str_len(linec)))
+        var full: string = key
+        if str_len(cur) > 0 {
+            full = cur + "." + key
+        }
+        var vok = parse_value(out, full, rhs)
+        if !vok {
+            return table_new_string()
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// 返回最近一次解析的错误信息（空串 = 解析成功/无错）。
+pub func last_err() -> string {
+    return g_err
+}
+
+// ---------- 内部工具 ----------
+
+// 表头解析：返回新当前前缀 + 是否合法。cur 由调用方赋回（返回元组实现）。
+func parse_header(hd: string, arrc: table<string>) -> (string, bool) {
+    var n = str_len(hd)
+    var isarr = false
+    if str_char(hd, 0) == "[" && n >= 2 && str_char(hd, 1) == "[" {
+        isarr = true
+    }
+    if str_char(hd, n - 1) != "]" {
+        set_err("节头未闭合: " + hd)
+        return ("", false)
+    }
+    var inner: string = ""
+    if isarr {
+        if n < 4 || str_char(hd, n - 2) != "]" {
+            set_err("数组表头未闭合: " + hd)
+            return ("", false)
+        }
+        inner = trim(slice(hd, 2, n - 2))
+        var idx = acnt_get(arrc, inner)
+        acnt_put(arrc, inner, idx + 1)
+        return (inner + "." + to_string(idx), true)
+    }
+    inner = trim(slice(hd, 1, n - 1))
+    if str_len(inner) == 0 {
+        set_err("空节头")
+        return ("", false)
+    }
+    return (inner, true)
+}
+
+// 值解析分发：按首字符判定 内联表/数组/字符串/裸标量。出错返回 false（已 set_err）。
+func parse_value(out: table<string>, key: string, rhs: string) -> bool {
+    var n = str_len(rhs)
+    if n == 0 {
+        return true
+    }
+    var c0 = str_char(rhs, 0)
+    if c0 == "{" || c0 == "[" {
+        var ok = parse_bracket(out, key, rhs, c0 == "[" ? 1 : 0)
+        return ok
+    }
+    if c0 == "\"" {
+        var (val, qok) = unquote(rhs)
+        if !qok {
+            set_err("字符串未闭合: " + key)
+            return false
+        }
+        emit(out, key, val)
+        return true
+    }
+    // 裸标量（int/float/bool/日期等）——按原文存储，类型判定交给 cfg.get_*。
+    emit(out, key, rhs)
+    return true
+}
+
+// 内联表 {} 或 值数组 [] 解析。isArr=1 数组（下标），=0 内联表（具名键）。
+func parse_bracket(out: table<string>, key: string, rhs: string, isArr: i64) -> bool {
+    var n = str_len(rhs)
+    if n < 2 {
+        set_err("表/数组空体未闭合: " + key)
+        return false
+    }
+    var close = isArr == 1 ? "]" : "}"
+    if str_char(rhs, n - 1) != close {
+        set_err("缺少闭环 " + close + ": " + key)
+        return false
+    }
+    var inner = slice(rhs, 1, n - 1)
+    var items = split_top(inner)
+    var m = len(items)
+    var i: i64 = 0
+    while i < m {
+        var item = items[i]
+        if isArr == 1 {
+            // 数组元素：键 = 父路径.下标，值递归分发（可含内联/数组/标量）
+            var ek = key + "." + to_string(i)
+            var aok = parse_value(out, ek, item)
+            if !aok {
+                return false
+            }
+        } else {
+            var eq = find_char(item, "=")
+            if eq < 0 {
+                set_err("内联表项缺 '=': " + item)
+                return false
+            }
+            var nm = trim(slice(item, 0, eq))
+            var rv = trim(slice(item, eq + 1, str_len(item)))
+            var iok = parse_value(out, key + "." + nm, rv)
+            if !iok {
+                return false
+            }
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 解析双引号基本字符串 → (值, 是否闭合)。支持 \n \t \r \" \\，未知转义保留原字符。
+func unquote(rhs: string) -> (string, bool) {
+    var n = str_len(rhs)
+    var out: string = ""
+    var i: i64 = 1
+    while i < n {
+        var c = str_char(rhs, i)
+        if c == "\\" {
+            if i + 1 >= n {
+                return ("", false)
+            }
+            var e = str_char(rhs, i + 1)
+            if e == "n" {
+                out = out + "\n"
+            } else if e == "t" {
+                out = out + "\t"
+            } else if e == "r" {
+                out = out + "\r"
+            } else if e == "\"" {
+                out = out + "\""
+            } else if e == "\\" {
+                out = out + "\\"
+            } else {
+                out = out + e
+            }
+            i = i + 2
+            continue
+        }
+        if c == "\"" {
+            return (out, true)
+        }
+        out = out + c
+        i = i + 1
+    }
+    return ("", false)
+}
+
+// 按「顶层逗号」拆分（忽略引号内与 {} [] 嵌套内的逗号）。用于内联表/数组体。
+func split_top(s: string) -> table<string> {
+    var res = table_new_string()
+    var n = str_len(s)
+    var depth: i64 = 0
+    var start: i64 = 0
+    var inq = false
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(s, i)
+        if inq {
+            if c == "\\" {
+                i = i + 2
+                continue
+            }
+            if c == "\"" {
+                inq = false
+            }
+            i = i + 1
+            continue
+        }
+        if c == "\"" {
+            inq = true
+        } else if c == "{" || c == "[" {
+            depth = depth + 1
+        } else if c == "}" || c == "]" {
+            if depth > 0 {
+                depth = depth - 1
+            }
+        } else if c == "," && depth == 0 {
+            table_push(res, trim(slice(s, start, i)))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    var last = trim(slice(s, start, n))
+    if str_len(last) > 0 {
+        table_push(res, last)
+    }
+    return res
+}
+
+// 去掉引号外的行尾 # 注释（引号内 # 保留）。返回值不含注释。
+func uncomment(line: string) -> string {
+    var n = str_len(line)
+    var inq = false
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(line, i)
+        if inq {
+            if c == "\\" {
+                i = i + 2
+                continue
+            }
+            if c == "\"" {
+                inq = false
+            }
+            i = i + 1
+            continue
+        }
+        if c == "\"" {
+            inq = true
+        } else if c == "#" {
+            return slice(line, 0, i)
+        }
+        i = i + 1
+    }
+    return line
+}
+
+// 交错表对 key 的读取（数组表计数），未命中返回 0。
+func acnt_get(t: table<string>, key: string) -> i64 {
+    var n = len(t)
+    var i: i64 = 0
+    while i < n {
+        if t[i] == key {
+            return parse_int(t[i + 1])
+        }
+        i = i + 2
+    }
+    return 0
+}
+
+// 交错表对 key 的覆写/追加（数组表计数写入）。
+func acnt_put(t: table<string>, key: string, v: i64) {
+    var n = len(t)
+    var i: i64 = 0
+    while i < n {
+        if t[i] == key {
+            t[i + 1] = to_string(v)
+            return
+        }
+        i = i + 2
+    }
+    table_push(t, key)
+    table_push(t, to_string(v))
+}
+
+// 交错表 push 一对：先键后值。
+func emit(out: table<string>, key: string, val: string) {
+    table_push(out, key)
+    table_push(out, val)
+}
+
+// 记录首条错误（后续错误忽略，保持首因）。
+func set_err(msg: string) {
+    if str_len(g_err) == 0 {
+        g_err = msg
+    }
+}
+
+// 按 \n 拆行（去掉行尾 \r）；空文本返回空表。
+func split_lines(s: string) -> table<string> {
+    var rows = table_new_string()
+    var n: i64 = str_len(s)
+    var line: string = ""
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(s, i)
+        if c == "\n" {
+            table_push(rows, line)
+            line = ""
+        } else if c == "\r" {
+            // 忽略行尾 \r
+        } else {
+            line = line + c
+        }
+        i = i + 1
+    }
+    if str_len(line) > 0 {
+        table_push(rows, line)
+    }
+    return rows
+}
+
+// 找字符串中首个 ch 的位置；未找到返回 -1。
+func find_char(s: string, ch: string) -> i64 {
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        if str_char(s, i) == ch {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 去除字符串首尾空白（空格/制表）。
+func trim(s: string) -> string {
+    var n: i64 = str_len(s)
+    var start: i64 = 0
+    var end: i64 = n
+    while start < end && (str_char(s, start) == " " || str_char(s, start) == "\t") {
+        start = start + 1
+    }
+    while end > start && (str_char(s, end - 1) == " " || str_char(s, end - 1) == "\t") {
+        end = end - 1
+    }
+    return slice(s, start, end)
+}
+
+// 取字符串 [start, end) 子串（码点级）。
+func slice(s: string, start: i64, end: i64) -> string {
+    var out: string = ""
+    var i: i64 = start
+    while i < end {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+}
