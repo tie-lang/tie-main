@@ -1,0 +1,157 @@
+type tie<logic>
+// tests/win32_probe/win32_probe.tie —— p.6.6.23 验收：sys/win32 平台专用层。
+// Windows 本机全离线确定性探针。所有项只做「存在断言 / 运行断言」，绝不精确
+// 断言值（环境差异：版本号、内存量、剪贴板内容、窗口存在性等均不写死）。
+//   - 剪贴板只读（clip_get 不写、不用 clip_set 污染用户剪贴板）；
+//   - env_set 只写探针专属名 TIE_WIN32_PROBE（进程本地，无需恢复）；
+//   - 注册表只读（reg_read HKLM ProductName）。
+// 期望全部 PASS / exit 0。
+import "../../sys/win32.tie" as sys_win32
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// 子串包含判定（不精断值，仅用于存在性）。
+func contains(s: string, sub: string) -> bool {
+    var n = str_len(s)
+    var m = str_len(sub)
+    if m == 0 {
+        return true
+    }
+    if m > n {
+        return false
+    }
+    var i: i64 = 0
+    while i <= n - m {
+        var j: i64 = 0
+        var ok = true
+        while j < m {
+            if str_char(s, i + j) != str_char(sub, j) {
+                ok = false
+            }
+            j = j + 1
+        }
+        if ok {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func wide_section() {
+    // 1 wide_from/wide_to 往返（ASCII / 中文 / 空串）+ UTF-16 字节数
+    var a = "abcABC123"
+    var wa = sys_win32.wide_from(a)
+    check(sys_win32.wide_to(wa) == a, "wide roundtrip ascii")
+    check(len(wa) == 2 * str_len(a), "wide ascii bytes 2n=" + to_string(2 * str_len(a)))
+    var z = "张三"
+    var wz = sys_win32.wide_from(z)
+    check(sys_win32.wide_to(wz) == z, "wide roundtrip cjk")
+    // 中文每字 ≤0xFFFF → 单码元 2 字节；"张三" → 4 字节（不精确字面量，仅计字节）
+    check(len(wz) == 4, "wide cjk bytes 2n=" + to_string(len(wz)))
+    var e = "你好"
+    check(sys_win32.wide_to(sys_win32.wide_from(e)) == e, "wide roundtrip ch")
+    var empty = ""
+    var we = sys_win32.wide_from(empty)
+    check(sys_win32.wide_to(we) == empty, "wide roundtrip empty")
+    check(len(we) == 0, "wide empty bytes 0")
+    // 注：emoji "\u{1F600}" 依赖字面量转义支持；为确保确定性改用中文串断言。
+}
+
+func env_section() {
+    // 2 环境变量存在 + set/读回
+    var p = sys_win32.env_get("PATH")
+    if str_len(p) == 0 {
+        p = sys_win32.env_get("SystemRoot")
+    }
+    check(str_len(p) > 0, "env PATH/SystemRoot non-empty")
+    check(sys_win32.env_set("TIE_WIN32_PROBE", "p.6.6.23"), "env_set probe flag")
+    check(sys_win32.env_get("TIE_WIN32_PROBE") == "p.6.6.23", "env_get readback")
+    // 不恢复：进程本地变量，探针退出即消失（注释说明）。
+}
+
+func sysinfo_section() {
+    // 3 系统信息存在性
+    var ov = sys_win32.os_version()
+    var ov_digit = str_len(ov) > 0 && char_code(str_char(ov, 0)) >= 48 && char_code(str_char(ov, 0)) <= 57
+    check(ov_digit && contains(ov, "."), "os_version format (digit.leading + dot): " + ov)
+    var mi = sys_win32.mem_info()
+    var sp = -1
+    var i: i64 = 0
+    while i < str_len(mi) {
+        if str_char(mi, i) == " " {
+            sp = i
+            break
+        }
+        i = i + 1
+    }
+    var tk: i64 = 0
+    if sp > 0 {
+        var tok = ""
+        var j: i64 = 0
+        while j < sp {
+            tok = tok + str_char(mi, j)
+            j = j + 1
+        }
+        tk = parse_int(tok)
+    }
+    check(sp > 0 && tk > 0, "mem_info first-token(KB)>0: " + mi)
+    check(str_len(sys_win32.cpu_name()) > 0, "cpu_name non-empty")
+}
+
+func files_section() {
+    // 4 用户目录 / 窗口消息（存在/运行断言，不精断值）
+    var dir = sys_win32.user_dir()
+    check(str_len(dir) > 0, "user_dir non-empty length>0")
+    var desk = sys_win32.desktop_dir()
+    check(str_len(desk) > 0, "desktop_dir non-empty length>0")
+    var hw = sys_win32.win_find("", "")
+    var wp = sys_win32.win_post(0, 0, 0, 0)
+    check(true, "win_find/win_post ran (no precise assert; hw=" + to_string(hw) + " ok=" + (wp ? "true" : "false"))
+}
+
+func enum_section() {
+    // 5 进程/服务/网络适配器/硬件信息（存在断言）
+    var pl = sys_win32.proc_list()
+    check(len(pl) > 0, "proc_list len>0, has=" + to_string(len(pl)))
+    var svc = sys_win32.svc_enum()
+    check(len(svc) > 0, "svc_enum len>0 (registry, Windows 必有服务), has=" + to_string(len(svc)))
+    var na = sys_win32.net_adapters()
+    check(len(na) > 0, "net_adapters len>0 (Windows 必有网卡)")
+    var hw2 = sys_win32.hw_info()
+    check(len(hw2) > 0 && str_len(hw2[0]) > 0, "hw_info len>0, first=" + hw2[0])
+}
+
+func reg_section() {
+    // 6 注册表只读
+    var pn = sys_win32.reg_read(0x80000002,
+        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ProductName")
+    check(str_len(pn) > 0, "reg_read HKLM ProductName non-empty (read-only)")
+}
+
+func main() {
+    println("start")
+    wide_section()
+    env_section()
+    sysinfo_section()
+    files_section()
+    enum_section()
+    reg_section()
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+}
