@@ -1,0 +1,436 @@
+type tie<class>
+// ============================================================================
+// smtp.tie：标准库——SMTP 发信客户端（命名空间 smtp，纯 tie）
+// SMTP mail-sending client (namespace smtp, pure-tie). p.6.6.8
+//
+// 数据平面（Data plane）：命令与响应均为 ASCII string（SMTP 协议命令/回复头本是
+// 可打印 ASCII；用户名/密码/主题/正文的 ASCII 场景足够，符合本库保持 string 平面、
+// 不引入字节表的定位）。行传输以 CRLF（"\r\n"）为界。
+//
+// 交互架构（Transport injection）：
+//   会话状态机做成**可注入收发函数对**（模仿 ext/spidey/crawl 的 fetcher 注入）：
+//     rd() -> string     取一行（含行尾换行；返回空串 = 连接关闭）
+//     wr(string) -> i64  发一行，返回发送字节数（<0 视为发送失败）
+//   内部核心 `session(rd, wr, ...)` 与传输解耦：真实网络时 rd/wr 包 std/net 的
+//   tcp_recv_bytes / tcp_send_bytes（rd 逐字节累积出行 / wr 由字节表发送）；
+//   验收探针注入脚本化假服务器（完全离线确定性）。成功 0；失败返回负码（各失败
+//   点不同码，见模块级 RC_* 常量与注释）；错误信息经 smtp.last_err() 取回。
+//
+// 命令-响应序列（SMTP RFC 5321 子集）：
+//   220 → EHLO tie-smtp → 250（允许多行 250-...250 续行折叠）
+//        → [AUTH LOGIN | AUTH PLAIN | 匿名] 
+//        → MAIL FROM:<from> → 250 → RCPT TO:<to> (×每个收件人) → 250
+//        → DATA → 354 → 正文（点填充：'.' 开头行前加 '.'）+ 终止 "\r\n.\r\n" → 250
+//        → QUIT → 221
+//   EHLO 后若服务端 250 行内无 AUTH 关键字、或 auth 传 "none" → 直接 MAIL（匿名）。
+//   响应断言：只按「3 位状态码 + 空格」断言；多行 250 会话内聚合（rd_resp）。
+//
+// 超时/守卫（Guard）：会话各步骤读线次数上限（1000000）防死循环；
+//   rd 返回空串视为连接关闭 → 失败（RC_CLOSED）。
+//
+// STARTTLS：**占位**（不实现，文档化取舍）。若环境变量 TIE_SMTP_STARTTLS=1 且
+//   EHLO 行含 STARTTLS 能力，标准路径为：发 STARTTLS 收 220 → tls.connect 同
+//   host/pport 建立 TLS 会话 → rd/wr 切换为 tls.send/tls.recv 版本。本轮以实现
+//   明文全量会话为准，STARTTLS 触点用注释标注形如 <STARTTLS-POINT>，待 p.6.6.1
+//   tls 会话接管（TLS 会话的 recv/send 已就绪：tls.connect/send/recv/close）续接；
+//   说明见回报。tie 暂无环境变量读取原语，env gate 亦留待续接。验收以明文脚本
+//   会话为准，STARTTLS 探针默认跳过。
+//
+// 语言约束（Language constraints）：
+//   - 正文点填充 / 头组装 / 会话累积一律用 string_builder 单遍构建，禁止逐字符
+//     字符串拼接（O(n^2)）；
+//   - `port`、`text` 是 tie 保留字：端口参数命名为 pport；
+//   - 模块级全局 g_err（顶层持久变量，参照 httpc g_jar）供错误信息取回。
+// ============================================================================
+
+import "./encoding.tie" as enc
+import "./string.tie" as str
+import "./net.tie" as net
+
+// ---- 模块级全局：最近一次错误信息（顶层持久变量，参照 httpc g_jar）----
+var g_err: string = ""
+
+// ---- 失败返回码（session/send 返回负码；0 成功；错误信息经 smtp.last_err()）----
+// 注：tie 的 const/模块级 var 对【负字面量】初始化折叠为 0（见 tests/_cst_probe），
+// 故代码内一律内联负字面量，此处仅作文档映射表：
+//   -10 连接关闭（rd 返回空串）       -11 读线次数超限（1000000 防死循环）
+//   -12 未收到 220 欢迎              -13 EHLO 未回 250
+//   -14 AUTH 失败（535/334/235 不符）-15 MAIL FROM 未回 250
+//   -16 RCPT TO 未回 250             -17 DATA 未回 354
+//   -18 正文结束后未回 250           -19 wr 发送失败（返回 <0）
+//   -20 send() 建连失败（tcp_connect <0）
+
+// STARTTLS-POINT：TLS 会话句柄（接通后 rd/wr 切换为 tls.send/tls.recv 版本）。
+// 本轮占位未实现，变量保留供 p.6.6.1 续接。
+var g_tlsx: i64 = -1
+
+// 真实网络收发用底层 socket 句柄（rd_net/wr_net 经模块全局共享，见命名空间内实现）。
+var g_sock: i64 = -1
+
+namespace smtp {
+
+// ============================================================================
+// 一、SMTP 响应读取：多行折叠聚合 + 3 位状态码
+// ============================================================================
+
+// 单行是否为响应末行（折叠判断）：行第 4 字符（下标 3）为 '-' 表示续行，
+// 否则（空格/行尾换行）为终行。行含行尾换行。
+func resp_terminal(line: string) -> bool {
+    var ln = str_len(line)
+    if ln <= 4 {
+        return true    // "250\r\n" 或更短：无折叠，终行
+    }
+    var c4 = str_char(line, 3)
+    if c4 == "-" {
+        return false   // "250-more\r\n"：续行
+    }
+    return true
+}
+
+// 读取一个完整 SMTP 响应：聚合多行折叠（250-...250）为一段文本并返回。
+// 失败（rd 返回空串=连接关闭 / 读线次数超限）返回空串（会话据此判负）；
+// 具体原因写 g_err。
+func rd_resp(rd: fn() -> string) -> string {
+    var sb = string_builder()
+    var g: i64 = 0
+    while g < 1000000 {
+        var line = rd()
+        if str_len(line) == 0 {
+            g_err = "connection closed / no data while reading response"
+            return ""
+        }
+        sb_append(sb, line)
+        g = g + 1
+        if resp_terminal(line) {
+            return sb_build(sb)
+        }
+    }
+    g_err = "read guard exceeded (1000000) while reading response"
+    return ""
+}
+
+// 响应文本 → 3 位状态码（取前 2 位 i64 解析为数字）。
+func resp_code(resp: string) -> i64 {
+    var n = str_len(resp)
+    if n < 3 {
+        return -99
+    }
+    var c0 = char_code(str_char(resp, 0))
+    var c1 = char_code(str_char(resp, 1))
+    var c2 = char_code(str_char(resp, 2))
+    return (c0 - 48) * 100 + (c1 - 48) * 10 + (c2 - 48)
+}
+
+// ============================================================================
+// 二、AUTH 子流程（LOGIN / PLAIN；失败返回负 RC_*，成功 0）
+// ============================================================================
+func do_auth(rd: fn() -> string, wr: fn(string) -> i64, user: string, pwd: string, auth: string) -> i64 {
+    // AUTH LOGIN：AUTH LOGIN → 334 → base64(user) → 334 → base64(pwd) → 235
+    if auth == "PLAIN" {
+        // AUTH PLAIN：一步发送 "AUTH PLAIN " + base64("\0" user "\0" pwd)
+        var s = string_builder()
+        sb_append_byte(s, 0)
+        sb_append(s, user)
+        sb_append_byte(s, 0)
+        sb_append(s, pwd)
+        var plain = sb_build(s)
+        var b64 = enc.base64_encode(plain)
+        if wr("AUTH PLAIN " + b64 + "\r\n") < 0 {
+            g_err = "send AUTH PLAIN failed"
+            return -19
+        }
+        var resp = rd_resp(rd)
+        if str_len(resp) == 0 {
+            return -10
+        }
+        if resp_code(resp) != 235 {
+            g_err = "AUTH PLAIN rejected: code " + to_string(resp_code(resp))
+            return -14
+        }
+        return 0
+    }
+    // 默认走 LOGIN
+    if wr("AUTH LOGIN\r\n") < 0 {
+        g_err = "send AUTH LOGIN failed"
+        return -19
+    }
+    var resp = rd_resp(rd)
+    if str_len(resp) == 0 {
+        return -10
+    }
+    if resp_code(resp) != 334 {
+        g_err = "AUTH LOGIN: expected 334, got " + to_string(resp_code(resp))
+        return -14
+    }
+    if wr(enc.base64_encode(user) + "\r\n") < 0 {
+        g_err = "send AUTH username failed"
+        return -19
+    }
+    resp = rd_resp(rd)
+    if str_len(resp) == 0 {
+        return -10
+    }
+    if resp_code(resp) != 334 {
+        g_err = "AUTH LOGIN: expected 334 for pwd, got " + to_string(resp_code(resp))
+        return -14
+    }
+    if wr(enc.base64_encode(pwd) + "\r\n") < 0 {
+        g_err = "send AUTH password failed"
+        return -19
+    }
+    resp = rd_resp(rd)
+    if str_len(resp) == 0 {
+        return -10
+    }
+    if resp_code(resp) != 235 {
+        g_err = "AUTH LOGIN rejected: code " + to_string(resp_code(resp))
+        return -14
+    }
+    return 0
+}
+
+// ============================================================================
+// 三、DATA 载荷：头 + 点填充正文，单遍 string_builder 构建后一次 wr 发送
+// ============================================================================
+func send_data(wr: fn(string) -> i64, from: string, tos: table<string>, subject: string, body: string, headers: table<string>) -> i64 {
+    var sb = string_builder()
+    // 头区（可覆写入口令：固定 From/To/Subject，再拼自定义头，空行结束）
+    sb_append(sb, "From: ")
+    sb_append(sb, from)
+    sb_append(sb, "\r\n")
+    sb_append(sb, "To: ")
+    sb_append(sb, str.join(tos, ", "))
+    sb_append(sb, "\r\n")
+    sb_append(sb, "Subject: ")
+    sb_append(sb, subject)
+    sb_append(sb, "\r\n")
+    var hi: i64 = 0
+    while hi < len(headers) {
+        sb_append(sb, headers[hi])
+        sb_append(sb, "\r\n")
+        hi = hi + 1
+    }
+    sb_append(sb, "\r\n")
+    // 正文：逐行，'.' 开头行前加 '.'（点填充），行以 CRLF 终止
+    var bn = len(body)
+    var bi: i64 = 0
+    var ln = string_builder()
+    var ll: i64 = 0
+    while bi < bn {
+        var ch = str_char(body, bi)
+        if ch == "\n" {
+            // 收束当前行
+            var line = sb_build(ln)
+            if ll > 0 && str_byte(line, 0) == 0x2E {
+                sb_append(sb, ".")
+            }
+            sb_append(sb, line)
+            sb_append(sb, "\r\n")
+            ln = string_builder()
+            ll = 0
+        } else if ch == "\r" {
+            // 归一化：忽略单独 \r（以 \n 为行界）
+        } else {
+            sb_append(ln, ch)
+            ll = ll + 1
+        }
+        bi = bi + 1
+    }
+    // 末行无换行
+    var tail = sb_build(ln)
+    if str_len(tail) > 0 {
+        if str_byte(tail, 0) == 0x2E {
+            sb_append(sb, ".")
+        }
+        sb_append(sb, tail)
+        sb_append(sb, "\r\n")
+    }
+    // DATA 终止：行段逐个 "." 行
+    sb_append(sb, ".\r\n")
+    var payload = sb_build(sb)
+    if wr(payload) < 0 {
+        g_err = "send DATA payload failed"
+        return -19
+    }
+    return 0
+}
+
+// ============================================================================
+// 四、会话核心（可注入 rd/wr；探针驱动完整事务走这里）
+// ============================================================================
+pub func session(rd: fn() -> string, wr: fn(string) -> i64, server: string, pport: i64,
+                 user: string, pwd: string, auth: string, from: string,
+                 tos: table<string>, subject: string, body: string, headers: table<string>) -> i64 {
+    g_err = ""
+    // 1) 欢迎行：必须 220
+    var resp = rd_resp(rd)
+    if str_len(resp) == 0 {
+        return -11   // 内部 g_err 已设；空回多为在读欢迎即关
+    }
+    if resp_code(resp) != 220 {
+        g_err = "greeting not 220: code " + to_string(resp_code(resp))
+        return -12
+    }
+    // 2) EHLO tie-smtp：允许多行 250-...250 折叠
+    if wr("EHLO tie-smtp\r\n") < 0 {
+        g_err = "send EHLO failed"
+        return -19
+    }
+    resp = rd_resp(rd)
+    if str_len(resp) == 0 {
+        g_err = "connection closed during EHLO"
+        return -10
+    }
+    if resp_code(resp) != 250 {
+        g_err = "EHLO not 250: code " + to_string(resp_code(resp))
+        return -13
+    }
+    // STARTTLS-POINT：此处若 TIE_SMTP_STARTTLS=1 且 resp 含 STARTTLS，发 STARTTLS
+    // 收 220 → g_tlsx = tls.connect(server, pport) → rd/wr 切换为 tls 版会话。
+    // 待 p.6.6.1 tls 会话接管续接；本轮未实现（文档化取舍）。
+    // 3) 可选认证：auth=="none" 或服务端 EHLO 行内无 AUTH → 匿名（直接 MAIL）
+    var want_auth: i64 = 1
+    if auth == "none" {
+        want_auth = 0
+    }
+    if want_auth == 1 && str.contains(resp, "AUTH") == false {
+        want_auth = 0
+    }
+    if want_auth == 1 {
+        var ar = do_auth(rd, wr, user, pwd, auth)
+        if ar < 0 {
+            return ar
+        }
+    }
+    // 4) MAIL FROM
+    if wr("MAIL FROM:<" + from + ">\r\n") < 0 {
+        g_err = "send MAIL FROM failed"
+        return -19
+    }
+    resp = rd_resp(rd)
+    if str_len(resp) == 0 {
+        g_err = "connection closed during MAIL"
+        return -10
+    }
+    if resp_code(resp) != 250 {
+        g_err = "MAIL FROM rejected: code " + to_string(resp_code(resp))
+        return -15
+    }
+    // 5) RCPT TO（每个收件人）
+    var i: i64 = 0
+    while i < len(tos) {
+        if wr("RCPT TO:<" + tos[i] + ">\r\n") < 0 {
+            g_err = "send RCPT TO failed"
+            return -19
+        }
+        resp = rd_resp(rd)
+        if str_len(resp) == 0 {
+            g_err = "connection closed during RCPT"
+            return -10
+        }
+        if resp_code(resp) != 250 {
+            g_err = "RCPT TO rejected for " + tos[i] + ": code " + to_string(resp_code(resp))
+            return -16
+        }
+        i = i + 1
+    }
+    // 6) DATA
+    if wr("DATA\r\n") < 0 {
+        g_err = "send DATA command failed"
+        return -19
+    }
+    resp = rd_resp(rd)
+    if str_len(resp) == 0 {
+        g_err = "connection closed during DATA"
+        return -10
+    }
+    if resp_code(resp) != 354 {
+        g_err = "DATA not 354: code " + to_string(resp_code(resp))
+        return -17
+    }
+    // 7) 正文载荷（点填充 + 终止）
+    var dc = send_data(wr, from, tos, subject, body, headers)
+    if dc < 0 {
+        return dc
+    }
+    resp = rd_resp(rd)
+    if str_len(resp) == 0 {
+        g_err = "connection closed after DATA body"
+        return -10
+    }
+    if resp_code(resp) != 250 {
+        g_err = "DATA not accepted: code " + to_string(resp_code(resp))
+        return -18
+    }
+    // 8) QUIT → 221（忽略其码，发信已成功）
+    wr("QUIT\r\n")
+    rd_resp(rd)
+    return 0
+}
+
+// ============================================================================
+// 五、真实网络收发（包 std/net；供 send() 使用）
+// ============================================================================
+// STARTTLS-POINT：g_tlsx>=0 时 rd/wr 应切换为 tls.send/tls.recv 版本；本轮未实现。
+
+// 网络读一行（含行尾换行）：逐字节累积直到 0x0A；连接关闭返回现有缓冲或空串。
+func rd_net() -> string {
+    var sb = string_builder()
+    var g: i64 = 0
+    while g < 1000000 {
+        var b = net.tcp_recv_bytes(g_sock, 4096)
+        if len(b) == 0 {
+            var s = sb_build(sb)
+            if str_len(s) > 0 {
+                return s
+            }
+            return ""
+        }
+        var i: i64 = 0
+        while i < len(b) {
+            var bv = b[i]
+            sb_append_byte(sb, bv)
+            if bv == 0x0A {
+                return sb_build(sb)
+            }
+            i = i + 1
+        }
+    }
+    return ""
+}
+
+// 网络发一行：转字节表后 tcp_send_bytes，返回发送字节数（<0 失败）。
+func wr_net(s: string) -> i64 {
+    var t = table_new_i64()
+    var i: i64 = 0
+    var n = len(s)
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+    return net.tcp_send_bytes(g_sock, t)
+}
+
+// 最顶层只放命名空间封装；broad-API 短名不进顶层。
+
+// 最近一次错误信息。
+pub func last_err() -> string {
+    return g_err
+}
+
+// 对外主入口：建连 + 会话 + 关闭。成功 0，失败负码（见 RC_*）。
+pub func send(server: string, pport: i64, user: string, pwd: string, auth: string,
+              from: string, tos: table<string>, subject: string, body: string,
+              headers: table<string>) -> i64 {
+    g_sock = net.tcp_connect(server, pport)
+    if g_sock < 0 {
+        g_err = "tcp connect " + server + " failed"
+        return -20
+    }
+    var c = session(rd_net, wr_net, server, pport, user, pwd, auth, from, tos, subject, body, headers)
+    net.close(g_sock)
+    g_sock = -1
+    return c
+}
+
+}   // namespace smtp
