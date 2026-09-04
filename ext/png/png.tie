@@ -1,0 +1,1125 @@
+type tie<class>
+// ============================================================================
+// ext/png/png.tie —— PNG 编解码（命名空间 png，纯 tie）p.6.6.13
+// PNG encode/decode (namespace png, pure-tie).
+//
+// 数据平面（Data plane）：整链路以 table<i64>（元素 0..255）承载原始字节，
+// 绝不转 string（PNG/CRC/zlib 覆盖 ≥0x80 字节，string 携带不了）。所有多字节
+// 整数一律大端（BE），DEFLATE/Huffman 位流一律 LSB-first。
+//
+// 顶层结构（chunk 遍历）：
+//   decode(bytes) -> PngImage：签名校验 → 依 IHDR/PLTE/IDAT/IEND 遍历，跳过
+//   tEXt 等未知块；多个 IDAT 聚合后经 inflate_zlib 统一解压 → 逐行滤波逆变换
+//   （5 型 None/Sub/Up/Average/Paeth）→ 输出连续像素字节表。
+//   encode(rgba,w,h) -> table<i64>：RGBA8 → 合法 PNG（IHDR + IDAT + IEND），
+//   IDAT 用 zlib(0x78 0x01) + BTYPE=00 存储块（>65535 自动分块）。CRC32/adler32
+//   为字节表自实现（不依赖字符串版 tink.crc32）。
+//
+// 最小 DEFLATE 解码（RFC 1951）：std 无 inflate，本模块自写 zlib 包装 +
+//   三型块（BTYPE=00 存储块字节对齐 / 01 固定 Huffman / 10 动态 Huffman）。
+//   Huffman 用「count[]+symbol[] 规范序」表单遍解码（hdec），无反转建表。
+//   位读取用 i64 位累加器 LSB-first（禁止逐位字符串拼接，规避 zstd 教训）。
+//   解压循环统一守卫：输入越界（read_bits 返回 -1）与输出超上限均报错不挂死。
+//
+// 错误约定：与 httpc/sse 一致——不抛异常，PngImage.ok==false + err；decode 对
+// 截断/非法输入返回 {ok=false, err=...}。encode 恒构造合法 PNG。
+//
+// 语言约束（Language constraints）：
+//   - tie struct 为值类型，结构字段表禁止直接下标写；构建用局部表整体赋回。
+//   - 位/字节运算只接触 ≤0xFFFFFFFF 的正值（hex 字面量为正 64 位），>> 即逻辑
+//     右移，无符号位污染。
+//   - 性能：行/像素复制用 while 下标推进 + table_push（O(n)），禁止 str_char
+//     全串扫描 / 逐字节字符串拼接。
+// ============================================================================
+
+// ---- PngImage：一次 PNG 解码结果 ----
+// pixels：滤波逆变换后的逐行像素字节。color_type 0/2/6 时为实际通道字节；
+// color_type 3（调色板）时为像素索引字节（非 RGB 展开），配合 palette 使用：
+// palette 是 PLTE 的三元组（R,G,B）平铺表（每像素 3 个字节）。本实现探针主路径
+// 用灰度 0 / RGBA 6，palette 仅原样透出。
+struct PngImage {
+    var ok: bool = false
+    var err: string = ""
+    var w: i64 = 0
+    var h: i64 = 0
+    var bit_depth: i64 = 0
+    var color_type: i64 = 0
+    var interlace: i64 = 0
+    var pixels: table<i64> = table_new_i64()    // 滤波后的像素字节表（共享引用可写）
+    var palette: table<i64> = table_new_i64()   // PLTE RGB 三元组平铺（color 3）
+}
+
+namespace png {
+
+// ============================================================================
+// 一、校验和：CRC32 / adler32（字节表自实现）
+// ============================================================================
+
+// CRC32-IEEE（反射，多项式 0xEDB88320，init/final 0xFFFFFFFF）。
+// 校验向量：crc32("123456789" ASCII) == 0xCBF43926（与 std/tink 一致）。
+pub func crc32(b: table<i64>) -> i64 {
+    var cr: i64 = 0xFFFFFFFF
+    var n = len(b)
+    var i: i64 = 0
+    while i < n {
+        cr = (cr ^ b[i]) & 0xFFFFFFFF
+        var j: i64 = 0
+        while j < 8 {
+            if (cr & 1) != 0 {
+                cr = ((cr >> 1) ^ 0xEDB88320) & 0xFFFFFFFF
+            } else {
+                cr = (cr >> 1) & 0xFFFFFFFF
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return (cr ^ 0xFFFFFFFF) & 0xFFFFFFFF
+}
+
+// Adler-32（zlib 校验）。校验向量：adler32("Wikipedia")==0x11E60398（RFC1950）。
+pub func adler32(b: table<i64>) -> i64 {
+    var s1: i64 = 1
+    var s2: i64 = 0
+    var n = len(b)
+    var i: i64 = 0
+    while i < n {
+        s1 = (s1 + b[i]) % 65521
+        s2 = (s2 + s1) % 65521
+        i = i + 1
+    }
+    return ((s2 << 16) | s1) & 0xFFFFFFFF
+}
+
+// 大端 u32 拆分 4 字节 [b3..b0]（CRC/adler 落 PNG chunk 用）。
+func be_bytes32(v: i64) -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, (v >> 24) & 0xFF)
+    table_push(t, (v >> 16) & 0xFF)
+    table_push(t, (v >> 8) & 0xFF)
+    table_push(t, v & 0xFF)
+    return t
+}
+
+// ============================================================================
+// 二、位读取器（i64 位累加器，LSB-first）
+// ============================================================================
+// 状态表 st：[0]=bitbuf 累加器, [1]=bitcnt 有效位数, [2]=pos 下一未读字节下标。
+// read_bits 当位不足且输入越界时返回 -1（错误哨兵；合法结果恒 ≥0）。
+
+func read_bits(st: table<i64>, raw: table<i64>, n: i64) -> i64 {
+    while st[1] < n {
+        if st[2] >= len(raw) {
+            return -1
+        }
+        var b = raw[st[2]]
+        st[2] = st[2] + 1
+        st[0] = st[0] | (b << st[1])
+        st[1] = st[1] + 8
+    }
+    var mask: i64 = 1
+    var k: i64 = 0
+    while k < n {
+        mask = mask << 1
+        k = k + 1
+    }
+    mask = mask - 1
+    var res = st[0] & mask
+    st[0] = st[0] >> n
+    st[1] = st[1] - n
+    return res
+}
+
+// 存储块前的字节对齐：丢弃当前字节剩余位。
+func byte_align(st: table<i64>) {
+    st[0] = 0
+    st[1] = 0
+}
+
+// 新位读取器状态。
+func new_br() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0)   // [0] bitbuf
+    table_push(t, 0)   // [1] bitcnt
+    table_push(t, 0)   // [2] pos
+    return t
+}
+
+// ============================================================================
+// 三、Huffman 规范树构建 + 单遍解码
+// ============================================================================
+
+// 由码长表 length（下标=符号）构建 (symbol[], count[], maxbits)。
+// symbol[] 按（位长升序，符号升序）规范序排列；count[l]=位长 l 的码数。
+// 无效（全零码长）时 maxbits==0，调用方判错。code 生成按 DEFLATE 规范序：
+//   相同位长按符号升序分配递增码；解码时经 count/first/index 推进命中。
+func build_tables(length: table<i64>, n: i64) -> (table<i64>, table<i64>, i64) {
+    var count = table_new_i64()
+    var i: i64 = 0
+    while i < 16 {
+        table_push(count, 0)
+        i = i + 1
+    }
+    var maxbits: i64 = 0
+    i = 0
+    while i < n {
+        var l = length[i]
+        if l > 0 {
+            count[l] = count[l] + 1
+            if l > maxbits {
+                maxbits = l
+            }
+        }
+        i = i + 1
+    }
+    var symbol = table_new_i64()
+    if maxbits > 15 {
+        return (symbol, count, 0)
+    }
+    var lx: i64 = 1
+    while lx <= maxbits {
+        i = 0
+        while i < n {
+            if length[i] == lx {
+                table_push(symbol, i)
+            }
+            i = i + 1
+        }
+        lx = lx + 1
+    }
+    return (symbol, count, maxbits)
+}
+
+// 解码一个符号：逐位推进规范码，命中即返回符号；越界/无效返回 -1。
+// 算法同 zlib puff.c decode()：code 累积接收位（LSB-first，末尾左移进位即
+// MSB-first 规范序），first/count/index 二分码字空间。
+func hdec(st: table<i64>, raw: table<i64>, symbol: table<i64>,
+          count: table<i64>, maxbits: i64) -> i64 {
+    var cd: i64 = 0
+    var first: i64 = 0
+    var index: i64 = 0
+    var l: i64 = 1
+    while l <= maxbits {
+        var b = read_bits(st, raw, 1)
+        if b < 0 {
+            return -1
+        }
+        cd = cd | b
+        var cnt = count[l]
+        if cd - cnt < first {
+            return symbol[index + (cd - first)]
+        }
+        index = index + cnt
+        first = first + cnt
+        first = first << 1
+        cd = cd << 1
+        l = l + 1
+    }
+    return -1
+}
+
+// 固定 Huffman 字面/长度码长表（288 元素）。
+func fixed_lit_len() -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < 288 {
+        var L = 8
+        if i >= 144 && i <= 255 {
+            L = 9
+        } else if i >= 256 && i <= 279 {
+            L = 7
+        }
+        table_push(t, L)
+        i = i + 1
+    }
+    return t
+}
+
+// 固定 Huffman 距离码长表（32 元素全 5）。
+func fixed_dist_len() -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < 32 {
+        table_push(t, 5)
+        i = i + 1
+    }
+    return t
+}
+
+// 长度码（sym 257..285 → li=sym-257）的基值表。
+func len_base_t() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 3)   // 257
+    table_push(t, 4)
+    table_push(t, 5)
+    table_push(t, 6)
+    table_push(t, 7)
+    table_push(t, 8)
+    table_push(t, 9)
+    table_push(t, 10)
+    table_push(t, 11)  // 265
+    table_push(t, 13)
+    table_push(t, 15)
+    table_push(t, 17)
+    table_push(t, 19)
+    table_push(t, 23)
+    table_push(t, 27)
+    table_push(t, 31)
+    table_push(t, 35)  // 273
+    table_push(t, 43)
+    table_push(t, 51)
+    table_push(t, 59)
+    table_push(t, 67)
+    table_push(t, 83)
+    table_push(t, 99)
+    table_push(t, 115)
+    table_push(t, 131) // 281
+    table_push(t, 163)
+    table_push(t, 195)
+    table_push(t, 227)
+    table_push(t, 258) // 285
+    return t
+}
+
+// 长度码的附加位表。
+func len_extra_t() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 1)
+    table_push(t, 1)
+    table_push(t, 1)
+    table_push(t, 1)
+    table_push(t, 2)
+    table_push(t, 2)
+    table_push(t, 2)
+    table_push(t, 2)
+    table_push(t, 3)
+    table_push(t, 3)
+    table_push(t, 3)
+    table_push(t, 3)
+    table_push(t, 4)
+    table_push(t, 4)
+    table_push(t, 4)
+    table_push(t, 4)
+    table_push(t, 5)
+    table_push(t, 5)
+    table_push(t, 5)
+    table_push(t, 5)
+    table_push(t, 0)   // 285
+    return t
+}
+
+// 距离码（0..29）的基值表。
+func dist_base_t() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 1)
+    table_push(t, 2)
+    table_push(t, 3)
+    table_push(t, 4)
+    table_push(t, 5)
+    table_push(t, 7)
+    table_push(t, 9)
+    table_push(t, 13)
+    table_push(t, 17)
+    table_push(t, 25)
+    table_push(t, 33)
+    table_push(t, 49)
+    table_push(t, 65)
+    table_push(t, 97)
+    table_push(t, 129)
+    table_push(t, 193)
+    table_push(t, 257)
+    table_push(t, 385)
+    table_push(t, 513)
+    table_push(t, 769)
+    table_push(t, 1025)
+    table_push(t, 1537)
+    table_push(t, 2049)
+    table_push(t, 3073)
+    table_push(t, 4097)
+    table_push(t, 6145)
+    table_push(t, 8193)
+    table_push(t, 12289)
+    table_push(t, 16385)
+    table_push(t, 24577)
+    return t
+}
+
+// 距离码的附加位表。
+func dist_extra_t() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, 1)
+    table_push(t, 1)
+    table_push(t, 2)
+    table_push(t, 2)
+    table_push(t, 3)
+    table_push(t, 3)
+    table_push(t, 4)
+    table_push(t, 4)
+    table_push(t, 5)
+    table_push(t, 5)
+    table_push(t, 6)
+    table_push(t, 6)
+    table_push(t, 7)
+    table_push(t, 7)
+    table_push(t, 8)
+    table_push(t, 8)
+    table_push(t, 9)
+    table_push(t, 9)
+    table_push(t, 10)
+    table_push(t, 10)
+    table_push(t, 11)
+    table_push(t, 11)
+    table_push(t, 12)
+    table_push(t, 12)
+    table_push(t, 13)
+    table_push(t, 13)
+    return t
+}
+
+// 码长符号顺序（动态块 HCLEN 用）。
+func cl_order() -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 16)
+    table_push(t, 17)
+    table_push(t, 18)
+    table_push(t, 0)
+    table_push(t, 8)
+    table_push(t, 7)
+    table_push(t, 9)
+    table_push(t, 6)
+    table_push(t, 10)
+    table_push(t, 5)
+    table_push(t, 11)
+    table_push(t, 4)
+    table_push(t, 12)
+    table_push(t, 3)
+    table_push(t, 13)
+    table_push(t, 2)
+    table_push(t, 14)
+    table_push(t, 1)
+    table_push(t, 15)
+    return t
+}
+
+// ============================================================================
+// 四、DEFLATE 主流程（存储 / 固定 / 动态）
+// ============================================================================
+
+// 运行一个字面/长度-距离 LZ 循环直到本块结束（sym 256）。字面树 (syms,cnts,
+// litmb) 与距离树 (dsyms,dcnts,dmb) 各为代表。返回 false = 位流越界/非法。
+func run_lz(st: table<i64>, raw: table<i64>, out: table<i64>,
+            syms: table<i64>, cnts: table<i64>, litmb: i64,
+            dsyms: table<i64>, dcnts: table<i64>, dmb: i64) -> bool {
+    var lb = len_base_t()
+    var le = len_extra_t()
+    var db = dist_base_t()
+    var de = dist_extra_t()
+    var g: i64 = 0
+    while g < 100000000 {
+        g = g + 1
+        var sym = hdec(st, raw, syms, cnts, litmb)
+        if sym < 0 {
+            return false
+        }
+        if sym < 256 {
+            table_push(out, sym & 0xFF)
+            if len(out) > 134217728 {
+                return false
+            }
+        } else if sym == 256 {
+            return true
+        } else {
+            var li = sym - 257
+            if li < 0 || li > 28 {
+                return false
+            }
+            var ex = read_bits(st, raw, le[li])
+            if ex < 0 {
+                return false
+            }
+            var lrun = lb[li] + ex
+            var dsym = hdec(st, raw, dsyms, dcnts, dmb)
+            if dsym < 0 || dsym > 29 {
+                return false
+            }
+            var dex = read_bits(st, raw, de[dsym])
+            if dex < 0 {
+                return false
+            }
+            var dist = db[dsym] + dex
+            if dist < 1 || dist > 65536 {
+                return false
+            }
+            if lrun < 3 || lrun > 260 {
+                return false
+            }
+            var base = len(out)
+            var k: i64 = 0
+            while k < lrun {
+                table_push(out, out[base - dist + k])
+                k = k + 1
+            }
+            if len(out) > 134217728 {
+                return false
+            }
+        }
+        if len(out) > 134217728 {
+            return false
+        }
+    }
+    return false
+}
+
+// 动态块：读码长序列并解析出 lit/dist 码长表，再跑 LZ。
+func block_dynamic(st: table<i64>, raw: table<i64>, out: table<i64>) -> bool {
+    var hlit = read_bits(st, raw, 5) + 257
+    var hdist = read_bits(st, raw, 5) + 1
+    var hclen = read_bits(st, raw, 4) + 4
+    if hlit > 288 || hdist > 32 || hclen > 19 {
+        return false
+    }
+    // 码长码长 Huffman
+    var cllen = table_new_i64()
+    var i: i64 = 0
+    while i < 19 {
+        table_push(cllen, 0)
+        i = i + 1
+    }
+    var ord = cl_order()
+    i = 0
+    while i < hclen {
+        var l = read_bits(st, raw, 3)
+        if l < 0 {
+            return false
+        }
+        if ord[i] < 19 {
+            cllen[ord[i]] = l
+        }
+        i = i + 1
+    }
+    var r = build_tables(cllen, 19)
+    var clsym = r.0
+    var clcnt = r.1
+    var clmb = r.2
+    if clmb <= 0 {
+        return false
+    }
+    // 码长序列 → lit+dist 总码长表 cl
+    var tot = hlit + hdist
+    var cl = table_new_i64()
+    i = 0
+    while i < tot {
+        table_push(cl, 0)
+        i = i + 1
+    }
+    var pos: i64 = 0
+    var prev: i64 = 0
+    while pos < tot {
+        var s = hdec(st, raw, clsym, clcnt, clmb)
+        if s < 0 {
+            return false
+        }
+        if s <= 15 {
+            cl[pos] = s
+            prev = s
+            pos = pos + 1
+        } else if s == 16 {
+            var rep = read_bits(st, raw, 2) + 3
+            if prev == 0 || pos + rep > tot {
+                return false
+            }
+            var k: i64 = 0
+            while k < rep {
+                cl[pos + k] = prev
+                k = k + 1
+            }
+            pos = pos + rep
+        } else if s == 17 {
+            var rep2 = read_bits(st, raw, 3) + 3
+            if pos + rep2 > tot {
+                return false
+            }
+            var k2: i64 = 0
+            while k2 < rep2 {
+                cl[pos + k2] = 0
+                k2 = k2 + 1
+            }
+            pos = pos + rep2
+        } else { // 18
+            var rep3 = read_bits(st, raw, 7) + 11
+            if pos + rep3 > tot {
+                return false
+            }
+            var k3: i64 = 0
+            while k3 < rep3 {
+                cl[pos + k3] = 0
+                k3 = k3 + 1
+            }
+            pos = pos + rep3
+        }
+    }
+    // 拆分 lit / dist
+    var litlen = table_new_i64()
+    var distlen = table_new_i64()
+    i = 0
+    while i < hlit {
+        table_push(litlen, cl[i])
+        i = i + 1
+    }
+    i = 0
+    while i < hdist {
+        table_push(distlen, cl[hlit + i])
+        i = i + 1
+    }
+    var rl = build_tables(litlen, hlit)
+    var ls = rl.0
+    var lcc = rl.1
+    var lmb = rl.2
+    var rd = build_tables(distlen, hdist)
+    var ds = rd.0
+    var dcc = rd.1
+    var dmb = rd.2
+    if lmb <= 0 || dmb <= 0 {
+        return false
+    }
+    return run_lz(st, raw, out, ls, lcc, lmb, ds, dcc, dmb)
+}
+
+// 固定块：直接用内置长度表跑 LZ。
+func block_fixed(st: table<i64>, raw: table<i64>, out: table<i64>) -> bool {
+    var ll = fixed_lit_len()
+    var dl = fixed_dist_len()
+    var rl = build_tables(ll, 288)
+    var ls = rl.0
+    var lcc = rl.1
+    var lmb = rl.2
+    var rd = build_tables(dl, 32)
+    var ds = rd.0
+    var dcc = rd.1
+    var dmb = rd.2
+    return run_lz(st, raw, out, ls, lcc, lmb, ds, dcc, dmb)
+}
+
+// 存储块：字节对齐读 LEN/NLEN，校验补码，直接拷贝 len 字节。
+func block_stored(st: table<i64>, raw: table<i64>, out: table<i64>) -> bool {
+    byte_align(st)
+    var pos = st[2]
+    if pos + 4 > len(raw) {
+        return false
+    }
+    var L = raw[pos] | (raw[pos + 1] << 8)
+    var NL = raw[pos + 2] | (raw[pos + 3] << 8)
+    if L + NL != 65535 {
+        return false
+    }
+    if pos + 4 + L > len(raw) {
+        return false
+    }
+    var i: i64 = 0
+    while i < L {
+        table_push(out, raw[pos + 4 + i])
+        i = i + 1
+    }
+    st[2] = pos + 4 + L
+    return len(out) <= 134217728
+}
+
+// 原始 DEFLATE 流解压 → (ok, out)。out 上限 128M 字节守卫。
+func inflate(raw: table<i64>) -> (bool, table<i64>) {
+    var out = table_new_i64()
+    var st = new_br()
+    var bfinal: i64 = 0
+    var g: i64 = 0
+    while bfinal == 0 && g < 1000000 {
+        g = g + 1
+        var f2 = read_bits(st, raw, 1)
+        if f2 < 0 {
+            return (false, out)
+        }
+        bfinal = f2
+        var btype = read_bits(st, raw, 2)
+        if btype < 0 {
+            return (false, out)
+        }
+        var ok: bool = false
+        if btype == 0 {
+            ok = block_stored(st, raw, out)
+        } else if btype == 1 {
+            ok = block_fixed(st, raw, out)
+        } else if btype == 2 {
+            ok = block_dynamic(st, raw, out)
+        }
+        if ok == false {
+            return (false, out)
+        }
+    }
+    return (true, out)
+}
+
+// zlib 包装：校验 CMF/FLG 头（(CMF*256+FLG)%31、CM==8）+ deflate + Adler-32 尾。
+func inflate_zlib(zdata: table<i64>) -> (bool, table<i64>) {
+    var empty = table_new_i64()
+    if len(zdata) < 2 {
+        return (false, empty)
+    }
+    var cmf = zdata[0]
+    var flg = zdata[1]
+    if ((cmf * 256 + flg) % 31) != 0 {
+        return (false, empty)
+    }
+    if (cmf & 0x0F) != 8 {
+        return (false, empty)
+    }
+    if len(zdata) < 7 {
+        return (false, empty)   // 头2 + deflate 至少1块(sym256 1字节) + adler4
+    }
+    var raw = table_new_i64()
+    var i: i64 = 2
+    while i + 4 < len(zdata) {
+        table_push(raw, zdata[i])
+        i = i + 1
+    }
+    var r = inflate(raw)
+    var ok = r.0
+    var out2 = r.1
+    if ok == false {
+        return (false, out2)
+    }
+    var n = len(zdata)
+    var adl = ((zdata[n - 4] & 0xFF) << 24) | ((zdata[n - 3] & 0xFF) << 16) |
+              ((zdata[n - 2] & 0xFF) << 8) | (zdata[n - 1] & 0xFF)
+    if adler32(out2) != adl {
+        return (false, out2)
+    }
+    return (true, out2)
+}
+
+// ============================================================================
+// 五、PNG chunk 遍历 + 滤波逆变换 + decode
+// ============================================================================
+
+// 大端 u32 [off..off+3]。
+func be32(b: table<i64>, off: i64) -> i64 {
+    return ((b[off] & 0xFF) << 24) | ((b[off + 1] & 0xFF) << 16) |
+           ((b[off + 2] & 0xFF) << 8) | (b[off + 3] & 0xFF)
+}
+
+// chunk 类型四字节是否等于给定 ASCII。
+func type_eq(b: table<i64>, off: i64, c0: i64, c1: i64, c2: i64, c3: i64) -> bool {
+    return b[off] == c0 && b[off + 1] == c1 && b[off + 2] == c2 && b[off + 3] == c3
+}
+
+// 绝对值。
+func ab(x: i64) -> i64 {
+    if x < 0 {
+        return -x
+    }
+    return x
+}
+
+// Paeth 预测器（PNG 滤波 4）。
+func paeth(a: i64, b: i64, c: i64) -> i64 {
+    var p = a + b - c
+    var pa = ab(p - a)
+    var pb = ab(p - b)
+    var pc = ab(p - c)
+    if pa <= pb && pa <= pc {
+        return a
+    }
+    if pb <= pc {
+        return b
+    }
+    return c
+}
+
+// RGB/RGBA/灰度/调色板每像素字节数。
+func bpp_of(ct: i64) -> i64 {
+    if ct == 2 {
+        return 3
+    }
+    if ct == 6 {
+        return 4
+    }
+    return 1   // 0 灰度 / 3 调色板
+}
+
+// 滤波逆变换：raw 为带每行 filter 字节的像素流，输出连续像素字节表。
+// 深度固定 8。bpp=每像素字节；None/Sub/Up/Average/Paeth 逐字节解码。
+// 上侧像素（b/c，Up/Average/Paeth 用）取「上一行」prev：本行解码写进独立 cur，
+// 行末才整体赋回 prev，避免中途覆盖（曾导致 b/c 读到本行值而错误）。
+func unfilter(w: i64, h: i64, bpp: i64, raw: table<i64>) -> (bool, table<i64>) {
+    var out = table_new_i64()
+    var stride = w * bpp
+    if h * (stride + 1) != len(raw) {
+        return (false, out)
+    }
+    var prev = table_new_i64()
+    var i: i64 = 0
+    while i < stride {
+        table_push(prev, 0)
+        i = i + 1
+    }
+    var y: i64 = 0
+    while y < h {
+        var base = y * (stride + 1)
+        var ft = raw[base]
+        if ft > 4 {
+            return (false, out)
+        }
+        var cur = table_new_i64()
+        var x: i64 = 0
+        while x < stride {
+            var a: i64 = 0
+            if x >= bpp {
+                a = out[y * stride + x - bpp]
+            }
+            var b = prev[x]
+            var c: i64 = 0
+            if x >= bpp {
+                c = prev[x - bpp]
+            }
+            var rv = raw[base + 1 + x]
+            var v: i64 = rv
+            if ft == 1 {
+                v = rv + a
+            } else if ft == 2 {
+                v = rv + b
+            } else if ft == 3 {
+                v = rv + (a + b) / 2
+            } else if ft == 4 {
+                v = rv + paeth(a, b, c)
+            }
+            v = v & 0xFF
+            table_push(out, v)
+            table_push(cur, v)
+            x = x + 1
+        }
+        prev = cur
+        y = y + 1
+    }
+    return (true, out)
+}
+
+// decode：完整 PNG 字节表 → PngImage。错误返回 {ok=false, err}。
+// 遍历 chunk；未知块（tEXt 等）跳过；多 IDAT 聚合；CRC 强制校验。
+pub func decode(bytes: table<i64>) -> PngImage {
+    var img = PngImage()
+    var nb = len(bytes)
+    if nb < 8 {
+        img.err = "truncated: <8 signature bytes"
+        return img
+    }
+    if type_eq(bytes, 0, 0x89, 0x50, 0x4E, 0x47) == false ||
+       bytes[4] != 0x0D || bytes[5] != 0x0A || bytes[6] != 0x1A || bytes[7] != 0x0A {
+        img.err = "bad PNG signature"
+        return img
+    }
+    var w: i64 = 0
+    var h: i64 = 0
+    var bd: i64 = 0
+    var ct: i64 = 0
+    var inter: i64 = 0
+    var seen_ihdr = false
+    var seen_iend = false
+    var seen_plte = false
+    var palette = table_new_i64()
+    var idat = table_new_i64()
+    var pos: i64 = 8
+    var g: i64 = 0
+    while seen_iend == false && g < 1000000 {
+        g = g + 1
+        if pos + 8 > nb {
+            img.err = "truncated: chunk header"
+            return img
+        }
+        var clen = be32(bytes, pos)
+        if clen < 0 {
+            img.err = "chunk len overflow"
+            return img
+        }
+        var cend = pos + 8 + clen + 4
+        if cend > nb {
+            img.err = "truncated: chunk data/crc overrun"
+            return img
+        }
+        // CRC 校验（覆盖 type+data）
+        var ctype = pos + 4
+        var crc_calc = table_new_i64()
+        var i2: i64 = ctype
+        while i2 < ctype + 4 + clen {
+            table_push(crc_calc, bytes[i2])
+            i2 = i2 + 1
+        }
+        var crc_stored = be32(bytes, cend - 4)
+        if crc32(crc_calc) != crc_stored {
+            img.err = "chunk CRC mismatch"
+            return img
+        }
+        if type_eq(bytes, ctype, 0x49, 0x48, 0x44, 0x52) {
+            if clen != 13 {
+                img.err = "IHDR wrong len"
+                return img
+            }
+            w = be32(bytes, pos + 8)
+            h = be32(bytes, pos + 12)
+            bd = bytes[pos + 16]
+            ct = bytes[pos + 17]
+            var comp = bytes[pos + 18]
+            var filt = bytes[pos + 19]
+            inter = bytes[pos + 20]
+            if w <= 0 || h <= 0 {
+                img.err = "IHDR zero w/h"
+                return img
+            }
+            if bd != 8 {
+                img.err = "IHDR bit_depth != 8 unsupported"
+                return img
+            }
+            if ct != 0 && ct != 2 && ct != 3 && ct != 6 {
+                img.err = "IHDR color_type unsupported"
+                return img
+            }
+            if comp != 0 {
+                img.err = "IHDR compression != 0"
+                return img
+            }
+            if filt != 0 {
+                img.err = "IHDR filter != 0"
+                return img
+            }
+            if inter != 0 {
+                img.err = "IHDR interlaced unsupported"
+                return img
+            }
+            seen_ihdr = true
+        } else if type_eq(bytes, ctype, 0x50, 0x4C, 0x54, 0x45) {
+            var pk: i64 = 0
+            while pk < clen {
+                table_push(palette, bytes[pos + 8 + pk])
+                pk = pk + 1
+            }
+            seen_plte = true
+        } else if type_eq(bytes, ctype, 0x49, 0x44, 0x41, 0x54) {
+            var dk: i64 = 0
+            while dk < clen {
+                table_push(idat, bytes[pos + 8 + dk])
+                dk = dk + 1
+            }
+        } else if type_eq(bytes, ctype, 0x49, 0x45, 0x4E, 0x44) {
+            if clen != 0 {
+                img.err = "IEND wrong len"
+                return img
+            }
+            seen_iend = true
+        }
+        // 未知块：直接跳过（pos 已经推进到下一 chunk 偏移）
+        pos = cend
+    }
+    if seen_ihdr == false {
+        img.err = "missing IHDR"
+        return img
+    }
+    if seen_iend == false {
+        img.err = "missing IEND"
+        return img
+    }
+    if ct == 3 && seen_plte == false {
+        img.err = "color_type 3 missing PLTE"
+        return img
+    }
+    if len(idat) == 0 {
+        img.err = "no IDAT"
+        return img
+    }
+    var ir = inflate_zlib(idat)
+    if ir.0 == false {
+        img.err = "inflate failed"
+        return img
+    }
+    var raw = ir.1
+    var bpp = bpp_of(ct)
+    var uf = unfilter(w, h, bpp, raw)
+    if uf.0 == false {
+        img.err = "unfilter failed (bad scanline length)"
+        return img
+    }
+    img.ok = true
+    img.w = w
+    img.h = h
+    img.bit_depth = bd
+    img.color_type = ct
+    img.interlace = inter
+    img.pixels = uf.1
+    img.palette = palette
+    return img
+}
+
+// ============================================================================
+// 六、encode：RGBA8 → 合法 PNG（IDAT 用存储块 + zlib）
+// ============================================================================
+
+// 追加 u32 BE 4 字节到 buf。
+func push_u32be(buf: table<i64>, v: i64) {
+    table_push(buf, (v >> 24) & 0xFF)
+    table_push(buf, (v >> 16) & 0xFF)
+    table_push(buf, (v >> 8) & 0xFF)
+    table_push(buf, v & 0xFF)
+}
+
+// 追加若干字节到 buf。
+func push_bytes(buf: table<i64>, src: table<i64>, off: i64, n: i64) {
+    var i: i64 = 0
+    while i < n {
+        table_push(buf, src[off + i])
+        i = i + 1
+    }
+}
+
+// 追加字符串（ASCII 段）字节到 buf。
+func push_str(buf: table<i64>, s: string) {
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(buf, str_byte(s, i))
+        i = i + 1
+    }
+}
+
+// raw（每行 filter=0 + 像素）→ deflate 存储块（BTYPE=00，>65535 分块）。
+func stored_blocks(raw: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var n = len(raw)
+    var off: i64 = 0
+    if n == 0 {
+        // 空流：单个 final 空块
+        table_push(out, 1)
+        table_push(out, 0x00)
+        table_push(out, 0x00)
+        table_push(out, 0xFF)
+        table_push(out, 0xFF)
+        return out
+    }
+    while off < n {
+        var blk = n - off
+        var last = false
+        if blk > 65535 {
+            blk = 65535
+        } else {
+            last = true
+        }
+        // 头字节：BFINAL(bit0) + BTYPE(00 bit1-2)，余位补 0
+        if last {
+            table_push(out, 1)
+        } else {
+            table_push(out, 0)
+        }
+        // LEN LE + NLEN LE
+        table_push(out, blk & 0xFF)
+        table_push(out, (blk >> 8) & 0xFF)
+        var nl = (65535 - blk) & 0xFFFF
+        table_push(out, nl & 0xFF)
+        table_push(out, (nl >> 8) & 0xFF)
+        push_bytes(out, raw, off, blk)
+        off = off + blk
+    }
+    return out
+}
+
+// RGBA8（row-major，每像素 R,G,B,A 四字节）→ PNG 字节表。
+pub func encode(rgba: table<i64>, w: i64, h: i64) -> table<i64> {
+    var raw = table_new_i64()
+    if w <= 0 || h <= 0 {
+        return raw
+    }
+    var stride = w * 4
+    var y: i64 = 0
+    while y < h {
+        table_push(raw, 0)   // filter type = None(0)
+        var k: i64 = 0
+        while k < stride {
+            table_push(raw, rgba[y * stride + k])
+            k = k + 1
+        }
+        y = y + 1
+    }
+    // zlib：0x78 0x01 + 存储块 + adler32(raw)
+    var zdata = table_new_i64()
+    table_push(zdata, 0x78)
+    table_push(zdata, 0x01)
+    var sd = stored_blocks(raw)
+    var zz: i64 = 0
+    while zz < len(sd) {
+        table_push(zdata, sd[zz])
+        zz = zz + 1
+    }
+    var ad = adler32(raw)
+    var adb = be_bytes32(ad)
+    var aa: i64 = 0
+    while aa < 4 {
+        table_push(zdata, adb[aa])
+        aa = aa + 1
+    }
+    // IHDR data（13 字节）
+    var ihdr = table_new_i64()
+    push_u32be(ihdr, w)
+    push_u32be(ihdr, h)
+    table_push(ihdr, 8)          // bit_depth
+    table_push(ihdr, 6)          // color_type = RGBA
+    table_push(ihdr, 0)          // compression
+    table_push(ihdr, 0)          // filter
+    table_push(ihdr, 0)          // interlace
+    // 组装 PNG
+    var out = table_new_i64()
+    table_push(out, 0x89)
+    table_push(out, 0x50)
+    table_push(out, 0x4E)
+    table_push(out, 0x47)
+    table_push(out, 0x0D)
+    table_push(out, 0x0A)
+    table_push(out, 0x1A)
+    table_push(out, 0x0A)
+    // IHDR chunk
+    push_u32be(out, 13)
+    push_str(out, "IHDR")
+    push_bytes(out, ihdr, 0, 13)
+    var crc_ihdr = table_new_i64()
+    push_str(crc_ihdr, "IHDR")
+    push_bytes(crc_ihdr, ihdr, 0, 13)
+    push_bytes(out, be_bytes32(crc32(crc_ihdr)), 0, 4)
+    // IDAT chunk
+    push_u32be(out, len(zdata))
+    push_str(out, "IDAT")
+    push_bytes(out, zdata, 0, len(zdata))
+    var crc_idat = table_new_i64()
+    push_str(crc_idat, "IDAT")
+    push_bytes(crc_idat, zdata, 0, len(zdata))
+    push_bytes(out, be_bytes32(crc32(crc_idat)), 0, 4)
+    // IEND chunk
+    push_u32be(out, 0)
+    push_str(out, "IEND")
+    var crc_iend = table_new_i64()
+    push_str(crc_iend, "IEND")
+    push_bytes(out, be_bytes32(crc32(crc_iend)), 0, 4)
+    return out
+}
+
+// 解压一段完整 zlib 数据（PNG IDAT 载荷同构）。失败返回空表。
+// 暴露给探针做 RFC 1951 向量校验（存储/固定/动态三型）。
+pub func zinflate(zdata: table<i64>) -> table<i64> {
+    var r = inflate_zlib(zdata)
+    return r.1
+}
+
+}   // namespace png
