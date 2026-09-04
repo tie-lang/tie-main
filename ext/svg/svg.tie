@@ -1,0 +1,435 @@
+type tie<class>
+// ============================================================================
+// svg.tie：ext/svg——SVG 解析语义层（命名空间 svg，纯 tie）p.6.6.15
+// SVG semantics layer over ext/xml (namespace svg, pure-tie). p.6.6.15
+//
+// 定位（Positioning）：消费 p.6.6.5 ext/xml 的 XML 元素树（xml.parse 得 XmlDoc
+// 句柄），在其上提供 SVG 语义层。本模块不做字节级 IO、不做 XML 解析——文档解析
+// 一律经 xml.parse 得 XmlDoc，再以该句柄 + 节点 id 调用 svg 访问器。
+//
+// 数据平面（Data plane）：全 string（UTF-8 文本），与 xml 底座一致；不触碰字节表。
+//
+// 接口（Interface）：svg 访问器与 xml API 对齐（首参为文档句柄 d，次参为节点 id
+// nid；跨模块类型注释一律裸名 XmlDoc）：
+//   ok(d)                        解析是否成功（转发 xml.is_ok）
+//   kind(d, nid)                 节点类型（0=元素 1=文本 2=注释 3=PI 4=CDATA）
+//   tag(d, nid)                  完整标签名（转发 xml.tag；含前缀如 "svg:rect"）
+//   local(d, nid)                元素本地名（去前缀；SVG 元素类型识别主入口）
+//   attr(d, nid, name, def)      属性取值；缺失（或显式空值）返回 def
+//   children(d, nid)             全部孩子（含文本/注释节点；转发 xml.children）
+//   elements(d, nid)             仅元素孩子（跳过空白文本/注释——SVG 排版常见）
+//   parent(d, nid)               父节点 id（转发 xml.parent）
+//   is_el(d, nid)                是否为元素节点
+//   is_shape(d, nid, name)       元素类型是否 == name（如 "rect"/"g"/"path"）
+//   parse_path_d(d: string) -> table<string>    path 的 d 属性 token 化
+//   parse_transform(t: string) -> table<string> transform 简析
+//
+// 子集取舍（Subset）：
+//   元素（元素类型识别）：rect / circle / ellipse / line / polyline / polygon /
+//     path / g / text / use 等一律经 local() 取本地名识别。本模块不做元素白名单
+//     校验（未知元素名照常返回，不报错）——识别是"查询式"而非"白名单式"，
+//     故新增元素类型无需改本模块。
+//   通用属性：x y width height rx ry cx cy r x1 y1 x2 y2 points d fill stroke
+//     stroke-width transform id class 等一律经 attr(d, nid, name, def) 取原值
+//     （string）；不做数值解析/单位换算（数值由消费方 parse_int/parse_float）。
+//   属性缺失 vs 值为空：二者均返回 def（xml 底座 attr 缺失即返回 ""，无法区分
+//     显式空值；SVG 显式空属性值罕见，作缺失处理）。
+//   path d 命令子集：M/m L/l H/h V/v C/c Q/q Z/z。隐式重复参数展平保留
+//     （"M 10 20 30 40" = M10,20 L30,40 → ["M","10","20","30","40"]，
+//     消费方按命令期望参数数自行分组）。不支持 A/S/T/R 等命令——遇之整段返回
+//     空表（畸形）。数字支持 [+-]?数字[.数字]?[eE[+-]?数字]? 子集（含科学计数）。
+//   transform 子集：translate(tx[,ty]) / scale(sx[,sy]) / rotate(deg[,cx,cy])，
+//     大小写敏感。其它函数（skewX/matrix 等）视为畸形 → 整段空表。
+//   容错：任何畸形 path/transform（未知命令/参数数不符/非法数字/未闭合括号/
+//     尾随垃圾/空输入）恒返回空表，不崩溃、不死循环。
+//
+// 性能：d/transform token 化均单遍字节扫描（str_byte + string_builder 累积），
+// 无逐字符字符串拼接（O(n)，无 O(n²)）。
+// ============================================================================
+
+import "../xml/xml.tie" as xml
+import "../xml/tree.tie" as tree
+
+namespace svg {
+
+// ---- 文档级 ----
+// 解析是否成功（转发 xml.is_ok）
+pub func ok(d: XmlDoc) -> bool {
+    return xml.is_ok(d)
+}
+
+// ---- 节点访问（对齐 xml API：d 在前，nid 其次）----
+
+// 节点类型：0=元素 1=文本 2=注释 3=PI 4=CDATA；非法 id 返回 -1
+pub func kind(d: XmlDoc, nid: i64) -> i64 {
+    return xml.kind(d, nid)
+}
+
+// 完整标签名（大小写保留；含前缀）；非元素/非法返回 ""
+pub func tag(d: XmlDoc, nid: i64) -> string {
+    return xml.tag(d, nid)
+}
+
+// 元素本地名（去前缀；无前缀则=完整标签名）；非元素/非法返回 ""
+pub func local(d: XmlDoc, nid: i64) -> string {
+    return xml.local(d, nid)
+}
+
+// 属性取值：缺失（或显式空值）返回 def；值非空返回原值（string，不解析）。
+pub func attr(d: XmlDoc, nid: i64, name: string, def: string) -> string {
+    var v = xml.attr(d, nid, name)
+    if len(v) > 0 {
+        return v
+    }
+    return def
+}
+
+// 全部孩子（含文本/注释/PI/CDATA 节点；对齐 xml.children）
+pub func children(d: XmlDoc, nid: i64) -> table<i64> {
+    return xml.children(d, nid)
+}
+
+// 仅元素孩子（跳过空白文本/注释等——SVG 排版换行常见；文档序）
+pub func elements(d: XmlDoc, nid: i64) -> table<i64> {
+    var out = table_new_i64()
+    var kids = xml.children(d, nid)
+    var k: i64 = 0
+    while k < len(kids) {
+        if xml.kind(d, kids[k]) == 0 {
+            table_push(out, kids[k])
+        }
+        k = k + 1
+    }
+    return out
+}
+
+// 父节点 id；根容器/非法返回 -1
+pub func parent(d: XmlDoc, nid: i64) -> i64 {
+    return xml.parent(d, nid)
+}
+
+// 是否为元素节点（非元素/非法 → false）
+pub func is_el(d: XmlDoc, nid: i64) -> bool {
+    return xml.kind(d, nid) == 0
+}
+
+// 元素类型是否 == name（如 "rect"/"g"/"path"；非元素/非法恒 false）
+pub func is_shape(d: XmlDoc, nid: i64, name: string) -> bool {
+    if xml.kind(d, nid) != 0 {
+        return false
+    }
+    return xml.local(d, nid) == name
+}
+
+// ============================================================================
+// path d token 化
+// ============================================================================
+
+// path 的 d 属性 → 交错表 [命令, 参数...]（命令字母与数字各为独立 token，按
+// 文档序）。支持命令 M/m L/l H/h V/v C/c Q/q Z/z；数字支持科学计数法。
+// 隐式重复参数展平保留；畸形输入返回空表。
+pub func parse_path_d(src: string) -> table<string> {
+    var out = table_new_string()
+    var n = len(src)
+    var i: i64 = 0
+    var started: bool = false   // 是否已见首个命令
+    var cur: i64 = 0            // 当前命令字节
+    var want: i64 = 0           // 当前命令尚需参数数（0=已完成）
+    while i < n {
+        var b = str_byte(src, i)
+        // 空白/逗号分隔符
+        if b == 32 || b == 9 || b == 10 || b == 13 || b == 44 {
+            i = i + 1
+            continue
+        }
+        var ar = cmd_arity(b)
+        if ar >= 0 {
+            // 新命令：前一命令必须已完成
+            if started && want != 0 {
+                return table_new_string()
+            }
+            table_push(out, byte_str(b))
+            cur = b
+            want = ar
+            started = true
+            i = i + 1
+            continue
+        }
+        if is_num_start(b) {
+            // 数字：命令未开始 / 紧跟 Z 之后 → 畸形
+            if !started {
+                return table_new_string()
+            }
+            if cur == 90 || cur == 122 {
+                return table_new_string()
+            }
+            var (tok, ni) = scan_number(src, i)
+            if len(tok) == 0 {
+                return table_new_string()
+            }
+            if !num_ok(tok) {
+                return table_new_string()
+            }
+            table_push(out, tok)
+            if want == 0 {
+                want = cmd_arity(cur)   // 隐式重复：重新按命令参数数分组
+            }
+            want = want - 1
+            i = ni
+            continue
+        }
+        // 未知字符（含不支持的 A/S/T/R 命令字母）
+        return table_new_string()
+    }
+    if started && want != 0 {
+        return table_new_string()
+    }
+    return out
+}
+
+// 命令字节 → 期望参数数（M/m L/l:2，H/h V/v:1，C/c:6，Q/q:4，Z/z:0）；未知 -1。
+// 隐式重复参数数与此相同（M 重复=隐式 L，仍 2；C/Q 同理）。
+func cmd_arity(b: i64) -> i64 {
+    if b == 77 || b == 109 { return 2 }   // M m
+    if b == 76 || b == 108 { return 2 }   // L l
+    if b == 72 || b == 104 { return 1 }   // H h
+    if b == 86 || b == 118 { return 1 }   // V v
+    if b == 67 || b == 99 { return 6 }    // C c
+    if b == 81 || b == 113 { return 4 }   // Q q
+    if b == 90 || b == 122 { return 0 }   // Z z
+    return -1
+}
+
+// 字节是否为数字 token 起始：数字 / '.' / '+' / '-'
+func is_num_start(b: i64) -> bool {
+    if b >= 48 && b <= 57 {
+        return true
+    }
+    if b == 46 || b == 43 || b == 45 {
+        return true
+    }
+    return false
+}
+
+// 字节值 → 单字节字符串
+func byte_str(b: i64) -> string {
+    var sb = string_builder()
+    sb_append_byte(sb, b)
+    return sb_build(sb)
+}
+
+// 从 src[i] 单遍扫描一个数字 token；返回 (token, 下一位置)。
+// 符号仅在开头或 e/E 后允许（"10-20" → "10" + "-20" 正确切分）；'.' 在指数后停止。
+func scan_number(src: string, i: i64) -> (string, i64) {
+    var n = len(src)
+    var sb = string_builder()
+    var last: i64 = -1        // 最近追加的字节
+    var have_exp: bool = false
+    while i < n {
+        var b = str_byte(src, i)
+        if b >= 48 && b <= 57 {
+            sb_append_byte(sb, b)
+            last = b
+            i = i + 1
+            continue
+        }
+        if b == 46 {          // '.'
+            if have_exp {
+                break
+            }
+            sb_append_byte(sb, b)
+            last = b
+            i = i + 1
+            continue
+        }
+        if b == 43 || b == 45 {   // '+' '-'
+            if last == -1 || last == 101 || last == 69 {
+                sb_append_byte(sb, b)
+                last = b
+                i = i + 1
+                continue
+            }
+            break
+        }
+        if b == 101 || b == 69 {  // e E
+            have_exp = true
+            sb_append_byte(sb, b)
+            last = b
+            i = i + 1
+            continue
+        }
+        break
+    }
+    return (sb_build(sb), i)
+}
+
+// 数字 token 格式校验（不调用 parse_*，畸形不崩溃）：
+// [+-]? 数字 [. 数字]? ([eE] [+-]? 数字)?（SVG number 子集）
+func num_ok(t: string) -> bool {
+    var n = len(t)
+    if n == 0 {
+        return false
+    }
+    var i: i64 = 0
+    var b0 = str_byte(t, 0)
+    if b0 == 43 || b0 == 45 {
+        i = 1
+    }
+    var digits: i64 = 0
+    while i < n {
+        var b = str_byte(t, i)
+        if b >= 48 && b <= 57 {
+            digits = digits + 1
+            i = i + 1
+        } else {
+            break
+        }
+    }
+    if i < n && str_byte(t, i) == 46 {
+        i = i + 1
+        while i < n {
+            var b2 = str_byte(t, i)
+            if b2 >= 48 && b2 <= 57 {
+                digits = digits + 1
+                i = i + 1
+            } else {
+                break
+            }
+        }
+    }
+    if digits == 0 {
+        return false
+    }
+    if i < n {
+        var be = str_byte(t, i)
+        if be == 101 || be == 69 {
+            i = i + 1
+            if i < n {
+                var bs = str_byte(t, i)
+                if bs == 43 || bs == 45 {
+                    i = i + 1
+                }
+            }
+            var ed: i64 = 0
+            while i < n {
+                var b3 = str_byte(t, i)
+                if b3 >= 48 && b3 <= 57 {
+                    ed = ed + 1
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            if ed == 0 {
+                return false
+            }
+        }
+    }
+    return i == n
+}
+
+// ============================================================================
+// transform 简析
+// ============================================================================
+
+// transform 属性 → 交错表 [类型, 参数...]（各函数名与数字参数各为独立 token）。
+// 子集：translate(tx[,ty]) / scale(sx[,sy]) / rotate(deg[,cx,cy])（大小写敏感）；
+// 多个变换可连写（空白/逗号分隔）。畸形输入返回空表。
+pub func parse_transform(src: string) -> table<string> {
+    var out = table_new_string()
+    var n = len(src)
+    var i: i64 = 0
+    while i < n {
+        // 跳过变换间的空白/逗号
+        while i < n {
+            var bs = str_byte(src, i)
+            if bs == 32 || bs == 9 || bs == 10 || bs == 13 || bs == 44 {
+                i = i + 1
+            } else {
+                break
+            }
+        }
+        if i >= n {
+            break
+        }
+        // 函数名：连续字母
+        var sb = string_builder()
+        while i < n {
+            var bl = str_byte(src, i)
+            if (bl >= 65 && bl <= 90) || (bl >= 97 && bl <= 122) {
+                sb_append_byte(sb, bl)
+                i = i + 1
+            } else {
+                break
+            }
+        }
+        var fn = sb_build(sb)
+        if fn != "translate" && fn != "scale" && fn != "rotate" {
+            return table_new_string()
+        }
+        // 期望 '('（容忍函数名与括号间的空白）
+        while i < n {
+            var bg = str_byte(src, i)
+            if bg == 32 || bg == 9 || bg == 10 || bg == 13 {
+                i = i + 1
+            } else {
+                break
+            }
+        }
+        if i >= n || str_byte(src, i) != 40 {
+            return table_new_string()
+        }
+        i = i + 1
+        // 参数列表直到 ')'
+        var args = table_new_string()
+        while true {
+            while i < n {
+                var bq = str_byte(src, i)
+                if bq == 32 || bq == 9 || bq == 10 || bq == 13 || bq == 44 {
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            if i >= n {
+                return table_new_string()   // 未闭合
+            }
+            var bc = str_byte(src, i)
+            if bc == 41 {
+                i = i + 1
+                break
+            }
+            if is_num_start(bc) {
+                var (tok, ni) = scan_number(src, i)
+                if len(tok) == 0 || !num_ok(tok) {
+                    return table_new_string()
+                }
+                table_push(args, tok)
+                i = ni
+            } else {
+                return table_new_string()
+            }
+        }
+        // 参数个数校验（按类型）
+        var ac = len(args)
+        if fn == "translate" && ac != 1 && ac != 2 {
+            return table_new_string()
+        }
+        if fn == "scale" && ac != 1 && ac != 2 {
+            return table_new_string()
+        }
+        if fn == "rotate" && ac != 1 && ac != 3 {
+            return table_new_string()
+        }
+        // 交错登记 [类型, 参数...]
+        table_push(out, fn)
+        var k: i64 = 0
+        while k < ac {
+            table_push(out, args[k])
+            k = k + 1
+        }
+    }
+    return out
+}
+
+}   // namespace svg
