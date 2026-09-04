@@ -1,0 +1,237 @@
+type tie<logic>
+// tests/spidey_probe/spidey_probe.tie —— p.6.6.6 验收：ext/spidey 爬虫治理库。
+// 全离线确定性探针（无网络）：robots 解析/匹配（RFC 9309 子集）、polite 限速
+// （假时钟）、seen 去重（含扩容）、crawl 编排四场景（假抓取）、spidey 入口。
+// 期望全部 PASS / exit 0。
+import "../../ext/spidey/robots.tie" as robots
+import "../../ext/spidey/polite.tie" as polite
+import "../../ext/spidey/seen.tie" as seen
+import "../../ext/spidey/crawl.tie" as crawl
+import "../../ext/spidey/spidey.tie" as spidey
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ==================== robots 段 ====================
+func robots_section() {
+    // 1 无组 → 放行
+    var r0 = robots.parse("", "tie-probe")
+    check(robots.allowed(r0, "/x") == 1, "empty allow")
+    // 2 UA 组 disallow /private, allow /public
+    var rt = "User-agent: tie-probe\nDisallow: /private\nAllow: /public$\nCrawl-delay: 2\n"
+    var r1 = robots.parse(rt, "tie-probe")
+    check(robots.allowed(r1, "/private/deep") == 0, "disallow private deep")
+    check(robots.allowed(r1, "/private") == 0, "disallow private exact")
+    check(robots.allowed(r1, "/public") == 1, "allow public exact")
+    check(robots.allowed(r1, "/") == 1, "default allow root")
+    check(robots.group_delay(r1, "tie-probe") == 2000, "crawl-delay 2s -> 2000ms")
+    // 3 其他 UA 未命中 → 放行
+    var rB = robots.parse(rt, "other-bot")
+    check(robots.allowed(rB, "/private") == 1, "unmatched ua allow")
+    // 4 '*' 兜底组
+    var rw = robots.parse("User-agent: *\nDisallow: /private\n", "tie-probe")
+    check(robots.allowed(rw, "/private/x") == 0, "wildcard disallow")
+    check(robots.allowed(rw, "/ok") == 1, "wildcard allow other")
+    // 5 通配 *.jpg$
+    var rj = robots.parse("User-agent: *\nDisallow: /*.jpg$\n", "tie-probe")
+    check(robots.allowed(rj, "/a.jpg") == 0, "jpg blocked")
+    check(robots.allowed(rj, "/a.jpg2") == 1, "jpg2 allowed (anchor)")
+    check(robots.allowed(rj, "/x/b.JPG") == 1, "case sensitive jpg allow")
+    // 6 空 Disallow → 放行一切
+    var re = robots.parse("User-agent: *\nDisallow:\n", "tie-probe")
+    check(robots.allowed(re, "/anything") == 1, "empty disallow allow all")
+    // 7 最长匹配优先
+    var rl = robots.parse("User-agent: *\nAllow: /a/b\nDisallow: /a\n", "tie-probe")
+    check(robots.allowed(rl, "/a/b") == 1, "longer allow wins over disallow")
+    check(robots.allowed(rl, "/a/c") == 0, "shorter disallow applies")
+    // 8 并列等长 → Allow 胜
+    var r8 = robots.parse("User-agent: *\nAllow: /x/y\nDisallow: /x/y\n", "tie-probe")
+    check(robots.allowed(r8, "/x/y") == 1, "tie allow wins")
+    // 9 注释剥离 / CRLF / 小数 delay
+    var rc = robots.parse("User-agent: * # comment\r\nDisallow: /tmp#frag\r\nCrawl-delay: 0.5\r\n", "tie-probe")
+    check(robots.allowed(rc, "/tmp") == 0, "crlf + inline comment disallow")
+    check(robots.group_delay(rc, "tie-probe") == 500, "delay 0.5 -> 500ms")
+    // 10 sitemap 收集
+    var rs = robots.parse("Sitemap: https://ex.com/s.xml\nUser-agent: *\n", "tie-probe")
+    var sm = robots.sitemaps(rs)
+    check(len(sm) == 1 && sm[0] == "https://ex.com/s.xml", "sitemap collected")
+    // 11 多 UA 同组
+    var rm = robots.parse("User-agent: a\nUser-agent: b\nDisallow: /d\n", "a")
+    check(robots.allowed(rm, "/d") == 0, "multi-ua group binds a")
+    check(robots.allowed(robots.parse("User-agent: a\nUser-agent: b\nDisallow: /d\n", "b"), "/d") == 0, "multi-ua group binds b")
+    // 12 注释独占行 / 未知行
+    var rn = robots.parse("# only\nhost: x\nUser-agent: *\nDisallow: /p\n", "tie-probe")
+    check(robots.allowed(rn, "/p") == 0, "unknown lines skipped")
+}
+
+// ==================== polite + seen 段 ====================
+func polite_seen_section() {
+    polite.reset()
+    check(polite.decide("a.com", 300, 0) == 0, "first request immediate")
+    check(polite.wait("a.com", 300, 0) == 0, "wait first immediate")
+    check(polite.decide("a.com", 300, 100) == 200, "decide remaining 200")
+    check(polite.decide("a.com", 300, 300) == 0, "decide zero at threshold")
+    check(polite.decide("a.com", 300, 400) == 0, "decide zero past")
+    check(polite.hosts() == 1, "one host registered")
+    polite.reset()
+    polite.wait("c.com", 0, 0)
+    var ok0 = 1
+    var i: i64 = 0
+    while i < 10 {
+        if polite.decide("c.com", 0, i * 100) != 0 {
+            ok0 = 0
+        }
+        i = i + 1
+    }
+    check(ok0 == 1, "zero delay never throttles")
+
+    seen.new(4)
+    check(seen.mark("https://a.com/") == 0, "first url new")
+    check(seen.mark("https://a.com/") == 1, "same url dup")
+    check(seen.mark("https://a.com/x") == 0, "diff url new")
+    check(seen.count() == 2, "count 2")
+    seen.new(100)
+    var all_new: i64 = 1
+    var k: i64 = 0
+    while k < 200 {
+        var u = "https://site.example/p/" + to_string(k)
+        if seen.mark(u) != 0 {
+            all_new = 0
+        }
+        k = k + 1
+    }
+    check(all_new == 1 && seen.count() == 200, "200 unique all new")
+    check(seen.mark("https://site.example/p/7") == 1, "dup after grow")
+    check(seen.mark("https://site.example/p/200") == 0, "new after grow")
+}
+
+// ==================== crawl 段（假抓取） ====================
+var g_site: table<string> = []
+var g_status: table<i64> = []
+var g_body: table<string> = []
+
+func site_add(u: string, status: i64, body: string) {
+    table_push(g_site, u)
+    table_push(g_status, status)
+    table_push(g_body, body)
+}
+
+func loc(u: string) -> i64 {
+    var k: i64 = 0
+    while k < len(g_site) {
+        if g_site[k] == u {
+            return k
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+func fake_fetch(url: string) -> i64 {
+    var idx = loc(url)
+    if idx < 0 {
+        return 0
+    }
+    return g_status[idx]
+}
+
+func fake_loader(url: string) -> string {
+    var idx = loc(url)
+    if idx < 0 {
+        return ""
+    }
+    return g_body[idx]
+}
+
+func rebuild_a() {
+    g_site = table_new_string()
+    g_status = table_new_i64()
+    g_body = table_new_string()
+    site_add("https://a.example/", 200, "<html><body><a href='/b'>b</a><a href='/c'>c</a></body></html>")
+    site_add("https://a.example/b", 200, "<html><body><a href='/d'>d</a></body></html>")
+    site_add("https://a.example/c", 200, "<html><body><a href='/d'>d</a><a href='/e'>e</a></body></html>")
+    site_add("https://a.example/d", 200, "<html><body>leaf d</body></html>")
+    site_add("https://a.example/e", 200, "<html><body><a href='/f'>f</a></body></html>")
+    site_add("https://a.example/f", 200, "<html><body>too deep</body></html>")
+}
+
+func rebuild_b() {
+    g_site = table_new_string()
+    g_status = table_new_i64()
+    g_body = table_new_string()
+    site_add("https://b.example/robots.txt", 200, "User-agent: *\nDisallow: /secret\n")
+    site_add("https://b.example/", 200, "<html><body><a href='/secret'>s</a><a href='/open'>o</a></body></html>")
+    site_add("https://b.example/open", 200, "<html><body>open</body></html>")
+}
+
+func rebuild_c() {
+    g_site = table_new_string()
+    g_status = table_new_i64()
+    g_body = table_new_string()
+    site_add("https://c.example/", 200, "<html><body><a href='/missing'>m</a><a href='/dead'>d</a></body></html>")
+    site_add("https://c.example/missing", 404, "<html><body>not found</body></html>")
+    site_add("https://c.example/dead", 0, "")
+}
+
+func rebuild_d() {
+    g_site = table_new_string()
+    g_status = table_new_i64()
+    g_body = table_new_string()
+    site_add("https://d.example/", 200, "<html><body><a href='/p'>p</a><a href='http://x.example/q'>x</a></body></html>")
+    site_add("https://d.example/p", 200, "<html><body>p</body></html>")
+    site_add("http://x.example/q", 200, "<html><body>x</body></html>")
+}
+
+func crawl_section() {
+    // 场景 A：BFS + 去重 + 深度上限
+    rebuild_a()
+    var seedsA: table<string> = table_new_string()
+    table_push(seedsA, "https://a.example/")
+    var sA = crawl.run(seedsA, 100, 2, 1, 0, 1, "tie-probe", fake_fetch, fake_loader)
+    check(sA.fetched == 5 && sA.ok == 5 && sA.failed == 0, "A fetch 5 ok 5")
+    check(sA.links == 5 && sA.dup == 1 && sA.queued == 5, "A links 5 dup 1 queued 5")
+    // 场景 B：robots 拒绝
+    rebuild_b()
+    var seedsB: table<string> = table_new_string()
+    table_push(seedsB, "https://b.example/")
+    var sB = crawl.run(seedsB, 100, 3, 1, 1, 1, "tie-probe", fake_fetch, fake_loader)
+    check(sB.disallowed == 1 && sB.fetched == 2 && sB.ok == 2, "B disallowed 1 fetched 2")
+    check(sB.robots_fetch == 1, "B robots fetched once")
+    // 场景 C：失败计数 + 深度 1 不展开
+    rebuild_c()
+    var seedsC: table<string> = table_new_string()
+    table_push(seedsC, "https://c.example/")
+    var sC = crawl.run(seedsC, 100, 1, 1, 0, 1, "tie-probe", fake_fetch, fake_loader)
+    check(sC.fetched == 3 && sC.ok == 2 && sC.failed == 1, "C fetch 3 ok 2 fail 1")
+    check(sC.links == 2, "C links 2 (depth cap)")
+    // 场景 D：max_pages 上限 + 同域过滤
+    rebuild_d()
+    var seedsD: table<string> = table_new_string()
+    table_push(seedsD, "https://d.example/")
+    var sD = crawl.run(seedsD, 2, 3, 1, 0, 1, "tie-probe", fake_fetch, fake_loader)
+    check(sD.fetched == 2 && sD.ok == 2, "D fetched capped 2")
+    check(sD.links == 2 && sD.queued == 2, "D cross-host filtered")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    robots_section()
+    polite_seen_section()
+    crawl_section()
+    check(spidey.version() == "0.6.6", "spidey version")
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}

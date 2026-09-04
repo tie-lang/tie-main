@@ -1,0 +1,70 @@
+type tie<class>
+// ============================================================================
+// spidey.tie：ext/spidey——爬虫库统一入口（命名空间 spidey，纯 tie）p.6.6.6.4
+// Unified crawler entry point (namespace spidey). p.6.6.6.4
+//
+// 组成（Composition）：
+//   robots.tie     robots.txt 解析与匹配（RFC 9309 子集）
+//   polite.tie     每主机限速（kernel32 Sleep 原语 + decide 纯计算）
+//   seen.tie       URL 去重（xxh3 开地址集合）
+//   crawl.tie      编排器（BFS 前沿 + robots 闸 + 限速 + 去重 + 统计）
+//
+// 默认抓取实现（Default fetch）：httpc.get 封装
+//   http_fetch(url) -> i64     HTTP 状态码（0 = 传输失败；如连接被拒）
+//   http_loader(url) -> string 响应正文（UTF-8 文本；失败返回空串）
+//   两函数共享模块级 g_last_text（fetcher 写、loader 读），按 crawl 协议配对使用；
+//   UA 经 set_ua() 全局配置（默认 "tie-spidey/1.0"）。
+//
+// 便捷入口（Convenience）：
+//   net_run(seeds, max_pages, max_depth, delay_ms, robots_on, same_host, ua)
+//       -> CrawlStats    = crawl.run(..., http_fetch, http_loader) 一行接线
+//   version() -> string  库版本
+//
+// 局限（Limits）：默认 fetch 走 httpc——强制 Connection: close 一请求一连接、不
+// 支持 keep-alive；正文以 httpc body_text 转 UTF-8 文本（html 数据平面分界）。
+// 实跑限速粒度受 time_now 秒级原语限制（秒级节流，文档化）。
+// ============================================================================
+
+import "../../std/httpc.tie" as httpc
+import "./crawl.tie" as crawl
+
+var g_ua: string = "tie-spidey/1.0"   // 默认 UA（set_ua 覆盖）
+var g_last_text: string = ""          // 最近一次 http_fetch 的正文缓存
+
+namespace spidey {
+
+// 设置默认抓取的 User-Agent（net_run 前调用）。
+pub func set_ua(ua: string) {
+    g_ua = ua
+}
+
+// 默认抓取：返回 HTTP 状态（0 = 传输失败），正文缓存供 http_loader。
+pub func http_fetch(url: string) -> i64 {
+    var headers: table<string> = table_new_string()
+    table_push(headers, "User-Agent: " + g_ua)
+    table_push(headers, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+    var r = httpc.get(url, headers)
+    g_last_text = httpc.body_text(r)
+    if r.status <= 0 {
+        g_last_text = ""
+        return 0
+    }
+    return r.status
+}
+
+// 默认正文加载：读取 http_fetch 缓存的正文。
+pub func http_loader(url: string) -> string {
+    return g_last_text
+}
+
+// 便捷入口：默认 httpc 抓取的完整爬取（参数语义同 crawl.run）。
+pub func net_run(seeds: table<string>, max_pages: i64, max_depth: i64, delay_ms: i64, robots_on: i64, same_host: i64, ua: string) -> CrawlStats {
+    return crawl.run(seeds, max_pages, max_depth, delay_ms, robots_on, same_host, ua, http_fetch, http_loader)
+}
+
+// 库版本。
+pub func version() -> string {
+    return "0.6.6"
+}
+
+}   // namespace spidey
