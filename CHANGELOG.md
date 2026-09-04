@@ -22,6 +22,156 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] sys/win32 平台专用层首期：注册表/系统信息/剪贴板/环境/用户目录/窗口 + 高级枚举（p.6.6.23）（2026-09-04）
+
+- 新增 `sys/win32.tie`（命名空间 sys_win32，全部 unsafe extern fn 直绑，仿 ext/ecdsa 范式）：
+  - UTF-16 宽字符桥（wide_from/wide_to，码点级全量转换，含代理对）；
+  - 基础六件：注册表 reg_read/reg_write/reg_enum（HKLM/HKCU 等）、系统信息 os_version/mem_info/cpu_name
+    （cpu 名复用自身 reg_read）、剪贴板 clip_get/clip_set（CF_UNICODETEXT）、环境 env_get/env_set、
+    用户目录 user_dir/desktop_dir（SHGetKnownFolderPath + HeapFree）、窗口 win_find/win_post；
+  - 高级四项：proc_list（Toolhelp，结构体 568B/szExeFile@44 实测校正）、svc_enum 与 net_adapters
+    （因 iphlpapi 不可链、服务句柄权限难开，改注册表代理，已注释偏差）、hw_info（GetSystemInfo + 内存）。
+- 验收：tests/win32_probe/win32_probe.tie 21 条**确定性存在断言**全 PASS（注册表/剪贴板只读，
+  不断言精确值）。
+
+EN: sys/win32 first platform layer (namespace sys_win32): UTF-16 wide bridge, registry/system
+info/clipboard/env/user-dirs/windows basics + proc/svc/net/hw advanced enumeration (registry
+fallback for svc/net — iphlpapi not linkable in toolchain); 21 existence-only probe assertions PASS.
+
+## [feat] Web 服务框架：std/http_server 升级——路由/keep-alive/静态文件/SSE/JWT 会话（p.6.6.21）（2026-09-04）
+
+- `std/http_server.tie` 在原 API 上扩展（保留 listen/read_request/send 等既有 API）：
+  - 路由表 route(method, pattern, handler)（/users/:id 参数；fn 元素全局表可行）+ match_route；
+  - 纯函数 parse_request/receive_next（keep-alive 循环按 Content-Length 定界，Connection: close 断开）；
+  - 静态文件 static_content_type（扩展名→MIME）+ serve_static（防穿越，字节安全走 tcp_send_bytes）；
+  - SSE 推送 sse_frame/sse_send（与 p.6.6.3 客户端同线格式 `event:`/`data:` + 空行）；
+  - JWT 会话门控 jwt_session（Bearer → jwt.verify，p.6.6.19 依赖）。
+- 修复既有缺陷：原 listen(port) 参数名撞保留字（port）无法编译→改 pport；header() 大小写收敛为
+  lower(key)==lower(name)。
+- 验收：tests/httpsrv_probe/httpsrv_probe.tie 48 断言全 PASS（handler 响应体走真实 socket，离线
+  探针降级为 match_route 断言，live 段环境变量 gate 默认跳过）。
+
+EN: std/http_server upgraded: route table with :param (fn-typed handlers), pure parse + keep-alive
+receive loop (Content-Length delimited), static file MIME/anti-traversal byte-safe serving, SSE push
+frames matching the p.6.6.3 client line format, JWT bearer session gate; fixed reserved-word port
+param and header() case-insensitivity; 48 offline asserts PASS.
+
+## [fix] 编译器：全局标量初值折叠根治——var/负字面量/转义字符串/字面量表达式（2026-09-04）
+
+- 根治三条语言级缺陷（RCA：irgen.tig_global_var 仅采纳 const+裸 INT_LIT 初值；UNARY 取负不折叠；
+  字符串初值直传原始 lexeme 未反转义；字面量算术/拼接表达式不折叠）：
+  - irgen 新增编译期常量折叠 global_init_fold：INT_LIT/STR_LIT（经 str_unescape_quoted 去引号反转义）/
+    UNARY 取负/BINARY + - * / %（字符串 + 拼接、整数算术）；
+  - llvmgen.emit_globals 放开 `>= 0` 负值守卫（有符号整型直输负字面量，无符号保持零值）；
+  - 已知局限（文档化）：跨全局引用表达式初始化（如 a+"."+b）仍不折叠。
+- 联动：两个编译器 commit（ea544d8/a581041）二次自举；既有 p.6.6.1 起各子项探针零回归。
+- 新自举不动点 SHA256 `238CA89D479C4FC43EBBDF61D6E726290A777749B2683EF1D855E291EEECE2E2`
+  （3894784 字节；p.6.6.9 的中间不动点 F92463F8… 被其取代）；回归探针 tests/probe_global_init.tie
+  12 断言全 PASS。
+
+EN: compiler global scalar init folding fixed — var/negative-int literals no longer zeroed, string
+literals unescaped, int arithmetic and str-literal concat fold; signed-negative globals emitted;
+cross-global-reference inits stay unfolded (documented); rebootstrap to fixed point
+238CA89D…E2E2 (3894784 B), probe_global_init 12/12 PASS.
+
+## [feat] std/jwt：JWT HS256 签发与验证（p.6.6.19）（2026-09-04）
+
+- 新增 `std/jwt.tie`（命名空间 jwt）：字节级 base64url（b64u_encode/b64u_decode，- _ 无 padding）、
+  encode(secret, claims_json, exp)（header 固定 {"alg":"HS256","typ":"JWT"}，secret 先 b64url 解码为
+  字节做 HMAC 密钥）、verify（0 有效/-1..-6：段损坏/base64 错/alg 不符/签名不符/过期/未生效）+ last_err、
+  claims()。
+- 验收：tests/jwt_probe/jwt_probe.tie 20 断言全 PASS——RFC 7515 A.1 紧凑 JSON 向量对撞（签名按
+  紧凑输入正确计算：d6nMDXnJ…，任务给定 dBjf… 系缩进 JSON 的 A.1 原向量，注释已纠偏）、篡改/过期/nbf/
+  段损坏/中文 UTF-8 往返。
+- RS256 暂缓（依赖 RSA 就绪），verify 对非 HS256 返回 -3 并注释，不阻塞本子项。
+
+EN: std/jwt HS256 — byte-level base64url, build/verify with exp/nbf + last_err; RFC7515 A.1 compact
+JSON vector collides with the corrected signature (dBjf… is the indented-JSON variant), tamper/expiry
+asserts; RS256 deferred until RSA lands.
+
+## [feat] std/cron：cron 调度器（p.6.6.18）（2026-09-04）
+
+- 新增 `std/cron.tie`（命名空间 cron）：内置 civil 日历逆推（Hinnant 400 年周期纯算术，1970-01-01
+  周四起算星期）、parse（`*`/a/a-b/a,n/*/n/a-b/n；dow 0/7=周日；dom&dow 同受限取并集）、
+  next(after_epoch_s) 严格大于、8 年哨兵兜底永不 -1、last_err。
+- 验收：tests/cron_probe/cron_probe.tie 22 断言全 PASS（*/5、工作日、每月 1 号、闰日 2/29、周六 dom、
+  午夜严格次次日、parse 失败、weekday 向量、2 月 30 哨兵、2027 无闰日）均为手工/UTC 推算固定向量。
+
+EN: std/cron — civil calendar from epoch (400y arithmetic), 5-field parse (masks), dom&dow union
+quirk, strictly-next with sentinel fallback; 22 fixed UTC epoch vectors PASS.
+
+## [feat] std/diff：行级文本 diff（p.6.6.17）（2026-09-04）
+
+- 新增 `std/diff.tie`（命名空间 diff）：公共前后缀剥离 + Myers O(ND)（V 数组 2*MAX+1，D>800 降级
+  整段 del+add），零文本行复制；line_diff 三平行表（ops 0/1/2 + 行号）；unified（固定 --- a/+++ b 头、
+  空格/-/+ 前缀行、空行保形、无 @@hunk）。
+- 验收：tests/diff_probe/diff_probe.tie 31 断言全 PASS（相等/增删改/空行/unified 精确串/2K 行
+  sub-second/前后缀剥离）。
+
+EN: std/diff — prefix/suffix strip + Myers O(ND) line diff (no O(n·m) memory), parallel op/line tables,
+unified output with blank-line fidelity; 31 offline asserts PASS incl. 2K-line perf.
+
+## [feat] std/tpl：模板引擎（p.6.6.16）（2026-09-04）
+
+- 新增 `std/tpl.tie`（命名空间 tpl，string 平面）：render(tpl, vars: table<string>) 单遍字节扫描；
+  表达式子集（变量/字面量/== != < >/&& || 短路，缺值容错 ""）；{{if}}/{{else}}/{{ifend}}、
+  {{for item in list}}/{{forend}}（list 用 "<name>.len"/"<name>.i" 键编码，绑定栈支持嵌套）；{{ }} 配平、
+  畸形宽容（未闭合原样输出、悬空 else/ifend/forend 忽略）。
+- 验收：tests/tpl_probe/tpl_probe.tie 34 断言全 PASS，200KB 模板渲染 0ms（远低于 sub-second 红线）。
+
+EN: std/tpl — single-pass template scanner + expr subset with short-circuit, if/else and for with
+binding stack, malformed tolerance; 34 asserts PASS, 200KB render 0ms.
+
+## [feat] ext/png：PNG 编解码（p.6.6.13）（2026-09-04）
+
+- 新增 `ext/png/png.tie`（命名空间 png，字节平面）：内置最小 DEFLATE 解码（RFC 1951 存储/固定/动态
+  哈夫曼，LSB-first 位累加器，无逐位字符串拼接）+ Adler-32/CRC-32 字节表版（对齐 RFC 1950/1951 向量）；
+  decode（IHDR/PLTE/IDAT 聚合/IEND，8-bit 灰度/RGB/RGBA/调色板，5 型滤波逆变换含 Paeth）；
+  encode（RGBA8，存储块 IDAT，chunk CRC 正确）。
+- 验收：tests/png_probe/png_probe.tie 18 断言全 PASS（3 个 RFC1951 zlib 向量、手工 1×1 解码、
+  encode↔decode 逐字节回环、crc32/adler32 对拍、截断/缺 IEND 拒收）。
+
+EN: ext/png — minimal inflate (stored/fixed/dynamic Huffman) + 5-type unfilter + encode with
+stored-block IDAT, byte-table crc32/adler32; 18 offline asserts PASS incl. RFC vectors & roundtrip.
+
+## [feat] std/dns：DNS 解析 + UDP 字节级原语（p.6.6.9）（2026-09-04）
+
+- 编译器新增底座原语 net_udp_send_bytes / net_udp_recv_bytes（镜像 net_tcp_send_bytes/recv_bytes
+  全触点，sendto/recvfrom 直调；std/net.tie 同步 udp_send_bytes/udp_recv_bytes 包装），并据
+  p.6.6.1 自举核验流程二次自举（中间不动点 F92463F8…，后被编译器折叠修复取代）。
+- 新增 `std/dns.tie`（命名空间 dns，字节平面）：encode_query/parse_response/query——header
+  id/flags/qd/an、QNAME 标签、0xC0 指针解压（128 跳防环守卫）、A/AAAA/TXT/MX/NS 解析（MX "prio host"）；
+  id 自增、QR/RCODE 校验。
+- 验收：tests/dns_probe/dns_probe.tie 16 断言全 PASS（查询字节精确、A/MX/TXT/NS 手工应答解析、
+  指针防环、id 自增；真实 UDP 查询 TIE_DNS_LIVE=1 gate 默认跳过）；html/xml 探针零回归。
+
+EN: std/dns — UDP byte primitives added and rebootstrapped; query/answer codec with pointer
+decompression + A/AAAA/TXT/MX/NS; 16 offline asserts PASS, real DNS gated by env.
+
+## [feat] std/smtp：SMTP 发信（p.6.6.8）（2026-09-04）
+
+- 新增 `std/smtp.tie`（命名空间 smtp）：send(server,pport,user,pwd,auth,from,tos,subject,body,headers)
+  + last_err；会话状态机做可注入收发函数对（脚本驱动假服务器可全离线断言）——220→EHLO（250- 续行折叠）
+  →AUTH LOGIN/PLAIN（enc.base64）→235→MAIL/RCPT→DATA（点填充 + `.\r\n` 终止）→QUIT→221；
+  失败路径负码。STARTTLS 为文档化占位（EHLO 后触点 + tls 接管注释，待 p.6.6.1 会话续接）。
+- 验收：tests/smtp_probe/smtp_probe.tie 21 断言全 PASS（收发序列精确、PLAIN 单步、点填充、匿名跳过
+  AUTH、535/550 负码）。
+
+EN: std/smtp — injectable-IO session state machine (scripted fake server), EHLO/AUTH/MAIL/RCPT/DATA
+dot-stuffing, error codes; 21 offline asserts PASS; STARTTLS documented placeholder.
+
+## [feat] std/ws：WebSocket 客户端（p.6.6.7）（2026-09-04）
+
+- 新增 `std/ws.tie`（命名空间 ws，字节平面）：connect 握手（随机 16 字节 base64 作 Key，校验
+  Sec-WebSocket-Accept == base64(sha1(key+magic GUID))，复用 httpc.open_stream）；客户端帧强制
+  mask（长度 7/16/64 三档、注入掩码键可确定）；ws_recv FIN/opcode 1/2/8/9/10 + 解掩码；
+  ws_close 收发关闭帧。
+- 验收：tests/ws_probe/ws_probe.tie 46 断言全 PASS（RFC 6455 握手向量 key→accept 精确、字节 base64
+  往返、帧编解码 125/126/127/65535/65536 边界+掩码往返、服务端无掩码帧、分片/ping/pong/close）。
+
+EN: std/ws — RFC6455 client (handshake accept vector s3pPLM…==, masked frame codec 7/16/64-bit lengths,
+opcode 1/2/8/9/10 parse, close); 46 offline asserts PASS.
+
 ## [docs] tie p.6.9 LSP 重写（tsp）规划定稿：0-Rust 收官（2026-09-03）
 
 - `docs/superpowers/specs/2026-09-03-tie-p69-lsp-rewrite-design.md`：tsp 执行 spec 定稿

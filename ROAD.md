@@ -239,13 +239,13 @@ neither continues the other**.
 
 - [ ] p.6.6.15 ext/svg：SVG 解析（元素树 + 路径/形状结构，依赖 p.6.6.5）
 
-- [ ] p.6.6.16 std/tpl：模板引擎（`{{expr}}` 求值 + 渲染字符串/文件）
+- [x] p.6.6.16 std/tpl：模板引擎（`{{expr}}` 求值 + 渲染字符串/文件）
 
-- [ ] p.6.6.17 std/diff：文本 diff（LCS → 行级增删改 + 统一格式输出）
+- [x] p.6.6.17 std/diff：文本 diff（LCS → 行级增删改 + 统一格式输出）
 
-- [ ] p.6.6.18 std/cron：cron 调度（5 字段表达式 → 下次触发时间/到期判断）
+- [x] p.6.6.18 std/cron：cron 调度（5 字段表达式 → 下次触发时间/到期判断）
 
-- [ ] p.6.6.19 std/jwt：JWT（HS256/RS256 签发验证，供 p.6.6.21 会话）
+- [x] p.6.6.19 std/jwt：JWT（HS256/RS256 签发验证，供 p.6.6.21 会话）
 
 - [ ] p.6.6.20 std/sqlite：SQLite 驱动（C ABI 桥，参考 ext/ecdsa extern 范式）
 
@@ -253,7 +253,7 @@ neither continues the other**.
 
 - [ ] p.6.6.22 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式，依赖 p.6.6.2/p.6.6.3）
 
-- [ ] p.6.6.23 sys/win32：平台专用层首期（命名空间 sys\_win32；注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息 + 进程枚举/服务控制/网络接口/硬件信息）
+- [x] p.6.6.23 sys/win32：平台专用层首期（命名空间 sys\_win32；注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息 + 进程枚举/服务控制/网络接口/硬件信息）
   - 依赖方向（单向）：tls → httpc → sse；html → xml → svg；httpc → ws；tls → smtp/jwt；httpc+sse → llm
 
   - 平台层：sys/win32 之后 linux/mac 同名层（sys\_linux / sys\_mac）
