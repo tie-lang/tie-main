@@ -936,11 +936,27 @@ func tig_global_var(s: i64) {
         llvmgen.global_table_reg(nm)
     } else {
         llvmgen.global_scalar_reg(nm, ty)
-        // const 整数字面量初始值（否则 @g = global i64 0，
-        // 顶层 const 读取全为 0——token id 常量等全失效）
+        // 标量整数字面量初始值（否则 @g = global i64 0，顶层初值全失效）。
+        // 根治（2026-09-04）：此前仅 const+裸 INT_LIT 被采纳——var 的正/负整数
+        // 字面量初值全部静默丢失；负字面量是 UNARY(取负)@INT_LIT 节点，折叠为 0。
         var init = sstate.child(s, 1)
-        if sinfer.gb_const_of(intern.intern(nm)) == 1 && init >= 0 && s_tags[init] == 0 {
-            llvmgen.global_scalar_init(nm, s_vals[init])
+        var litv: i64 = 0
+        var has_lit = false
+        if init >= 0 && s_tags[init] == 0 {
+            // 裸整数字面量（const 与 var 均生效）
+            litv = s_vals[init]
+            has_lit = true
+        } else if init >= 0 && s_tags[init] == 8 {
+            // 一元取负（U_NEG=0）：子节点为整数字面量 → 0 - x
+            var op = s_vals[init]
+            var operand = sstate.child(init, 0)
+            if op == 0 && operand >= 0 && s_tags[operand] == 0 {
+                litv = 0 - s_vals[operand]
+                has_lit = true
+            }
+        }
+        if has_lit {
+            llvmgen.global_scalar_init(nm, litv)
         } else if init >= 0 && s_tags[init] == 2 && ty == types.named(TK_STR) {
             // 顶层字符串全局初始字面量（var/const 均含：如 registry 默认 URL）：
             // @g = global ptr @.str.N（曾忽略字面量 → @g 恒为空串）

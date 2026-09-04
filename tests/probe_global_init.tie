@@ -1,0 +1,20 @@
+type tie<logic>
+// tests/probe_global_init.tie —— 全局标量初值回归探针（根治 p.6.6.8 报告的语言缺陷 2026-09-04）
+// 覆盖：var/const × 正/负整数字面量 + 字符串字面量。此前负字面量(UNARY)与非 const
+// 整数初值全部折叠为 0（编译器 irgen.tig_global_var + llvmgen.emit_globals 双处根治）。
+// 期望全部 PASS / exit 0。
+var g_p: i64 = 5
+var g_n: i64 = -15
+var g_s: string = "abc"
+const g_pk: i64 = 7
+const g_kn: i64 = -7
+
+func main() {
+    var fails: i64 = 0
+    if g_p == 5 { println("PASS var pos 5") } else { println("FAIL var pos g_p=" + to_string(g_p)); fails += 1 }
+    if g_n == -15 { println("PASS var neg -15") } else { println("FAIL var neg g_n=" + to_string(g_n)); fails += 1 }
+    if g_s == "abc" { println("PASS var str abc") } else { println("FAIL var str g_s=" + g_s); fails += 1 }
+    if g_pk == 7 { println("PASS const pos 7") } else { println("FAIL const pos g_pk=" + to_string(g_pk)); fails += 1 }
+    if g_kn == -7 { println("PASS const neg -7") } else { println("FAIL const neg g_kn=" + to_string(g_kn)); fails += 1 }
+    if fails == 0 { println("done") } else { println("FAIL " + to_string(fails)) }
+}

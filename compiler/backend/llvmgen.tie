@@ -294,6 +294,11 @@ func emit_agg_types() {
 // 输出全局变量段（模块头 declare 之后、函数 define 之前）：
 //   @g = global ptr null            （表全局，main 入口运行时创建）
 //   @g = global T <零值>             （标量；i64→0 / bool→false / string→null / f64→0.0）
+// 有符号整数类型（负字面量常量允许输出为 LLVM 有符号字面量）。
+func is_signed_int(t: i64) -> bool {
+    return t == 0 || t == 1 || t == 2 || t == 3 || t == 21
+}
+
 func emit_globals() {
     var i: i64 = 0
     while i < len(g_global_names) {
@@ -306,8 +311,13 @@ func emit_globals() {
             // const 整数字面量初始值（全部整数类型直接输出；其余保持零值）。
             // 旧实现仅 ty=="i64" 应用 → i8/i16/i32/u* 等 const 全局恒为 0
             //（GetSystemMetrics(1 的 const i32) 传成 0 一类值破坏 bug）。
-            if i < len(g_global_inits) && g_global_inits[i] >= 0 && types.is_int(g_global_tys[i]) {
-                init = to_string(g_global_inits[i])
+            // 负值守卫根治（2026-09-04）：原 `>= 0` 使顶层负字面量初值回退 "0"
+            //（折叠为 0）；现对**有符号**整型直接输出负字面量，无符号保持零值。
+            if i < len(g_global_inits) && types.is_int(g_global_tys[i]) {
+                var iv = g_global_inits[i]
+                if iv >= 0 || is_signed_int(g_global_tys[i]) {
+                    init = to_string(iv)
+                }
             }
             if ty == "ptr" {
                 // string 全局默认空串常量（null 会被 strcmp 段错误）；
