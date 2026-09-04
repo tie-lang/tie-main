@@ -486,7 +486,7 @@ func is_builtin_name(nm: string) -> bool {
         return true
     }
     // ---------- trm-lite 轻量执行体原语（阶段1块2：spawn/yield/collect）----------
-    if nm == "spawn" || nm == "yield" || nm == "collect" {
+    if nm == "spawn" || nm == "yield" || nm == "collect" || nm == "gosched" {
         return true
     }
     // ---------- channel 原语（p.6.5.7：ch_open/ch_send/ch_recv/ch_close，静态链接 trm_lite.a）----------
@@ -2468,6 +2468,22 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         }
         var T64y = types.named(TK_I64)
         tig_trmlite_call("trm_lite_sched$yield_wait", tig_empty_types(), tig_empty_vals(), T64y)
+        g_builtin_res = tig_int_lit(0)
+        return 0
+    }
+    if nm == "gosched" {
+        // gosched() → p.6.7.10 协作抢占：显式让出点（纯让出不等待）。
+        // 双形态统一：简单形态（无 import）调 trm_lite_sched$gosched；复杂形态
+        // （import tl_runtime_ctx / trm_lite_ws）调 trm_lite_ws$gosched（同语义，
+        // 与简单形态互为替代运行时路径——编译期按模块内形状分派，不互斥报错）。
+        g_used_trmlite = true
+        var T64s = types.named(TK_I64)
+        var sym: string = "trm_lite_sched$gosched"
+        if sstate.fn_def_node("trm_lite_ws::sync_cs") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_gosched") >= 0 {
+            sym = "trm_lite_ws$gosched"
+        }
+        tig_trmlite_call(sym, tig_empty_types(), tig_empty_vals(), T64s)
         g_builtin_res = tig_int_lit(0)
         return 0
     }

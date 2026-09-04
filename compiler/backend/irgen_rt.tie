@@ -1050,6 +1050,25 @@ func gen_s_pool_worker_eager() {
     ir.add_operand(br2, b_join, 1)
     g_cur_block = b_join
     tig_trmlite_call("trm_lite_sched$task_done", tig_empty_types(), tig_empty_vals(), -1)
+    // p.6.7.10 调度点让出：after_task(me) → 该 worker 本轮让出（gosched 显式点 /
+    // 时间片耗尽），经 pool_give_wait 1ms 限时后回 loop（给其余 worker 抢单机会）
+    var yat: table<i64> = table_new_i64()
+    var yav: table<i64> = table_new_i64()
+    table_push(yat, T64)
+    table_push(yav, me)
+    var y = tig_trmlite_call("trm_lite_sched$after_task", yat, yav, T64)
+    var z1 = tig_int_lit_ty(0, T64)
+    var isgy = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))  // icmp ne
+    ir.add_operand(isgy, y, 0)
+    ir.add_operand(isgy, z1, 0)
+    ir.add_operand(isgy, 1, 2)
+    var b_give = ir.new_block(fid, interner.intern("spw.g"))
+    var cbg = ir.new_inst(g_cur_block, 31, -1)
+    ir.add_operand(cbg, ir.get_value(isgy), 0)
+    ir.add_operand(cbg, b_give, 1)
+    ir.add_operand(cbg, loop, 1)
+    g_cur_block = b_give
+    tig_trmlite_call("trm_lite_sched$pool_give_wait", tig_empty_types(), tig_empty_vals(), -1)
     var bw2 = ir.new_inst(g_cur_block, 30, -1)  // br loop
     ir.add_operand(bw2, loop, 1)
     g_cur_func = saved_func

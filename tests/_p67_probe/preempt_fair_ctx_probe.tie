@@ -1,0 +1,114 @@
+type tie<logic>
+// tests/_p67_probe/preempt_fair_ctx_probe.tie —— p.6.7.10 验收：协作抢占统一（复杂形态）。
+// import trm-lite 复杂形态：gosched 双入口（内置 gosched() 分派到 trm_lite_ws$gosched
+// + ctx_gosched() 显式转发）；worker 每任务完成经 after_task 检查显式让出 / 时间片。
+// 场景：6 长任务（体内 1.2M 迭代，每 150K 调 ctx_gosched()）+ 60 轻任务。
+// 断言：len==66、id∈[0,66)、无重复、tid 去重 ≥2；ctx_shutdown 后 exit 0。
+// 期望：len=66 dup=0 tid≥2 / PASS / exit 0；连跑 3 次全 PASS。
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_data: table<i64> = []
+var g_tid: table<i64> = []
+var g_fill: i64 = 0
+
+unsafe extern fn GetCurrentThreadId() -> i64
+func tid_now() -> i64 {
+    unsafe {
+        return GetCurrentThreadId()
+    }
+}
+func heavy(w0: i64) -> i64 {
+    var w: i64 = w0
+    var f: i64 = 0
+    while f < 1200000 {
+        if (f % 150000) == 0 {
+            tl_runtime_ctx.ctx_gosched()   // p.6.7.10 显式让出点（复杂形态）
+        }
+        w = (w * 7 + f) % 1000000007
+        f = f + 1
+    }
+    return w
+}
+
+func main() {
+    var k: i64 = 0
+    while k < 66 {
+        table_push(g_tid, 0)
+        k = k + 1
+    }
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    var i: i64 = 0
+    while i < 6 {
+        var id = i
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            var r = heavy(id)
+            g_fill = r
+            table_push(g_data, id)
+            g_tid[id] = tid_now()
+            return r
+        })
+        i = i + 1
+    }
+    i = 6
+    while i < 66 {
+        var id = i
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            table_push(g_data, id)
+            g_tid[id] = tid_now()
+            return id
+        })
+        i = i + 1
+    }
+    tl_runtime_ctx.ctx_drain()
+
+    var L = len(g_data)
+    var bad: i64 = 0
+    i = 0
+    while i < L {
+        if g_data[i] < 0 || g_data[i] >= 66 {
+            bad = 1
+        }
+        i = i + 1
+    }
+    var dup: i64 = 0
+    i = 0
+    while i < L && dup == 0 {
+        var j = i + 1
+        while j < L {
+            if g_data[i] == g_data[j] {
+                dup = 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    var tid_set: i64 = 0
+    i = 0
+    while i < 66 {
+        var seen: i64 = 0
+        var j2: i64 = 0
+        while j2 < i {
+            if g_tid[j2] == g_tid[i] && g_tid[i] != 0 {
+                seen = 1
+            }
+            j2 = j2 + 1
+        }
+        if seen == 0 && g_tid[i] != 0 {
+            tid_set = tid_set + 1
+        }
+        i = i + 1
+    }
+    println("len=" + to_string(L) + " dup=" + to_string(dup) + " bad=" + to_string(bad) + " tid_set=" + to_string(tid_set))
+    var ok: i64 = 1
+    if L != 66 || dup != 0 || bad != 0 || tid_set < 2 {
+        ok = 0
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

@@ -1,0 +1,122 @@
+type tie<logic>
+// tests/_p67_probe/preempt_fair_simple_probe.tie —— p.6.7.10 验收：协作抢占统一（简单形态）。
+// 无任何 import（纯内置）：gosched() 新内置 = 显式让出点（调度级，不等待）；时间片
+// 计数器检查插桩在 worker「pop→执行→pop」边界（任务体原子执行，不可硬中断）。
+// 场景：
+//   6 个「长任务」（体内循环 ~1.2M 迭代，每 150K 调一次 gosched 显式让出，尾部
+//   共享表 push 自编码 + 记执行线程 tid）+ 60 个轻任务（push 自编码 + 记 tid）。
+// 断言：
+//   1) 全部任务完成且计数精确：共享表 len == 66、id ∈ [0,66)、无重复
+//   2) 调度公平性：全部任务执行线程 tid 去重 ≥2（长任务未独占单 worker/单线程）
+//   3) 时间片让出路径不丢任务（len 恰 66）+ yield 同步点后全部完成
+// 期望：len=66 dup=0 tid≥2 / PASS / exit 0；连跑 3 次全 PASS。
+
+var g_data: table<i64> = []     // 共享表：任务完成标记（每表锁）
+var g_tid: table<i64> = []      // 每任务执行线程 tid（独立槽位）
+
+unsafe extern fn GetCurrentThreadId() -> i64
+func tid_now() -> i64 {
+    unsafe {
+        return GetCurrentThreadId()
+    }
+}
+
+// 重载（防死代码消除：结果回写全局文本）
+var g_fill: i64 = 0
+func heavy(w0: i64) -> i64 {
+    var w: i64 = w0
+    var f: i64 = 0
+    while f < 1200000 {
+        if (f % 150000) == 0 {
+            gosched()   // p.6.7.10 显式让出点（任务体内，调度级让出）
+        }
+        w = (w * 7 + f) % 1000000007
+        f = f + 1
+    }
+    return w
+}
+
+func main() {
+    // tid 槽预分配（66 任务）
+    var k: i64 = 0
+    while k < 66 {
+        table_push(g_tid, 0)
+        k = k + 1
+    }
+    // 6 个长任务（id 0..5）
+    var i: i64 = 0
+    while i < 6 {
+        var id = i
+        spawn(func() -> i64 {
+            var r = heavy(id)
+            g_fill = r
+            table_push(g_data, id)
+            g_tid[id] = tid_now()
+            return r
+        })
+        i = i + 1
+    }
+    // 60 个轻任务（id 6..65）
+    i = 6
+    while i < 66 {
+        var id = i
+        spawn(func() -> i64 {
+            table_push(g_data, id)
+            g_tid[id] = tid_now()
+            return id
+        })
+        i = i + 1
+    }
+    yield()   // 同步点：全部完成
+
+    var L = len(g_data)
+    // 区间校验 + 两两去重
+    var bad: i64 = 0
+    i = 0
+    while i < L {
+        if g_data[i] < 0 || g_data[i] >= 66 {
+            bad = 1
+        }
+        i = i + 1
+    }
+    var dup: i64 = 0
+    i = 0
+    while i < L && dup == 0 {
+        var j = i + 1
+        while j < L {
+            if g_data[i] == g_data[j] {
+                dup = 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    // tid 去重（调度公平性：>1 线程执行）
+    var tid_set: i64 = 0
+    i = 0
+    while i < 66 {
+        var seen: i64 = 0
+        var j2: i64 = 0
+        while j2 < i {
+            if g_tid[j2] == g_tid[i] && g_tid[i] != 0 {
+                seen = 1
+            }
+            j2 = j2 + 1
+        }
+        if seen == 0 && g_tid[i] != 0 {
+            tid_set = tid_set + 1
+        }
+        i = i + 1
+    }
+    println("len=" + to_string(L) + " dup=" + to_string(dup) + " bad=" + to_string(bad) + " tid_set=" + to_string(tid_set))
+    var ok: i64 = 1
+    if L != 66 || dup != 0 || bad != 0 || tid_set < 2 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

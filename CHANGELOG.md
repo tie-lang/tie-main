@@ -57,6 +57,34 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [feat] p.6.7.10 协作抢占统一：gosched 显式点 + 时间片插桩（2026-09-04）
+
+- **内置**（tiec）：新增 `gosched()`（is_builtin_name / builtin_expr / sbuiltin /
+  ensure_builtins 四处注册）＝**显式让出点（纯让出不等待）**；双形态编译期按模块
+  形状分派：简单形态 → `trm_lite_sched$gosched`，复杂形态（import
+  tl_runtime_ctx/trm_lite_ws）→ `trm_lite_ws$gosched`（yield 保持同步点语义不动）。
+- **简单形态**（sched.tie）：`gosched()` 置 `g_sdq_gosched_pend`；
+  `after_task(me)`（worker 每任务完成后的调度点检查：显式让出或时间片
+  g_sdq_slice[me] 达 S_SLICE_LIMIT=8 清零让出）；`pool_give_wait`（1ms 限时让出）；
+  tiec worker codegen 在 task_done 后插桩 after_task → pool_give_wait。
+- **复杂形态**（sched_ws.tie）：同三件套（`gosched/after_task/give_wait`，
+  g_ws_* 前缀防裸名冲突；worker_main done 记后插桩 after_task → give_wait；
+  ctx_gosched 转发）。
+- **探针**：`preempt_fair_simple_probe` + `preempt_fair_ctx_probe`（6 长任务体内
+  循环每 150K iter 显式 gosched + 60 轻任务）len=66、无重复、tid_set=4——长任务
+  可让出、调度公平（>1 线程执行）、时间片路径不丢任务，PASS×3；p.6.7 全套 +
+  m6_actor + demos + trm-lite 测试零回归；自举 tiec76→tiec77 字节不动点。
+
+EN: p.6.7.10 unified cooperative preemption (2026-09-04) — new `gosched()` builtin
+(explicit yield point, non-waiting; dispatched per module shape: simple →
+trm_lite_sched$gosched, complex → trm_lite_ws$gosched); both forms add after_task
+scheduler-point check (explicit gosched or timeslice counter S_SLICE_LIMIT=8) +
+1ms give-wait; tiec worker codegen instrumented after task_done. Probes
+preempt_fair_simple/ctx (6 long tasks with in-body gosched + 60 light): len=66
+unique tid_set=4 — long tasks yield, fairness, no task loss — PASS x3; full p.6.7
+suite + m6_actor + demos + trm-lite tests zero regression; bootstrap tiec76→tiec77
+fixpoint.
+
 ## [feat] p.6.7.9 复杂形态 per-P 细锁（C-deque）（2026-09-04）
 
 - **运行时**（trm-lite/core/mnn/sched_ws.tie）：去掉全局单 CS（原 g_cs 既做队列
