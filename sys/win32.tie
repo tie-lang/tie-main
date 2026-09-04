@@ -1,0 +1,822 @@
+type tie<class>
+// ============================================================================
+// sys/win32.tie —— 平台专用层首期（命名空间 sys_win32） p.6.6.23
+// Windows 平台专用：注册表 / 系统信息 / 剪贴板 / 环境变量 / 用户目录 /
+// 窗口消息 / 进程枚举 / 服务枚举 / 网络适配器 / 硬件信息。
+// 全部 unsafe extern fn 直绑 kernel32/user32/shell32/advapi32（MSVC 默认
+// 默认库自动链入，net 程序无需额外 -l）。范式照 ext/ecdsa.tie：
+//  `unsafe extern fn X(...) -> i32` 声明于文件顶层（命名空间体外），
+//  `unsafe { ... }` 块内直调，缓冲用 alloc/deref/deref_write/ptr_add/
+//  addr_of/as_u8/as_i64/as_u32 现成原语，宽字符串用 write_wide 手拼
+//  UTF-16LE 字节（含代理对），wide_to 解码回 tie 字符串。
+//
+// 接口契约（失败统一返回空串 / 0 / 空表）：
+//   reg_read(root,key,name)->string   reg_write(root,key,name,val)->bool
+//   reg_enum(root,key)->table<string>
+//       root 传 i64 常量：0x80000000 HKCR / 0x80000001 HKCU /
+//       0x80000002 HKLM / 0x80000003 HKU
+//   os_version()->string    "major.minor.build"（RtlGetVersion 真实版本）
+//   mem_info()->string      "totalKB availKB"（GlobalMemoryStatusEx）
+//   cpu_name()->string      复用 reg_read（读 C0 ProcessorNameString）
+//   clip_get()->string      clip_set(s)->bool（CF_UNICODETEXT=13）
+//   env_get(name)->string   env_set(name,val)->bool
+//   user_dir()/desktop_dir()->string（SHGetKnownFolderPath+CoTaskMemFree）
+//   win_find(cls,title)->i64   win_post(hwnd,msg,wparam,lparam)->bool
+//   proc_list()->table<string>   "pid name" 行（Toolhelp32）
+//   svc_enum()->table<string>    "name display start" 行（注册表实现，见节九偏差）
+//   net_adapters()->table<string>   "Description" 行（见下节偏差说明）
+//   hw_info()->table<string>     processors/page_size/total_kb/avail_kb 行
+//   wide_from(s)->table<i64>   wide_to(b)->string  UTF-16 宽字符桥（pub 供探针）
+//
+// 链入事实（本机 clang MSVC 实测，toolchain 恒加 -luser32 -lgdi32 -lshell32，
+//   plus MSVC 默认库带 kernel32/advapi32/ole32/ntdll）：
+//   ✓ kernel32  ✓ user32  ✓ shell32  ✓ advapi32  ✓ ole32(CoTaskMemFree)  ✓ ntdll
+//   ✗ iphlpapi（GetAdaptersInfo）——非自动链，且不改 compiler/toolchain，故
+//     net_adapters 改用注册表 HKLM\...\NetworkCards 枚举 Description（只读、
+//     离线确定性），不再返回每卡 IP 列表（偏离 GetAdaptersInfo 语义，已注释）。
+//   GlobalMemoryStatusEx 无 W 后缀（非 ANSI/Unicode 对），勿写成 *W。
+//
+// 偏差说明（对误差标注的做保守放行，探针只做确定性存在断言）：
+//   - win_find 空串参数按「空串→传空缓冲」，而非 NULL（tie ptr<u8> 形参不能
+//     接收 0 字面量）；语义上等价匹配不到窗口，探针不精断 win_find/win_post。
+//   - svc_enum 非管理员对 SCM 枚举句柄打开可能失败 → 返回空表（探针 len>=0）。
+// ============================================================================
+
+// ---- Windows extern（文件顶层；kernel32/user32/shell32/advapi32 自动链入）----
+// 注册表（advapi32）
+unsafe extern fn RegOpenKeyExW(hKey: i64, lpSubKey: ptr<u8>, ulOptions: u32, samDesired: u32, phkResult: ptr<i64>) -> i32
+unsafe extern fn RegQueryValueExW(hKey: i64, lpValueName: ptr<u8>, lpReserved: i64, lpType: ptr<u32>, lpData: ptr<u8>, lpcbData: ptr<u32>) -> i32
+unsafe extern fn RegSetValueExW(hKey: i64, lpValueName: ptr<u8>, Reserved: u32, dwType: u32, lpData: ptr<u8>, cbData: u32) -> i32
+unsafe extern fn RegEnumKeyW(hKey: i64, dwIndex: u32, lpName: ptr<u8>, cchName: u32) -> i32
+unsafe extern fn RegCloseKey(hKey: i64) -> i32
+
+// 系统信息（kernel32 / ntdll）
+unsafe extern fn RtlGetVersion(lpVersionInformation: ptr<u8>) -> i32
+unsafe extern fn GlobalMemoryStatusEx(lpBuffer: ptr<u8>) -> i32
+unsafe extern fn GetSystemInfo(lpSystemInfo: ptr<u8>) -> i32
+
+// 剪贴板（user32）
+unsafe extern fn OpenClipboard(hWndNewOwner: i64) -> i32
+unsafe extern fn EmptyClipboard() -> i32
+unsafe extern fn CloseClipboard() -> i32
+unsafe extern fn GetClipboardData(uFormat: u32) -> i64
+unsafe extern fn SetClipboardData(uFormat: u32, hMem: i64) -> i64
+
+// 全局内存（kernel32）
+unsafe extern fn GlobalAlloc(uFlags: u32, dwBytes: u32) -> i64
+unsafe extern fn GlobalLock(hMem: i64) -> i64
+unsafe extern fn GlobalUnlock(hMem: i64) -> i32
+unsafe extern fn GlobalSize(hMem: i64) -> u32
+
+// 环境变量（kernel32）
+unsafe extern fn GetEnvironmentVariableW(lpName: ptr<u8>, lpBuffer: ptr<u8>, nSize: u32) -> u32
+unsafe extern fn SetEnvironmentVariableW(lpName: ptr<u8>, lpValue: ptr<u8>) -> i32
+
+// 已知文件夹（shell32）+ COM 释放（ole32）
+unsafe extern fn SHGetKnownFolderPath(rfid: ptr<u8>, dwFlags: u32, hToken: i64, ppszPath: ptr<i64>) -> i32
+unsafe extern fn CoTaskMemFree(pv: i64) -> i32
+
+// 窗口消息（user32）
+unsafe extern fn FindWindowW(lpClassName: ptr<u8>, lpWindowName: ptr<u8>) -> i64
+unsafe extern fn PostMessageW(hWnd: i64, Msg: u32, wParam: i64, lParam: i64) -> i64
+
+// 进程快照（kernel32）
+unsafe extern fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> i64
+unsafe extern fn Process32FirstW(hSnapshot: i64, lppe: ptr<u8>) -> i32
+unsafe extern fn Process32NextW(hSnapshot: i64, lppe: ptr<u8>) -> i32
+unsafe extern fn CloseHandle(hObject: i64) -> i32
+
+// 服务枚举（advapi32）
+unsafe extern fn OpenSCManagerW(lpMachineName: i64, lpDatabaseName: i64, dwDesiredAccess: u32) -> i64
+unsafe extern fn EnumServicesStatusExW(hSCManager: i64, InfoLevel: u32, dwServiceType: u32, dwServiceState: u32, lpServices: ptr<u8>, cbBufSize: u32, pcbBytesNeeded: ptr<u32>, lpServicesReturned: ptr<u32>, lpResumeHandle: ptr<u32>, pszGroupName: i64) -> i32
+unsafe extern fn CloseServiceHandle(hSCObject: i64) -> i32
+
+namespace sys_win32 {
+
+// ============================================================================
+// 一、UTF-16 宽字符桥（tie 全量实现；pub 化供探针往返断言）
+// ============================================================================
+
+// 码点 → UTF-8 字节，追加进 string_builder（单遍 O(n)，规避字符串逐段拼接）。
+// sb_append_byte 内部对 i64 字节值做截断（见 std），故直传 i64，勿包 as_u8。
+func utf8_append(sb: i64, cp: i64) {
+    if cp <= 0x7F {
+        sb_append_byte(sb, cp)
+    } else if cp <= 0x7FF {
+        sb_append_byte(sb, 0xC0 | (cp >> 6))
+        sb_append_byte(sb, 0x80 | (cp & 0x3F))
+    } else if cp <= 0xFFFF {
+        sb_append_byte(sb, 0xE0 | (cp >> 12))
+        sb_append_byte(sb, 0x80 | ((cp >> 6) & 0x3F))
+        sb_append_byte(sb, 0x80 | (cp & 0x3F))
+    } else {
+        sb_append_byte(sb, 0xF0 | (cp >> 18))
+        sb_append_byte(sb, 0x80 | ((cp >> 12) & 0x3F))
+        sb_append_byte(sb, 0x80 | ((cp >> 6) & 0x3F))
+        sb_append_byte(sb, 0x80 | (cp & 0x3F))
+    }
+}
+
+// tie 字符串 → UTF-16LE 字节表（table<i64>，不含尾 0）。逐码点：
+// ≤0xFFFF 单码元；>0xFFFF 拆高位代理 0xD800.. + 低位代理 0xDC00..。
+pub func wide_from(s: string) -> table<i64> {
+    var out = table_new_i64()
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        var cp = char_code(str_char(s, i))
+        if cp > 0xFFFF {
+            var v = cp - 0x10000
+            var hi = 0xD800 + (v >> 10)
+            table_push(out, hi & 0xFF)
+            table_push(out, (hi >> 8) & 0xFF)
+            var lo = 0xDC00 + (v & 0x3FF)
+            table_push(out, lo & 0xFF)
+            table_push(out, (lo >> 8) & 0xFF)
+        } else {
+            table_push(out, cp & 0xFF)
+            table_push(out, (cp >> 8) & 0xFF)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// UTF-16LE 字节表 → tie 字符串（反向代理对合并；孤立代理跳过）。返回
+// UTF-8 编码（tie 内部）。单遍 string_builder，O(n)。
+pub func wide_to(b: table<i64>) -> string {
+    var sb = string_builder()
+    var n = len(b)
+    if (n & 1) != 0 {
+        n = n - 1
+    }
+    var i: i64 = 0
+    while i + 1 < n {
+        var u = as_i64(b[i]) | (as_i64(b[i + 1]) << 8)
+        if u >= 0xD800 && u <= 0xDBFF {
+            if i + 3 < n {
+                var lo = as_i64(b[i + 2]) | (as_i64(b[i + 3]) << 8)
+                if lo >= 0xDC00 && lo <= 0xDFFF {
+                    var cp = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00)
+                    utf8_append(sb, cp)
+                    i = i + 4
+                    continue
+                }
+            }
+            i = i + 2
+            continue
+        }
+        if u >= 0xDC00 && u <= 0xDFFF {
+            i = i + 2
+            continue
+        }
+        utf8_append(sb, u)
+        i = i + 2
+    }
+    return sb_build(sb)
+}
+
+// UTF-16 文本字节数（不含尾 0）：每码点 2 字节，代理对再 +2。
+func wide_byte_len(s: string) -> i64 {
+    var n = str_len(s)
+    var total: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var cp = char_code(str_char(s, i))
+        total = total + 2
+        if cp > 0xFFFF {
+            total = total + 2
+        }
+        i = i + 1
+    }
+    return total
+}
+
+// ---- 内部：用 write_wide/wcstr/wide_cstr 与 alloc 缓冲在 unsafe 下与 API 交互 ----
+
+// 把 s 的 UTF-16LE 字节（含代理对）+ 结尾双 0 写进 p。
+unsafe fn write_wide(p: ptr<u8>, s: string) {
+    var n = str_len(s)
+    var o: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var cp = char_code(str_char(s, i))
+        if cp > 0xFFFF {
+            var v = cp - 0x10000
+            var hi = 0xD800 + (v >> 10)
+            var lo = 0xDC00 + (v & 0x3FF)
+            deref_write(ptr_add(p, o), as_u8(hi & 0xFF))
+            deref_write(ptr_add(p, o + 1), as_u8((hi >> 8) & 0xFF))
+            deref_write(ptr_add(p, o + 2), as_u8(lo & 0xFF))
+            deref_write(ptr_add(p, o + 3), as_u8((lo >> 8) & 0xFF))
+            o = o + 4
+        } else {
+            deref_write(ptr_add(p, o), as_u8(cp & 0xFF))
+            deref_write(ptr_add(p, o + 1), as_u8((cp >> 8) & 0xFF))
+            o = o + 2
+        }
+        i = i + 1
+    }
+    deref_write(ptr_add(p, o), as_u8(0))
+    deref_write(ptr_add(p, o + 1), as_u8(0))
+}
+
+// s → 自动 alloc 的 UTF-16LE（带尾 0）缓冲。
+unsafe fn wcstr(s: string) -> ptr<u8> {
+    var p: ptr<u8> = alloc(wide_byte_len(s) + 2)
+    write_wide(p, s)
+    return p
+}
+
+// 读 p 处的 UTF-16LE 宽 C 串直到 0 → tie 字符串。
+unsafe fn wide_cstr(p: ptr<u8>) -> string {
+    var bt = table_new_i64()
+    var i: i64 = 0
+    while true {
+        var u = as_i64(deref(ptr_add(p, i))) | (as_i64(deref(ptr_add(p, i + 1))) << 8)
+        if u == 0 {
+            break
+        }
+        table_push(bt, u & 0xFF)
+        table_push(bt, (u >> 8) & 0xFF)
+        i = i + 2
+    }
+    return wide_to(bt)
+}
+
+// 读 p 处的宽 C 串码元数（不含尾 0）。
+unsafe fn wide_len(p: ptr<u8>) -> i64 {
+    var i: i64 = 0
+    var c: i64 = 0
+    while true {
+        var u = as_i64(deref(ptr_add(p, i))) | (as_i64(deref(ptr_add(p, i + 1))) << 8)
+        if u == 0 {
+            return c
+        }
+        c = c + 1
+        i = i + 2
+    }
+    return c
+}
+
+// 缓冲区小端 u32 读。
+unsafe fn rd_u32(p: ptr<u8>, off: i64) -> i64 {
+    return as_i64(deref(ptr_add(p, off))) |
+        (as_i64(deref(ptr_add(p, off + 1))) << 8) |
+        (as_i64(deref(ptr_add(p, off + 2))) << 16) |
+        (as_i64(deref(ptr_add(p, off + 3))) << 24)
+}
+
+// 缓冲区小端 u32 写（结构体 dwSize/dwLength 等多字节字段用，勿用单字节写）。
+unsafe fn wr_u32(p: ptr<u8>, off: i64, v: i64) {
+    deref_write(ptr_add(p, off), as_u8(v & 0xFF))
+    deref_write(ptr_add(p, off + 1), as_u8((v >> 8) & 0xFF))
+    deref_write(ptr_add(p, off + 2), as_u8((v >> 16) & 0xFF))
+    deref_write(ptr_add(p, off + 3), as_u8((v >> 24) & 0xFF))
+}
+
+// 缓冲区小端 8 字节（i64）读（物理内存大小/指针值等）。
+unsafe fn rd_u64(p: ptr<u8>, off: i64) -> i64 {
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < 8 {
+        v = v | (as_i64(deref(ptr_add(p, off + k))) << (8 * k))
+        k = k + 1
+    }
+    return v
+}
+
+// ============================================================================
+// 二、注册表
+// ============================================================================
+
+// 读一个注册表值：REG_SZ→文本；REG_DWORD→十进制文本；失败→""。只读。
+// 两段式取长：先以小缓冲试探（RegQueryValueExW 超长设 234=ERROR_MORE_DATA，
+//   lpcbData 回填所需字节），再精确 alloc 后读值。
+pub func reg_read(root: i64, key: string, name: string) -> string {
+    unsafe {
+        var hk: i64 = 0
+        var keyb = wcstr(key)
+        if RegOpenKeyExW(root, keyb, 0, 0x20019, addr_of(hk)) != 0 {
+            return ""
+        }
+        var nameb = wcstr(name)
+        var sz: u32 = 4
+        var typ: u32 = 0
+        var dummy = alloc(4)
+        var q1 = RegQueryValueExW(hk, nameb, 0, addr_of(typ), dummy, addr_of(sz))
+        if q1 != 0 && q1 != 234 {
+            RegCloseKey(hk)
+            return ""
+        }
+        var need = as_i64(sz)
+        if need < 4 {
+            need = 4
+        }
+        var buf = alloc(need)
+        var typ2: u32 = 0
+        var rsz: u32 = as_u32(need)
+        var q2 = RegQueryValueExW(hk, nameb, 0, addr_of(typ2), buf, addr_of(rsz))
+        if q2 != 0 {
+            RegCloseKey(hk)
+            return ""
+        }
+        if typ2 == 4 {
+            // REG_DWORD：4 字节小端 → 十进制文本
+            var dv: i64 = rd_u32(buf, 0)
+            RegCloseKey(hk)
+            return to_string(dv)
+        }
+        if typ2 == 1 {
+            // REG_SZ：UTF-16 文本扣尾 0
+            var tb = as_i64(rsz) - 2
+            if tb < 0 {
+                tb = 0
+            }
+            var bt = table_new_i64()
+            var j: i64 = 0
+            while j < tb {
+                table_push(bt, as_i64(deref(ptr_add(buf, j))))
+                j = j + 1
+            }
+            RegCloseKey(hk)
+            return wide_to(bt)
+        }
+        RegCloseKey(hk)
+        return ""
+    }
+}
+
+// 写一个注册表值：纯数字→REG_DWORD，否则→REG_SZ；成功 true。
+pub func reg_write(root: i64, key: string, name: string, val: string) -> bool {
+    unsafe {
+        var hk: i64 = 0
+        var keyb = wcstr(key)
+        if RegOpenKeyExW(root, keyb, 0, 0x20006, addr_of(hk)) != 0 {
+            return false
+        }
+        var nameb = wcstr(name)
+        var ok: i64 = -1
+        if is_num(val) {
+            var dv = parse_int(val)
+            var db = alloc(4)
+            deref_write(db, as_u8(dv & 0xFF))
+            deref_write(ptr_add(db, 1), as_u8((dv >> 8) & 0xFF))
+            deref_write(ptr_add(db, 2), as_u8((dv >> 16) & 0xFF))
+            deref_write(ptr_add(db, 3), as_u8((dv >> 24) & 0xFF))
+            ok = as_i64(RegSetValueExW(hk, nameb, 0, 4, db, 4))
+        } else {
+            var blob = wide_byte_len(val)
+            var wb = alloc(blob + 2)
+            write_wide(wb, val)
+            ok = as_i64(RegSetValueExW(hk, nameb, 0, 1, wb, as_u32(blob + 2)))
+        }
+        RegCloseKey(hk)
+        return ok == 0
+    }
+}
+
+// 枚举某键下的直接子键名 → table<string>。
+pub func reg_enum(root: i64, key: string) -> table<string> {
+    var out = table_new_string()
+    unsafe {
+        var hk: i64 = 0
+        var keyb = wcstr(key)
+        if RegOpenKeyExW(root, keyb, 0, 0x20019, addr_of(hk)) != 0 {
+            return out
+        }
+        var buf = alloc(520)
+        var idx: i64 = 0
+        while true {
+            var rc = as_i64(RegEnumKeyW(hk, as_u32(idx), buf, 260))
+            if rc == 259 {
+                break
+            }
+            if rc != 0 {
+                break
+            }
+            table_push(out, wide_cstr(buf))
+            idx = idx + 1
+        }
+        RegCloseKey(hk)
+    }
+    return out
+}
+
+// val 是否为十进制整数（可带 +/-）。
+func is_num(v: string) -> bool {
+    var n = str_len(v)
+    if n == 0 {
+        return false
+    }
+    var i: i64 = 0
+    if str_char(v, 0) == "-" || str_char(v, 0) == "+" {
+        i = 1
+    }
+    if i >= n {
+        return false
+    }
+    while i < n {
+        var cp = char_code(str_char(v, i))
+        if cp < 48 || cp > 57 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// ============================================================================
+// 三、系统信息
+// ============================================================================
+
+// 真实操作系统版本 → "major.minor.build"（RtlGetVersion，不受 manifest 屏蔽）。
+pub func os_version() -> string {
+    unsafe {
+        var vi = alloc(284)
+        wr_u32(vi, 0, 284)
+        if as_i64(RtlGetVersion(vi)) != 0 {
+            return ""
+        }
+        var major = rd_u32(vi, 4)
+        var minor = rd_u32(vi, 8)
+        var build = rd_u32(vi, 12)
+        return to_string(major) + "." + to_string(minor) + "." + to_string(build)
+    }
+}
+
+// 物理内存 → "totalKB availKB"（GlobalMemoryStatusEx）。
+pub func mem_info() -> string {
+    unsafe {
+        var ms = alloc(64)
+        var i: i64 = 0
+        while i < 64 {
+            deref_write(ptr_add(ms, i), as_u8(0))
+            i = i + 1
+        }
+        deref_write(ms, as_u8(64))
+        if as_i64(GlobalMemoryStatusEx(ms)) == 0 {
+            return ""
+        }
+        var total = rd_u64(ms, 8)
+        var avail = rd_u64(ms, 16)
+        return to_string(total >> 10) + " " + to_string(avail >> 10)
+    }
+}
+
+// CPU 名称：复用 reg_read 直读 HKLM\HARDWARE\...\CentralProcessor\0。
+pub func cpu_name() -> string {
+    var key = "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"
+    return reg_read(0x80000002, key, "ProcessorNameString")
+}
+
+// ============================================================================
+// 四、剪贴板（UTF-16 双向转译）
+// ============================================================================
+
+// 读剪贴板 CF_UNICODETEXT → tie 字符串；无文本/失败→""。只读（不破坏内容）。
+pub func clip_get() -> string {
+    unsafe {
+        if as_i64(OpenClipboard(0)) == 0 {
+            return ""
+        }
+        var h = GetClipboardData(13)
+        if h == 0 {
+            CloseClipboard()
+            return ""
+        }
+        var lp = GlobalLock(h)
+        if lp == 0 {
+            CloseClipboard()
+            return ""
+        }
+        var bytes = as_i64(GlobalSize(h))
+        var nb = bytes - 2
+        if nb < 0 {
+            nb = 0
+        }
+        var bt = table_new_i64()
+        var i: i64 = 0
+        while i < nb {
+            table_push(bt, as_i64(deref(ptr_add(int_to_ptr(lp), i))))
+            i = i + 1
+        }
+        GlobalUnlock(h)
+        CloseClipboard()
+        return wide_to(bt)
+    }
+}
+
+// 写 s → 剪贴板（CF_UNICODETEXT）；成功 true。
+pub func clip_set(s: string) -> bool {
+    unsafe {
+        if as_i64(OpenClipboard(0)) == 0 {
+            return false
+        }
+        if as_i64(EmptyClipboard()) == 0 {
+            CloseClipboard()
+            return false
+        }
+        var blob = wide_byte_len(s)
+        var h = GlobalAlloc(0x2, as_u32(blob + 2))
+        if h == 0 {
+            CloseClipboard()
+            return false
+        }
+        var lp = GlobalLock(h)
+        if lp == 0 {
+            CloseClipboard()
+            return false
+        }
+        write_wide(int_to_ptr(lp), s)
+        GlobalUnlock(h)
+        var sr = SetClipboardData(13, h)
+        CloseClipboard()
+        return sr != 0
+    }
+}
+
+// ============================================================================
+// 五、环境变量
+// ============================================================================
+
+// 读环境变量；不存在/失败→""。单缓冲一次读取（nSize 足够大，env 值通常 < 32KB）。
+pub func env_get(name: string) -> string {
+    unsafe {
+        var nameb = wcstr(name)
+        var buf = alloc(40000)
+        var n = as_i64(GetEnvironmentVariableW(nameb, buf, 20000))
+        if n == 0 {
+            return ""
+        }
+        // 返回值 n = 写入缓冲的字符数（不含结尾 0）；读 n 个码元字节
+        var units = n
+        var bt = table_new_i64()
+        var i: i64 = 0
+        while i < units * 2 {
+            table_push(bt, as_i64(deref(ptr_add(buf, i))))
+            i = i + 1
+        }
+        return wide_to(bt)
+    }
+}
+
+// 写环境变量（进程本地）；成功 true。
+pub func env_set(name: string, val: string) -> bool {
+    unsafe {
+        var nameb = wcstr(name)
+        var valb = wcstr(val)
+        return as_i64(SetEnvironmentVariableW(nameb, valb)) != 0
+    }
+}
+
+// ============================================================================
+// 六、用户目录
+// ============================================================================
+
+// 用户主目录 → 路径串（SHGetKnownFolderPath + CoTaskMemFree）。
+pub func user_dir() -> string {
+    return known_folder(0)
+}
+
+// 桌面目录 → 路径串。
+pub func desktop_dir() -> string {
+    return known_folder(1)
+}
+
+// 0=Profile(5E6C858F-0E22-4760-9AFE-EA3317B67173) 1=Desktop(B4BFCC3A-...)。
+func known_folder(which: i64) -> string {
+    unsafe {
+        var guid = alloc(16)
+        if which == 1 {
+            // FOLDERID_Desktop = {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}（小端 data1）
+            fill_guid(guid, 0x3A, 0xCC, 0xBF, 0xB4, 0x2C, 0xDB, 0x4C, 0x42,
+                0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41)
+        } else {
+            // FOLDERID_Profile = {5E6C858F-0E22-4760-9AFE-EA3317B67173}
+            fill_guid(guid, 0x8F, 0x85, 0x6C, 0x5E, 0x22, 0x0E, 0x60, 0x47,
+                0x9A, 0xFE, 0xEA, 0x33, 0x17, 0xB6, 0x71, 0x73)
+        }
+        var pp: i64 = 0
+        if as_i64(SHGetKnownFolderPath(guid, 0, 0, addr_of(pp))) != 0 {
+            return ""
+        }
+        var res: string = wide_cstr(int_to_ptr(pp))
+        CoTaskMemFree(pp)
+        return res
+    }
+}
+
+// 按 16 字节写 GUID（小端 DWORD/WORD + 原始 Data4）。
+unsafe fn fill_guid(p: ptr<u8>, b0: i64, b1: i64, b2: i64, b3: i64, b4: i64, b5: i64, b6: i64, b7: i64,
+    b8: i64, b9: i64, b10: i64, b11: i64, b12: i64, b13: i64, b14: i64, b15: i64) {
+    deref_write(ptr_add(p, 0), as_u8(b0))
+    deref_write(ptr_add(p, 1), as_u8(b1))
+    deref_write(ptr_add(p, 2), as_u8(b2))
+    deref_write(ptr_add(p, 3), as_u8(b3))
+    deref_write(ptr_add(p, 4), as_u8(b4))
+    deref_write(ptr_add(p, 5), as_u8(b5))
+    deref_write(ptr_add(p, 6), as_u8(b6))
+    deref_write(ptr_add(p, 7), as_u8(b7))
+    deref_write(ptr_add(p, 8), as_u8(b8))
+    deref_write(ptr_add(p, 9), as_u8(b9))
+    deref_write(ptr_add(p, 10), as_u8(b10))
+    deref_write(ptr_add(p, 11), as_u8(b11))
+    deref_write(ptr_add(p, 12), as_u8(b12))
+    deref_write(ptr_add(p, 13), as_u8(b13))
+    deref_write(ptr_add(p, 14), as_u8(b14))
+    deref_write(ptr_add(p, 15), as_u8(b15))
+}
+
+// ============================================================================
+// 七、窗口消息
+// ============================================================================
+
+// 按类名/窗口名找顶层窗口句柄；两参皆可空串（空→传空缓冲，见文件头偏差）。
+pub func win_find(cls: string, title: string) -> i64 {
+    unsafe {
+        var c = wcstr(cls)
+        var t = wcstr(title)
+        return FindWindowW(c, t)
+    }
+}
+
+// 向窗口投递消息：成功 true（PostMessageW 非 0）。
+pub func win_post(hwnd: i64, msg: i64, wparam: i64, lparam: i64) -> bool {
+    unsafe {
+        return PostMessageW(hwnd, as_u32(msg), wparam, lparam) != 0
+    }
+}
+
+// ============================================================================
+// 八、进程枚举
+// ============================================================================
+
+// 进程快照 → "pid name" 行表（Toolhelp32；Process32FirstW/NextW）。
+pub func proc_list() -> table<string> {
+    var out = table_new_string()
+    unsafe {
+        var snap = CreateToolhelp32Snapshot(0x2, 0)
+        if snap < 0 {
+            return out
+        }
+        var pe = alloc(568)
+        // PROCESSENTRY32W dwSize=568（ULONG_PTR th32DefaultHeapID 8 字节对齐后
+        // szExeFile@44，结构体 568 字节——实测以 dwSize=568 为 Process32FirstW 接受）
+        wr_u32(pe, 0, 568)
+        var first = as_i64(Process32FirstW(snap, pe))
+        while first != 0 {
+            var pid = rd_u32(pe, 8)
+            var name = wide_cstr(ptr_add(pe, 44))
+            table_push(out, to_string(pid) + " " + name)
+            first = as_i64(Process32NextW(snap, pe))
+        }
+        CloseHandle(snap)
+    }
+    return out
+}
+
+// ============================================================================
+// 九、服务枚举
+// ============================================================================
+
+// 服务枚举 → "name display start" 行。实现走注册表：HKLM\SYSTEM\
+// CurrentControlSet\Services 的直接子键即服务名（权限无关、离线确定性），
+// DisplayName 为 REG_SZ 显示名，Start 为 REG_DWORD 启动类型（2=自动/3=手动/
+// 4=禁用，作 status 代理）。已知偏差：**未采用** OpenSCManagerW+
+// EnumServicesStatusExW——实测其 inline 字符串布局（全部结构体 + 尾部字符串
+// 池）在 tie int_to_ptr 走表时跨条目地址不可靠、易越界崩溃，非管理员枚举
+// 句柄也别以打开；注册表方案以「服务定义 + 启动类型」替代「运行时运行态」。
+// （OpenSCManagerW/EnumServicesStatusExW/CloseServiceHandle 已声明于文件顶层。）
+pub func svc_enum() -> table<string> {
+    var out = table_new_string()
+    var root = 0x80000002
+    var base = "SYSTEM\\CurrentControlSet\\Services"
+    var subs = reg_enum(root, base)
+    var i: i64 = 0
+    while i < len(subs) {
+        var sk = subs[i]
+        if str_len(sk) == 0 {
+            i = i + 1
+            continue
+        }
+        var disp = reg_read(root, base + "\\" + sk, "DisplayName")
+        var start = reg_read(root, base + "\\" + sk, "Start")
+        table_push(out, sk + " " + disp + " " + start)
+        i = i + 1
+    }
+    return out
+}
+
+// ============================================================================
+// 十、网络适配器（注册表回退；iphlpapi 非自动链，见文件头）
+// ============================================================================
+
+// 网络适配器名列表（每行一个适配器 Description）。GetAdaptersInfo(iphlpapi)
+// 在纯 tie 程序不可链（非 MSVC 默认库、toolchain 亦未加），故改枚举注册表
+// HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkCards 直接子键，
+// 取各卡 Description 只读值——离线确定性、权限无关。不返回每卡 IP 列表
+// （偏离 GetAdaptersInfo 语义的已知偏差）。
+pub func net_adapters() -> table<string> {
+    var out = table_new_string()
+    var root = 0x80000002
+    var base = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkCards"
+    var subs = reg_enum(root, base)
+    var i: i64 = 0
+    while i < len(subs) {
+        var desc = reg_read(root, base + "\\" + subs[i], "Description")
+        if str_len(desc) > 0 {
+            table_push(out, desc)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ============================================================================
+// 十一、硬件信息
+// ============================================================================
+
+// 硬件信息 → "proc=N"、"page=N"、"total_kb=N"、"avail_kb=N" 行（GetSystemInfo
+// + GlobalMemoryStatusEx 复用）。
+pub func hw_info() -> table<string> {
+    var out = table_new_string()
+    unsafe {
+        var si = alloc(64)
+        var k: i64 = 0
+        while k < 64 {
+            deref_write(ptr_add(si, k), as_u8(0))
+            k = k + 1
+        }
+        GetSystemInfo(si)
+        // SYSTEM_INFO(x64)：wProcessorArchitecture@0(WORD, 兼容读 u32|0xFFFF)
+        // dwPageSize@4 dwNumberOfProcessors@32
+        var procs = rd_u32(si, 32)
+        var page = rd_u32(si, 4)
+        var arch = rd_u32(si, 0) & 0xFFFF
+        table_push(out, "proc=" + to_string(procs))
+        table_push(out, "page=" + to_string(page))
+        table_push(out, "arch=" + to_string(arch))
+    }
+    var mem = mem_info()
+    var sp = str_find(mem, " ")
+    if sp >= 0 {
+        var tk = str_slice(mem, 0, sp)
+        var ak = str_slice(mem, sp + 1, str_len(mem))
+        table_push(out, "total_kb=" + tk)
+        table_push(out, "avail_kb=" + ak)
+    }
+    return out
+}
+
+// ---- 内部字符串小工具（str_slice/str_find，避开外部 std 依赖）----
+func str_slice(s: string, start: i64, end: i64) -> string {
+    var n = str_len(s)
+    var lo: i64 = start
+    var hi: i64 = end
+    if lo < 0 {
+        lo = 0
+    }
+    if lo > n {
+        lo = n
+    }
+    if hi > n {
+        hi = n
+    }
+    var out: string = ""
+    var i: i64 = lo
+    while i < hi {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+func str_find(s: string, sub: string) -> i64 {
+    var n = str_len(s)
+    var m = str_len(sub)
+    if m == 0 {
+        return 0
+    }
+    if m > n {
+        return -1
+    }
+    var i: i64 = 0
+    while i <= n - m {
+        var j: i64 = 0
+        var matched = true
+        while j < m {
+            if str_char(s, i + j) != str_char(sub, j) {
+                matched = false
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+}   // namespace sys_win32
