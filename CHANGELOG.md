@@ -22,6 +22,138 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [fix] std/json 嵌套对象/数组子条目污染父键/元素区间——收集-登记两阶段根治（2026-09-05）
+
+- 根因（RCA）：json.parse_object/parse_array 旧实现先 push 键（或记 start）+ 值占位、再解析值，
+  嵌套对象/数组解析时把内层键值对/元素 push 进共享平行表，恰落入父区间 [start, start+cnt)，
+  导致「嵌套块之后的外层兄弟键/元素」丢失（如 `{"a":{"b":1},"c":2}` 的 c 丢失、`[[1,2],[3]]`
+  外层读到 1,2）。该缺陷波及 p.6.6.22 llm 等依赖 json 的库（此前靠「把嵌套数组放对象末尾」规避）。
+- 根治：parse_object/parse_array 改为**收集-登记两阶段**——键/值（元素）先收集进局部表，整个
+  容器解析完成后统一追加登记到共享表；子块条目在父区间之外，键/元素连续。obj_keys/obj_get/
+  arr_at 访问器不变，序列化 to_str 顺序稳定。
+- 回归：tests/language/std_json.tie 验收探针 PASS；嵌套数组 + 对象后跟标量键场景实测正确；
+  p.6.6.22 llm 探针（依赖 json）31 断言 PASS。
+- 说明：yaml（p.6.6.10）同款结构在设计时即采用收集-登记，未引入此缺陷。
+
+EN: std/json nested object/array child entries polluted parent key/element ranges — parse_object/
+parse_array now collect-then-register into local tables before appending to shared flat tables, so
+child-block entries sit outside parent [start,start+cnt); sibling keys/elements after a nested block
+are no longer lost (e.g. {"a":{"b":1},"c":2} keeps c). std_json probe + llm probe regression PASS.
+
+## [feat] std/llm：OpenAI 兼容客户端——chat body 构造 + SSE 响应解析 + 可注入传输（p.6.6.22）（2026-09-05）
+
+- 新增 `std/llm.tie`（命名空间 llm，依赖 p.6.6.2 httpc + p.6.6.3 sse + p.6.6.19 json）：
+  - `build_chat_body(messages, opts)`：请求 JSON 构造 pub 化（model/temperature/stream 键值、
+    messages 数组；顺序固定可被 json.parse 完整往返）；
+  - `parse_sse_data(line)`：剥离 `data: ` 前缀取 JSON 片段（`[DONE]` 哨兵/注释/空行约定）；
+    `extract_content(json_text)`：流式 choices[0].delta.content / 非流式 message.content 提取；
+  - `complete(model, api_key, messages, opts, rd, wr)`：**传输可注入**（仿 p.6.6.8 smtp 的
+    rd()/wr() 函数对范式），成功文本入 g_out（last_out() 取回），失败负码 + last_err()；
+    `chat(...)` 为真实网络封装（httpc POST + 正文逐行 SSE），真实调用由调用方按需接入。
+- 验收：tests/llm_probe/llm_probe.tie 31 断言全 PASS（body 精确向量、SSE 行解析、content 提取、
+  注入假传输成功/非 200/坏 JSON 错误路径）；全程离线确定性。
+
+EN: std/llm OpenAI-compatible client (namespace llm): pub build_chat_body request JSON, pub
+parse_sse_data/extract_content response parsing, injectable rd()/wr() transport (smtp-style) in
+complete() with g_out/last_err, real-network chat() wrapper; 31 offline assertions PASS.
+
+## [feat] std/sqlite：SQLite 驱动——winsqlite3.dll 动态加载 C ABI 桥（p.6.6.20）（2026-09-05）
+
+- 新增 `std/sqlite.tie`（命名空间 sqlite）：open（":memory:" 支持）/exec/query/step/
+  col_count/col_name/col_int/col_str/close/last_err；一次解析 12 个 sqlite3_* 符号；
+  exec 经 errmsg 槽拷贝后 sqlite3_free；step 在 DONE/出错时自动 finalize。
+- **编译器新增 5 个最小动态调用原语**（p.6.6.20 需要，tie 无「从 i64 地址调用 C 函数」能力）：
+  `load_library(name)->i64`（LoadLibraryW）/ `get_proc(h,name)->i64`（GetProcAddress）/
+  `dyn_call(addr,a1..a5)->i64`（i32 返回 C 调用）/ `dyn_call_p(addr,a1..a5)->i64`（i64 返回）/
+  `cstr_to_string(addr)->string`；字符串实参按 const char* 零拷贝直传 tie 串布局；
+  接线 7 个 compiler 文件（ir/llvmgen_inst/irgen_expr/irgen/llvmgen_str/sbuiltin/data）。
+- **重新自举至新不动点**：旧 238CA89D…E2E2（3894784B）→ 新
+  `5F6CB91DCE27BE69717FC2DD4082F04DB90AF147B7161B08B8745C40B73C8B42`（3912192B，tiec2==tiec3
+  字节一致）；关键回归零破坏（html/xml/std_json/httpsrv 含 SSE 帧全 PASS）。
+- 验收：tests/sqlite_probe/sqlite_probe.tie 36 断言全 PASS（仅 :memory:，create/insert/select/
+  update、列名、多行、COUNT、错误 SQL→负码+last_err）。
+
+EN: std/sqlite driver (namespace sqlite) over dynamically loaded winsqlite3.dll via 5 new compiler
+primitives load_library/get_proc/dyn_call/dyn_call_p/cstr_to_string (opcode 73); rebootstraped to
+fixed point 5F6CB91D…B42 (3912192 B); 36 :memory: assertions PASS, key regressions clean.
+
+## [feat] ext/svg：SVG 解析——xml 底座上的元素语义层 + path d / transform（p.6.6.15）（2026-09-05）
+
+- 新增 `ext/svg/svg.tie`（命名空间 svg，string 平面，复用 p.6.6.5 ext/xml 的 parse/tag/attr/
+  children 底座）：元素识别（rect/circle/ellipse/line/polyline/polygon/path/g/text 等，查询式
+  不设白名单）、形状/通用属性访问、结构遍历；`parse_path_d(d)`（M/L/H/V/C/Q/Z 子集 + 隐式
+  重复展平 + 紧凑分隔/科学计数）、`parse_transform(t)`（translate/scale/rotate 子集）。
+- 畸形容错：未知命令/参数数不符/非法数字/未闭合括号/空输入恒返回空表，不挂死。
+- 验收：tests/svg_probe/svg_probe.tie 121 断言全 PASS（嵌套 g、8 类形状属性、path d 大/小写
+  全命令、transform 三形态、14 条畸形容错）；d/transform 单遍扫描无 O(n²)。
+
+EN: ext/svg (namespace svg) semantics layer over ext/xml: element/shape recognition, attr access,
+structure traversal; parse_path_d (M/L/H/V/C/Q/Z subset) and parse_transform (translate/scale/
+rotate) tokenizers, single-pass, malformed-tolerant; 121 offline assertions PASS.
+
+## [feat] ext/qr：QR 码生成——GF(256) RS + 8 掩码 + 功能图形（p.6.6.14）（2026-09-05）
+
+- 新增 `ext/qr/qr.tie`（命名空间 qr）：encode(content, ecl)（版本 1-2 自动选最小；ecl 0=L/1=M/
+  2=Q/3=H；超容量 -1 + err_msg）；数字/字母数字/字节三模式自动选择；GF(256) RS 纠错（0x11D、
+  本原 2、生成多项式综合除法）；8 种掩码全实现并按四规则罚分选最优；finder/separator/timing/
+  alignment/format info（BCH(15,5)）/dark module/quiet zone；render_ascii + 经 p.6.6.13 png
+  输出 PNG（to_png）。
+- 验收：tests/qr_probe/qr_probe.tie 54 断言全 PASS；RS 码字向量与 python qrcode 8.2 库
+  **bit 级对拍**（v1-M/v1-L/v2-M 三组写死向量 + 整矩阵逐模块比对 10 用例），全一致。
+
+EN: ext/qr QR encoder (namespace qr) v1-2: numeric/alphanumeric/byte modes, GF(256) RS, all 8
+masks with penalty-based best selection, functional patterns, format info, render_ascii and PNG
+out via png.encode; RS vectors bit-identical against python qrcode 8.2; 54 assertions PASS.
+
+## [feat] std/markdown：markdown 解析——块级元素 + 行内标记（p.6.6.12）（2026-09-05）
+
+- 新增 `std/markdown.tie`（命名空间 md，string 平面）：parse(text) -> 块句柄表；块类型
+  0-8（标题/无序有序列表/引用/代码块/表格/段落/分隔线），平行表存储 + 访问器
+  kind/btext/extra/table_rows/table_cols/cell/block_count/block_at；`inline_tokens(s)` 行内
+  解析（普通/粗/斜/行内代码/链接，链接为三元组）。
+- 子集取舍：ATX `#`/`##`、`-`/`*`/`+` 与数字列表、`>` 引用、```代码块原样保留（含语言标注）、
+  `|` 表格、`---` 分隔线；行内解析深度 1（格式元素内部不二次递归），文件头注释说明。
+- 验收：tests/md_probe/md_probe.tie 60 断言全 PASS（各块级类型、行内标记、表格行列、代码块
+  原样、畸形容错含未闭合代码块/孤立符号）。
+
+EN: std/markdown (namespace md): block-level parse (headings/lists/quote/code/table/paragraph/
+hr) into parallel-table block handles + inline tokenizer (bold/italic/link/code, link triples);
+subset documented (ATX, -/*/+ lists, fenced code verbatim, | tables); 60 assertions PASS.
+
+## [feat] ext/config：TOML 解析提升——嵌套表/数组表/内联表统一入口（p.6.6.11）（2026-09-05）
+
+- 新增 `ext/config/toml.tie`（命名空间 toml）：parse(text) -> 交错表（与 INI/KV 同构，
+  [键, 值, ...]，键用点路径 `a.b.x`/`server.0.host`，cfg.get/get_int/get_bool/has 直接通用）；
+  支持 `[a.b]` 嵌套表、`[[a]]` 数组表（多元素下标）、内联表 `{x=1,y="s"}`、基础键值
+  string/int/float/bool、整行 + 行尾 `#` 注释（引号内保留）。
+- `ext/config.tie` 新增 `parse_toml(content)` 统一入口（委托 toml.parse，与 parse_kv/parse_ini
+  并列）；既有 parse_kv/parse_ini/parse_file 行为完全不变。
+- 子集取舍（注释说明）：多行字符串 `"""`、日期/时间字面量、\uXXXX 转义、引号表头键未实现。
+- 验收：tests/toml_probe/toml_probe.tie 57 断言全 PASS（嵌套/数组表/内联/类型/注释/坏文档容错
+  + KV-INI 回归一致性）。
+
+EN: ext/config TOML support (namespace toml): nested tables [a.b], array tables [[a]], inline
+tables, basic scalars, comments -> interleaved table with dotted keys, unified via cfg.parse_toml
+alongside parse_kv/parse_ini; subset documented; 57 assertions PASS + KV/INI regression.
+
+## [feat] std/yaml：YAML 解析子集——块缩进/流式/标量/注释/折叠（p.6.6.10）（2026-09-05）
+
+- 新增 `std/yaml.tie`（命名空间 yaml，string 平面，API 句柄风格对齐 std/json）：
+  parse(text) -> 节点句柄 + type_of/int_val/float_val/str_val/arr_len/arr_at/obj_keys/obj_get/
+  is_null/err_msg；平行表节点存储。
+- 子集：块缩进 map/list 嵌套（行首空格定层级）、流式 `[]`/`{}`（单行闭合）、标量类型
+  str/int/float/bool/null/引号串（含 \u 转义可构造 ASCII）、`#` 整行/行内注释剥离（引号内
+  保留）、多行 `|`/`>` 折叠（clip 语义）；坏文档返回 -1 + err_msg 不崩溃。
+- 解析结构采用**收集-登记两阶段**（map/seq/flow 子块条目不落入父区间，避免 json 同款
+  嵌套污染——见 json 修复条目）。
+- 验收：tests/yaml_probe/yaml_probe.tie 55 断言全 PASS；200KB 输入 95ms 线性解析（防 O(n²)）。
+
+EN: std/yaml (namespace yaml) subset parser, json-aligned handle API: block-indent map/list
+nesting, flow []/{}, scalars (str/int/float/bool/null/quoted), # comments stripped (kept in
+quotes), |/> fold (clip); bad docs -> -1 + err_msg; collect-then-register avoids child-range
+pollution; 55 assertions PASS, 200KB parsed in ~95ms (linear).
+
+
 ## [fix] tsha1 通用压缩去每块表分配——digest 级 scratch 复用（p.6.10.1）（2026-09-05）
 
 - 根因（RCA）：tie 无自动回收（trm-lite GC 为显式 collect 制，编译器侧 collect 内置未接线）——

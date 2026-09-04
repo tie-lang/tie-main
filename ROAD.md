@@ -227,17 +227,17 @@ neither continues the other**.
 
 - [x] p.6.6.9 std/dns：DNS 解析（A/AAAA/TXT/MX 查询，依赖 std/net UDP）
 
-- [ ] p.6.6.10 std/yaml：YAML 解析（块缩进/流式/标量类型 → 平行表）
+- [x] p.6.6.10 std/yaml：YAML 解析（块缩进/流式/标量类型 → 平行表）
 
-- [ ] p.6.6.11 ext/config：TOML 支持提升（表/数组表/内联表，与 INI/KV 统一入口）
+- [x] p.6.6.11 ext/config：TOML 支持提升（表/数组表/内联表，与 INI/KV 统一入口）
 
-- [ ] p.6.6.12 std/markdown：markdown 解析（块级元素/行内标记 → 结构表）
+- [x] p.6.6.12 std/markdown：markdown 解析（块级元素/行内标记 → 结构表）
 
 - [x] p.6.6.13 ext/png：PNG 编解码（chunk 遍历 + 滤波 + 位深/色彩类型）
 
-- [ ] p.6.6.14 ext/qr：QR 码生成（RS 纠错 + 矩阵布局 + 版本/掩码）
+- [x] p.6.6.14 ext/qr：QR 码生成（RS 纠错 + 矩阵布局 + 版本/掩码）
 
-- [ ] p.6.6.15 ext/svg：SVG 解析（元素树 + 路径/形状结构，依赖 p.6.6.5）
+- [x] p.6.6.15 ext/svg：SVG 解析（元素树 + 路径/形状结构，依赖 p.6.6.5）
 
 - [x] p.6.6.16 std/tpl：模板引擎（`{{expr}}` 求值 + 渲染字符串/文件）
 
@@ -247,11 +247,11 @@ neither continues the other**.
 
 - [x] p.6.6.19 std/jwt：JWT（HS256/RS256 签发验证，供 p.6.6.21 会话）
 
-- [ ] p.6.6.20 std/sqlite：SQLite 驱动（C ABI 桥，参考 ext/ecdsa extern 范式）
+- [x] p.6.6.20 std/sqlite：SQLite 驱动（C ABI 桥，参考 ext/ecdsa extern 范式）
 
 - [x] p.6.6.21 Web 服务框架：std/http\_server 升级（路由表 / keep-alive / 静态文件 / SSE 推送 / JWT 会话）
 
-- [ ] p.6.6.22 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式，依赖 p.6.6.2/p.6.6.3）
+- [x] p.6.6.22 LLM 调用库：OpenAI 兼容客户端（POST + JSON + SSE 流式，依赖 p.6.6.2/p.6.6.3）
 
 - [x] p.6.6.23 sys/win32：平台专用层首期（命名空间 sys\_win32；注册表/系统信息/剪贴板/环境强化/用户目录/窗口消息 + 进程枚举/服务控制/网络接口/硬件信息）
   - 依赖方向（单向）：tls → httpc → sse；html → xml → svg；httpc → ws；tls → smtp/jwt；httpc+sse → llm
@@ -355,8 +355,8 @@ neither continues the other**.
 
 **内存治理（p.6.10，库层去分配 + 运行时自动回收；tsha1 基准内存爆炸 RCA 后立项）**
 
-| 子项            | 内容                                                                                              | 验收                                        |
-| ------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| \[x] p.6.10.1 | tsha1 通用 compress 去每块表分配：lanes/Pw 提升为 digest 级 scratch 复用（absorb 加 W 参数、fin_synth 复用 lanes/Pw 作 zrc、compress48 透传） | 四模型 KAT 探针逐字一致（n=144 通用路径覆盖）；基准不再无界涨 |
-| \[ ] p.6.10.2 | trm-lite 表内存自动回收 / collect 内置接线：tie 无自动回收（GC 显式 collect 制）→ 长跑程序（哈希基准/网络服务）内存只增不减               | 长跑探针内存有界；collect 内置可在大循环中周期调用          |
+| 子项            | 内容                                                                                                                  | 验收                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| \[x] p.6.10.1 | tsha1 通用 compress 去每块表分配：lanes/Pw 提升为 digest 级 scratch 复用（absorb 加 W 参数、fin\_synth 复用 lanes/Pw 作 zrc、compress48 透传） | 四模型 KAT 探针逐字一致（n=144 通用路径覆盖）；基准不再无界涨 |
+| \[ ] p.6.10.2 | trm-lite 表内存自动回收 / collect 内置接线：tie 无自动回收（GC 显式 collect 制）→ 长跑程序（哈希基准/网络服务）内存只增不减                                   | 长跑探针内存有界；collect 内置可在大循环中周期调用        |
 
