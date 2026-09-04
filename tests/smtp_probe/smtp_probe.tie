@@ -1,0 +1,286 @@
+type tie<logic>
+// tests/smtp_probe/smtp_probe.tie —— p.6.6.8 验收：std/smtp SMTP 发信客户端。
+// 全离线确定性探针（不连真实网络）：脚本化假服务器驱动注入会话核心 session()，
+// 覆盖 AUTH LOGIN / AUTH PLAIN / 匿名 / DATA 点填充 / 认证与 MAIL 失败 / base64 端到端。
+// 期望全部 PASS / exit 0。
+import "../../std/encoding.tie" as enc
+import "../../std/string.tie" as str
+import "../../std/smtp.tie" as smtp
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ==================== 脚本化假服务器 ====================
+// g_resp   有序服务端响应行（fake_rd 逐条返回；返回空串 = 连接关闭）
+// g_expect 期望的客户端发送序列（fake_wr 按序核对；多/漏/错置 mismatch）
+// g_sent   实际记录的全部发送（供后续独立断言）
+var g_resp: table<string> = []
+var g_rp: i64 = 0
+var g_expect: table<string> = []
+var g_xp: i64 = 0
+var g_sent: table<string> = []
+var g_sent_ok: i64 = 1     // 发送序列是否与期望一致
+
+func script_new() {
+    g_resp = table_new_string()
+    g_expect = table_new_string()
+    g_sent = table_new_string()
+    g_rp = 0
+    g_xp = 0
+    g_sent_ok = 1
+}
+
+func srecv(line: string) {
+    table_push(g_resp, line)
+}
+
+func sexpect(s: string) {
+    table_push(g_expect, s)
+}
+
+func fake_rd() -> string {
+    if g_rp < len(g_resp) {
+        var r = g_resp[g_rp]
+        g_rp = g_rp + 1
+        return r
+    }
+    return ""
+}
+
+func fake_wr(s: string) -> i64 {
+    table_push(g_sent, s)
+    if g_sent_ok == 1 {
+        if g_xp >= len(g_expect) || g_expect[g_xp] != s {
+            g_sent_ok = 0
+        }
+    }
+    g_xp = g_xp + 1
+    return len(s)
+}
+
+// 发送序列与期望完全一致且全部响应被消费
+func seq_ok() -> bool {
+    if g_sent_ok != 1 {
+        return false
+    }
+    if g_rp != len(g_resp) {
+        return false
+    }
+    if g_xp != len(g_expect) {
+        return false
+    }
+    return true
+}
+
+// 首个 "From:" 开头的发送（=DATA 载荷）
+func data_send() -> string {
+    var i: i64 = 0
+    while i < len(g_sent) {
+        if str.starts_with(g_sent[i], "From:") {
+            return g_sent[i]
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+func mk_tos() -> table<string> {
+    var t = table_new_string()
+    table_push(t, "b@example")
+    return t
+}
+
+func empty_headers() -> table<string> {
+    return table_new_string()
+}
+
+// 公共会话参数（除 body 外各场景相同）
+func do_session(body: string, auth: string) -> i64 {
+    var tos = mk_tos()
+    var hd = empty_headers()
+    return smtp.session(fake_rd, fake_wr, "smtp.example", 25, "user", "pass", auth,
+                        "a@example", tos, "hi", body, hd)
+}
+
+// ==================== 场景 1：AUTH LOGIN 完整事务 ====================
+func s1_loginsession() {
+    script_new()
+    srecv("220 smtp.example ESMTP\r\n")
+    srecv("250-tie-smtp\r\n")
+    srecv("250-AUTH LOGIN PLAIN\r\n")
+    srecv("250 OK\r\n")
+    srecv("334 VXNlcm5hbWU6\r\n")   // 334 Username:
+    srecv("334 UGFzc3dvcmQ6\r\n")   // 334 Password:
+    srecv("235 2.7.0 Authentication successful\r\n")
+    srecv("250 2.1.0 MAIL OK\r\n")
+    srecv("250 2.1.5 RCPT OK\r\n")
+    srecv("354 End data\r\n")
+    srecv("250 2.0.0 queued\r\n")
+    srecv("221 2.0.0 Bye\r\n")
+    var payload = "From: a@example\r\nTo: b@example\r\nSubject: hi\r\n\r\nline1\r\n..line2\r\nlastline\r\n.\r\n"
+    sexpect("EHLO tie-smtp\r\n")
+    sexpect("AUTH LOGIN\r\n")
+    sexpect("dXNlcg==\r\n")        // base64("user")
+    sexpect("cGFzcw==\r\n")        // base64("pass")
+    sexpect("MAIL FROM:<a@example>\r\n")
+    sexpect("RCPT TO:<b@example>\r\n")
+    sexpect("DATA\r\n")
+    sexpect(payload)
+    sexpect("QUIT\r\n")
+    var r = do_session("line1\n.line2\nlastline", "LOGIN")
+    check(r == 0, "s1 AUTH LOGIN return 0")
+    check(smtp.last_err() == "", "s1 last_err empty")
+    check(seq_ok(), "s1 send/receive sequence exact")
+    check(len(g_sent) == 9, "s1 nine commands sent")
+}
+
+// ==================== 场景 2：AUTH PLAIN ====================
+func s2_plain() {
+    script_new()
+    srecv("220 smtp.example ESMTP\r\n")
+    srecv("250-tie-smtp\r\n")
+    srecv("250-AUTH PLAIN LOGIN\r\n")
+    srecv("250 OK\r\n")
+    srecv("235 2.7.0 Authentication successful\r\n")
+    srecv("250 2.1.0 MAIL OK\r\n")
+    srecv("250 2.1.5 RCPT OK\r\n")
+    srecv("354 End data\r\n")
+    srecv("250 2.0.0 queued\r\n")
+    srecv("221 2.0.0 Bye\r\n")
+    var payload = "From: a@example\r\nTo: b@example\r\nSubject: hi\r\n\r\nline1\r\n..line2\r\nlastline\r\n.\r\n"
+    sexpect("EHLO tie-smtp\r\n")
+    sexpect("AUTH PLAIN AHVzZXIAcGFzcw==\r\n")   // base64("\0user\0pass")
+    sexpect("MAIL FROM:<a@example>\r\n")
+    sexpect("RCPT TO:<b@example>\r\n")
+    sexpect("DATA\r\n")
+    sexpect(payload)
+    sexpect("QUIT\r\n")
+    var r = do_session("line1\n.line2\nlastline", "PLAIN")
+    check(r == 0, "s2 AUTH PLAIN return 0")
+    check(seq_ok(), "s2 AUTH PLAIN single-step line exact")
+}
+
+// ==================== 场景 3：DATA 点填充 ====================
+func s3_dotstuff() {
+    script_new()
+    srecv("220 smtp.example ESMTP\r\n")
+    srecv("250 smtp.example\r\n")            // 无 AUTH：直接匿名
+    srecv("250 2.1.0 MAIL OK\r\n")
+    srecv("250 2.1.5 RCPT OK\r\n")
+    srecv("354 End data\r\n")
+    srecv("250 2.0.0 queued\r\n")
+    srecv("221 2.0.0 Bye\r\n")
+    var payload = "From: a@example\r\nTo: b@example\r\nSubject: hi\r\n\r\n..a\r\nb\r\n..\r\n\r\nx\r\n.\r\n"
+    sexpect("EHLO tie-smtp\r\n")
+    sexpect("MAIL FROM:<a@example>\r\n")
+    sexpect("RCPT TO:<b@example>\r\n")
+    sexpect("DATA\r\n")
+    sexpect(payload)
+    sexpect("QUIT\r\n")
+    var r = do_session(".a\nb\n.\n\nx\n", "none")
+    check(r == 0, "s3 dot-stuff transaction return 0")
+    var d = data_send()
+    check(d == payload, "s3 full DATA payload exact")
+    check(str.contains(d, "..a\r\n") == true, "s3 leading dot line doubled (..a)")
+    check(str.contains(d, "..\r\n") == true, "s3 lone dot line doubled (..)")
+    check(str.ends_with(d, ".\r\n") == true, "s3 DATA terminated by .CRLF")
+}
+
+// ==================== 场景 4：匿名（auth=none，服务端无 AUTH）====================
+func s4_anon() {
+    script_new()
+    srecv("220 smtp.example ESMTP\r\n")
+    srecv("250 smtp.example\r\n")            // 单行 250，无 AUTH 关键字
+    srecv("250 2.1.0 MAIL OK\r\n")
+    srecv("250 2.1.5 RCPT OK\r\n")
+    srecv("354 End data\r\n")
+    srecv("250 2.0.0 queued\r\n")
+    srecv("221 2.0.0 Bye\r\n")
+    var payload = "From: a@example\r\nTo: b@example\r\nSubject: hi\r\n\r\nline1\r\n.\r\n"
+    sexpect("EHLO tie-smtp\r\n")
+    sexpect("MAIL FROM:<a@example>\r\n")
+    sexpect("RCPT TO:<b@example>\r\n")
+    sexpect("DATA\r\n")
+    sexpect(payload)
+    sexpect("QUIT\r\n")
+    var r = do_session("line1", "none")
+    check(r == 0, "s4 anonymous return 0")
+    // 断言未发送任何 AUTH 命令
+    var any_auth = 0
+    var i: i64 = 0
+    while i < len(g_sent) {
+        if str.starts_with(g_sent[i], "AUTH") {
+            any_auth = 1
+        }
+        i = i + 1
+    }
+    check(any_auth == 0, "s4 no AUTH command sent")
+    check(seq_ok(), "s4 send/receive sequence exact")
+}
+
+// ==================== 场景 5：失败路径 ====================
+func s5_fail() {
+    // 5a 认证被拒（534/535）→ RC_AUTH=-14
+    script_new()
+    srecv("220 smtp.example ESMTP\r\n")
+    srecv("250-tie-smtp\r\n")
+    srecv("250-AUTH LOGIN PLAIN\r\n")
+    srecv("250 OK\r\n")
+    srecv("334 VXNlcm5hbWU6\r\n")
+    srecv("535 5.7.8 Authentication failed\r\n")
+    sexpect("EHLO tie-smtp\r\n")
+    sexpect("AUTH LOGIN\r\n")
+    sexpect("dXNlcg==\r\n")
+    var r = do_session("body", "LOGIN")
+    check(r == -14, "s5a auth rejected -> RC_AUTH -14")
+    check(len(smtp.last_err()) > 0, "s5a last_err nonempty")
+    // 5b MAIL 拒绝（550）→ RC_MAIL=-15
+    script_new()
+    srecv("220 smtp.example ESMTP\r\n")
+    srecv("250 smtp.example\r\n")
+    srecv("550 5.1.1 Mailbox unavailable\r\n")
+    sexpect("EHLO tie-smtp\r\n")
+    sexpect("MAIL FROM:<a@example>\r\n")
+    var r2 = do_session("body", "none")
+    check(r2 == -15, "s5b MAIL rejected -> RC_MAIL -15")
+    check(len(smtp.last_err()) > 0, "s5b last_err nonempty")
+}
+
+// ==================== 场景 6：base64 端到端固定向量 ====================
+func s6_base64() {
+    check(enc.base64_encode("user") == "dXNlcg==", "s6 b64(user)=dXNlcg==")
+    check(enc.base64_encode("pass") == "cGFzcw==", "s6 b64(pass)=cGFzcw==")
+    // 构造 "\0user\0pass" 并验证其 base64（smtp AUTH PLAIN 内部路径同此）
+    var s = string_builder()
+    sb_append_byte(s, 0)
+    sb_append(s, "user")
+    sb_append_byte(s, 0)
+    sb_append(s, "pass")
+    var plain = sb_build(s)
+    check(enc.base64_encode(plain) == "AHVzZXIAcGFzcw==", "s6 b64(\\x00user\\x00pass)=AHVzZXIAcGFzcw==")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    s1_loginsession()
+    s2_plain()
+    s3_dotstuff()
+    s4_anon()
+    s5_fail()
+    s6_base64()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}
