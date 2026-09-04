@@ -1,0 +1,116 @@
+type tie<logic>
+// tests/cron_probe/cron_probe.tie —— p.6.6.18 验收：std/cron cron 调度。
+// 全离线确定性探针（纯算术 + 字符串解析，无外设/无网络）。
+// 期望全部 PASS / exit 0。
+//
+// 时区约定：cron 语义按 UTC 日期推进（见 std/cron.tie 头注释），因此所有
+// 期望 epoch 均按 UTC 生成（datetime(..., tz=UTC).timestamp()），与实现对齐、
+// 与运行机器本地时区（Asia/Shanghai）无关。
+import "../../std/cron.tie" as cron
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ==================== 固定向量（期望 epoch 为 UTC 手工推算定稿） ====================
+func vectors_section() {
+    // 1) */5 * * * *：after=2026-09-04 08:01:07(UTC)
+    //    同日上午 08:05:00 是 after 后最近的 5 分钟刻度
+    var e1a: i64 = 1788508867   // 2026-09-04 08:01:07 UTC
+    var e1e: i64 = 1788509100   // 2026-09-04 08:05:00 UTC
+    check(cron.next("*/5 * * * *", e1a) == e1e, "*/5 five-minute next")
+
+    // 2) 0 3 * * 1-5：after=2026-09-04 08:00:00（周五，UTC）
+    //    当天 03:00 已过；下次命中为下周一（9-07）03:00:00
+    var e2a: i64 = 1788508800   // 2026-09-04 08:00:00 UTC
+    var e2e: i64 = 1788750000   // 2026-09-07 03:00:00 UTC（周一）
+    check(cron.next("0 3 * * 1-5", e2a) == e2e, "dow weekdays next monday 03:00")
+
+    // 3) 15 2 1 * *：after=2026-09-01 01:00:00（UTC）
+    //    同月同日 02:15:00 晚于 after → 命中
+    var e3a: i64 = 1788224400   // 2026-09-01 01:00:00 UTC
+    var e3e: i64 = 1788228900   // 2026-09-01 02:15:00 UTC
+    check(cron.next("15 2 1 * *", e3a) == e3e, "dom day 1 02:15 same day")
+
+    // 4) 0 0 29 2 *（闰日）：after=2026-03-01 00:00:00（UTC）
+    //   2026/2027 非闰年 2 月无 29 日；下次命中 2028-02-29 00:00:00
+    var e4a: i64 = 1772323200   // 2026-03-01 00:00:00 UTC
+    var e4e: i64 = 1835395200   // 2028-02-29 00:00:00 UTC
+    check(cron.next("0 0 29 2 *", e4a) == e4e, "leap day 2028-02-29")
+
+    // 5) dom∩dow 并集：30 4 5 * 1 = 每月 5 号 OR 周一 04:30
+    //    after=2026-09-04 00:00:00（周五，UTC）；9-05（周六）为 dom 5 → 命中
+    var e5a: i64 = 1788480000   // 2026-09-04 00:00:00 UTC
+    var e5e: i64 = 1788582600   // 2026-09-05 04:30:00 UTC
+    check(cron.next("30 4 5 * 1", e5a) == e5e, "dom/dow union dom 5 04:30")
+
+    // 7) 0 0 * * *：after 恰为某日 00:00:00（严格大于）→ 下一次为次日 00:00:00
+    var e7a: i64 = 1788480000   // 2026-09-04 00:00:00 UTC
+    var e7e: i64 = 1788566400   // 2026-09-05 00:00:00 UTC
+    check(cron.next("0 0 * * *", e7a) == e7e, "midnight strictly next day")
+}
+
+// ==================== parse 失败段 ====================
+func parse_fail_section() {
+    // 6) 非法表达式 → 0 且 last_err 非空
+    check(cron.parse("bad expr") == 0, "bad expr parse fail")
+    check(str_len(cron.last_err()) > 0, "bad expr last_err non-empty")
+
+    // 6b) 字段数不是 5 → 0
+    check(cron.parse("* * *") == 0, "three fields parse fail")
+
+    // 6c) min 越界 60 → 0 且 last_err 非空
+    check(cron.parse("60 * * * *") == 0, "min out of range parse fail")
+    check(str_len(cron.last_err()) > 0, "min out of range last_err non-empty")
+
+    // 6d) dom 越界 32 / 步进为 0 / 范围反序 → 0
+    check(cron.parse("0 0 32 * *") == 0, "dom out of range parse fail")
+    check(cron.parse("*/0 * * * *") == 0, "zero step parse fail")
+    check(cron.parse("0 0 * 5-1 *") == 0, "reversed range parse fail")
+
+    // 正确表达式在失败后仍能解析成功（结果位图正确重建）
+    var e1e: i64 = 1788509100
+    check(cron.next("*/5 * * * *", 1788508867) == e1e, "ok after prior failures")
+}
+
+// ==================== 星期换算段 ====================
+func weekday_section() {
+    check(cron.weekday(1788480000) == 5, "wd 2026-09-04 fri=5")   // 2026-09-04 周五
+    check(cron.weekday(1788566400) == 6, "wd 2026-09-05 sat=6")   // 2026-09-05 周六
+    check(cron.weekday(1788652800) == 0, "wd 2026-09-06 sun=0")   // 2026-09-06 周日
+    check(cron.weekday(1788739200) == 1, "wd 2026-09-07 mon=1")   // 2026-09-07 周一
+    check(cron.weekday(0) == 4, "wd 1970-01-01 thu=4")            // 1970-01-01 周四
+}
+
+// ==================== 永不触发段（非法日期） ====================
+func impossible_section() {
+    // 9) 0 0 30 2 *：2 月 30 日永不存在 → next 返回哨兵大整数
+    var sentinel = cron.next("0 0 30 2 *", 1772323200)   // after=2026-03-01
+    check(sentinel > 4102444800, "feb 30 never triggers -> sentinel > year 2100")
+
+    // 8 年兜底对第 4 条（闰日）无误报：0 0 29 2 * 在 2027（非闰年）无命中，
+    // after=2027-06-01（已跨过 2027 年 2 月）→ next 仍正确落在 2028-02-29
+    check(cron.next("0 0 29 2 *", 1811808000) == 1835395200, "no leap 29 hit in 2027")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    vectors_section()
+    parse_fail_section()
+    weekday_section()
+    impossible_section()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}
