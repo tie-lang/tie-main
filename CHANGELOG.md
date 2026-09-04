@@ -57,6 +57,38 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [feat] p.6.7.12 channel Go 语义：close 广播 + select 多路收发（2026-09-04）
+
+- **运行时**（trm-lite/core/chan/tl_chan.tie）：
+  · **close 广播唤醒**——ch_close 改 WakeAllConditionVariable（tl_k32 新增
+    `WakeAllConditionVariable` 声明 + tl_sync `cv_wake_all` 封装）：close 后所有
+    阻塞 recv 依次醒来、先排空残留消息再统一返回 -1（Go 语义，无丢 reader）；
+  · **ch_select 多路收发**——`ch_select(handles, actions, values) -> i64`：
+    平行数组按分支对齐（actions[i]=1 recv / -1 send）；锁内**非阻塞**轮询各
+    通道试用（recv 有消息即取写回 values 槽、send 未关未满即入队），全不可用
+    → 1ms 限时重试（至多 20 次）；表参数以容器句柄显式传入，运行时按 tl_tbl
+    布局 {cap@0,len@8,data@16,esz@24,lock@32} unsafe 裸读写（tl_chan_lib.o
+    成员零跨成员依赖）。
+- **语言入口**：新增内置 `ch_select`（is_builtin_name / builtin_expr /
+  sbuiltin / ensure_builtins 注册；与 import trm-lite 互斥报错）+ 复杂形态
+  `ctx_ch_select` 转发；三表实参经 t21_ptri 传句柄。
+- **探针**：`chan_select_probe`——顺序三分支（send 分支命中 2/值 42；recv 分支
+  命中 1/值 7 与 0/值 9）分支计数 1/1/1；60 次并发 select recv 全取回（3 发送者
+  × 20 条，无丢无重）；close 广播 4 reader 全见 -1（无丢 reader）PASS×3；
+  parity_chan 逐字节一致、chan_open_par/mix_simple 零回归；p.6.7 全套 + m6_actor
+  + demos + trm-lite 测试零回归；自举 tiec80→tiec81 字节不动点。
+
+EN: p.6.7.12 Go-style channel semantics (2026-09-04) — ch_close now **broadcasts**
+via WakeAllConditionVariable (new tl_k32 decl + tl_sync cv_wake_all) so all blocked
+recv wake, drain residual messages, then return -1 (no reader lost); new ch_select
+builtin + ctx_ch_select: parallel arrays (actions 1=recv/-1=send), non-blocking
+per-channel trial under its own lock, 1ms bounded retry; table args passed as
+handles and read via the tl_tbl layout directly. Probe chan_select_probe: sequential
+3-branch reachability (branch counts 1/1/1, exact values), 60 concurrent selects all
+recovered, close broadcast 4 readers all -1 — PASS x3; parity_chan byte-identical;
+full p.6.7 suite + m6_actor + demos + trm-lite tests zero regression; bootstrap
+tiec80->tiec81 fixpoint.
+
 ## [feat] p.6.7.11 结构化并发 WaitGroup（2026-09-04）
 
 - **运行时**（trm-lite）：新增 `core/mnn/wg.tie`（命名空间 trm_lite_wg，Go

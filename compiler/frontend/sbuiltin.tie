@@ -988,6 +988,16 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_VOID)
     }
+    // ch_select(handles, actions, values) -> i64（p.6.7.12）：命中分支下标/-1，3 参数。
+    if fn_name == "ch_select" {
+        if nargs != 3 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "ch_select() 期望 3 个参数（handles/actions/values 表），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
     // 未识别：按用户函数处理（返回 -3 表示不是内置）
     return -3
 }

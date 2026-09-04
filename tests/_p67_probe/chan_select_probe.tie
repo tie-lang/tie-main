@@ -1,0 +1,154 @@
+type tie<logic>
+// tests/_p67_probe/chan_select_probe.tie —— p.6.7.12 验收：channel Go 语义
+//（close 广播唤醒 + select 多路收发）。无任何 import（纯内置）。
+// 场景 A — select 多路（每分支均可达、计数精确）：
+//   c0/c1/c2 三通道；① send 分支：select 分支集 [c0 recv, c1 recv, c2 send 42]
+//   → 命中分支 2 且 ch_recv(c2)==42；② recv 分支：发 7 入 c1 后
+//   select([c0,c1,c2],[1,1,1],[0,0,0]) → 命中 1 且 values[1]==7；③ 发 9 入 c0 后
+//   → 命中 0 且 values[0]==9。三分支各命中一次（分支计数精确 1/1/1）。
+//   并发竞争轮：3 个发送者任务（各有 N 条入三通道）+ 主线程连做 3N 次 select
+//   recv —— 总命中数精确（无丢无重）。
+// 场景 B — close 广播：c3 上 4 个 reader 任务阻塞 recv；主线程 close(c3) →
+//   全部 reader 依次醒来看到 -1（res 四格全 -1，无丢 reader）。
+// 期望：A 分支计数 / B all=-1 / PASS / exit 0；连跑 3 次全 PASS。
+
+var g_sel_hits: table<i64> = []   // 分支命中计数（三格：0/1/2）
+var g_rd_res: table<i64> = []     // close 广播 reader 结果（四格，-1=关闭排空）
+var g_chs: table<i64> = []        // c0/c1/c2 句柄（发送者任务用）
+
+func main() {
+    var c0 = ch_open()
+    var c1 = ch_open()
+    var c2 = ch_open()
+    var c3 = ch_open()
+    g_chs = table_new_i64()
+    table_push(g_chs, c0)
+    table_push(g_chs, c1)
+    table_push(g_chs, c2)
+    g_sel_hits = table_new_i64()
+    table_push(g_sel_hits, 0)
+    table_push(g_sel_hits, 0)
+    table_push(g_sel_hits, 0)
+
+    // 场景 A：分支可达性（顺序、确定的）
+    // ① send 分支：select 集 {c0 recv, c1 recv, c2 send 42} → 命中 2, c2 有 42
+    var hs0: table<i64> = []
+    var ac0: table<i64> = []
+    var vl0: table<i64> = []
+    table_push(hs0, c0); table_push(ac0, 1); table_push(vl0, 0)
+    table_push(hs0, c1); table_push(ac0, 1); table_push(vl0, 0)
+    table_push(hs0, c2); table_push(ac0, -1); table_push(vl0, 42)
+    var h0 = ch_select(hs0, ac0, vl0)
+    g_sel_hits[h0] = g_sel_hits[h0] + 1
+    var r42 = ch_recv(c2)   // 排空：42
+    // ② recv 分支：发 7 入 c1 → select 全 recv → 命中 1 且 values[1]==7
+    ch_send(c1, 7)
+    var hs1: table<i64> = []
+    var ac1: table<i64> = []
+    var vl1: table<i64> = []
+    table_push(hs1, c0); table_push(ac1, 1); table_push(vl1, 0)
+    table_push(hs1, c1); table_push(ac1, 1); table_push(vl1, 0)
+    table_push(hs1, c2); table_push(ac1, 1); table_push(vl1, 0)
+    var h1 = ch_select(hs1, ac1, vl1)
+    g_sel_hits[h1] = g_sel_hits[h1] + 1
+    var v1 = vl1[h1]
+    // ③ recv 分支：发 9 入 c0 → select 全 recv → 命中 0 且 values[0]==9
+    ch_send(c0, 9)
+    var h2 = ch_select(hs1, ac1, vl1)
+    g_sel_hits[h2] = g_sel_hits[h2] + 1
+    var v0 = vl1[h2]
+
+    // 并发竞争轮：3 发送者各 20 条入 c0/c1/c2；主线程 60 次 select recv 全取回
+    var i: i64 = 0
+    while i < 3 {
+        var ci = i
+        var chh = g_chs[i]
+        spawn(func() -> i64 {
+            var j: i64 = 0
+            while j < 20 {
+                ch_send(chh, ci * 1000 + j)
+                j = j + 1
+            }
+            return ci
+        })
+        i = i + 1
+    }
+    var got: i64 = 0
+    var sbad: i64 = 0
+    i = 0
+    while i < 60 {
+        var hx = ch_select(hs1, ac1, vl1)
+        if hx < 0 || hx >= 3 {
+            sbad = 1
+        } else {
+            var v = vl1[hx]
+            var t2 = v / 1000
+            var s2 = v % 1000
+            if t2 < 0 || t2 >= 3 || s2 < 0 || s2 >= 20 {
+                sbad = 1
+            }
+            got = got + 1
+        }
+        i = i + 1
+    }
+    // 校验 A：h0=2, r42==42；分支命中计数 1/1/1；竞争轮 60 全取回
+    var a_ok: i64 = 1
+    if h0 != 2 || r42 != 42 || v1 != 7 || v0 != 9 {
+        a_ok = 0
+    }
+    i = 0
+    while i < 3 {
+        if g_sel_hits[i] != 1 {
+            a_ok = 0
+        }
+        i = i + 1
+    }
+    if got != 60 || sbad == 1 {
+        a_ok = 0
+    }
+    yield()
+
+    // 场景 B：close 广播（4 reader 全看到 -1）
+    var k: i64 = 0
+    while k < 4 {
+        table_push(g_rd_res, 0)
+        k = k + 1
+    }
+    k = 0
+    while k < 4 {
+        var rk = k
+        spawn(func() -> i64 {
+            var r: i64 = 0
+            var guard: i64 = 0
+            while r == 0 && guard < 400 {
+                r = ch_recv(c3)   // close 后：残留排空 → -1
+                guard = guard + 1
+            }
+            g_rd_res[rk] = r
+            return r
+        })
+        k = k + 1
+    }
+    ch_close(c3)
+    yield()
+    var b_ok: i64 = 1
+    k = 0
+    while k < 4 {
+        if g_rd_res[k] != -1 {
+            b_ok = 0
+        }
+        k = k + 1
+    }
+
+    println("h0=" + to_string(h0) + " r42=" + to_string(r42) + " v1=" + to_string(v1) + " v0=" + to_string(v0) + " hits=" + to_string(g_sel_hits[0]) + "/" + to_string(g_sel_hits[1]) + "/" + to_string(g_sel_hits[2]) + " got=" + to_string(got) + " sbad=" + to_string(sbad) + " b_all=" + to_string(g_rd_res[0]) + "/" + to_string(g_rd_res[1]) + "/" + to_string(g_rd_res[2]) + "/" + to_string(g_rd_res[3]))
+    var ok: i64 = 1
+    if a_ok != 1 || b_ok != 1 {
+        ok = 0
+    }
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

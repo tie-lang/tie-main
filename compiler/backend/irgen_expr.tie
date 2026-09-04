@@ -490,7 +490,7 @@ func is_builtin_name(nm: string) -> bool {
         return true
     }
     // ---------- channel 原语（p.6.5.7：ch_open/ch_send/ch_recv/ch_close，静态链接 trm_lite.a）----------
-    if nm == "ch_open" || nm == "ch_send" || nm == "ch_recv" || nm == "ch_close" {
+    if nm == "ch_open" || nm == "ch_send" || nm == "ch_recv" || nm == "ch_close" || nm == "ch_select" {
         return true
     }
     // ---------- WaitGroup 原语（p.6.7.11：wg_new/wg_add/wg_done/wg_wait）----------
@@ -2583,6 +2583,33 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         table_push(ats3, T64cc); table_push(avs3, c_v3)
         tig_trmlite_call("trm_lite_chan$ch_close", ats3, avs3, -1)  // void 桥
         g_builtin_res = tig_int_lit(0)
+        return 0
+    }
+    // ---------- p.6.7.12 ch_select：多路收发（平行数组承载） ----------
+    // ch_select(handles: table<i64>, actions: table<i64>, values: table<i64>)
+    //   → i64（命中分支下标 0 起 / -1 无可执行分支）。actions[i]=1 recv / -1 send。
+    // 三个表实参经 t21_ptri 转 i64 句柄传入（运行时自行按容器布局读元素）。
+    if nm == "ch_select" {
+        g_used_trmlite = true
+        if sstate.fn_def_node("trm_lite_chan::ch_select") >= 0 ||
+            sstate.fn_def_node("tl_runtime_ctx::ctx_ch_select") >= 0 {
+            sm_err_msg = "ch_select 内置与 import trm-lite 冲突：内置与 import 是替代运行时路径，不能混用（函数 " + g_cur_fn_name + "）"
+            return -1
+        }
+        var T64cs = types.named(TK_I64)
+        var ats_cs: table<i64> = table_new_i64()
+        var avs_cs: table<i64> = table_new_i64()
+        var k2: i64 = 0
+        while k2 < 3 {
+            var av = tig_expr(call_arg(id, k2))
+            if av < 0 {
+                return -1
+            }
+            table_push(ats_cs, T64cs)
+            table_push(avs_cs, t21_ptri(av))   // 表 → 句柄 i64
+            k2 = k2 + 1
+        }
+        g_builtin_res = tig_trmlite_call("trm_lite_chan$ch_select", ats_cs, avs_cs, T64cs)
         return 0
     }
     // ---------- WaitGroup 原语（p.6.7.11：Go sync.WaitGroup 语义，trm_lite_wg$*） ----------
