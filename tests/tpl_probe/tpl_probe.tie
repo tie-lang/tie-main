@@ -1,0 +1,182 @@
+type tie<logic>
+// tests/tpl_probe/tpl_probe.tie —— p.6.6.16 验收：std/tpl 模板引擎。
+// 全离线确定性探针：变量/缺值容错、if/else、逻辑短路、for（含 list 编码约定）、
+// 原文透传、畸形容错、比较 < >、字面量、200KB 性能、嵌套混合。
+// 期望全部 PASS / exit 0。
+import "../../std/tpl.tie" as tpl
+import "../../std/string.tie" as str
+import "../../std/time.tie" as time
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// 构建单键 vars 表（"k=v" 编码，与 std/tpl 模块头约定一致）
+func var1(k: string, v: string) -> table<string> {
+    var t = table_new_string()
+    table_push(t, k + "=" + v)
+    return t
+}
+
+// ==================== 1 变量替换 / 2 缺值容错 ====================
+func var_section() {
+    check(tpl.render("Hello {{name}}!", var1("name", "tie")) == "Hello tie!", "var substitution")
+    check(tpl.render("a{{missing}}b", table_new_string()) == "ab", "missing var -> empty")
+    check(tpl.render("x{{ a }}y", var1("a", "1")) == "x1y", "space between braces and name")
+}
+
+// ==================== 3 if/else ====================
+func if_section() {
+    check(tpl.render("{{if flag}}Y{{else}}N{{ifend}}", var1("flag", "1")) == "Y", "if true")
+    check(tpl.render("{{if flag}}Y{{else}}N{{ifend}}", var1("flag", "")) == "N", "if false empty")
+    check(tpl.render("{{if x==5}}eq{{else}}ne{{ifend}}", var1("x", "5")) == "eq", "x==5 eq")
+    check(tpl.render("{{if x==5}}eq{{else}}ne{{ifend}}", var1("x", "6")) == "ne", "x==6 ne")
+}
+
+// ==================== 4 逻辑短路 ====================
+func logic_section() {
+    var va = table_new_string()
+    table_push(va, "a=1")
+    table_push(va, "b=2")
+    check(tpl.render("{{if a==1 && b==2}}AB{{ifend}}", va) == "AB", "and true")
+    var vb = table_new_string()
+    table_push(vb, "a=1")
+    table_push(vb, "b=2")
+    check(tpl.render("{{if a==1 && b==9}}AB{{ifend}}", vb) == "", "and false")
+    // || 短路：a==1 真则不求值 b==2（b 缺键不崩）
+    check(tpl.render("{{if a==1 || b==2}}OK{{ifend}}", var1("a", "1")) == "OK", "or short-circuit true")
+    // 左侧假才求值 b：b 缺键 → ""，""==2 为假 → 空输出（不崩）
+    check(tpl.render("{{if a==9 || b==2}}OK{{ifend}}", var1("a", "1")) == "", "or no crash missing b")
+}
+
+// ==================== 5 for ====================
+func for_section() {
+    var vt = table_new_string()
+    table_push(vt, "list.len=3")
+    table_push(vt, "list.0=a")
+    table_push(vt, "list.1=b")
+    table_push(vt, "list.2=c")
+    check(tpl.render("[{{for it in list}}{{it}},{{forend}}]", vt) == "[a,b,c,]", "basic for list")
+    // item.index 绑定（从 0 起）
+    check(tpl.render("{{for it in list}}{{it.index}}:{{it}};{{forend}}", vt) == "0:a;1:b;2:c;", "for item.index")
+    // 缺 len 键 → 0 次循环（不渲染）
+    var vn = table_new_string()
+    table_push(vn, "list.0=a")
+    check(tpl.render("[{{for it in list}}{{it}}{{forend}}]", vn) == "[]", "missing len -> 0 iters")
+    // 嵌套 for（2×2）
+    var v2 = table_new_string()
+    table_push(v2, "a.len=2")
+    table_push(v2, "a.0=x")
+    table_push(v2, "a.1=y")
+    table_push(v2, "b.len=2")
+    table_push(v2, "b.0=1")
+    table_push(v2, "b.1=2")
+    check(tpl.render("{{for i in a}}({{for j in b}}{{i}}{{j}};{{forend}}){{forend}}", v2)
+        == "(x1;x2;)(y1;y2;)", "nested for 2x2")
+}
+
+// ==================== 6 原文透传 ====================
+func literal_section() {
+    check(tpl.render("Hello, World! plain text, no brakes.", table_new_string())
+        == "Hello, World! plain text, no brakes.", "verbatim passthrough")
+}
+
+// ==================== 7 畸形容错 ====================
+func malformed_section() {
+    // 缺 ifend：x 缺键为假 → 不渲染 then 块，输出前缀 "a"
+    check(tpl.render("a{{if x}}b", table_new_string()) == "a", "missing ifend false -> prefix only")
+    // 缺 ifend 且条件真：渲染 then 块到末尾
+    check(tpl.render("a{{if x}}b", var1("x", "1")) == "ab", "missing ifend true -> render tail")
+    // 未闭合 {{ 原样输出
+    check(tpl.render("a{{b", table_new_string()) == "a{{b", "unclosed braces verbatim")
+    // 悬空 else 忽略
+    check(tpl.render("ab{{else}}cd", table_new_string()) == "abcd", "dangling else ignored")
+}
+
+// ==================== 8 比较 < > ====================
+func cmp_section() {
+    check(tpl.render("{{if n<3}}lt{{ifend}}", var1("n", "2")) == "lt", "n<3 true")
+    check(tpl.render("{{if n<3}}lt{{ifend}}", var1("n", "5")) == "", "n<3 false")
+    check(tpl.render("{{if n>10}}gt{{ifend}}", var1("n", "12")) == "gt", "n>10 true")
+    check(tpl.render("{{if n>10}}gt{{ifend}}", var1("n", "6")) == "", "n>10 false")
+}
+
+// ==================== 9 字面量 ====================
+func literal_expr_section() {
+    check(tpl.render("{{if s==\"hi\"}}ok{{ifend}}", var1("s", "hi")) == "ok", "string literal ==")
+    check(tpl.render("{{if s=='x'}}ok{{ifend}}", var1("s", "hi")) == "", "single-quote literal ne")
+    check(tpl.render("{{if true}}t{{else}}f{{ifend}}", table_new_string()) == "t", "true literal truthy")
+    check(tpl.render("{{if false}}t{{else}}f{{ifend}}", table_new_string()) == "f", "false literal falsy")
+    check(tpl.render("{{if 5>3}}big{{ifend}}", table_new_string()) == "big", "int literal compare")
+}
+
+// ==================== 10 200KB 性能 ====================
+func build_big() -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < 3500 {
+        sb_append(sb, "row-")
+        sb_append(sb, to_string(i))
+        sb_append(sb, ":lorem ipsum dolor sit amet consectetur {{name}} adipiscing elit sed do eiusmod\n")
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+func perf_section() {
+    var big = build_big()
+    var varsBig = var1("name", "tie")
+    time.tick_start()
+    var out = tpl.render(big, varsBig)
+    var el = time.tick_ms()
+    println("perf_200kb_ms=" + to_string(el))
+    check(len(out) >= 200000, "200KB output length >= 200000 (got " + to_string(len(out)) + ")")
+    check(str.contains(out, "row-1750:lorem ipsum dolor sit amet consectetur tie adipiscing") == true, "200KB key substring rendered")
+    check(str.contains(big, "{{name}}") == true, "200KB template has substitution tokens")
+}
+
+// ==================== 11 嵌套混合 ====================
+func mixed_section() {
+    // if 内 for
+    var vi = table_new_string()
+    table_push(vi, "flag=1")
+    table_push(vi, "L.len=2")
+    table_push(vi, "L.0=a")
+    table_push(vi, "L.1=b")
+    check(tpl.render("{{if flag}}[{{for x in L}}{{x}};{{forend}}]{{else}}empty{{ifend}}", vi)
+        == "[a;b;]", "if containing for")
+    // for 内 if
+    var vf = table_new_string()
+    table_push(vf, "L.len=2")
+    table_push(vf, "L.0=")
+    table_push(vf, "L.1=b")
+    check(tpl.render("{{for x in L}}{{if x}}Y{{else}}z{{ifend}}{{forend}}", vf) == "zY", "for containing if")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    var_section()
+    if_section()
+    logic_section()
+    for_section()
+    literal_section()
+    malformed_section()
+    cmp_section()
+    literal_expr_section()
+    perf_section()
+    mixed_section()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}
