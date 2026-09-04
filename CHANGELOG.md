@@ -57,6 +57,32 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [docs] p.6.7.14 trm-lite 并行体系收尾：preview.3 双语文档 + 已知限制（2026-09-04）
+
+- **trm-lite README 升 preview.3**：状态行 + API 全景更新——简单形态新增
+  `gosched()`/`wg_new/add/done/wait`/`ch_close` 广播唤醒/`ch_select` 多路收发；
+  复杂形态新增 `ctx_gosched`/`ctx_wg_*`/`ctx_ch_select`/`ctx_pool_threads`/
+  `ctx_shutdown`；工程结构图同步。
+- **已知限制清单刷新**（中英双语）：
+  · 任务仍为原子执行体，**协作抢占仅在 `gosched()` 显式让出点与时间片插桩点生效**
+    （`S_SLICE_LIMIT=8`），非 OS 硬抢占；`ctx_ws/ctx_gc/combo` 等带时序断言的老
+    demo 在宿主负载升高时偶发 FAIL（时钟断言受宿主噪声——同一二进制低负载时
+    PASS，属已知 flakiness 非运行时回归，验收以确定性 18 探针 + 双形态矩阵为准）。
+- **验收闭环**：18 探针 p.6.7 全套 + 双形态矩阵 PASS×3/逐字节一致×3 + parity 行为
+  一致 + m6_actor（panic 存活/同步 RPC 全对）+ trm-lite 测试全过；**自举 tiec 字节
+  不动点**（当前 tiec 自编译 SHA256 13878DFC… 一致，3879936 字节）。
+
+EN: trm-lite parallel system finalization (p.6.7.14, 2026-09-04) — README bumped to
+preview.3 with the full API surface (simple-form gosched/wg/ch_close broadcast/ch_select;
+complex-form ctx_gosched/ctx_wg_*/ctx_ch_select/ctx_pool_threads/ctx_shutdown); known
+limitations refreshed: tasks stay atomic bodies with cooperative yields only at gosched
+and timeslice checkpoints (no hard preemption), and the timing-asserted legacy demos
+(ctx_ws/ctx_gc/combo) are host-noise-flaky (same binary passing at low load — not a
+runtime regression; the deterministic 18-probe suite + dual-form matrix is the
+acceptance authority). Closure: 18-probe p.6.7 suite + matrix PASS x3 / byte-identical
+x3 + parity + m6_actor + trm-lite tests all green; bootstrap tiec self-compile byte
+fixpoint (SHA256 13878DFC..., 3879936 bytes).
+
 ## [feat] p.6.7.13 双形态并行验收矩阵（2026-09-04）
 
 - **矩阵探针**：`matrix_simple_probe` + `matrix_ctx_probe`——同一套确定性工作负载
