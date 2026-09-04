@@ -1,0 +1,225 @@
+type tie<logic>
+// tests/jwt_probe/jwt_probe.tie —— p.6.6.19 验收：std/jwt HS256。
+// 全离线确定性探针（无网络）：base64url 字节码、RFC 7515 A.1 风格签名对撞、
+// 篡改/段损坏/exp/nbf 时间字段、claims 提取、exp 注入、中文 UTF-8 字节编码。
+// 期望全部 PASS / exit 0。
+//
+// 说明：任务给出的「RFC 7515 A.1 token」在内部不一致——其 b64u 段是紧凑
+// JSON（eyJhbGci.../eyJpc3Mi compact），但其签名段 dBjft... 对应 RFC A.1 的
+// 缩进（CRLF+空格）JSON 输入；两者签名算法输入不同，无法用同一对 header/payload
+// 同时命中。本探针实现标准行为（secret 先 base64url 解码为 64 字节密钥；header
+// 固定紧凑 {"alg":"HS256","typ":"JWT"}），对任务给定的紧凑 header/payload 计算
+// 出**正确**签名（d6nM...），并断言 encode 精确等于该正确 token。详见报告。
+import "../../std/jwt.tie" as jwt
+import "../../std/time.tie" as time
+import "../../std/utf.tie" as utf
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ==================== 字符串/表小工具 ====================
+func sub(s: string, a: i64, b: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = a
+    while i < b {
+        sb_append(sb, str_char(s, i))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+func rep_at(s: string, i: i64, ch: string) -> string {
+    return sub(s, 0, i) + ch + sub(s, i + 1, str_len(s))
+}
+
+func find_dot(s: string, from: i64) -> i64 {
+    var i: i64 = from
+    while i < str_len(s) {
+        if str_char(s, i) == "." {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func seg2(s: string) -> string {
+    var d1 = find_dot(s, 0)
+    if d1 < 0 {
+        return ""
+    }
+    var d2 = find_dot(s, d1 + 1)
+    if d2 < 0 {
+        return ""
+    }
+    return sub(s, d1 + 1, d2)
+}
+
+func seg3(s: string) -> string {
+    var d1 = find_dot(s, 0)
+    if d1 < 0 {
+        return ""
+    }
+    var d2 = find_dot(s, d1 + 1)
+    if d2 < 0 {
+        return ""
+    }
+    return sub(s, d2 + 1, str_len(s))
+}
+
+func eq(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// ==================== 常量 ====================
+var secret: string = "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow"
+var header_b64u: string = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+var payload_b64u_a1: string = "eyJpc3MiOiJqb2UiLCJleHAiOjEzMDA4MTkzODAsImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ"
+var sig_a1: string = "d6nMDXnJZfNNj-1o1e75s6d0six0lkLp5hSrGaz4o9A"
+var correct_a1: string = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJqb2UiLCJleHAiOjEzMDA4MTkzODAsImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.d6nMDXnJZfNNj-1o1e75s6d0six0lkLp5hSrGaz4o9A"
+
+// claims 文本（用局部字面量构造——顶层全局字符串带转义引号的字面量初始化在 tie 中不可靠）
+func claims_a1() -> string {
+    return "{\"iss\":\"joe\",\"exp\":1300819380,\"http://example.com/is_root\":true}"
+}
+
+// ==================== 1. A.1 风格 encode 精确对撞 + verify 过期 ====================
+func sec1() {
+    check(jwt.encode(secret, claims_a1(), 1300819380) == correct_a1, "A.1-style encode exact token (compact header/payload + correct sig)")
+    var vr = jwt.verify(correct_a1, secret)
+    check(vr == -5, "A.1-style token verify -> -5 (exp 2011 expired)")
+    // 区块 b64u 与任务给定值一致
+    check(jwt.b64u_encode(bytes("{\"alg\":\"HS256\",\"typ\":\"JWT\"}")) == header_b64u, "header b64u == task vector")
+    // 未来 exp 重新 encode 应有效
+    var fut_pl = "{\"iss\":\"joe\",\"exp\":4102444800,\"http://example.com/is_root\":true}"
+    var fut_pl_b64u = "eyJpc3MiOiJqb2UiLCJleHAiOjQxMDI0NDQ4MDAsImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ"
+    var fut_sig = "tKp-vSkf_2Lt63pkFckiG8-8EAvQL8kWJCk7oIaL_2w"
+    var fut_correct = header_b64u + "." + fut_pl_b64u + "." + fut_sig
+    check(jwt.encode(secret, fut_pl, 4102444800) == fut_correct, "future-exp encode exact")
+    check(jwt.verify(fut_correct, secret) == 0, "future-exp token verify -> 0")
+}
+
+// 构造 header 字节表
+func bytes(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < len(s) {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+    return t
+}
+
+// ==================== 2. 篡改 → -4 ====================
+func sec2() {
+    var t_last = rep_at(correct_a1, str_len(correct_a1) - 1, "Y")
+    check(jwt.verify(t_last, secret) == -4, "tamper last sig char -> -4")
+    var t_payload = header_b64u + "." + rep_at(payload_b64u_a1, 10, "j") + "." + sig_a1
+    check(jwt.verify(t_payload, secret) == -4, "tamper payload middle char -> -4")
+}
+
+// ==================== 3. 段损坏 → -1 / -2 ====================
+func sec3() {
+    var two = header_b64u + "." + payload_b64u_a1
+    check(jwt.verify(two, secret) == -1, "only 2 segments -> -1")
+    var bad = header_b64u + "." + payload_b64u_a1 + "." + "!!!"
+    check(jwt.verify(bad, secret) == -2, "illegal base64url char in sig -> -2")
+}
+
+// ==================== 4. nbf 未生效 → -6 ====================
+func sec4() {
+    var nbf_claims = "{\"nbf\":4102444800}"
+    var tok = jwt.encode(secret, nbf_claims, 0)
+    check(jwt.verify(tok, secret) == -6, "nbf future -> -6")
+}
+
+// ==================== 5. exp 过期/有效 ====================
+func sec5() {
+    var e1 = "{\"exp\":" + to_string(time.now() - 60) + "}"
+    var tok1 = jwt.encode(secret, e1, 0)
+    check(jwt.verify(tok1, secret) == -5, "exp past -> -5")
+    var e2 = "{\"exp\":" + to_string(time.now() + 60) + "}"
+    var tok2 = jwt.encode(secret, e2, 0)
+    check(jwt.verify(tok2, secret) == 0, "exp future -> 0")
+}
+
+// ==================== 6. claims() 提取 ====================
+func sec6() {
+    check(jwt.claims(correct_a1) == claims_a1(), "claims returns payload JSON exact")
+}
+
+// ==================== 7. b64u 单元 ====================
+func sec7() {
+    var t = table_new_i64()
+    table_push(t, 72); table_push(t, 101); table_push(t, 108); table_push(t, 108); table_push(t, 111)
+    var enc = jwt.b64u_encode(t)
+    check(enc == "SGVsbG8", "b64u 'Hello' == SGVsbG8 (no padding)")
+    var dec = jwt.b64u_decode(enc)
+    check(eq(dec, t), "b64u roundtrip decode == original bytes")
+    // eyJhbGciOiJIUzI1NiJ9 → {"alg":"HS256"}（15 字节）
+    var exp_b = table_new_i64()
+    var exp_raw = "{\"alg\":\"HS256\"}"
+    var i: i64 = 0
+    while i < len(exp_raw) {
+        table_push(exp_b, str_byte(exp_raw, i))
+        i = i + 1
+    }
+    var dec2 = jwt.b64u_decode("eyJhbGciOiJIUzI1NiJ9")
+    check(eq(dec2, exp_b), "b64u decode == {\"alg\":\"HS256\"} bytes")
+}
+
+// ==================== 8. exp 参数注入 ====================
+func sec8() {
+    var sub_claims = "{\"sub\":\"u\"}"
+    var tok = jwt.encode(secret, sub_claims, 4102444800)
+    check(jwt.claims(tok) == "{\"sub\":\"u\",\"exp\":4102444800}", "exp injected into claims()")
+    check(seg2(tok) == "eyJzdWIiOiJ1IiwiZXhwIjo0MTAyNDQ0ODAwfQ", "payload b64u == manual expectation")
+}
+
+// ==================== 9. 中文 claims（UTF-8 字节） ====================
+func sec9() {
+    var zh = "{\"name\":\"张三\"}"
+    var tok = jwt.encode(secret, zh, 0)
+    check(jwt.claims(tok) == zh, "chinese claims roundtrip exact")
+    // 解码 payload 字节数 == UTF-8 字节数（{"name":" =9", 张三=6, "} =2 → 17）
+    var pb = jwt.b64u_decode(seg2(tok))
+    check(len(pb) == utf.byte_len(zh), "chinese payload decoded byte count == byte_len")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    sec1()
+    sec2()
+    sec3()
+    sec4()
+    sec5()
+    sec6()
+    sec7()
+    sec8()
+    sec9()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}
