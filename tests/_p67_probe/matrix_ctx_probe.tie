@@ -1,0 +1,97 @@
+type tie<logic>
+// tests/_p67_probe/matrix_ctx_probe.tie —— p.6.7.13 验收：双形态并行矩阵（复杂形态侧）。
+// 与 matrix_simple_probe 完全同一套确定性工作负载，stdout **逐字节一致**（行为一致对比）：
+//   · 4 个生产者任务：各向**自己的通道**发 25 条（值 p*1000+j+1（非零，避开
+//     ch_recv 空/值 0 歧义）；单通道 25 < 容量 64）
+//   · 每任务 5 次 ctx_gosched()（j%5==0 点，确定性计数 20）
+//   · wg：ctx_wg_new/ctx_wg_add(100)/ctx_wg_done(每消息一次)/ctx_wg_wait（p.6.7.11）
+//   · 主线程 ctx_drain 后收集 4×25 条（逐通道 25 条，空 → 有界轮询）+ 两两去重计数
+// 输出（确定性）：sum/cnt/uniq/gs —— 与简单形态矩阵探针完全一致。
+// 期望：sum=151300 cnt=100 uniq=100 gs=20 / PASS / exit 0；连跑 3 次全 PASS。
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_chs: table<i64> = []   // 4 条生产者通道（主线程建）
+var g_tbl: table<i64> = []   // 收集表（主线程独占）
+
+func main() {
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+    var k: i64 = 0
+    while k < 4 {
+        table_push(g_chs, tl_runtime_ctx.ctx_ch_open())
+        k = k + 1
+    }
+    var h = tl_runtime_ctx.ctx_wg_new()
+    tl_runtime_ctx.ctx_wg_add(h, 100)
+    var p: i64 = 0
+    while p < 4 {
+        var pv = p
+        var hv = h
+        var chh = g_chs[p]
+        tl_runtime_ctx.ctx_spawn(func() -> i64 {
+            var j: i64 = 0
+            var gs: i64 = 0
+            while j < 25 {
+                tl_runtime_ctx.ctx_ch_send(chh, pv * 1000 + j + 1)
+                tl_runtime_ctx.ctx_wg_done(hv)
+                if (j % 5) == 0 && gs < 10 {
+                    tl_runtime_ctx.ctx_gosched()
+                    gs = gs + 1
+                }
+                j = j + 1
+            }
+            return gs
+        })
+        p = p + 1
+    }
+    tl_runtime_ctx.ctx_drain()   // 复杂形态任务由 drain 驱动
+    // 收集：逐通道 25 条（空返回 0 → 有界轮询；guard 撑满 4×25）
+    var got: i64 = 0
+    var guard: i64 = 0
+    while got < 100 && guard < 200000 {
+        var v = tl_runtime_ctx.ctx_ch_recv(g_chs[got / 25])
+        if v != 0 {
+            table_push(g_tbl, v)
+            got = got + 1
+        }
+        guard = guard + 1
+    }
+    tl_runtime_ctx.ctx_wg_wait(h)
+    // 汇总
+    var cnt = len(g_tbl)
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < cnt {
+        sum = sum + g_tbl[i]
+        i = i + 1
+    }
+    var uniq: i64 = 0
+    i = 0
+    while i < cnt {
+        var seen: i64 = 0
+        var j: i64 = 0
+        while j < i {
+            if g_tbl[i] == g_tbl[j] {
+                seen = 1
+            }
+            j = j + 1
+        }
+        if seen == 0 {
+            uniq = uniq + 1
+        }
+        i = i + 1
+    }
+    var gs = 20   // 4 任务 × 5 次（j%5==0 命中点，负载内确定性）
+    println("sum=" + to_string(sum) + " cnt=" + to_string(cnt) + " uniq=" + to_string(uniq) + " gs=" + to_string(gs))
+    var ok: i64 = 1
+    if sum != 151300 || cnt != 100 || uniq != 100 || gs != 20 {
+        ok = 0
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}
