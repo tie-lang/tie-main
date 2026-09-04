@@ -22,6 +22,7 @@ type tie<class>
 //   is_el(d, nid)                是否为元素节点
 //   is_shape(d, nid, name)       元素类型是否 == name（如 "rect"/"g"/"path"）
 //   parse_path_d(d: string) -> table<string>    path 的 d 属性 token 化
+//   parse_transform(t: string) -> table<string> transform 简析
 //
 // 子集取舍（Subset）：
 //   元素（元素类型识别）：rect / circle / ellipse / line / polyline / polygon /
@@ -37,10 +38,12 @@ type tie<class>
 //     （"M 10 20 30 40" = M10,20 L30,40 → ["M","10","20","30","40"]，
 //     消费方按命令期望参数数自行分组）。不支持 A/S/T/R 等命令——遇之整段返回
 //     空表（畸形）。数字支持 [+-]?数字[.数字]?[eE[+-]?数字]? 子集（含科学计数）。
-//   容错：任何畸形 path（未知命令/参数数不符/非法数字/空输入）恒返回空表，
-//     不崩溃、不死循环。
+//   transform 子集：translate(tx[,ty]) / scale(sx[,sy]) / rotate(deg[,cx,cy])，
+//     大小写敏感。其它函数（skewX/matrix 等）视为畸形 → 整段空表。
+//   容错：任何畸形 path/transform（未知命令/参数数不符/非法数字/未闭合括号/
+//     尾随垃圾/空输入）恒返回空表，不崩溃、不死循环。
 //
-// 性能：d token 化单遍字节扫描（str_byte + string_builder 累积），
+// 性能：d/transform token 化均单遍字节扫描（str_byte + string_builder 累积），
 // 无逐字符字符串拼接（O(n)，无 O(n²)）。
 // ============================================================================
 
@@ -323,6 +326,110 @@ func num_ok(t: string) -> bool {
         }
     }
     return i == n
+}
+
+// ============================================================================
+// transform 简析
+// ============================================================================
+
+// transform 属性 → 交错表 [类型, 参数...]（各函数名与数字参数各为独立 token）。
+// 子集：translate(tx[,ty]) / scale(sx[,sy]) / rotate(deg[,cx,cy])（大小写敏感）；
+// 多个变换可连写（空白/逗号分隔）。畸形输入返回空表。
+pub func parse_transform(src: string) -> table<string> {
+    var out = table_new_string()
+    var n = len(src)
+    var i: i64 = 0
+    while i < n {
+        // 跳过变换间的空白/逗号
+        while i < n {
+            var bs = str_byte(src, i)
+            if bs == 32 || bs == 9 || bs == 10 || bs == 13 || bs == 44 {
+                i = i + 1
+            } else {
+                break
+            }
+        }
+        if i >= n {
+            break
+        }
+        // 函数名：连续字母
+        var sb = string_builder()
+        while i < n {
+            var bl = str_byte(src, i)
+            if (bl >= 65 && bl <= 90) || (bl >= 97 && bl <= 122) {
+                sb_append_byte(sb, bl)
+                i = i + 1
+            } else {
+                break
+            }
+        }
+        var fn = sb_build(sb)
+        if fn != "translate" && fn != "scale" && fn != "rotate" {
+            return table_new_string()
+        }
+        // 期望 '('（容忍函数名与括号间的空白）
+        while i < n {
+            var bg = str_byte(src, i)
+            if bg == 32 || bg == 9 || bg == 10 || bg == 13 {
+                i = i + 1
+            } else {
+                break
+            }
+        }
+        if i >= n || str_byte(src, i) != 40 {
+            return table_new_string()
+        }
+        i = i + 1
+        // 参数列表直到 ')'
+        var args = table_new_string()
+        while true {
+            while i < n {
+                var bq = str_byte(src, i)
+                if bq == 32 || bq == 9 || bq == 10 || bq == 13 || bq == 44 {
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            if i >= n {
+                return table_new_string()   // 未闭合
+            }
+            var bc = str_byte(src, i)
+            if bc == 41 {
+                i = i + 1
+                break
+            }
+            if is_num_start(bc) {
+                var (tok, ni) = scan_number(src, i)
+                if len(tok) == 0 || !num_ok(tok) {
+                    return table_new_string()
+                }
+                table_push(args, tok)
+                i = ni
+            } else {
+                return table_new_string()
+            }
+        }
+        // 参数个数校验（按类型）
+        var ac = len(args)
+        if fn == "translate" && ac != 1 && ac != 2 {
+            return table_new_string()
+        }
+        if fn == "scale" && ac != 1 && ac != 2 {
+            return table_new_string()
+        }
+        if fn == "rotate" && ac != 1 && ac != 3 {
+            return table_new_string()
+        }
+        // 交错登记 [类型, 参数...]
+        table_push(out, fn)
+        var k: i64 = 0
+        while k < ac {
+            table_push(out, args[k])
+            k = k + 1
+        }
+    }
+    return out
 }
 
 }   // namespace svg
