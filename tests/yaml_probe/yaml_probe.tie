@@ -1,0 +1,231 @@
+type tie<logic>
+// ============================================================================
+// yaml_probe.tie：std/yaml YAML 解析子集探针（p.6.6.10）。
+// YAML parsing subset probe (p.6.6.10).
+//
+// 覆盖（Coverage）：
+//   - 样本① 块式嵌套 map/list + 标量类型（str/int/float/bool/null）+ \u \t 转义
+//     + 引号串 + ~：
+//   - 样本② 块式序列（项为内联映射 {tags: ...}、流式空数组、标量项）；
+//   - 样本③ 流式 {a:1,b:[..]} 对象与数组嵌套；
+//   - 样本④ 流式数组混合类型 + 内嵌流式数组/对象；
+//   - 样本⑤ 整行/行内 `#` 注释剥离、`#` 不剥离（无前导空格）、引号串、多行
+//     `|`/`>` 折叠；
+//   - 样本⑥ 坏文档（缩进错乱 / 流式未闭合）→ parse 返回 -1 + err_msg 非空；
+//   - 大样本 >200KB（块式序列每项为内联映射，防 O(n^2)）：秒级完成（以能跑完
+//     且结果对为准，不做脆弱的毫秒断言）。
+// 数据平面：全 string（UTF-8）。夹具全部内联（不入库）。
+// 编译运行：compiler\tiec.exe tests\yaml_probe\yaml_probe.tie
+// ============================================================================
+import "../../std/yaml.tie" as yaml
+import "../../std/string.tie" as str
+import "../../std/time.tie" as time
+
+// ---- 断言工具 ----
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=[" + got + "] want=[" + want + "]")
+        exit(1)
+    }
+}
+
+func chk_i64(name: string, got: i64, want: i64) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func chk_f64(name: string, got: f64, want: f64) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func chk_true(name: string, v: bool) {
+    if v {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " expected true")
+        exit(1)
+    }
+}
+
+// ---- 样本①：块式嵌套 map/list + 标量类型 ----
+func tst_sample1() {
+    var doc = "name: Alice\n" +
+        "age: 30\n" +
+        "height: 1.75\n" +
+        "active: true\n" +
+        "note: \"hello \\\"world\\\"\"\n" +
+        "empty: null\n" +
+        "miss: ~\n" +
+        "skills:\n" +
+        "  - yaml\n" +
+        "  - tie\n" +
+        "address:\n" +
+        "  city: Shanghai\n" +
+        "  zip: 200000\n" +
+        "work:\n" +
+        "  company: Tie Inc\n" +
+        "  projects:\n" +
+        "    - one\n" +
+        "    - two\n"
+    var r = yaml.parse(doc)
+    chk_i64("s1_root_map", yaml.type_of(r), 6)
+    chk("s1_name", yaml.str_val(yaml.obj_get(r, "name")), "Alice")
+    chk_i64("s1_age", yaml.int_val(yaml.obj_get(r, "age")), 30)
+    chk_f64("s1_height", yaml.float_val(yaml.obj_get(r, "height")), 1.75)
+    chk_i64("s1_active_t", yaml.type_of(yaml.obj_get(r, "active")), 1)
+    chk_i64("s1_active_v", yaml.int_val(yaml.obj_get(r, "active")), 1)
+    chk("s1_note", yaml.str_val(yaml.obj_get(r, "note")), "hello \"world\"")
+    chk_true("s1_empty_null", yaml.is_null(yaml.obj_get(r, "empty")))
+    chk_true("s1_miss_null", yaml.is_null(yaml.obj_get(r, "miss")))
+    var sk = yaml.obj_get(r, "skills")
+    chk_i64("s1_skills_len", yaml.arr_len(sk), 2)
+    chk("s1_skills0", yaml.str_val(yaml.arr_at(sk, 0)), "yaml")
+    var ad = yaml.obj_get(r, "address")
+    chk("s1_city", yaml.str_val(yaml.obj_get(ad, "city")), "Shanghai")
+    chk_i64("s1_zip", yaml.int_val(yaml.obj_get(ad, "zip")), 200000)
+    var wk = yaml.obj_get(r, "work")
+    var pr = yaml.obj_get(wk, "projects")
+    chk_i64("s1_projects_len", yaml.arr_len(pr), 2)
+    chk("s1_projects1", yaml.str_val(yaml.arr_at(pr, 1)), "two")
+}
+
+// ---- 样本②：块式序列（内联映射 / 流式空数组 / 标量项）----
+func tst_sample2() {
+    var doc = "- name: a\n" +
+        "  tags:\n" +
+        "    - x\n" +
+        "    - y\n" +
+        "- name: b\n" +
+        "  tags: []\n" +
+        "- 5\n" +
+        "- \"hello\"\n"
+    var r = yaml.parse(doc)
+    chk_i64("s2_seq_type", yaml.type_of(r), 5)
+    chk_i64("s2_seq_len", yaml.arr_len(r), 4)
+    var i0 = yaml.arr_at(r, 0)
+    chk_i64("s2_i0_map", yaml.type_of(i0), 6)
+    chk("s2_i0_name", yaml.str_val(yaml.obj_get(i0, "name")), "a")
+    var t0 = yaml.obj_get(i0, "tags")
+    chk_i64("s2_i0_tags_len", yaml.arr_len(t0), 2)
+    chk("s2_i0_tags1", yaml.str_val(yaml.arr_at(t0, 1)), "y")
+    var i1 = yaml.arr_at(r, 1)
+    chk_i64("s2_i1_tags_empty", yaml.arr_len(yaml.obj_get(i1, "tags")), 0)
+    chk_i64("s2_i2_int", yaml.int_val(yaml.arr_at(r, 2)), 5)
+    chk("s2_i3_str", yaml.str_val(yaml.arr_at(r, 3)), "hello")
+}
+
+// ---- 样本③：流式对象/数组 ----
+func tst_sample3() {
+    var doc = "flow: {a: 1, b: [2, 3, 4]}\n"
+    var r = yaml.parse(doc)
+    var f = yaml.obj_get(r, "flow")
+    chk_i64("s3_f_type", yaml.type_of(f), 6)
+    chk_i64("s3_f_a", yaml.int_val(yaml.obj_get(f, "a")), 1)
+    var b = yaml.obj_get(f, "b")
+    chk_i64("s3_f_b_len", yaml.arr_len(b), 3)
+    chk_i64("s3_f_b2", yaml.int_val(yaml.arr_at(b, 2)), 4)
+}
+
+// ---- 样本④：流式数组混合类型 + 嵌套 ----
+func tst_sample4() {
+    var doc = "s: [1, 2.5, true, \"x\", null, [6, 7], {k: v}]\n"
+    var r = yaml.parse(doc)
+    var s = yaml.obj_get(r, "s")
+    chk_i64("s4_len", yaml.arr_len(s), 7)
+    chk_i64("s4_i0", yaml.int_val(yaml.arr_at(s, 0)), 1)
+    chk_f64("s4_i1", yaml.float_val(yaml.arr_at(s, 1)), 2.5)
+    chk_i64("s4_i2_bool", yaml.int_val(yaml.arr_at(s, 2)), 1)
+    chk("s4_i3_str", yaml.str_val(yaml.arr_at(s, 3)), "x")
+    chk_true("s4_i4_null", yaml.is_null(yaml.arr_at(s, 4)))
+    var inner = yaml.arr_at(s, 5)
+    chk_i64("s4_i5_arr_len", yaml.arr_len(inner), 2)
+    chk_i64("s4_i5_arr1", yaml.int_val(yaml.arr_at(inner, 1)), 7)
+    var obj = yaml.arr_at(s, 6)
+    chk("s4_i6_k", yaml.str_val(yaml.obj_get(obj, "k")), "v")
+}
+
+// ---- 样本⑤：注释剥离 + 引号串 + 多行折叠 ----
+func tst_sample5() {
+    var doc = "# top comment\n" +
+        "a: 100 # inline comment\n" +
+        "z: 3.14\n" +
+        "t: true\n" +
+        "f: false\n" +
+        "n: null\n" +
+        "nosy: plain#keep\n" +
+        "c: 'single''quote'\n" +
+        "d: \"double\\tquote\"\n" +
+        "lit: |\n" +
+        "  line one\n" +
+        "  line two\n" +
+        "fold: >\n" +
+        "  fold a\n" +
+        "  fold b\n"
+    var r = yaml.parse(doc)
+    chk_i64("s5_a_int", yaml.int_val(yaml.obj_get(r, "a")), 100)
+    chk_f64("s5_z_float", yaml.float_val(yaml.obj_get(r, "z")), 3.14)
+    chk_i64("s5_t_bool", yaml.int_val(yaml.obj_get(r, "t")), 1)
+    chk_i64("s5_f_bool", yaml.int_val(yaml.obj_get(r, "f")), 0)
+    chk_true("s5_n_null", yaml.is_null(yaml.obj_get(r, "n")))
+    chk("s5_nosy_hash", yaml.str_val(yaml.obj_get(r, "nosy")), "plain#keep")
+    chk("s5_c_single", yaml.str_val(yaml.obj_get(r, "c")), "single'quote")
+    chk("s5_d_double", yaml.str_val(yaml.obj_get(r, "d")), "double\tquote")
+    chk("s5_lit", yaml.str_val(yaml.obj_get(r, "lit")), "line one\nline two\n")
+    chk("s5_fold", yaml.str_val(yaml.obj_get(r, "fold")), "fold a fold b\n")
+}
+
+// ---- 样本⑥：坏文档（缩进错乱 / 流式未闭合）----
+func tst_sample6() {
+    var doc1 = "bad:\n" +
+        "    a: 1\n" +
+        "  b: 2\n"
+    var r1 = yaml.parse(doc1)
+    chk_i64("s6_bad_indent", r1, -1)
+    chk_true("s6_bad_indent_err", len(yaml.err_msg()) > 0)
+    var doc2 = "bad2: [1, 2\n"
+    var r2 = yaml.parse(doc2)
+    chk_i64("s6_bad_flow", r2, -1)
+    chk_true("s6_bad_flow_err", len(yaml.err_msg()) > 0)
+}
+
+// ---- 大样本：200KB 块式序列（内联映射），线性、防 O(n²) ----
+func tst_big() {
+    var chunk = "- value: 12345\n"
+    var big = str.repeat(chunk, 15000)
+    var byte_len = len(big)
+    chk_true("big_size_gt_200k", byte_len > 200000)
+    time.tick_start()
+    var r = yaml.parse(big)
+    chk_i64("big_type", yaml.type_of(r), 5)
+    chk_i64("big_len", yaml.arr_len(r), 15000)
+    var it3 = yaml.arr_at(r, 3)
+    chk_i64("big_item_type", yaml.type_of(it3), 6)
+    chk_i64("big_item_val", yaml.int_val(yaml.obj_get(it3, "value")), 12345)
+    var last = yaml.arr_at(r, 14999)
+    chk_i64("big_last_val", yaml.int_val(yaml.obj_get(last, "value")), 12345)
+    var ms = time.tick_ms()
+    println("INFO big_bytes=" + to_string(byte_len) + " parse_ms=" + to_string(ms))
+}
+
+func main() {
+    tst_sample1()
+    tst_sample2()
+    tst_sample3()
+    tst_sample4()
+    tst_sample5()
+    tst_sample6()
+    tst_big()
+    println("done")
+    exit(0)
+}
