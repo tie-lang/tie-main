@@ -1,0 +1,235 @@
+type tie<logic>
+// tests/httpsrv_probe/httpsrv_probe.tie —— p.6.6.21 验收：std/http_server Web 服务框架。
+// 全离线确定性探针（不连网，无假连接）：纯请求解析、字节流定界（receive_next）、
+// 路由匹配（:param/*/精确 + 参数表）、静态文件（MIME + 防穿越）、SSE 帧、JWT 门控。
+// 期望全部 PASS / exit 0。
+//
+// 取舍：服务端 keep-alive 的路由 handler**响应体**测试需真实 socket（handle_conn 内部
+// 走 net.tcp_send，离线无法注入假 conn）——按任务允许的「降级断言」处理：注册 handler
+// 后仅断言 match_route 返回的路由下标 + 参数表；handler 响应体测试留在服务端循环集成
+// 层（env TIE_HTTPSRV_LIVE=1 的 live 段，默认跳过）。
+import "../../std/http_server.tie" as httpsrv
+import "../../std/jwt.tie" as jwt
+import "../../std/time.tie" as time
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ==================== 探针本地字节工具 ====================
+
+// 字符串 → 字节表（UTF-8 字节逐个入表）。
+func bytes(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var n: i64 = len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+    return t
+}
+
+// 字节表 [s,e) 复制。
+func tbl_slice(t: table<i64>, s: i64, e: i64) -> table<i64> {
+    var o = table_new_i64()
+    var i: i64 = s
+    while i < e {
+        table_push(o, t[i])
+        i = i + 1
+    }
+    return o
+}
+
+// 字节表是否相等（与字符串比对）。
+func beqstr(t: table<i64>, s: string) -> bool {
+    if len(t) != len(s) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(t) {
+        if t[i] != str_byte(s, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// ==================== 1. 纯请求解析 parse_request ====================
+func parse_section() {
+    // GET 无 body：请求行 + Host 头
+    var g = "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    var r = httpsrv.parse_request(bytes(g))
+    check(r.method == "GET", "parse GET method")
+    check(r.path == "/index.html", "parse GET path")
+    check(r.version == "HTTP/1.1", "parse version")
+    check(r.headers_text == "Host: localhost", "parse headers_text")
+    // 请求行/头复用 header() 语义（保留 API）
+    check(httpsrv.header(r, "Host") == "localhost", "parse header() lookup")
+    check(httpsrv.header(r, "host") == "localhost", "parse header() lowercase query")
+    check(httpsrv.header(r, "HOST") == "localhost", "parse header() uppercase query")
+    // POST 带 Content-Length body
+    var body = "name=tie&x=1"
+    var post = "POST /api HTTP/1.1\r\nContent-Length: " + to_string(len(body)) + "\r\n\r\n" + body
+    var p = httpsrv.parse_request(bytes(post))
+    check(p.method == "POST", "parse POST method")
+    check(p.path == "/api", "parse POST path")
+    check(p.body == body, "parse POST body by Content-Length")
+}
+
+// ==================== 2. 字节流定界 receive_next ====================
+func receive_section() {
+    var r1 = "GET /a HTTP/1.1\r\nHost: x\r\n\r\n"
+    var r2 = "POST /b HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc"
+    var buf = bytes(r1 + r2)
+    // 第一次：完整 + consumed 正确 + 残余为第二个请求
+    var (ok1, c1, q1) = httpsrv.receive_next(buf)
+    check(ok1 == true, "r1 complete ok")
+    check(c1 == len(bytes(r1)), "r1 consumed == len(r1)")
+    check(q1.path == "/a", "r1 path parsed")
+    var residual = tbl_slice(buf, c1, len(buf))
+    check(beqstr(residual, r2), "residual == second request bytes")
+    // 第二次（从残余定界）：方法/body 正确
+    var (ok2, c2, q2) = httpsrv.receive_next(residual)
+    check(ok2 == true && q2.method == "POST", "r2 parsed from residual")
+    check(q2.body == "abc", "r2 body parsed")
+    // 不完整：头缺 \r\n\r\n → ok=false
+    var inc1 = bytes("GET /c HTTP/1.1\r\nHost: x")
+    var (ok3, cc3, q3) = httpsrv.receive_next(inc1)
+    check(ok3 == false, "incomplete header (no blank line) -> false")
+    // 不完整：Content-Length 未满 → ok=false
+    var inc2 = bytes("POST /d HTTP/1.1\r\nContent-Length: 5\r\n\r\nab")
+    var (ok4, cc4, q4) = httpsrv.receive_next(inc2)
+    check(ok4 == false, "incomplete body (CL not full) -> false")
+}
+
+// ==================== 3/4. 路由匹配 + handler（降级断言） ====================
+
+// 探针端 handler（fn(table<string>) -> string 形式，裸名函数定名）。
+func h(params: table<string>) -> string {
+    var s = ""
+    var i: i64 = 0
+    while i < len(params) {
+        if i > 0 {
+            s = s + ","
+        }
+        s = s + params[i]
+        i = i + 1
+    }
+    return s
+}
+
+func route_section() {
+    httpsrv.route("GET", "/api/users/:id", h)
+    httpsrv.route("GET", "/static/*", h)
+    httpsrv.route("POST", "/exact", h)
+    httpsrv.route("GET", "/a/:x/b/:y", h)
+    // :id 单参数提取
+    var (ai, ap) = httpsrv.match_route("GET", "/api/users/42")
+    check(ai == 0 && len(ap) == 1 && ap[0] == "42", "route /api/users/:id captures id")
+    // * 通配段匹配（不捕获）
+    var (si, sp) = httpsrv.match_route("GET", "/static/a/b.png")
+    check(si == 1 && len(sp) == 0, "route /static/* wildcard matches, no capture")
+    // 精确 path
+    var (ei, ep2) = httpsrv.match_route("POST", "/exact")
+    check(ei == 2 && len(ep2) == 0, "route exact POST /exact")
+    // 多参数顺序捕获
+    var (mi, mp) = httpsrv.match_route("GET", "/a/p1/b/p2")
+    check(mi == 3 && len(mp) == 2 && mp[0] == "p1" && mp[1] == "p2", "two :param captured in order")
+    // 无匹配 → -1
+    var (x_i, x_p) = httpsrv.match_route("GET", "/nope")
+    check(x_i == -1, "unmatched path -> -1")
+    var (w_i, w_p) = httpsrv.match_route("DELETE", "/api/users/1")
+    check(w_i == -1, "method mismatch -> -1")
+    var (m_i, m_p2) = httpsrv.match_route("GET", "/api/users")
+    check(m_i == -1, ":id requires segment -> -1")
+}
+
+// ==================== 5. 静态文件 MIME + 防穿越 ====================
+func static_section() {
+    check(httpsrv.static_content_type("x.html") == "text/html", "ct .html")
+    check(httpsrv.static_content_type("x.htm") == "text/html", "ct .htm")
+    check(httpsrv.static_content_type("A.CSS") == "text/css", "ct .css case-insensitive")
+    check(httpsrv.static_content_type("a.js") == "text/javascript", "ct .js")
+    check(httpsrv.static_content_type("a.json") == "application/json", "ct .json")
+    check(httpsrv.static_content_type("a.png") == "image/png", "ct .png")
+    check(httpsrv.static_content_type("/img/p.jpg") == "image/jpeg", "ct .jpg")
+    check(httpsrv.static_content_type("favicon.ico") == "image/x-icon", "ct .ico")
+    check(httpsrv.static_content_type("a.txt") == "text/plain", "ct .txt")
+    check(httpsrv.static_content_type("a.bin") == "application/octet-stream", "ct default octet-stream")
+    // 防穿越
+    check(httpsrv.safe_static_path("/a/b.html") == true, "safe normal path")
+    check(httpsrv.safe_static_path("/../etc/passwd") == false, "reject leading .. traversal")
+    check(httpsrv.safe_static_path("/a/../b") == false, "reject mid .. traversal")
+    check(httpsrv.safe_static_path("a/b") == false, "reject no leading slash")
+}
+
+// ==================== 6. SSE 帧 ====================
+func sse_section() {
+    check(beqstr(httpsrv.sse_frame("msg", "hi"), "event: msg\ndata: hi\n\n"), "sse frame with event exact bytes")
+    check(beqstr(httpsrv.sse_frame("", "hi"), "data: hi\n\n"), "sse frame no-event exact bytes")
+    var hs = httpsrv.sse_headers()
+    check(len(hs) == 3 && hs[0] == "Content-Type: text/event-stream", "sse headers event-stream")
+    check(hs[1] == "Cache-Control: no-cache" && hs[2] == "Connection: keep-alive", "sse headers no-cache + keep-alive")
+}
+
+// ==================== 7. JWT 会话门控 ====================
+var g_secret: string = "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow"
+
+// 篡改：替换字符串末字符为 'Y'。
+func tamper_last(s: string) -> string {
+    var n: i64 = str_len(s)
+    if n == 0 {
+        return ""
+    }
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n - 1 {
+        sb_append(sb, str_char(s, i))
+        i = i + 1
+    }
+    sb_append(sb, "Y")
+    return sb_build(sb)
+}
+
+func jwt_section() {
+    // 有效 token（exp 未来，确定性抖动只依赖 time.now()，不设 nbf）
+    var claims = "{\"exp\":" + to_string(time.now() + 3600) + "}"
+    var tok = jwt.encode(g_secret, claims, 0)
+    check(httpsrv.jwt_session(g_secret, "Bearer " + tok) == 0, "valid Bearer token -> 0")
+    // 篡改签名 → 负值
+    var tam = tamper_last(tok)
+    check(httpsrv.jwt_session(g_secret, "Bearer " + tam) != 0, "tampered token -> negative")
+    // 过期 token → 负值（exp 在过去）
+    var past = "{\"exp\":" + to_string(time.now() - 60) + "}"
+    var tokp = jwt.encode(g_secret, past, 0)
+    check(httpsrv.jwt_session(g_secret, "Bearer " + tokp) != 0, "expired token -> negative")
+    // 无 token / 错 scheme → -100
+    check(httpsrv.jwt_session(g_secret, "") == -100, "no token -> -100")
+    check(httpsrv.jwt_session(g_secret, "Basic abc") == -100, "wrong scheme -> -100")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    parse_section()
+    receive_section()
+    route_section()
+    static_section()
+    sse_section()
+    jwt_section()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}
