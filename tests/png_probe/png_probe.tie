@@ -1,0 +1,221 @@
+type tie<logic>
+// tests/png_probe/png_probe.tie —— p.6.6.13 验收：ext/png PNG 编解码。
+// 全离线确定性探针（无网络/无随机）：
+//   1. RFC 1951 inflate 三型向量（存储/固定/动态）——向量字节为开发期用 Python
+//      zlib 生成，探针运行时全离线；
+//   2. 手构 1×1 灰度 PNG 解码（chunk CRC 为 Python 开发期手算的固定字节）；
+//   3. encode→decode 回环（4×3 RGBA，逐字节一致）；
+//   4. crc32/adler32 与已知向量对拍；
+//   5. 非法/截断输入返回 ok=false 不挂死。
+// 期望全部 PASS / exit 0。
+import "../../ext/png/png.tie" as png
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// 十六进制字符（ASCII 字节）→ 值；非 hex 返回 -1。
+func hexv(c: i64) -> i64 {
+    if c >= 0x30 && c <= 0x39 {
+        return c - 0x30
+    }
+    if c >= 0x61 && c <= 0x66 {
+        return c - 0x61 + 10
+    }
+    if c >= 0x41 && c <= 0x46 {
+        return c - 0x41 + 10
+    }
+    return -1
+}
+
+// 十六进制字符串（忽略空白）→ 字节表。
+func hexbytes(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var nib: i64 = -1
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        var v = hexv(str_byte(s, i))
+        if v >= 0 {
+            if nib < 0 {
+                nib = v
+            } else {
+                table_push(t, nib * 16 + v)
+                nib = -1
+            }
+        }
+        i = i + 1
+    }
+    return t
+}
+
+// ASCII 字符串 → 字节表（探针内比较/构造用）。
+func sb(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+    return t
+}
+
+// 两字节表逐元素相等。
+func bytes_eq(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 表取区间 [s,e)。
+func slice(b: table<i64>, s: i64, e: i64) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = s
+    while i < e {
+        table_push(t, b[i])
+        i = i + 1
+    }
+    return t
+}
+
+// "a"*64 + "b"*64 字节表。
+func build_ab() -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 0
+    while i < 64 {
+        table_push(t, str_byte("a", 0))
+        i = i + 1
+    }
+    i = 0
+    while i < 64 {
+        table_push(t, str_byte("b", 0))
+        i = i + 1
+    }
+    return t
+}
+
+// ==================== 1) RFC 1951 inflate 三型 ====================
+func section_rfc() {
+    // (a) 存储块（BTYPE=00）：zlib 78 01 + LEN=3 NLEN=0xFFFC + "ABC" + adler
+    // 来源：Python zlib.compressobj(level=0)（开发期生成，探针运行时全离线）。
+    var s1 = png.zinflate(hexbytes("78 01 01 03 00 FC FF 41 42 43 01 8D 00 C7"))
+    check(bytes_eq(s1, sb("ABC")), "inflate stored block -> ABC")
+
+    // (b) 固定 Huffman（BTYPE=01）：level=1 对 "Hello!"。
+    // 来源：Python zlib.compressobj(level=1)（开发期生成，探针运行时全离线）。
+    var s2 = png.zinflate(hexbytes("78 01 F3 48 CD C9 C9 57 04 00 07 A2 02 16"))
+    check(bytes_eq(s2, sb("Hello!")), "inflate fixed huffman -> Hello!")
+
+    // (c) 动态 Huffman（BTYPE=10）：level=6 对 "a"*64+"b"*64。
+    // 来源：Python zlib.compressobj(level=6)（开发期生成，探针运行时全离线）。
+    var s3 = png.zinflate(hexbytes("78 9C 4B 4C A4 0C 24 51 08 00 41 94 30 C1"))
+    check(bytes_eq(s3, build_ab()), "inflate dynamic huffman -> a*64+b*64")
+}
+
+// ==================== 2) 手构 1×1 灰度 PNG 解码 ====================
+func section_1x1() {
+    // 1×1 灰度（bit 8 / color 0）：IHDR + IDAT(存储块) + IEND。
+    // 各 chunk CRC 为 Python 开发期按 CRC32-IEEE(zlib.crc32) 手算之固定字节：
+    //   IHDR(3A7E9B55)、IDAT(C36E25E0)、IEND(AE426082)，此处整体写死。
+    var pngbytes = hexbytes(
+        "89 50 4E 47 0D 0A 1A 0A"
+        + "00 00 00 0D 49 48 44 52 00 00 00 01 00 00 00 01 08 00 00 00 00 3A 7E 9B 55"
+        + "00 00 00 0D 49 44 41 54 78 01 01 02 00 FD FF 00 80 00 82 00 81 C3 6E 25 E0"
+        + "00 00 00 00 49 45 4E 44 AE 42 60 82")
+    var img = png.decode(pngbytes)
+    check(img.ok, "decode 1x1 grayscale ok")
+    check(img.w == 1 && img.h == 1, "1x1 dims")
+    check(img.bit_depth == 8 && img.color_type == 0 && img.interlace == 0, "1x1 ihdr fields")
+    check(len(img.pixels) == 1 && img.pixels[0] == 0x80, "1x1 pixel == 0x80")
+}
+
+// ==================== 3) encode -> decode 回环 ====================
+func section_roundtrip() {
+    var rgba = table_new_i64()
+    var row: i64 = 0
+    while row < 3 {
+        var col: i64 = 0
+        while col < 4 {
+            table_push(rgba, row * 63)        // R
+            table_push(rgba, col * 85)        // G
+            table_push(rgba, row + col * 7)   // B
+            table_push(rgba, 255)             // A
+            col = col + 1
+        }
+        row = row + 1
+    }
+    var enc = png.encode(rgba, 4, 3)
+    check(len(enc) > 8, "encode non-empty")
+    var dec = png.decode(enc)
+    check(dec.ok, "roundtrip decode ok")
+    check(dec.w == 4 && dec.h == 3 && dec.bit_depth == 8 && dec.color_type == 6, "roundtrip dims")
+    check(bytes_eq(dec.pixels, rgba), "roundtrip pixel bytes identical (decode(encode(x))==x)")
+}
+
+// ==================== 4) crc32 / adler32 对拍 ====================
+func section_checksum() {
+    // CRC32("123456789" ASCII) == 0xCBF43926（与 std/tink 及 zlib 一致）
+    check(png.crc32(hexbytes("31 32 33 34 35 36 37 38 39")) == 0xCBF43926,
+          "crc32 123456789 == 0xCBF43926")
+    // adler32("Wikipedia") == 0x11E60398（RFC 1950 已知值）
+    check(png.adler32(hexbytes("57 69 6B 69 70 65 64 69 61")) == 0x11E60398,
+          "adler32 Wikipedia == 0x11E60398")
+}
+
+// ==================== 5) 非法 / 截断输入 ====================
+func section_invalid() {
+    var empty = png.decode(table_new_i64())
+    check(empty.ok == false && str_len(empty.err) > 0, "decode empty -> ok=false")
+    // 不足 8 字节签名
+    var short = png.decode(hexbytes("89 50 4E 47"))
+    check(short.ok == false, "decode 4-byte trunc sig -> ok=false")
+    // 错误签名（8 字节但非 PNG 魔数）
+    var badsig = png.decode(hexbytes("89 50 4E 47 00 00 00 00"))
+    check(badsig.ok == false, "decode bad signature -> ok=false")
+    // 缺 IEND：合法小图去掉末尾 IEND chunk（12 字节）
+    var tiny = table_new_i64()
+    var j: i64 = 0
+    while j < 4 {
+        table_push(tiny, 10)
+        table_push(tiny, 20)
+        table_push(tiny, 30)
+        table_push(tiny, 255)
+        j = j + 1
+    }
+    var full = png.encode(tiny, 2, 2)
+    var no_iend = slice(full, 0, len(full) - 12)
+    var noe = png.decode(no_iend)
+    check(noe.ok == false && str_len(noe.err) > 0, "decode missing IEND -> ok=false")
+}
+
+// ==================== 入口 ====================
+func main() {
+    println("start")
+    section_rfc()
+    section_1x1()
+    section_roundtrip()
+    section_checksum()
+    section_invalid()
+    if fails == 0 {
+        println("PASS")
+    } else {
+        println("FAIL count=" + to_string(fails))
+    }
+    println("done")
+}
