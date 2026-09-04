@@ -733,6 +733,37 @@ func gen_inst(inst_id: i64) {
         }
         return
     }
+    if op == 73 {
+        // dyn_call（p.6.6.20 std/sqlite 动态加载）：操作数 [0]=entry 函数指针 VALUE,
+        // [1]=retmode IMM（0=i32 返回→截断+zext i64；1=完整 i64/指针返回）,
+        // 然后每参数 [类型 id IMM, 值]。发射 `call [Ty] %entry(args...)`——entry 是
+        // inttoptr 出的 ptr 值（GetProcAddress 地址），无 env（区别于 op70 的
+        // call_indirect 闭包调用）。所有实参按调用方声明的 tie 类型原样传递
+        //（字符串 TK_STR → ptr = const char*；整数 → i64），对齐 C ABI。
+        var entry_ref = opnd_ref(inst_id, 0)
+        var retmode = ir.ins_opnd(inst_id, 1)
+        var args3 = ""
+        var k3: i64 = 2
+        while k3 + 1 < cnt {
+            if k3 > 2 {
+                args3 = args3 + ", "
+            }
+            var pty3 = llvm_ty(ir.ins_opnd(inst_id, k3))
+            args3 = args3 + pty3 + " " + typed_ref(inst_id, k3 + 1)
+            k3 = k3 + 2
+        }
+        if retmode == 0 {
+            // i32 返回（sqlite3_* 返回 int）：call i32 %entry → zext i64
+            g_str_reg_cnt = g_str_reg_cnt + 1
+            var tmp = "%sc" + to_string(g_str_reg_cnt)
+            line(tmp + " = call i32 " + entry_ref + "(" + args3 + ")")
+            line(reg + " = zext i32 " + tmp + " to i64")
+        } else {
+            // 完整 64 位返回（指针/句柄）：call i64 %entry
+            line(reg + " = call i64 " + entry_ref + "(" + args3 + ")")
+        }
+        return
+    }
     if op == 56 {
         // str_cat（字符串拼接）：操作数 [lhs, rhs] → malloc+memcpy 序列。
         // S2.1：升级为 {ptr,len} 布局——malloc 8 头 + 数据 + \0：
