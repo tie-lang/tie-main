@@ -22,6 +22,23 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [fix] tsha1 通用压缩去每块表分配——digest 级 scratch 复用（p.6.10.1）（2026-09-05）
+
+- 根因（RCA）：tie 无自动回收（trm-lite GC 为显式 collect 制，编译器侧 collect 内置未接线）——
+  表内存只增不减；tsha1 通用 compress 每 64 字节块新建 lanes/Pw 表，1MiB 消息 ≈1.6 万块 × 每块
+  多表 → tsha_bench 高频调用下内存无界增长（数十秒吃满系统内存，连带波及同机网络服务）。
+- 修复：lanes/Pw 提升为 digest 级 scratch（一次建、全程复用）；absorb 增加 W 参数（不再依赖
+  len(lanes) 推导）；fin_synth 复用 lanes、清零 Pw 作 zrc；compress48 透传 scratch；
+  t 轨小表保持局部（每块 ≤4×4 项）。特化内核（w9/w11/w12）零字号不改。
+- 验收：tsha1f/b/r/x 四模型 KAT 探针全 PASS（n=144 走通用路径，覆盖重构后的 lanes/Pw 复用），
+  digest 输出逐字不变。
+
+EN: tsha1 generic compress no longer allocates per 64-byte block — lanes/Pw lifted to digest-level
+scratch reuse (absorb takes explicit W; fin_synth reuses lanes and zeroes Pw as zrc; compress48
+threads scratch through). RCA: tie has no auto-reclaim (trm-lite GC is explicit-collect only), so
+per-block table churn made tsha_bench memory grow unboundedly. All four model KAT probes PASS with
+byte-identical digests.
+
 ## [feat] sys/win32 平台专用层首期：注册表/系统信息/剪贴板/环境/用户目录/窗口 + 高级枚举（p.6.6.23）（2026-09-04）
 
 - 新增 `sys/win32.tie`（命名空间 sys_win32，全部 unsafe extern fn 直绑，仿 ext/ecdsa 范式）：

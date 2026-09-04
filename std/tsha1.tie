@@ -472,15 +472,16 @@ func ensure_xdcon() {
 // ---- 消息预处理：64 字节块 → 两组 (M,N) 平面 + Pw 位平面 + 3 基调度键（单遍扫描）----
 // 越界字节按 0 处理（等价纯零填充 ljust(64,0)）。
 // 3 为奇数乘子：3^k mod 2^32 恒非零 → 64 位低 3 位全部贡献（原 24^k 在 k≥11 湮灭）。
-func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64, m1: i64, n1: i64, pw: table<i64>, skey: i64) {
+// A6（p.6.10.1 去分配）：Pw 改由调用方复用传入（ref 写回，进入即清零 16 槽），
+//   消除每块 table_new_i64 + 16 次 push 的热路径分配；返回值改为 (M0,N0,M1,N1,skey)。
+func block_planes_skey(msg: string, pos: i64, nbytes: i64, Pw: ref table<i64>) -> (m0: i64, n0: i64, m1: i64, n1: i64, skey: i64) {
     var M0v: i64 = 0
     var N0v: i64 = 0
     var M1v: i64 = 0
     var N1v: i64 = 0
-    var Pw = table_new_i64()
     var kk: i64 = 0
     while kk < 16 {
-        table_push(Pw, 0)
+        Pw[kk] = 0
         kk = kk + 1
     }
     var skey: i64 = 0
@@ -524,12 +525,12 @@ func block_planes_skey(msg: string, pos: i64, nbytes: i64) -> (m0: i64, n0: i64,
         j = j + 1
     }
     // A5-b：M/N 由 1<<bit（bit<32）构成恒 32 位，返回防御掩码可省
-    return (M0v, N0v, M1v, N1v, Pw, skey)
+    return (M0v, N0v, M1v, N1v, skey)
 }
 
 // 位平面吸收（F1-2）：每块一次、compress 轮前调用；16 条 Pw 按锚点字 w%W 平衡加并入 lanes。
-func absorb(lanes: ref table<i64>, Pw: table<i64>, skey: i64, half: bool) {
-    var W = len(lanes) / 2
+// A6（p.6.10.1）：W 改为显式参数（lanes 为 digest 级复用 scratch，长度固定 ≥ 2·maxW）。
+func absorb(lanes: ref table<i64>, W: i64, Pw: table<i64>, skey: i64, half: bool) {
     var w: i64 = 0
     while w < 16 {
         if Pw[w] != 0 {
@@ -690,22 +691,19 @@ func lfsr_mix(lanes: ref table<i64>, td_start: i64, L: i64, r: i64,
 }
 
 // ---- 单块压缩（model: 0=f 1=r 2=b 3=x；half = (model==1)）----
+// A6（p.6.10.1 去分配）：lanes/Pw 由 digest 级 scratch 复用传入（len(lanes) ≥ 2·W、len(Pw) ≥ 16），
+//   消除每块 table_new + 逐项 push 的热路径分配；t 轨表保持局部（每块 ≤4×4 项小表）。
 func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
               t_lo: i64, t_hi: i64, last: bool,
-              iv: table<i64>, rcon: table<i64>, bcon: table<i64>, xdcon: table<i64>, half: bool) {
+              iv: table<i64>, rcon: table<i64>, bcon: table<i64>, xdcon: table<i64>, half: bool,
+              lanes: ref table<i64>, Pw: ref table<i64>) {
     var W = len(h)
-    var (M0, N0, M1, N1, Pw, skey) = block_planes_skey(msg, pos, nbytes)
-    var lanes = table_new_i64()
-    var i: i64 = 0
-    while i < 2 * W {
-        table_push(lanes, 0)
-        i = i + 1
-    }
+    var (M0, N0, M1, N1, skey) = block_planes_skey(msg, pos, nbytes, Pw)
     var mplan: i64 = 0xFFFFFFFF
     if half {
         mplan = 0xFFFF
     }
-    i = 0
+    var i: i64 = 0
     while i < W {
         // A5-b：h/iv/rotlane 恒 32 位，^ 结果 32 位，防御掩码可省；& mplan 保留（half 截断）
         lanes[2 * i] = h[i]
@@ -725,7 +723,7 @@ func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
         var lk = 2 * ((W / 2) % W) + 1
         lanes[lk] = lanes[lk] ^ 0xFFFFFFFF
     }
-    absorb(lanes, Pw, skey, half)   // F1-2：位平面吸收（IV/计数器混入之后、轮循环之前，每块一次）
+    absorb(lanes, W, Pw, skey, half)   // F1-2：位平面吸收（IV/计数器混入之后、轮循环之前，每块一次）
     // 轨分配（alloc_tracks 退化）：start/len/kind/rate（kind: 0=dual 1=ring 2=sponge 3=lfsr）
     var t_start = table_new_i64()
     var t_len = table_new_i64()
@@ -902,7 +900,7 @@ func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
         h[i] = h[i] ^ lanes[2 * i] ^ rotlane(lanes[2 * i + 1], (i * 3) & 31, half)
         i = i + 1
     }
-    fin_synth(h, half)
+    fin_synth(h, half, lanes, Pw)
 }
 
 // n=48 W 特化分派：f/b/x（W=9）走 dual9 内核、r（W=11 半宽）走 dual11h；其余 n 保持通用路径。
@@ -910,7 +908,7 @@ func compress(model: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
 func compress48(model: i64, n: i64, h: ref table<i64>, msg: string, pos: i64, nbytes: i64,
                 t_lo: i64, t_hi: i64, last: bool,
                 iv: table<i64>, rcon: table<i64>, bcon: table<i64>, xdcon: table<i64>,
-                half: bool) {
+                half: bool, lanes: ref table<i64>, Pw: ref table<i64>) {
     if n == 48 {
         if model == 0 {
             compress_w9(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
@@ -932,40 +930,34 @@ func compress48(model: i64, n: i64, h: ref table<i64>, msg: string, pos: i64, nb
             compress_w12(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 16)
         } else {
             // r 半宽 n=64 → W=23（dual 12+11），暂留通用路径
-            compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half)
+            compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half, lanes, Pw)
         }
         return
     }
-    compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half)
+    compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half, lanes, Pw)
 }
 
 // 最后综合（终筛）：S=4 轮全 W 字单环收束（rcon=0 表，skey=0x13579BDF），随后投影。
-func fin_synth(h: ref table<i64>, half: bool) {
+// A6（p.6.10.1 去分配）：lanes 复用调用方 scratch（原值已无用，整写）；zrc 复用 Pw 清零 16 槽。
+func fin_synth(h: ref table<i64>, half: bool, lanes: ref table<i64>, Pw: ref table<i64>) {
     var W = len(h)
     if W == 1 {
         return
     }
-    var lanes = table_new_i64()
     var i: i64 = 0
-    while i < 2 * W {
-        table_push(lanes, 0)
-        i = i + 1
-    }
-    i = 0
     while i < W {
         lanes[2 * i] = h[i]
         lanes[2 * i + 1] = rotlane(h[(i + 1) % W], 7, half)
         i = i + 1
     }
-    var zrc = table_new_i64()
     var z: i64 = 0
     while z < 16 {
-        table_push(zrc, 0)
+        Pw[z] = 0
         z = z + 1
     }
     var sf: i64 = 0
     while sf < 4 {
-        ring_mix(lanes, 0, W, sf, 0x13579BDF, zrc, half,
+        ring_mix(lanes, 0, W, sf, 0x13579BDF, Pw, half,
                  false, 0, 0, 0, 0, 0, 0, sf)
         sf = sf + 1
     }
@@ -1010,6 +1002,20 @@ func digest(model: i64, msg: string, nbytes: i64, n: i64) -> string {
         i = i + 1
     }
     h[0] = h[0] ^ 0x01010000 ^ 32
+    // A6（p.6.10.1 去分配）：块压缩 scratch 一次建、全程复用（lanes 2·maxW=64、Pw 16 槽），
+    //   消除每块 table_new + push；特化内核（w9/w11/w12）无需二者，通用路径（含 r/n=64）消费。
+    var lanes = table_new_i64()
+    var sp: i64 = 0
+    while sp < 64 {
+        table_push(lanes, 0)
+        sp = sp + 1
+    }
+    var Pw = table_new_i64()
+    sp = 0
+    while sp < 16 {
+        table_push(Pw, 0)
+        sp = sp + 1
+    }
     var bcon: table<i64> = table_new_i64()
     var xdcon: table<i64> = table_new_i64()
     if model == 2 || model == 3 {
@@ -1024,13 +1030,13 @@ func digest(model: i64, msg: string, nbytes: i64, n: i64) -> string {
     while pos + 64 < nbytes {
         t_hi = (t_hi + ((t_lo + 64) >> 32)) & 0xFFFFFFFF
         t_lo = (t_lo + 64) & 0xFFFFFFFF
-        compress48(model, n, h, msg, pos, nbytes, t_lo, t_hi, false, iv, rcon, bcon, xdcon, half)
+        compress48(model, n, h, msg, pos, nbytes, t_lo, t_hi, false, iv, rcon, bcon, xdcon, half, lanes, Pw)
         pos = pos + 64
     }
     var rem = nbytes - pos
     t_hi = (t_hi + ((t_lo + rem) >> 32)) & 0xFFFFFFFF
     t_lo = (t_lo + rem) & 0xFFFFFFFF
-    compress48(model, n, h, msg, pos, nbytes, t_lo, t_hi, true, iv, rcon, bcon, xdcon, half)
+    compress48(model, n, h, msg, pos, nbytes, t_lo, t_hi, true, iv, rcon, bcon, xdcon, half, lanes, Pw)
     var out: string = ""
     i = 0
     while i < W {
