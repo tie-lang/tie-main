@@ -1,0 +1,231 @@
+type tie<logic>
+// tests/_p67_probe/c_deque_perf_probe.tie —— p.6.7.9 验收：复杂形态 per-P 细锁（C-deque）。
+// import trm-lite 复杂形态：sched_ws 去全局单 CS——每 worker 段独立锁 + 全局溢出
+// 队列细锁 + 计数短临界锁；窃取窗口缩小到目标段。
+// 断言：
+//   1) 负载对比：P=4，同负载 24 任务（串行内联 vs 4 worker 并行）——**并行墙钟 <
+//      串行墙钟**，连续 3 次测量 ≥2 次成立（宽松门槛，spec §6：墙钟为辅）；并行
+//      tid 去重 ≥2 为主证（真并行铁证）
+//   2) 失衡负载：1 个制造者任务内 spawn 400 异构子任务 → stolen>0 或 子任务 tid
+//      覆盖 ≥2（验收二元，spec §4）；结果精确（len=400、区间合法、无重复）
+//   3) 3 轮 drain 线程句柄表恒定（ctx_pool_threads()==4，复用同一组线程）
+//   4) ctx_shutdown() 后进程正常退出 exit 0
+// 期望：par<ser ≥2/3 / tid≥2 / stolen>0 / ths=4 恒定 / PASS / exit 0
+import "../../../trm-lite/core/runtime/tl_runtime_ctx.tie"
+
+var g_data: table<i64> = []     // 失衡负载共享表
+var g_tid: table<i64> = []      // 失衡负载子任务执行线程 tid（独立槽位）
+var g_bench_tid: table<i64> = [] // 并行基准 24 任务执行线程 tid（独立槽位）
+var g_cnt: table<i64> = []      // 并行基准任务执行计数（表 push 计数联通性证据）
+var g_fill: i64 = 0
+
+unsafe extern fn GetCurrentThreadId() -> i64
+unsafe extern fn GetTickCount() -> i64
+
+func tid_now() -> i64 {
+    unsafe {
+        return GetCurrentThreadId()
+    }
+}
+func tick_ms() -> i64 {
+    unsafe {
+        return GetTickCount()
+    }
+}
+
+// 计算负载（结果写临终全局防死代码消除）
+func work(w0: i64, n: i64) -> i64 {
+    var w: i64 = w0
+    var f: i64 = 0
+    while f < n {
+        w = (w * 7 + f) % 1000000007
+        f = f + 1
+    }
+    return w
+}
+
+// 基准任务（p.6.7.9 探针纪律）：循环内创建闭包须经**每循环新局部变量**（var ci）——
+// tie 闭包捕获绑定变量槽，直接捕获循环变量会在迭代间共享槽位。
+func make_bench(i: i64, n: i64) -> fn() -> i64 {
+    var ci = i
+    var cn = n
+    return func() -> i64 {
+        var r = work(ci, cn)
+        g_fill = r
+        table_push(g_cnt, ci)
+        g_bench_tid[ci] = tid_now()
+        return r
+    }
+}
+
+// 串行基线：24 个任务内联执行
+func run_serial(n: i64) -> i64 {
+    var t0 = tick_ms()
+    var i: i64 = 0
+    while i < 24 {
+        g_fill = work(i, n)
+        i = i + 1
+    }
+    var t1 = tick_ms()
+    if t1 < t0 {
+        t1 = t0
+    }
+    return t1 - t0
+}
+
+// 并行：24 任务 ctx_spawn → ctx_drain
+func run_par(n: i64) -> i64 {
+    var t0 = tick_ms()
+    var i: i64 = 0
+    while i < 24 {
+        tl_runtime_ctx.ctx_spawn(make_bench(i, n))
+        i = i + 1
+    }
+    tl_runtime_ctx.ctx_drain()
+    var t1 = tick_ms()
+    if t1 < t0 {
+        t1 = t0
+    }
+    return t1 - t0
+}
+
+// 失衡负载：制造者 + 400 异构子任务（重载抬升本段消费时长 → 刺激窃取）
+func producer_task() -> fn() -> i64 {
+    return func() -> i64 {
+        var i: i64 = 0
+        while i < 400 {
+            var id = i
+            var hv: i64 = 0
+            if (i % 6) == 0 {
+                hv = 1
+            }
+            tl_runtime_ctx.ctx_spawn(func() -> i64 {
+                var w: i64 = id
+                if hv == 1 {
+                    w = work(w, 250000)
+                }
+                table_push(g_data, id)
+                g_tid[id] = tid_now()
+                return w
+            })
+            i = i + 1
+        }
+        return 400
+    }
+}
+
+// tid 槽去重计数（t ∈ 表，n 个槽）
+func tid_dedup(t: table<i64>, n: i64) -> i64 {
+    var set: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var seen: i64 = 0
+        var j: i64 = 0
+        while j < i {
+            if t[j] == t[i] && t[i] != 0 {
+                seen = 1
+            }
+            j = j + 1
+        }
+        if seen == 0 && t[i] != 0 {
+            set = set + 1
+        }
+        i = i + 1
+    }
+    return set
+}
+
+func main() {
+    // tid 槽预分配
+    var k: i64 = 0
+    while k < 500 {
+        table_push(g_tid, 0)
+        k = k + 1
+    }
+    k = 0
+    while k < 24 {
+        table_push(g_bench_tid, 0)
+        k = k + 1
+    }
+    tl_runtime_ctx.ctx_ensure()
+    tl_runtime_ctx.ctx_set_workers(4)
+
+    // 预热：起池 + 线程就绪（避免首次并行测量的池创建开销污染墙钟对比）
+    tl_runtime_ctx.ctx_spawn(func() -> i64 { return 1 })
+    tl_runtime_ctx.ctx_drain()
+
+    // 1) 负载对比：3 次测量，并行 < 串行 ≥2 次；并行 tid 覆盖 ≥2
+    var wins: i64 = 0
+    var n = 600000
+    var par_tid_min: i64 = 99
+    var rnd: i64 = 0
+    while rnd < 3 {
+        var tser = run_serial(n)
+        var tpar = run_par(n)
+        if tpar < tser {
+            wins = wins + 1
+        }
+        var set = tid_dedup(g_bench_tid, 24)
+        if set < par_tid_min {
+            par_tid_min = set
+        }
+        rnd = rnd + 1
+    }
+    var bcnt = len(g_cnt)
+
+    // 失衡负载：制造者 → 400 子任务
+    tl_runtime_ctx.ctx_spawn(producer_task())
+    tl_runtime_ctx.ctx_drain()
+    var stolen = tl_runtime_ctx.ctx_stolen()
+    var L = len(g_data)
+    var bad: i64 = 0
+    var i: i64 = 0
+    while i < L {
+        if g_data[i] < 0 || g_data[i] >= 400 {
+            bad = 1
+        }
+        i = i + 1
+    }
+    var dup: i64 = 0
+    i = 0
+    while i < L && dup == 0 {
+        var j = i + 1
+        while j < L {
+            if g_data[i] == g_data[j] {
+                dup = 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    var sub_tid = tid_dedup(g_tid, 400)
+
+    // 3 轮 drain 线程恒定
+    var ths = tl_runtime_ctx.ctx_pool_threads()
+    var r2: i64 = 0
+    var ths_ok: i64 = 1
+    while r2 < 3 {
+        tl_runtime_ctx.ctx_spawn(func() -> i64 { return 1 })
+        tl_runtime_ctx.ctx_drain()
+        if tl_runtime_ctx.ctx_pool_threads() != ths {
+            ths_ok = 0
+        }
+        r2 = r2 + 1
+    }
+
+    println("wins=" + to_string(wins) + " par_tid=" + to_string(par_tid_min) + " bcnt=" + to_string(bcnt) + " stolen=" + to_string(stolen) + " len=" + to_string(L) + " dup=" + to_string(dup) + " bad=" + to_string(bad) + " sub_tid=" + to_string(sub_tid) + " ths=" + to_string(ths) + " ths_ok=" + to_string(ths_ok))
+    var ok: i64 = 1
+    if wins < 2 || par_tid_min < 2 || bcnt != 72 || L != 400 || dup != 0 || bad != 0 || ths_ok == 0 || ths != 4 {
+        ok = 0
+    }
+    if stolen == 0 && sub_tid < 2 {
+        ok = 0
+    }
+    tl_runtime_ctx.ctx_shutdown()
+    if ok == 1 {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    println("done")
+}

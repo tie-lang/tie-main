@@ -57,6 +57,32 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [feat] p.6.7.9 复杂形态 per-P 细锁（C-deque）（2026-09-04）
+
+- **运行时**（trm-lite/core/mnn/sched_ws.tie）：去掉全局单 CS（原 g_cs 既做队列
+  又做计数与唤醒）——**每 worker 段独立 CS**（g_seg_lks[i]，自取/窃取只锁目标段，
+  窃取窗口从整队列缩小到单段）+ 全局溢出队列细锁 g_ovf_lk + 短临界计数锁 g_cnt_lk
+  （pending/active 空判断 + cv_wait 收敛其中，不做任务数据操作）+ 寄存器表追加锁
+  g_regs_lk；spawn 分步细锁（轮转位→寄存器→段/溢出→计数+唤醒），worker 抢任务
+  （自段→逐段窃取→溢出）与计账各持一把短锁——**单锁持有纪律，无多锁嵌套死锁**；
+  `reset_round` 逐细锁清段/计数；`shutdown` 逐细锁销毁；观察量改经计数锁读取。
+- **探针**：`c_deque_perf_probe`——预热起池后 3 次测量（串行内联 24 任务 vs 4
+  worker 并行）：**并行墙钟 < 串行** 3/3 成立（细锁解除全局 CS 争用，修复全局锁
+  退化 78>47 拐点）、并行 tid 去重 =4、基准任务执行计数 72（连通性证据）；失衡
+  负载 stolen=103~111、len=400 无重复、子任务 tid=4；3 轮 drain 句柄表恒定；
+  PASS×3。p.6.7 全套 + m6_actor + ctx_ws/ctx_gc/combo/parity_chan + trm-lite 测试
+  零回归。
+
+EN: p.6.7.9 complex-form per-P fine locks (C-deque) (2026-09-04) — global single CS
+removed: per-worker segment CS (steal window narrowed to the target segment), fine
+overflow lock, short-critical count lock (pending/active/empty + cv wait), register
+append lock; spawn/pick/account each hold ONE short lock (no nested multi-lock
+deadlock); reset/shutdown destroy per-fine-lock; observations read via the count lock.
+Probe c_deque_perf_probe (warm-up + 3 measurements): parallel wall-clock < serial 3/3
+(global-CS regression fixed), parallel tid=4, bench exec count 72, unbalanced stolen
+103~111 len=400 unique subtask tid=4, threads constant across 3 drains — PASS x3;
+full p.6.7 suite + m6_actor + demos + trm-lite tests zero regression.
+
 ## [feat] p.6.7.8 复杂形态常驻池（C-pool）（2026-09-04）
 
 - **运行时**（trm-lite/core/mnn/sched_ws.tie）：去「每轮 drain 重建/回收线程池」——
