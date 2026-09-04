@@ -1,0 +1,111 @@
+type tie<class>
+// ============================================================================
+// svg.tie：ext/svg——SVG 解析语义层（命名空间 svg，纯 tie）p.6.6.15
+// SVG semantics layer over ext/xml (namespace svg, pure-tie). p.6.6.15
+//
+// 定位（Positioning）：消费 p.6.6.5 ext/xml 的 XML 元素树（xml.parse 得 XmlDoc
+// 句柄），在其上提供 SVG 语义层。本模块不做字节级 IO、不做 XML 解析——文档解析
+// 一律经 xml.parse 得 XmlDoc，再以该句柄 + 节点 id 调用 svg 访问器。
+//
+// 数据平面（Data plane）：全 string（UTF-8 文本），与 xml 底座一致；不触碰字节表。
+//
+// 接口（Interface）：svg 访问器与 xml API 对齐（首参为文档句柄 d，次参为节点 id
+// nid；跨模块类型注释一律裸名 XmlDoc）：
+//   ok(d)                        解析是否成功（转发 xml.is_ok）
+//   kind(d, nid)                 节点类型（0=元素 1=文本 2=注释 3=PI 4=CDATA）
+//   tag(d, nid)                  完整标签名（转发 xml.tag；含前缀如 "svg:rect"）
+//   local(d, nid)                元素本地名（去前缀；SVG 元素类型识别主入口）
+//   attr(d, nid, name, def)      属性取值；缺失（或显式空值）返回 def
+//   children(d, nid)             全部孩子（含文本/注释节点；转发 xml.children）
+//   elements(d, nid)             仅元素孩子（跳过空白文本/注释——SVG 排版常见）
+//   parent(d, nid)               父节点 id（转发 xml.parent）
+//   is_el(d, nid)                是否为元素节点
+//   is_shape(d, nid, name)       元素类型是否 == name（如 "rect"/"g"/"path"）
+//
+// 子集取舍（Subset）：
+//   元素（元素类型识别）：rect / circle / ellipse / line / polyline / polygon /
+//     path / g / text / use 等一律经 local() 取本地名识别。本模块不做元素白名单
+//     校验（未知元素名照常返回，不报错）——识别是"查询式"而非"白名单式"，
+//     故新增元素类型无需改本模块。
+//   通用属性：x y width height rx ry cx cy r x1 y1 x2 y2 points d fill stroke
+//     stroke-width transform id class 等一律经 attr(d, nid, name, def) 取原值
+//     （string）；不做数值解析/单位换算（数值由消费方 parse_int/parse_float）。
+//   属性缺失 vs 值为空：二者均返回 def（xml 底座 attr 缺失即返回 ""，无法区分
+//     显式空值；SVG 显式空属性值罕见，作缺失处理）。
+// ============================================================================
+
+import "../xml/xml.tie" as xml
+import "../xml/tree.tie" as tree
+
+namespace svg {
+
+// ---- 文档级 ----
+// 解析是否成功（转发 xml.is_ok）
+pub func ok(d: XmlDoc) -> bool {
+    return xml.is_ok(d)
+}
+
+// ---- 节点访问（对齐 xml API：d 在前，nid 其次）----
+
+// 节点类型：0=元素 1=文本 2=注释 3=PI 4=CDATA；非法 id 返回 -1
+pub func kind(d: XmlDoc, nid: i64) -> i64 {
+    return xml.kind(d, nid)
+}
+
+// 完整标签名（大小写保留；含前缀）；非元素/非法返回 ""
+pub func tag(d: XmlDoc, nid: i64) -> string {
+    return xml.tag(d, nid)
+}
+
+// 元素本地名（去前缀；无前缀则=完整标签名）；非元素/非法返回 ""
+pub func local(d: XmlDoc, nid: i64) -> string {
+    return xml.local(d, nid)
+}
+
+// 属性取值：缺失（或显式空值）返回 def；值非空返回原值（string，不解析）。
+pub func attr(d: XmlDoc, nid: i64, name: string, def: string) -> string {
+    var v = xml.attr(d, nid, name)
+    if len(v) > 0 {
+        return v
+    }
+    return def
+}
+
+// 全部孩子（含文本/注释/PI/CDATA 节点；对齐 xml.children）
+pub func children(d: XmlDoc, nid: i64) -> table<i64> {
+    return xml.children(d, nid)
+}
+
+// 仅元素孩子（跳过空白文本/注释等——SVG 排版换行常见；文档序）
+pub func elements(d: XmlDoc, nid: i64) -> table<i64> {
+    var out = table_new_i64()
+    var kids = xml.children(d, nid)
+    var k: i64 = 0
+    while k < len(kids) {
+        if xml.kind(d, kids[k]) == 0 {
+            table_push(out, kids[k])
+        }
+        k = k + 1
+    }
+    return out
+}
+
+// 父节点 id；根容器/非法返回 -1
+pub func parent(d: XmlDoc, nid: i64) -> i64 {
+    return xml.parent(d, nid)
+}
+
+// 是否为元素节点（非元素/非法 → false）
+pub func is_el(d: XmlDoc, nid: i64) -> bool {
+    return xml.kind(d, nid) == 0
+}
+
+// 元素类型是否 == name（如 "rect"/"g"/"path"；非元素/非法恒 false）
+pub func is_shape(d: XmlDoc, nid: i64, name: string) -> bool {
+    if xml.kind(d, nid) != 0 {
+        return false
+    }
+    return xml.local(d, nid) == name
+}
+
+}   // namespace svg
