@@ -1,0 +1,292 @@
+type tie<logic>
+// ============================================================================
+// svg_probe.tie：ext/svg SVG 语义层探针（p.6.6.15）。
+// SVG semantics layer probe (p.6.6.15).
+//
+// 覆盖（Coverage）：
+//   - 样本：嵌套 g 分组 + rect/circle/ellipse/line/polyline/polygon/path/text/use
+//     —— 结构遍历（elements 仅元素孩子）、元素类型识别（local/is_shape）、
+//     通用属性访问（attr 带默认值 / id/class/fill/stroke/stroke-width/x/y/cx/cy/
+//     r/x1/y1/x2/y2/points/d/transform）；
+//   - path d token 化：M/L/H/V/C/Q/Z 全命令 + 小写命令 + 隐式重复 + 紧凑无分隔
+//     （10-20 / 10,20）+ 科学计数（1e2 / .5 / 3E-1）逐项断言；
+//   - transform 简析：translate/scale/rotate 各形态（单参/双参/三参、混合连写、
+//     空白/逗号混用）；
+//   - 畸形容错：坏 d（未知命令/参数数不符/数字先行/命令独行/尾随数字/非法数字/
+//     空输入）、坏 transform（未知函数/参数数不符/未闭合/尾随垃圾/非数字参数/
+//     缺括号/空输入）恒返回空表（len==0）。
+// 断言 110+ 条；全 PASS 后最后一行打印 done（exit 0）。
+// 编译运行：compiler\tiec.exe tests\svg_probe\svg_probe.tie
+// ============================================================================
+import "../../ext/xml/xml.tie" as xml
+import "../../ext/svg/svg.tie" as svg
+
+// ---- 断言工具 ----
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=[" + got + "] want=[" + want + "]")
+        exit(1)
+    }
+}
+
+func chk_i64(name: string, got: i64, want: i64) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func chk_true(name: string, v: bool) {
+    if v {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " want true")
+        exit(1)
+    }
+}
+
+// ---- 样本：嵌套 g + 各形状 + path/text/use ----
+func sample() -> string {
+    return "<?xml version=\"1.0\"?>\n" +
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"800\" height=\"600\" id=\"root\" class=\"canvas\">\n" +
+        "  <g id=\"grp-a\" transform=\"translate(10,20)\">\n" +
+        "    <g id=\"grp-b\" fill=\"red\" stroke=\"black\" stroke-width=\"2\">\n" +
+        "      <rect id=\"r1\" x=\"5\" y=\"6\" width=\"100\" height=\"50\" rx=\"2\" ry=\"3\"/>\n" +
+        "      <circle id=\"c1\" cx=\"50\" cy=\"60\" r=\"10\"/>\n" +
+        "      <ellipse id=\"e1\" cx=\"10\" cy=\"20\" rx=\"30\" ry=\"15\"/>\n" +
+        "      <line id=\"l1\" x1=\"0\" y1=\"0\" x2=\"100\" y2=\"100\"/>\n" +
+        "    </g>\n" +
+        "    <polyline id=\"pl1\" points=\"0,0 10,10 20,5\"/>\n" +
+        "    <polygon id=\"pg1\" points=\"0,0 10,10 20,5 0,0\"/>\n" +
+        "    <path id=\"p1\" d=\"M 10 20 L 30 40 H 50 V 60 C 1 2 3 4 5 6 Q 7 8 9 10 Z\"/>\n" +
+        "    <path id=\"p2\" d=\"m10,20 l5,5 h10 v10 c1 2 3 4 5 6 q7 8 9 10 z\" transform=\"scale(2) rotate(45)\"/>\n" +
+        "    <text id=\"t1\" x=\"1\" y=\"2\" fill=\"blue\">Hello</text>\n" +
+        "  </g>\n" +
+        "  <g id=\"grp-c\" transform=\"translate(100) scale(2,3) rotate(30,50,60)\">\n" +
+        "    <use id=\"u1\" xlink:href=\"#r1\"/>\n" +
+        "  </g>\n" +
+        "</svg>"
+}
+
+// 按 id 属性定位节点；未找到返回 -1
+func by_id(d: XmlDoc, idv: string) -> i64 {
+    var hits = xml.query_attr(d, "", "id", idv)
+    if len(hits) == 0 {
+        return -1
+    }
+    return hits[0]
+}
+
+// ---- 结构遍历 + 元素类型识别 + 通用属性 ----
+func tst_structure() {
+    var d = xml.parse(sample())
+    chk_true("ok", svg.ok(d))
+    var root = by_id(d, "root")
+    chk_i64("root_found", root >= 0 ? 1 : 0, 1)
+    chk("root_tag", svg.tag(d, root), "svg")
+    chk("root_local", svg.local(d, root), "svg")
+    // 通用属性 + 缺失默认值
+    chk("root_w", svg.attr(d, root, "width", "0"), "800")
+    chk("root_h", svg.attr(d, root, "height", "0"), "600")
+    chk("root_class", svg.attr(d, root, "class", ""), "canvas")
+    chk("root_missing", svg.attr(d, root, "nope", "dflt"), "dflt")
+    // 根下仅元素孩子：grp-a, grp-c（空白文本被跳过）
+    chk_i64("root_els", len(svg.elements(d, root)), 2)
+    // 嵌套 g 分组
+    var ga = by_id(d, "grp-a")
+    chk_true("ga_shape", svg.is_shape(d, ga, "g"))
+    chk_true("ga_not_rect", !svg.is_shape(d, ga, "rect"))
+    chk("ga_transform", svg.attr(d, ga, "transform", ""), "translate(10,20)")
+    var gb = by_id(d, "grp-b")
+    chk("gb_fill", svg.attr(d, gb, "fill", ""), "red")
+    chk("gb_stroke", svg.attr(d, gb, "stroke", ""), "black")
+    chk("gb_sw", svg.attr(d, gb, "stroke-width", "0"), "2")
+    // grp-a 元素孩子（跳过空白文本）：g, polyline, polygon, p1, p2, text = 6
+    var gak = svg.elements(d, ga)
+    chk_i64("ga_els", len(gak), 6)
+    chk("ga_el0", svg.local(d, gak[0]), "g")
+    chk("ga_el5", svg.local(d, gak[5]), "text")
+    // 父链
+    chk_i64("gb_parent", svg.parent(d, gb), ga)
+    // text 元素可识别（保留字仅限标识符，字符串 "text" 无碍）
+    var t1 = by_id(d, "t1")
+    chk_true("t1_is_el", svg.is_el(d, t1))
+    chk_true("t1_shape", svg.is_shape(d, t1, "text"))
+    chk("t1_fill", svg.attr(d, t1, "fill", ""), "blue")
+    // 属性缺失默认值（text 无 id 类属性之外的 stroke）
+    chk("t1_no_stroke", svg.attr(d, t1, "stroke", "none"), "none")
+}
+
+// ---- 各形状元素属性 ----
+func tst_shapes() {
+    var d = xml.parse(sample())
+    // rect：x/y/width/height/rx/ry
+    var r1 = by_id(d, "r1")
+    chk_true("r1_shape", svg.is_shape(d, r1, "rect"))
+    chk_true("r1_not_circle", !svg.is_shape(d, r1, "circle"))
+    chk("r1_x", svg.attr(d, r1, "x", ""), "5")
+    chk("r1_y", svg.attr(d, r1, "y", ""), "6")
+    chk("r1_w", svg.attr(d, r1, "width", ""), "100")
+    chk("r1_h", svg.attr(d, r1, "height", ""), "50")
+    chk("r1_rx", svg.attr(d, r1, "rx", ""), "2")
+    chk("r1_ry", svg.attr(d, r1, "ry", ""), "3")
+    // circle：cx/cy/r
+    var c1 = by_id(d, "c1")
+    chk_true("c1_shape", svg.is_shape(d, c1, "circle"))
+    chk("c1_cx", svg.attr(d, c1, "cx", ""), "50")
+    chk("c1_cy", svg.attr(d, c1, "cy", ""), "60")
+    chk("c1_r", svg.attr(d, c1, "r", ""), "10")
+    // ellipse：cx/cy/rx/ry
+    var e1 = by_id(d, "e1")
+    chk_true("e1_shape", svg.is_shape(d, e1, "ellipse"))
+    chk("e1_rx", svg.attr(d, e1, "rx", ""), "30")
+    chk("e1_ry", svg.attr(d, e1, "ry", ""), "15")
+    // line：x1/y1/x2/y2
+    var l1 = by_id(d, "l1")
+    chk_true("l1_shape", svg.is_shape(d, l1, "line"))
+    chk("l1_x1", svg.attr(d, l1, "x1", ""), "0")
+    chk("l1_y1", svg.attr(d, l1, "y1", ""), "0")
+    chk("l1_x2", svg.attr(d, l1, "x2", ""), "100")
+    chk("l1_y2", svg.attr(d, l1, "y2", ""), "100")
+    // polyline / polygon：points
+    var pl1 = by_id(d, "pl1")
+    chk_true("pl1_shape", svg.is_shape(d, pl1, "polyline"))
+    chk("pl1_pts", svg.attr(d, pl1, "points", ""), "0,0 10,10 20,5")
+    var pg1 = by_id(d, "pg1")
+    chk_true("pg1_shape", svg.is_shape(d, pg1, "polygon"))
+    chk("pg1_pts", svg.attr(d, pg1, "points", ""), "0,0 10,10 20,5 0,0")
+    // path：d 原值 + 类型识别
+    var p1 = by_id(d, "p1")
+    chk_true("p1_shape", svg.is_shape(d, p1, "path"))
+    chk("p1_d_raw", svg.attr(d, p1, "d", ""), "M 10 20 L 30 40 H 50 V 60 C 1 2 3 4 5 6 Q 7 8 9 10 Z")
+    // use + 命名空间属性原样
+    var u1 = by_id(d, "u1")
+    chk_true("u1_shape", svg.is_shape(d, u1, "use"))
+    chk("u1_href", svg.attr(d, u1, "xlink:href", ""), "#r1")
+}
+
+// ---- path d token 化 ----
+func tst_path_d() {
+    var d = xml.parse(sample())
+    // p1：大写全命令序列 ["M","10","20","L","30","40","H","50","V","60",
+    //                    "C","1","2","3","4","5","6","Q","7","8","9","10","Z"]
+    var p1 = by_id(d, "p1")
+    var t = svg.parse_path_d(svg.attr(d, p1, "d", ""))
+    chk_i64("pd_p1_len", len(t), 23)
+    chk("pd_p1_M", t[0], "M")
+    chk("pd_p1_10", t[1], "10")
+    chk("pd_p1_20", t[2], "20")
+    chk("pd_p1_L", t[3], "L")
+    chk("pd_p1_30", t[4], "30")
+    chk("pd_p1_40", t[5], "40")
+    chk("pd_p1_H", t[6], "H")
+    chk("pd_p1_50", t[7], "50")
+    chk("pd_p1_V", t[8], "V")
+    chk("pd_p1_60", t[9], "60")
+    chk("pd_p1_C", t[10], "C")
+    chk("pd_p1_C1", t[11], "1")
+    chk("pd_p1_C6", t[16], "6")
+    chk("pd_p1_Q", t[17], "Q")
+    chk("pd_p1_Q10", t[21], "10")
+    chk("pd_p1_Z", t[22], "Z")
+    // p2：小写命令 + 紧凑分隔（10,20 / l5,5）
+    var p2 = by_id(d, "p2")
+    var t2 = svg.parse_path_d(svg.attr(d, p2, "d", ""))
+    chk_i64("pd_p2_len", len(t2), 23)
+    chk("pd_p2_m", t2[0], "m")
+    chk("pd_p2_l", t2[3], "l")
+    chk("pd_p2_h", t2[6], "h")
+    chk("pd_p2_c", t2[10], "c")
+    chk("pd_p2_q", t2[17], "q")
+    chk("pd_p2_z", t2[22], "z")
+    // 紧凑无空格：命令后直接数字
+    var t3 = svg.parse_path_d("M10 20L30 40")
+    chk_i64("pd_compact_len", len(t3), 6)
+    chk("pd_compact_0", t3[0], "M")
+    chk("pd_compact_3", t3[3], "L")
+    // 隐式重复：M 后多余点对展平（"M 10 20 30 40"）
+    var t4 = svg.parse_path_d("M 10 20 30 40")
+    chk_i64("pd_repeat_len", len(t4), 5)
+    chk("pd_repeat_last", t4[4], "40")
+    // 负号紧贴分隔：10-20 → ["10","-20"]
+    var t5 = svg.parse_path_d("M10-20L30-40")
+    chk_i64("pd_neg_len", len(t5), 6)
+    chk("pd_neg_1", t5[1], "10")
+    chk("pd_neg_2", t5[2], "-20")
+    // 科学计数 + 点开头小数
+    var t6 = svg.parse_path_d("M 1e2 .5 L 3E-1 4")
+    chk_i64("pd_sci_len", len(t6), 6)
+    chk("pd_sci_1", t6[1], "1e2")
+    chk("pd_sci_2", t6[2], ".5")
+    chk("pd_sci_4", t6[4], "3E-1")
+}
+
+// ---- transform 简析 ----
+func tst_transform() {
+    var d = xml.parse(sample())
+    // translate(10,20)
+    var ga = by_id(d, "grp-a")
+    var t1 = svg.parse_transform(svg.attr(d, ga, "transform", ""))
+    chk_i64("tf_t1_len", len(t1), 3)
+    chk("tf_t1_0", t1[0], "translate")
+    chk("tf_t1_1", t1[1], "10")
+    chk("tf_t1_2", t1[2], "20")
+    // translate(100) scale(2,3) rotate(30,50,60)：混合连写
+    var gc = by_id(d, "grp-c")
+    var t2 = svg.parse_transform(svg.attr(d, gc, "transform", ""))
+    chk_i64("tf_t2_len", len(t2), 9)
+    chk("tf_t2_0", t2[0], "translate")
+    chk("tf_t2_1", t2[1], "100")
+    chk("tf_t2_2", t2[2], "scale")
+    chk("tf_t2_3", t2[3], "2")
+    chk("tf_t2_4", t2[4], "3")
+    chk("tf_t2_5", t2[5], "rotate")
+    chk("tf_t2_6", t2[6], "30")
+    chk("tf_t2_8", t2[8], "60")
+    // p2：scale(2) rotate(45)
+    var p2 = by_id(d, "p2")
+    var t3 = svg.parse_transform(svg.attr(d, p2, "transform", ""))
+    chk_i64("tf_t3_len", len(t3), 4)
+    chk("tf_t3_0", t3[0], "scale")
+    chk("tf_t3_1", t3[1], "2")
+    chk("tf_t3_2", t3[2], "rotate")
+    chk("tf_t3_3", t3[3], "45")
+    // 空白/逗号混用
+    var t4 = svg.parse_transform("translate(10, 20)")
+    chk_i64("tf_t4_len", len(t4), 3)
+    chk("tf_t4_2", t4[2], "20")
+}
+
+// ---- 畸形容错：坏 d / 坏 transform / 空输入 均返回空表 ----
+func tst_malformed() {
+    // 坏 d
+    chk_i64("bad_unknown_cmd", len(svg.parse_path_d("M10 20 A5 5 0 0 1 30 40")), 0)
+    chk_i64("bad_odd_params", len(svg.parse_path_d("M 10")), 0)
+    chk_i64("bad_num_first", len(svg.parse_path_d("10 20")), 0)
+    chk_i64("bad_cmd_alone", len(svg.parse_path_d("M")), 0)
+    chk_i64("bad_z_tail", len(svg.parse_path_d("M10 20 Z 5")), 0)
+    chk_i64("bad_bad_num", len(svg.parse_path_d("M 1..2 3")), 0)
+    chk_i64("bad_empty_d", len(svg.parse_path_d("")), 0)
+    // 坏 transform
+    chk_i64("bad_tf_unknown", len(svg.parse_transform("skewx(10)")), 0)
+    chk_i64("bad_tf_arity", len(svg.parse_transform("rotate(45,10)")), 0)
+    chk_i64("bad_tf_unterm", len(svg.parse_transform("translate(10")), 0)
+    chk_i64("bad_tf_trail", len(svg.parse_transform("translate(10)x")), 0)
+    chk_i64("bad_tf_nonnum", len(svg.parse_transform("translate(a)")), 0)
+    chk_i64("bad_tf_noparen", len(svg.parse_transform("translate 10")), 0)
+    chk_i64("bad_tf_empty", len(svg.parse_transform("")), 0)
+}
+
+func main() {
+    tst_structure()
+    tst_shapes()
+    tst_path_d()
+    tst_transform()
+    tst_malformed()
+    println("done")
+    exit(0)
+}
