@@ -1,0 +1,1352 @@
+type tie<class>
+// yaml.tie：标准库——YAML 解析子集（命名空间 yaml），兑现
+// "tie 当数据交换格式"定位（文件头 tie:data 角色的互操作核心之一）。
+// API 句柄风格对齐 std/json.tie：parse(text) -> i64 节点句柄 + 同款访问器
+// （type_of/int_val/float_val/str_val/arr_len/arr_at/obj_keys/obj_get/
+// is_null + err_msg()）。节点存储为平行表（见下），只依赖底座原语
+// （str_len/str_char/char_code/parse_int/parse_float/table_new_*/table_push
+// /len）+ string_builder + std/string（仅 trim/slice）。
+//
+// 节点表示（平行表，节点 id 为下标，对齐 json.tie）：
+//   y_types[i]  节点类型：0=null 1=bool 2=int 3=float 4=str 5=array 6=object
+//   y_ivals[i]  int/bool 值；str 节点存字符串表 y_strs 的索引
+//   y_fvals[i]  float 值
+//   y_strs      字符串表（str 节点文本 + object 键文本，追加登记不去重）
+//   y_kids[i]   array/object：子元素在**扁平登记表**中的起始下标
+//   y_ovals[i]  array/object：子元素个数（数组元素=节点 id；对象=键值对数）
+//   y_elem_flat 数组元素节点 id 扁平表（追加式登记）
+//   y_key_flat  对象键（y_strs 索引）扁平表
+//   y_val_flat  对象值节点 id 扁平表（与 y_key_flat 平行，同区间）
+//   y_err_msg   最近一次 parse 的错误消息（成功时为空串）
+//
+// 解析器位置推进：块式解析用**行游标** g_ln（预处理后的非空行表 g_lines 的
+// 下标，单遍推进）；流式语法用**列游标** g_fpos（当前 flow 字符串内）。
+// 均仿 std/json.tie 的 g_pos 约定：函数返回时游标指向已消费内容之后的
+// 首个未消费位置（失败时指向错误处）。
+//
+// 支持的 YAML 子集（取舍）：
+//   1. 块缩进 map/list 嵌套：用行首空格数判定层级（tab 不作缩进，视作内容）。
+//   2. 流式 `[]`/`{}`：单行内解析，可嵌套；键/value 间 `:` 允许 `a:1` 无空格。
+//   3. 标量：str/int/float/bool/null/引号串。int 为十进制（is_int_str 自检后
+//      parse_int）；float 需含 `.` 或指数（is_float_str 自检后 parse_float）；
+//      bool = true/false（含 True/TRUE 变体）；null = null/Null/NULL/~；
+//      双引号串支持 \n \r \t \0 \" \\ \/ \' 与 \uXXXX（仅可构造 ASCII 码点，
+//      同 json.tie 局限）；单引号串无转义、`''` 表字面引号。
+//   4. `#` 注释剥离：整行注释与行内注释（`#` 前为空白或行首才视作注释起始，
+//      引号串内的 `#` 不剥离）。
+//   5. 多行 `|`/`>` 折叠：已实现并测——`|` 字面（行间换行）、`>` 折叠（行间
+//      空格）；块内空行保留为换行；结尾统一 clip 语义以单个 `\n` 结束；`-`/`+`
+//      chomping 指示符未细分（一律 clip）。
+//   局限：
+//     - 流式语法必须在一行内闭合（不跨行续行）；对象键不做查重而追加式登记
+//       （避免 O(n²)），重复键取后者（obj_get 区间靠后者）。
+//     - 数字仅十进制；不支持二进制/八进制/十六进制字面量（视作 str）。
+//     - 锚点/别名/标签/多文档（---/...）不支持；Tab 缩进不识别。
+//     - 深层嵌套受调用栈限制（同 json.tie）。
+//
+// 失败约定：parse 返回 -1 且置 y_err_msg；访问器对非法节点 id 返回安全值
+// （0 / 空串 / -1），不崩溃。
+//
+// 性能：预处理把 text 单遍拆成 g_lines（每行 string_builder 构建）；块解析
+// 行游标单遍推进（每行仅访问一次，子块递归不重复扫描）；流式列游标单遍。
+// 200KB 输入线性，无 O(n²)。命名规范：命名空间内函数不加 yaml_ 前缀。
+
+import "./string.tie" as str
+
+// ==================== 节点存储（模块级全局，命名空间外） ====================
+var y_types: table<i64>;
+var y_ivals: table<i64>;
+var y_fvals: table<f64>;
+var y_strs: table<string>;
+var y_kids: table<i64>;
+var y_ovals: table<i64>;
+var y_elem_flat: table<i64>;
+var y_key_flat: table<i64>;
+var y_val_flat: table<i64>;
+var y_err_msg: string = "";
+// 块式解析行游标（见文件头"位置推进"说明）
+var g_ln: i64 = 0;
+var g_nl: i64 = 0;
+var g_lines: table<string>;
+// 流式解析列游标（当前 flow 字符串内下标）
+var g_fpos: i64 = 0;
+
+namespace yaml {
+
+// ---------- 节点构造（内部） ----------
+
+// 新建一个节点，返回节点 id。类型码入 y_types，其余槽位填默认值。
+func new_node(ty: i64) -> i64 {
+    table_push(y_types, ty)
+    table_push(y_ivals, 0)
+    table_push(y_fvals, 0.0)
+    table_push(y_strs, "")
+    table_push(y_kids, -1)
+    table_push(y_ovals, 0)
+    return len(y_types) - 1
+}
+
+// 字符串节点：文本入 y_strs，节点 y_ivals 存其索引。返回节点 id。
+func new_str_node(content: string) -> i64 {
+    var n = new_node(4)
+    table_push(y_strs, content)
+    y_ivals[n] = len(y_strs) - 1
+    return n
+}
+
+// 文本登记入 y_strs，返回索引（不查重——追加式，避免 O(n²) 扫描）。
+func push_str(txt: string) -> i64 {
+    table_push(y_strs, txt)
+    return len(y_strs) - 1
+}
+
+// ---------- 预处理 ----------
+
+// 文本 → 非空行表 g_lines（删除整行注释与行内注释；保留行首缩进；空行剔除）。
+// 单遍 O(n)。行内注释判定：不在引号串内，且 `#` 前为行首或空白。
+func preprocess(pp: string) {
+    var n: i64 = len(pp)
+    var i: i64 = 0
+    var line = string_builder()
+    while i < n {
+        var c = str_char(pp, i)
+        if c == "\n" {
+            var raw = sb_build(line)
+            var l = strip_comment(raw)
+            if str_len(str.trim(l)) > 0 {
+                table_push(g_lines, l)
+            }
+            line = string_builder()
+        } else if c == "\r" {
+            // 忽略 \r（行尾）
+        } else {
+            sb_append(line, c)
+        }
+        i = i + 1
+    }
+    var last = strip_comment(sb_build(line))
+    if str_len(str.trim(last)) > 0 {
+        table_push(g_lines, last)
+    }
+}
+
+// 去除一行末尾的行内注释（保留引号串内容）。`#` 前为行首或空白时视作注释起始。
+func strip_comment(line: string) -> string {
+    var n: i64 = len(line)
+    var sb = string_builder()
+    var in_dq: bool = false
+    var in_sq: bool = false
+    var prev: string = " "
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(line, i)
+        if in_dq {
+            sb_append(sb, c)
+            if c == "\\" {
+                if i + 1 < n {
+                    sb_append(sb, str_char(line, i + 1))
+                    i = i + 2
+                    continue
+                }
+            } else if c == "\"" {
+                in_dq = false
+            }
+            i = i + 1
+            continue
+        }
+        if in_sq {
+            sb_append(sb, c)
+            if c == "'" {
+                if i + 1 < n && str_char(line, i + 1) == "'" {
+                    sb_append(sb, "'")
+                    i = i + 2
+                    continue
+                }
+                in_sq = false
+            }
+            i = i + 1
+            continue
+        }
+        if c == "#" {
+            if prev == " " || prev == "\t" {
+                break
+            }
+        }
+        sb_append(sb, c)
+        if c == "\"" {
+            in_dq = true
+        } else if c == "'" {
+            in_sq = true
+        }
+        prev = c
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 行首空格数（缩进层级）。tab 不作缩进（视作内容）。
+func line_indent(s: string) -> i64 {
+    var n: i64 = len(s)
+    var i: i64 = 0
+    while i < n {
+        if str_char(s, i) != " " {
+            return i
+        }
+        i = i + 1
+    }
+    return i
+}
+
+// ---------- 解析（递归下降，块式 + 流式） ----------
+
+// 解析 YAML 文本，成功返回根节点 id（>=0）；失败返回 -1 且置 y_err_msg。
+// 空文档返回 null 节点（type_of==0）。
+pub func parse(pp: string) -> i64 {
+    g_lines = table_new_string()
+    y_err_msg = ""
+    reset_tables()
+    g_ln = 0
+    g_nl = 0
+    g_fpos = 0
+    preprocess(pp)
+    g_nl = len(g_lines)
+    if g_nl == 0 {
+        return new_node(0)
+    }
+    var root_indent = line_indent(g_lines[0])
+    var root = parse_block(root_indent)
+    if root < 0 {
+        return -1
+    }
+    return root
+}
+
+// 重置节点存储与状态。
+func reset_tables() {
+    y_types = table_new_i64()
+    y_ivals = table_new_i64()
+    y_fvals = table_new_f64()
+    y_strs = table_new_string()
+    y_kids = table_new_i64()
+    y_ovals = table_new_i64()
+    y_elem_flat = table_new_i64()
+    y_key_flat = table_new_i64()
+    y_val_flat = table_new_i64()
+}
+
+// 行是否为块序列项：`-` 后跟空白或行尾。
+func is_seq_line(line: string, indent: i64) -> bool {
+    var n: i64 = len(line)
+    if indent >= n {
+        return false
+    }
+    if str_char(line, indent) != "-" {
+        return false
+    }
+    if indent + 1 >= n {
+        return true
+    }
+    var c = str_char(line, indent + 1)
+    if c == " " || c == "\t" {
+        return true
+    }
+    return false
+}
+
+// 序列项内容：`-` 及其后空白删除后的剩余串。
+func item_content(line: string, indent: i64) -> string {
+    var n: i64 = len(line)
+    var pos: i64 = indent + 1
+    while pos < n {
+        var c = str_char(line, pos)
+        if c == " " || c == "\t" {
+            pos = pos + 1
+        } else {
+            break
+        }
+    }
+    return str.slice(line, pos, n)
+}
+
+// 块式键分隔冒号：行内首个「不在引号/流内、其后为空白或行尾」的 `:`。
+// 返回下标；无则 -1。这保证 `http://x`（`:` 后为 `/`）按纯标量处理。
+func colon_sep(line: string, from: i64) -> i64 {
+    var n: i64 = len(line)
+    var i: i64 = from
+    var depth: i64 = 0
+    while i < n {
+        var c = str_char(line, i)
+        if c == "\"" {
+            i = skip_dq(line, i)
+        } else if c == "'" {
+            i = skip_sq(line, i)
+        } else if c == "[" || c == "{" {
+            depth = depth + 1
+            i = i + 1
+        } else if c == "]" || c == "}" {
+            if depth > 0 {
+                depth = depth - 1
+            }
+            i = i + 1
+        } else if c == ":" {
+            if depth == 0 {
+                if i + 1 >= n {
+                    return i
+                }
+                var nx = str_char(line, i + 1)
+                if nx == " " || nx == "\t" {
+                    return i
+                }
+            }
+            i = i + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return -1
+}
+
+// 跳过双引号段，返回闭引号后的下标。
+func skip_dq(s: string, from: i64) -> i64 {
+    var n: i64 = len(s)
+    var i: i64 = from + 1
+    while i < n {
+        var c = str_char(s, i)
+        if c == "\\" {
+            i = i + 2
+        } else if c == "\"" {
+            return i + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return n
+}
+
+// 跳过单引号段，返回闭引号后的下标（`''` 转义）。
+func skip_sq(s: string, from: i64) -> i64 {
+    var n: i64 = len(s)
+    var i: i64 = from + 1
+    while i < n {
+        var c = str_char(s, i)
+        if c == "'" {
+            if i + 1 < n && str_char(s, i + 1) == "'" {
+                i = i + 2
+            } else {
+                return i + 1
+            }
+        } else {
+            i = i + 1
+        }
+    }
+    return n
+}
+
+// 行是否为块映射项：含块式分隔冒号（且冒号前有非空键）。
+func is_map_line(line: string, indent: i64) -> bool {
+    var cs = colon_sep(line, indent)
+    if cs < 0 {
+        return false
+    }
+    return cs > indent
+}
+
+// 解析一个独立的块节点，从当前行（其缩进 == indent）开始。
+func parse_block(indent: i64) -> i64 {
+    var line = g_lines[g_ln]
+    var li = line_indent(line)
+    if is_seq_line(line, li) {
+        return parse_seq(li)
+    }
+    if is_map_line(line, li) {
+        return parse_map(li)
+    }
+    // 独立标量（根标量文档或容错：映射值位置出现裸标量）
+    var token = str.trim(str.slice(line, li, len(line)))
+    g_ln = g_ln + 1
+    if is_fold_marker(token) {
+        return new_str_node(block_scalar(str_char(token, 0) == ">", li))
+    }
+    return parse_scalar_token(token)
+}
+
+// ---------- 块映射 ----------
+
+// 解析块映射（成员行缩进 == indent）。支持首成员由调用方提供（序列项内联映射）。
+// 收集-登记两阶段：先把成员键/值收集进局部表，全部解析完成后统一追加登记到
+// 共享 flat 表。这样子块解析 push 的条目在父区间之外，父键区间纯净（RCA 根治：
+// 旧实现先 push 键值占位再解析值，子块条目落入父区间污染键集——见项目记忆）。
+func parse_map(indent: i64) -> i64 {
+    var nd = new_node(6)
+    var keys = table_new_string()
+    var vals = table_new_i64()
+    var cnt: i64 = 0
+    while true {
+        if g_ln >= g_nl {
+            break
+        }
+        var line = g_lines[g_ln]
+        var li = line_indent(line)
+        if li < indent {
+            break
+        }
+        if li > indent {
+            y_err_msg = "YAML 映射值域缩进错乱（位置行 " + to_string(g_ln) + "）"
+            return -1
+        }
+        if !is_map_line(line, li) {
+            break
+        }
+        g_ln = g_ln + 1
+        var cs = colon_sep(line, li)
+        var key = str.trim(str.slice(line, li, cs))
+        var v = parse_member_value(line, li)
+        if v < 0 {
+            return -1
+        }
+        table_push(keys, unquote_key(key))
+        table_push(vals, v)
+        cnt = cnt + 1
+    }
+    var kstart: i64 = len(y_key_flat)
+    var i: i64 = 0
+    while i < cnt {
+        table_push(y_key_flat, push_str(keys[i]))
+        table_push(y_val_flat, vals[i])
+        i = i + 1
+    }
+    y_kids[nd] = kstart
+    y_ovals[nd] = cnt
+    return nd
+}
+
+// 解析柔韧块映射：首成员以字符串提供（相对列 0，缩进为 indent），
+// 后续成员从 g_lines 读取（缩进 == indent）。用于序列项内联映射 `- k: v`。
+// 同样采用收集-登记两阶段（见 parse_map 注释）。
+func parse_map_from(indent: i64, first: string) -> i64 {
+    var nd = new_node(6)
+    var keys = table_new_string()
+    var vals = table_new_i64()
+    var cnt: i64 = 0
+    // 首成员
+    var cs = colon_sep(first, 0)
+    if cs > 0 {
+        var key = str.trim(str.slice(first, 0, cs))
+        var v = parse_member_value(first, 0)
+        if v < 0 {
+            return -1
+        }
+        table_push(keys, unquote_key(key))
+        table_push(vals, v)
+        cnt = cnt + 1
+    } else {
+        // 首成员无 ':' → 容错为 {"" : 标量}
+        var v = parse_scalar_token(str.trim(first))
+        if v < 0 {
+            return -1
+        }
+        table_push(keys, "")
+        table_push(vals, v)
+        cnt = cnt + 1
+    }
+    // 后续成员
+    while true {
+        if g_ln >= g_nl {
+            break
+        }
+        var line = g_lines[g_ln]
+        var li = line_indent(line)
+        if li < indent {
+            break
+        }
+        if li > indent {
+            y_err_msg = "YAML 映射值域缩进错乱（位置行 " + to_string(g_ln) + "）"
+            return -1
+        }
+        if !is_map_line(line, li) {
+            break
+        }
+        g_ln = g_ln + 1
+        var cs2 = colon_sep(line, li)
+        var key = str.trim(str.slice(line, li, cs2))
+        var v = parse_member_value(line, li)
+        if v < 0 {
+            return -1
+        }
+        table_push(keys, unquote_key(key))
+        table_push(vals, v)
+        cnt = cnt + 1
+    }
+    var kstart: i64 = len(y_key_flat)
+    var i: i64 = 0
+    while i < cnt {
+        table_push(y_key_flat, push_str(keys[i]))
+        table_push(y_val_flat, vals[i])
+        i = i + 1
+    }
+    y_kids[nd] = kstart
+    y_ovals[nd] = cnt
+    return nd
+}
+
+// 解析映射成员的值并返回节点 id（失败 -1）。
+// line 为成员行（自 li 下标起为 `键: 值`）。值可为内联标量/流式/块式子块/折叠。
+// 注意：调用方在**值解析完成后**才统一登记键值对（收集-登记两阶段），故
+// 子块解析 push 进共享 flat 表的条目位于父区间之外，不会污染父键区间。
+func parse_member_value(line: string, li: i64) -> i64 {
+    var n: i64 = len(line)
+    var cs = colon_sep(line, li)
+    if cs < 0 || cs >= n {
+        y_err_msg = "YAML 映射成员缺少 ':'"
+        return -1
+    }
+    var rest = str.trim(str.slice(line, cs + 1, n))
+    if str_len(rest) == 0 {
+        // 空值：子块或 null
+        if g_ln >= g_nl || line_indent(g_lines[g_ln]) <= li {
+            return new_node(0)
+        }
+        var ci = line_indent(g_lines[g_ln])
+        var v = parse_block(ci)
+        if v < 0 {
+            return -1
+        }
+        return v
+    }
+    if is_fold_marker(rest) {
+        return new_str_node(block_scalar(str_char(rest, 0) == ">", li))
+    }
+    var v2 = parse_inline_value(rest)
+    if v2 < 0 {
+        return -1
+    }
+    return v2
+}
+
+// ---------- 块序列 ----------
+
+// 解析块序列（项行缩进 == indent）。收集-登记两阶段（同 parse_map：元素节点
+// 先收集局部表，解析完成后统一追加登记——子块解析 push 的条目不落入父区间）。
+func parse_seq(indent: i64) -> i64 {
+    var nd = new_node(5)
+    var elems = table_new_i64()
+    var cnt: i64 = 0
+    while true {
+        if g_ln >= g_nl {
+            break
+        }
+        var line = g_lines[g_ln]
+        var li = line_indent(line)
+        if li < indent {
+            break
+        }
+        if li > indent {
+            y_err_msg = "YAML 序列值域缩进错乱（位置行 " + to_string(g_ln) + "）"
+            return -1
+        }
+        if !is_seq_line(line, li) {
+            break
+        }
+        g_ln = g_ln + 1
+        var content = item_content(line, li)
+        var item = parse_seq_item(content, indent)
+        if item < 0 {
+            return -1
+        }
+        table_push(elems, item)
+        cnt = cnt + 1
+    }
+    var estart: i64 = len(y_elem_flat)
+    var i: i64 = 0
+    while i < cnt {
+        table_push(y_elem_flat, elems[i])
+        i = i + 1
+    }
+    y_kids[nd] = estart
+    y_ovals[nd] = cnt
+    return nd
+}
+
+// 解析一个序列项（其内容字符串 + 项所在缩进）。
+func parse_seq_item(content: string, indent: i64) -> i64 {
+    if str_len(content) == 0 {
+        // `-` 空项：子块
+        if g_ln >= g_nl || line_indent(g_lines[g_ln]) <= indent {
+            return new_node(0)
+        }
+        var ci = line_indent(g_lines[g_ln])
+        return parse_block(ci)
+    }
+    if str_char(content, 0) == "[" || str_char(content, 0) == "{" {
+        return parse_flow(content)
+    }
+    if is_fold_marker(content) {
+        return new_str_node(block_scalar(str_char(content, 0) == ">", indent))
+    }
+    var cs = colon_sep(content, 0)
+    if cs > 0 {
+        // 内联映射：首成员 = content（相对列 0），后续成员缩进 == indent+2
+        return parse_map_from(indent + 2, content)
+    }
+    return parse_scalar_token(content)
+}
+
+// ---------- 流式语法（单行，列游标 g_fpos） ----------
+
+// 解析流式值（s 以 `[` 或 `{` 开头，须单行闭合）。返回节点。
+func parse_flow(s: string) -> i64 {
+    g_fpos = 0
+    var nd = flow_node(s)
+    if nd < 0 {
+        return -1
+    }
+    flow_skip_ws(s)
+    if g_fpos < len(s) {
+        y_err_msg = "YAML 流式值后有额外内容（位置 " + to_string(g_fpos) + "）"
+        return -1
+    }
+    return nd
+}
+
+// 流式值解析（须以 `[`/`{`/引号/标量起始）。
+func flow_node(s: string) -> i64 {
+    flow_skip_ws(s)
+    if g_fpos >= len(s) {
+        y_err_msg = "YAML 流式值意外结束"
+        return -1
+    }
+    var c = str_char(s, g_fpos)
+    if c == "[" {
+        return flow_array(s)
+    }
+    if c == "{" {
+        return flow_obj(s)
+    }
+    if c == "\"" {
+        return flow_quoted(s, true)
+    }
+    if c == "'" {
+        return flow_quoted(s, false)
+    }
+    return flow_plain(s)
+}
+
+// 流式数组 [v1, v2, ...]。收集-登记两阶段（同 parse_seq：内层数组/对象
+// push 的条目不落入父区间）。
+func flow_array(s: string) -> i64 {
+    var nd = new_node(5)
+    var elems = table_new_i64()
+    var cnt: i64 = 0
+    g_fpos = g_fpos + 1 // 跳过 [
+    flow_skip_ws(s)
+    if g_fpos < len(s) && str_char(s, g_fpos) == "]" {
+        g_fpos = g_fpos + 1
+        y_kids[nd] = len(y_elem_flat)
+        y_ovals[nd] = 0
+        return nd
+    }
+    while true {
+        var v = flow_node(s)
+        if v < 0 {
+            return -1
+        }
+        table_push(elems, v)
+        cnt = cnt + 1
+        flow_skip_ws(s)
+        if g_fpos >= len(s) {
+            y_err_msg = "YAML 流式数组未闭合"
+            return -1
+        }
+        var c = str_char(s, g_fpos)
+        if c == "," {
+            g_fpos = g_fpos + 1
+        } else if c == "]" {
+            g_fpos = g_fpos + 1
+            break
+        } else {
+            y_err_msg = "YAML 流式数组期望 , 或 ]（位置 " + to_string(g_fpos) + "）"
+            return -1
+        }
+    }
+    var estart: i64 = len(y_elem_flat)
+    var i: i64 = 0
+    while i < cnt {
+        table_push(y_elem_flat, elems[i])
+        i = i + 1
+    }
+    y_kids[nd] = estart
+    y_ovals[nd] = cnt
+    return nd
+}
+
+// 流式对象 {k: v, ...}。收集-登记两阶段（同 parse_map：先收集键/值局部表，
+// 解析完成后统一登记——内层流式对象 push 的条目不落入父键区间）。
+func flow_obj(s: string) -> i64 {
+    var nd = new_node(6)
+    var keys = table_new_string()
+    var vals = table_new_i64()
+    var cnt: i64 = 0
+    g_fpos = g_fpos + 1 // 跳过 {
+    flow_skip_ws(s)
+    if g_fpos < len(s) && str_char(s, g_fpos) == "}" {
+        g_fpos = g_fpos + 1
+        y_kids[nd] = len(y_key_flat)
+        y_ovals[nd] = 0
+        return nd
+    }
+    while true {
+        var key = flow_key(s)
+        if g_fpos < 0 {
+            return -1
+        }
+        flow_skip_ws(s)
+        if g_fpos >= len(s) || str_char(s, g_fpos) != ":" {
+            y_err_msg = "YAML 流式对象期望 :（位置 " + to_string(g_fpos) + "）"
+            return -1
+        }
+        g_fpos = g_fpos + 1
+        var v = flow_node(s)
+        if v < 0 {
+            return -1
+        }
+        table_push(keys, key)
+        table_push(vals, v)
+        cnt = cnt + 1
+        flow_skip_ws(s)
+        if g_fpos >= len(s) {
+            y_err_msg = "YAML 流式对象未闭合"
+            return -1
+        }
+        var c = str_char(s, g_fpos)
+        if c == "," {
+            g_fpos = g_fpos + 1
+        } else if c == "}" {
+            g_fpos = g_fpos + 1
+            break
+        } else {
+            y_err_msg = "YAML 流式对象期望 , 或 }（位置 " + to_string(g_fpos) + "）"
+            return -1
+        }
+    }
+    var kstart: i64 = len(y_key_flat)
+    var i: i64 = 0
+    while i < cnt {
+        table_push(y_key_flat, push_str(keys[i]))
+        table_push(y_val_flat, vals[i])
+        i = i + 1
+    }
+    y_kids[nd] = kstart
+    y_ovals[nd] = cnt
+    return nd
+}
+
+// 流式键：引号串或纯标量，返回键文本；出错返回 ""（g_fpos 置 -1 表示失败）。
+func flow_key(s: string) -> string {
+    var c = str_char(s, g_fpos)
+    if c == "\"" {
+        var nd = flow_quoted(s, true)
+        if nd < 0 {
+            g_fpos = -1
+            return ""
+        }
+        return str_val(nd)
+    }
+    if c == "'" {
+        var nq = flow_quoted(s, false)
+        if nq < 0 {
+            g_fpos = -1
+            return ""
+        }
+        return str_val(nq)
+    }
+    var start: i64 = g_fpos
+    var n: i64 = len(s)
+    while g_fpos < n {
+        var cc = str_char(s, g_fpos)
+        if cc == ":" || cc == "," || cc == "}" || cc == "]" {
+            break
+        }
+        g_fpos = g_fpos + 1
+    }
+    return str.trim(str.slice(s, start, g_fpos))
+}
+
+// 流式引号标量。
+func flow_quoted(s: string, is_double: bool) -> i64 {
+    g_fpos = g_fpos + 1 // 开引号
+    var n: i64 = len(s)
+    var sb = string_builder()
+    if is_double {
+        while g_fpos < n {
+            var c = str_char(s, g_fpos)
+            if c == "\"" {
+                g_fpos = g_fpos + 1
+                return new_str_node(sb_build(sb))
+            }
+            if c == "\\" {
+                var ni = append_escape(sb, s, g_fpos)
+                if ni < 0 {
+                    return -1
+                }
+                g_fpos = ni
+            } else {
+                sb_append(sb, c)
+                g_fpos = g_fpos + 1
+            }
+        }
+        y_err_msg = "YAML 双引号串未闭合"
+        return -1
+    }
+    while g_fpos < n {
+        var c = str_char(s, g_fpos)
+        if c == "'" {
+            if g_fpos + 1 < n && str_char(s, g_fpos + 1) == "'" {
+                sb_append(sb, "'")
+                g_fpos = g_fpos + 2
+            } else {
+                g_fpos = g_fpos + 1
+                return new_str_node(sb_build(sb))
+            }
+        } else {
+            sb_append(sb, c)
+            g_fpos = g_fpos + 1
+        }
+    }
+    y_err_msg = "YAML 单引号串未闭合"
+    return -1
+}
+
+// 流式纯标量（读至 , ] } 或行尾，分类）。
+func flow_plain(s: string) -> i64 {
+    var start: i64 = g_fpos
+    var n: i64 = len(s)
+    while g_fpos < n {
+        var c = str_char(s, g_fpos)
+        if c == "," || c == "]" || c == "}" {
+            break
+        }
+        g_fpos = g_fpos + 1
+    }
+    var token = str.trim(str.slice(s, start, g_fpos))
+    return parse_scalar_token(token)
+}
+
+// 流式空白跳过（空格/制表）。
+func flow_skip_ws(s: string) {
+    var n: i64 = len(s)
+    while g_fpos < n {
+        var c = str_char(s, g_fpos)
+        if c == " " || c == "\t" {
+            g_fpos = g_fpos + 1
+        } else {
+            return
+        }
+    }
+}
+
+// ---------- 标量类型 ----------
+// 注意：parse_int/parse_float 对非法输入直接运行时错误，必须先自检
+// （is_int_str / is_float_str）后再调用。
+
+// 解析内联标量值：流式或标量 token。
+func parse_inline_value(s: string) -> i64 {
+    var c0 = str_char(s, 0)
+    if c0 == "[" || c0 == "{" {
+        return parse_flow(s)
+    }
+    return parse_scalar_token(s)
+}
+
+// 标量 token → 节点。quoted / null / bool / int / float / str。
+func parse_scalar_token(token: string) -> i64 {
+    if str_len(token) == 0 || token == "~" || token == "null" || token == "Null" || token == "NULL" {
+        return new_node(0)
+    }
+    if token == "true" || token == "True" || token == "TRUE" {
+        var b = new_node(1)
+        y_ivals[b] = 1
+        return b
+    }
+    if token == "false" || token == "False" || token == "FALSE" {
+        var b2 = new_node(1)
+        y_ivals[b2] = 0
+        return b2
+    }
+    var c0 = str_char(token, 0)
+    if c0 == "\"" {
+        return unquote_double(token)
+    }
+    if c0 == "'" {
+        return unquote_single(token)
+    }
+    if is_int_str(token) {
+        var inode = new_node(2)
+        y_ivals[inode] = parse_int(token)
+        return inode
+    }
+    if is_float_str(token) {
+        var fnode = new_node(3)
+        y_fvals[fnode] = parse_float(token)
+        return fnode
+    }
+    return new_str_node(token)
+}
+
+// 字符串是否为合法整数（可选 '-' + 全数字）。
+func is_int_str(s: string) -> bool {
+    var n: i64 = len(s)
+    if n == 0 {
+        return false
+    }
+    var i: i64 = 0
+    if str_char(s, 0) == "-" {
+        if n == 1 {
+            return false
+        }
+        i = 1
+    }
+    while i < n {
+        var c = str_char(s, i)
+        if c < "0" || c > "9" {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 字符串是否为合法浮点（可选符号 + 数字 + 可选 .小数 + 可选 e/E 指数）。
+func is_float_str(s: string) -> bool {
+    var n: i64 = len(s)
+    if n == 0 {
+        return false
+    }
+    var i: i64 = 0
+    if str_char(s, 0) == "-" || str_char(s, 0) == "+" {
+        i = 1
+    }
+    var digits: i64 = 0
+    while i < n {
+        var c = str_char(s, i)
+        if c >= "0" && c <= "9" {
+            digits = digits + 1
+            i = i + 1
+        } else {
+            break
+        }
+    }
+    if i < n && str_char(s, i) == "." {
+        i = i + 1
+        while i < n {
+            var d = str_char(s, i)
+            if d >= "0" && d <= "9" {
+                digits = digits + 1
+                i = i + 1
+            } else {
+                break
+            }
+        }
+    }
+    if digits == 0 {
+        return false
+    }
+    if i < n && (str_char(s, i) == "e" || str_char(s, i) == "E") {
+        i = i + 1
+        if i < n && (str_char(s, i) == "-" || str_char(s, i) == "+") {
+            i = i + 1
+        }
+        var ed: i64 = 0
+        while i < n {
+            var e = str_char(s, i)
+            if e >= "0" && e <= "9" {
+                ed = ed + 1
+                i = i + 1
+            } else {
+                break
+            }
+        }
+        if ed == 0 {
+            return false
+        }
+    }
+    return i >= n
+}
+
+// 双引号串解码（token 以 `"` 开头）。
+func unquote_double(token: string) -> i64 {
+    var n: i64 = len(token)
+    var i: i64 = 1
+    var sb = string_builder()
+    while i < n {
+        var c = str_char(token, i)
+        if c == "\"" {
+            if i != n - 1 {
+                y_err_msg = "YAML 双引号串闭引号后有多余内容"
+                return -1
+            }
+            return new_str_node(sb_build(sb))
+        }
+        if c == "\\" {
+            var ni = append_escape(sb, token, i)
+            if ni < 0 {
+                return -1
+            }
+            i = ni
+        } else {
+            sb_append(sb, c)
+            i = i + 1
+        }
+    }
+    y_err_msg = "YAML 双引号串未闭合"
+    return -1
+}
+
+// 单引号串解码（token 以 `'` 开头；`''` 表字面引号）。
+func unquote_single(token: string) -> i64 {
+    var n: i64 = len(token)
+    var i: i64 = 1
+    var sb = string_builder()
+    while i < n {
+        var c = str_char(token, i)
+        if c == "'" {
+            if i == n - 1 {
+                return new_str_node(sb_build(sb))
+            }
+            if str_char(token, i + 1) == "'" {
+                sb_append(sb, "'")
+                i = i + 2
+            } else {
+                y_err_msg = "YAML 单引号串闭引号后有多余内容"
+                return -1
+            }
+        } else {
+            sb_append(sb, c)
+            i = i + 1
+        }
+    }
+    y_err_msg = "YAML 单引号串未闭合"
+    return -1
+}
+
+// 键文本去引号化（quoted 键返回纯文本；否则原样）。
+func unquote_key(k: string) -> string {
+    var n: i64 = len(k)
+    if n >= 2 {
+        var c0 = str_char(k, 0)
+        if c0 == "\"" {
+            var nd = unquote_double(k)
+            if nd >= 0 {
+                return str_val(nd)
+            }
+        }
+        if c0 == "'" {
+            var nd2 = unquote_single(k)
+            if nd2 >= 0 {
+                return str_val(nd2)
+            }
+        }
+    }
+    return k
+}
+
+// 在 s 中从反斜杠下标 i 处解码一个转义序列，追加到 sb，返回序列后的下标。
+// 失败返回 -1（y_err_msg 已置）。
+func append_escape(sb: i64, s: string, i: i64) -> i64 {
+    var n: i64 = len(s)
+    if i + 1 >= n {
+        y_err_msg = "YAML 双引号串转义不完整"
+        return -1
+    }
+    var e = str_char(s, i + 1)
+    if e == "n" {
+        sb_append(sb, "\n")
+        return i + 2
+    }
+    if e == "r" {
+        sb_append(sb, "\r")
+        return i + 2
+    }
+    if e == "t" {
+        sb_append(sb, "\t")
+        return i + 2
+    }
+    if e == "0" {
+        sb_append_byte(sb, 0)
+        return i + 2
+    }
+    if e == "\"" {
+        sb_append(sb, "\"")
+        return i + 2
+    }
+    if e == "\\" {
+        sb_append(sb, "\\")
+        return i + 2
+    }
+    if e == "/" {
+        sb_append(sb, "/")
+        return i + 2
+    }
+    if e == "'" {
+        sb_append(sb, "'")
+        return i + 2
+    }
+    if e == "u" {
+        // \uXXXX：4 位十六进制 → 码点；仅可构造 ASCII 码点成功。
+        if i + 7 > n {
+            y_err_msg = "YAML \\u 转义不完整"
+            return -1
+        }
+        var cp: i64 = 0
+        var k: i64 = 0
+        var ok: bool = true
+        while k < 4 {
+            var h = str_char(s, i + 2 + k)
+            var hv = hex_val(h)
+            if hv < 0 {
+                ok = false
+            }
+            cp = cp * 16 + hv
+            k = k + 1
+        }
+        if !ok {
+            y_err_msg = "YAML \\u 含非十六进制字符"
+            return -1
+        }
+        var ch = cp_to_char(cp)
+        if str_len(ch) == 0 {
+            y_err_msg = "YAML \\u 仅支持可构造 ASCII 码点"
+            return -1
+        }
+        sb_append(sb, ch)
+        return i + 6
+    }
+    y_err_msg = "YAML 未知转义 \\" + e
+    return -1
+}
+
+// ---------- 多行折叠 | / > ----------
+
+// 检测折叠标记：| 或 > （可带 `-`/`+` 后缀，本实现一律 clip 语义）。
+func is_fold_marker(t: string) -> bool {
+    var n: i64 = len(t)
+    if n == 0 {
+        return false
+    }
+    var c0 = str_char(t, 0)
+    if c0 != "|" && c0 != ">" {
+        return false
+    }
+    if n == 1 {
+        return true
+    }
+    if n == 2 {
+        var c1 = str_char(t, 1)
+        if c1 == "-" || c1 == "+" {
+            return true
+        }
+    }
+    return false
+}
+
+// 收集块式折叠标量文本。fold：true=`>`(行间空格)；false=`|`(行间换行)。
+// 结尾 clip 语义以单个 `\n` 结束（非空时）；块内空行保留为换行。
+func block_scalar(fold: bool, indent: i64) -> string {
+    var bi: i64 = 0
+    if g_ln < g_nl {
+        bi = line_indent(g_lines[g_ln])
+    }
+    var sb = string_builder()
+    var first: bool = true
+    while g_ln < g_nl {
+        var ln = g_lines[g_ln]
+        var li = line_indent(ln)
+        if str_len(str.trim(ln)) == 0 {
+            // 空行（块内）→ 换行
+            if !first {
+                sb_append_byte(sb, 10)
+            }
+            g_ln = g_ln + 1
+            continue
+        }
+        if li <= indent {
+            break
+        }
+        var body = str.slice(ln, bi, len(ln))
+        if !first {
+            if fold {
+                sb_append_byte(sb, 32)
+            } else {
+                sb_append_byte(sb, 10)
+            }
+        }
+        sb_append(sb, body)
+        first = false
+        g_ln = g_ln + 1
+    }
+    var r = sb_build(sb)
+    r = trim_nl(r)
+    if str_len(r) > 0 {
+        r = r + "\n"
+    }
+    return r
+}
+
+// 去掉字符串尾部的所有 `\n`。
+func trim_nl(s: string) -> string {
+    var n: i64 = len(s)
+    var e: i64 = n
+    while e > 0 {
+        if str_char(s, e - 1) == "\n" {
+            e = e - 1
+        } else {
+            break
+        }
+    }
+    return str.slice(s, 0, e)
+}
+
+// ---------- 内部工具（\u 用） ----------
+
+// 单个十六进制字符 → 值 0..15；非十六进制返回 -1。
+func hex_val(c: string) -> i64 {
+    var cp = char_code(c)
+    if cp >= 48 && cp <= 57 {
+        return cp - 48
+    }
+    if cp >= 65 && cp <= 70 {
+        return cp - 65 + 10
+    }
+    if cp >= 97 && cp <= 102 {
+        return cp - 97 + 10
+    }
+    return -1
+}
+
+// 码点（0..127）→ 字符。可构造集合：\0\t\n\r 特判字面量，32..126 查可打印表；
+// 其余（含非 ASCII 码点）无法构造返回空串（同 json.tie \u 一致）。
+func cp_to_char(cp: i64) -> string {
+    if cp == 0 {
+        return "\0"
+    }
+    if cp == 9 {
+        return "\t"
+    }
+    if cp == 10 {
+        return "\n"
+    }
+    if cp == 13 {
+        return "\r"
+    }
+    if cp >= 32 && cp <= 126 {
+        var chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+        return str_char(chars, cp - 32)
+    }
+    return ""
+}
+
+// ---------- 访问器 ----------
+
+// 节点类型码（0-6；非法 id 返回 -1）。
+pub func type_of(n: i64) -> i64 {
+    if n < 0 || n >= len(y_types) {
+        return -1
+    }
+    return y_types[n]
+}
+
+pub func is_null(n: i64) -> bool {
+    return type_of(n) == 0
+}
+
+// int/bool 节点的值（bool: 0/1；其他类型返回 0）。
+pub func int_val(n: i64) -> i64 {
+    if n < 0 || n >= len(y_types) {
+        return 0
+    }
+    if y_types[n] == 1 || y_types[n] == 2 {
+        return y_ivals[n]
+    }
+    return 0
+}
+
+// float 节点的值（其他类型返回 0.0）。
+pub func float_val(n: i64) -> f64 {
+    if n < 0 || n >= len(y_types) {
+        return 0.0
+    }
+    if y_types[n] == 3 {
+        return y_fvals[n]
+    }
+    return 0.0
+}
+
+// str 节点的文本（其他类型返回空串）。
+pub func str_val(n: i64) -> string {
+    if n < 0 || n >= len(y_types) {
+        return ""
+    }
+    if y_types[n] == 4 {
+        return y_strs[y_ivals[n]]
+    }
+    return ""
+}
+
+// 数组元素个数（非数组返回 0）。
+pub func arr_len(n: i64) -> i64 {
+    if type_of(n) != 5 {
+        return 0
+    }
+    return y_ovals[n]
+}
+
+// 数组第 i 个元素节点（越界返回 -1）。
+pub func arr_at(n: i64, i: i64) -> i64 {
+    if type_of(n) != 5 {
+        return -1
+    }
+    if i < 0 || i >= y_ovals[n] {
+        return -1
+    }
+    return y_elem_flat[y_kids[n] + i]
+}
+
+// 对象键名表（table<string>；非对象返回空表）。
+pub func obj_keys(n: i64) -> table<string> {
+    var out = table_new_string()
+    if type_of(n) != 6 {
+        return out
+    }
+    var start: i64 = y_kids[n]
+    var cnt: i64 = y_ovals[n]
+    var i: i64 = 0
+    while i < cnt {
+        table_push(out, y_strs[y_key_flat[start + i]])
+        i = i + 1
+    }
+    return out
+}
+
+// 对象按键取值节点（键不存在返回 -1；重复键取最后登记——区间靠后者）。
+pub func obj_get(n: i64, key: string) -> i64 {
+    if type_of(n) != 6 {
+        return -1
+    }
+    var start: i64 = y_kids[n]
+    var cnt: i64 = y_ovals[n]
+    var found: i64 = -1
+    var i: i64 = 0
+    while i < cnt {
+        if y_strs[y_key_flat[start + i]] == key {
+            found = y_val_flat[start + i]
+        }
+        i = i + 1
+    }
+    return found
+}
+
+// 最近一次 parse 的错误消息（成功时为空串）。
+pub func err_msg() -> string {
+    return y_err_msg
+}
+
+}
