@@ -57,6 +57,28 @@ repr(C)/ptr direct representation + command-list translator, p.6.8.6-8) → full
 (p.6.8.13-14). **Revises ui-framework §2.2**: desktop drawing unifies on the self-built Skia
 subset (GPU deferred); embedded framebuffer / webui Canvas stay optional.
 
+## [feat] p.6.7.13 双形态并行验收矩阵（2026-09-04）
+
+- **矩阵探针**：`matrix_simple_probe` + `matrix_ctx_probe`——同一套确定性工作负载
+  双形态各跑一遍（4 生产者 × 25 消息入各自通道（值 p*1000+j+1 非零，避开 ch_recv
+  空/值 0 歧义）、每任务 5 次 gosched、wg 100 生命周期、逐通道顺序收集）：
+  **stdout 跨形态逐字节一致**（sum=151300 cnt=100 uniq=100 gs=20），PASS×3、
+  逐字节对比 ×3 全同。
+- **验收矩阵全绿**：18 探针 p.6.7 全套（真并行 tid 铁证 + 窃取/常驻池/细锁/抢占/
+  WaitGroup/channel Go 语义）+ parity_chan/combo/ctx_ws/ctx_gc 行为一致 + sso_probe
+  + m6_actor（重编）零回归 + trm-lite 全部测试；自举 tiec80→tiec81 字节不动点。
+- **运行时微调**（trm-lite）：复杂形态 `give_wait` 由调度 CV 限时等待改为纯
+  Sleep(1)（等价限时让出、零 CV 交互纠缠）。
+
+EN: p.6.7.13 dual-form parallel acceptance matrix (2026-09-04) — matrix_simple/ctx
+probes run the identical deterministic workload in both forms (4 producers x 25 to
+per-producer channels, non-zero values avoiding ch_recv empty/zero ambiguity, 5
+gosched per task, wg 100 lifecycle, ordered collection): stdout byte-identical
+across forms (sum=151300 cnt=100 uniq=100 gs=20), PASS x3 + byte-compare x3. Full
+18-probe p.6.7 suite + parity demos + sso_probe + m6_actor (rebuilt) + trm-lite
+tests zero regression; bootstrap tiec80->tiec81 fixpoint. Runtime: complex-form
+give_wait switched from scheduler-CV timed wait to plain Sleep(1).
+
 ## [feat] p.6.7.12 channel Go 语义：close 广播 + select 多路收发（2026-09-04）
 
 - **运行时**（trm-lite/core/chan/tl_chan.tie）：
