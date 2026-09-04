@@ -1,11 +1,19 @@
 type tie<class>
-// config.tie：扩展库——配置解析（命名空间 cfg），KEY=VALUE 与 INI 子集。
+// config.tie：扩展库——配置解析（命名空间 cfg），统一查询入口。
 //
 // 设计说明：语言底座**未注册 map 原语**（tie_map_* 仅 C ABI 层，语言层
 // 不可调用），故配置表用**交错表**表示：table<string> 按 [键, 值, 键, 值...]
 // 交替存放，get/has 线性扫描（配置条目少，线性足够）。
 //
-// 语法：
+// 三种格式 → 同一查询 API：
+//   parse_kv    KEY=VALUE（= 两侧 trim；值保留内部空白）
+//   parse_ini   INI 子集：[section] 起始行后，键存为 "section.key"
+//   parse_toml  TOML 子集（委托 ext/config/toml.tie）：嵌套表 "a.b"、
+//               数组表 "server.0.host"、内联表 "point.x"——点路径键名，
+//               与 KV/INI 共用 get/get_int/get_bool/has。
+//   三者均返回交错表；cfg.get 等四个查询函数对三者完全通用。
+//
+// 语法（KV/INI）：
 //   KEY=VALUE 行（= 两侧 trim；值保留内部空白）；
 //   INI 节：[section] 起始的行后，键存为 "section.key"（顶层键存 "key"）；
 //   空行与 # 开头的整行注释跳过（行内 # 不视为注释）；
@@ -19,6 +27,10 @@ type tie<class>
 //   cfg.get(t, "name", "")      // "Alice"
 //   cfg.get(t, "db.host", "")   // "localhost"
 //   cfg.get_int(t, "port", 80); cfg.get_bool(t, "verbose", false)
+//   var tt = cfg.parse_toml("[server]\nhost=\"x\"\n[[port]]\nport=80")
+//   cfg.get(tt, "server.host", ""); cfg.get_int(tt, "port.0.port", 0)
+
+import "./config/toml.tie" as toml
 
 namespace cfg {
 // 解析 KEY=VALUE 文本 → 交错表 [k1,v1,k2,v2...]。空输入返回空表。
@@ -68,6 +80,12 @@ pub func parse_kv(content: string) -> table<string> {
 // （parse_kv 已处理 [section] 标记，本函数为语义别名）。
 pub func parse_ini(content: string) -> table<string> {
     return parse_kv(content)
+}
+
+// 解析 TOML 文本 → 交错表（点路径键名，与 KV/INI 同构）。委托 toml.parse；
+// 坏文档返回空表，错误经 toml.last_err() 查询。
+pub func parse_toml(content: string) -> table<string> {
+    return toml.parse(content)
 }
 
 // 取键值（线性扫描取最后命中）；键不存在返回 def。
