@@ -1,21 +1,40 @@
 type tie<class>
-// std/http_server.tie —— HTTP/1.1 服务端框架（P0：std/net 之上，纯 tie）
+// std/http_server.tie —— HTTP/1.1 服务端框架（P0：std/net 之上，纯 tie；p.6.6.21 升级）
 // ============================================================
-// 基于 std/net（TCP），提供请求解析 + 响应构造的框架风格 API：
-//   1. listen(port) 监听（返回监听句柄）
-//   2. accept(srv) 接受连接（阻塞）
-//   3. read_request(conn) 读完整请求（请求行 + headers + body）→ Request
-//   4. send(conn, status, content_type, body) 发送响应（短连接，Connection: close）
-//   5. close(conn) 关闭连接
-// 路由由调用方以 if 链分派（tie 无函数指针/闭包，用 req.path 字符串比较）——
-// 见 examples/http_server_demo.tie。
-// 约定：
-//   - 仅 HTTP/1.1 短连接（一次请求一次响应后关闭），无 keep-alive；
-//   - body 按 Content-Length 读取（无 chunked）；
-//   - headers 存原始行表（"Name: value"），header() 线性查找（忽略大小写）。
-// 参考验收：examples/http_server_demo.tie + curl / tie http 客户端。
+// 基于 std/net（TCP）的框架风格 API。原版仅短连接（listen/accept/read_request/
+// header/send/close），本子项升级为 Web 服务框架，新增：
+//   A. 路由表 + 匹配/分发（route/match_route，`:param`/`*` 通配）
+//   B. 纯请求解析（parse_request/receive_next，字节表平面，非 socket，可离线测试）
+//   C. keep-alive 服务循环（serve/handle_conn，Content-Length 定界，逐请求循环）
+//   D. 静态文件（static_content_type/serve_static，路径防穿越，字节安全）
+//   E. SSE 服务端推送（sse_headers/sse_frame/sse_send，帧格式与 std/sse 客户端同线）
+//   F. JWT 会话门控（jwt_session，Bearer <token> → jwt.verify）
+//
+// 所有原 API 原样保留：Request/header/read_request/send(短连接)/close/listen/
+// accept/reason 等，examples/http_server_demo.tie 仍可复用。
+//
+// 数据平面（Data plane）：
+//   - 请求解析在**字节表**（table<i64>，0..255）平面进行：receive_next 从累积字节流
+//     定界一个完整请求（头 \r\n\r\n + 按 Content-Length 的 body），返回 consumed 字节数；
+//     残余由调用方（handle_conn 缓冲）维护，逐请求 O(leftover)（真实连接 leftover 极小）。
+//   - req.body 按 ASCII 文本承载（>=0x80 的二进制正文由调用方走字节表路径）。
+//   - 静态文件二进制安全：正文经 fs.read_bytes 读字节表 + net.tcp_send_bytes 发送，
+//     HTTP 响应头仍字符串拼装后按字节发送（tcp_send）。
+//
+// 语言约束（Language constraints）：
+//   - `port`、`text`、`impl` 是 tie 保留字——监听参数用 `pport`（原版 listen(port) 即
+//     因此无法编译，本版修正）。namespace 内不能声明 var，模块级全局一律放**文件顶层**。
+//   - 路由表/静态目录等模块级全局在文件顶层声明（= [] 初始化）；handlers 为顶层
+//     table<fn(table<string>) -> string>（fn 元素表 + 函数值入表 + 表元素调用，编译器已支持）。
+//   - namespace 内互调为裸调用（Harbor M2.1.6）。
+// 参考验收：tests/httpsrv_probe/httpsrv_probe.tie + examples/http_server_demo.tie。
 
-// ---------- 请求结构（顶层 struct，纯数据） ----------
+import "./string.tie" as str
+import "./net.tie" as net
+import "./fs.tie" as fs
+import "./jwt.tie" as jwt
+
+// ---------- 请求结构（顶层 struct，纯数据，保留原状） ----------
 
 struct Request {
     var method: string
@@ -25,11 +44,26 @@ struct Request {
     var body: string
 }
 
+// ---------- 模块级全局（文件顶层；namespace 内不能 var） ----------
+
+// 路由表（并行表：method/pattern/handler 三表同位下标对齐）。
+var g_routes_methods: table<string> = []
+var g_routes_patterns: table<string> = []
+var g_routes_handlers: table<fn(table<string>) -> string> = []
+
+// 静态文件根目录（serve() 设定；空表=未启用静态服务）。
+var g_static_dir: string = ""
+
 namespace httpsrv {
 
+// ============================================================================
+// 一、保留原 API（调用方兼容）
+// ============================================================================
+
     // 监听 0.0.0.0:port，返回监听句柄（失败 -1，透传 std/net）。
-    pub func listen(port: i64) -> i64 {
-        return net.tcp_listen(port)
+    // 注：port 为保留字，参数名用 pport。
+    pub func listen(pport: i64) -> i64 {
+        return net.tcp_listen(pport)
     }
 
     // 接受连接（阻塞），返回连接句柄（失败 -1）。
@@ -37,9 +71,8 @@ namespace httpsrv {
         return net.tcp_accept(srv)
     }
 
-    // 读取一个完整请求：请求行 + headers + body（按 Content-Length）。
-    // 读取策略：循环 recv 拼接缓冲直到找到头结束符 "\r\n\r\n"，
-    // 再按 Content-Length 读满 body；解析失败返回空 Request（method 为空）。
+    // 读取一个完整请求：请求行 + headers + body（按 Content-Length，socket 版，短连接）。
+    // 保留原实现语义；新增纯解析见 parse_request/receive_next（字节表平面）。
     pub func read_request(conn: i64) -> Request {
         var req = Request("", "/", "HTTP/1.1", "", "")
         var buff = ""
@@ -98,13 +131,14 @@ namespace httpsrv {
     // 按名字查 header（忽略大小写，线性查找）；未找到返回空串。
     pub func header(req: Request, name: string) -> string {
         var lines = str.split(req.headers_text, "\r\n")
+        var lname = str.to_lower(name)
         var i: i64 = 0
         while i < len(lines) {
             var line = lines[i]
             var colon = str.find(line, ":")
             if colon > 0 {
                 var key = str.trim(str.slice(line, 0, colon))
-                if key == name || key == str.to_lower(name) || key == str.to_upper(name) {
+                if str.to_lower(key) == lname {
                     return str.trim(str.slice(line, colon + 1, len(line)))
                 }
             }
@@ -145,7 +179,7 @@ namespace httpsrv {
         return "OK"
     }
 
-    // 发送响应并关闭连接（短连接：Connection: close）。
+    // 发送响应并关闭连接（短连接：Connection: close，保留原 API）。
     // 自动组装状态行 + Content-Type + Content-Length + 空行 + body。
     pub func send(conn: i64, status: i64, content_type: string, body: string) {
         var head = "HTTP/1.1 " + to_string(status) + " " + reason(status) + "\r\n"
@@ -159,5 +193,431 @@ namespace httpsrv {
     // 关闭连接（透传 std/net）。
     pub func close(conn: i64) {
         net.close(conn)
+    }
+
+// ============================================================================
+// 二、字节工具（请求解析平面；单遍，无 O(n^2)）
+// ============================================================================
+
+    // 在字节表 [s..e) 段复制为独立字节表。
+    func bytes_slice(b: table<i64>, s: i64, e: i64) -> table<i64> {
+        var out = table_new_i64()
+        var i: i64 = s
+        while i < e {
+            table_push(out, b[i])
+            i = i + 1
+        }
+        return out
+    }
+
+    // 把 src 追加到 dst 末尾（dst 为 ref 引用，就地增长）。
+    func bytes_cat(dst: ref table<i64>, src: table<i64>) {
+        var i: i64 = 0
+        while i < len(src) {
+            table_push(dst, src[i])
+            i = i + 1
+        }
+    }
+
+    // 字节表 [s..e) 段转字符串（ASCII/UTF-8；逐字节进 StringBuilder）。
+    func bytes_slice_str(b: table<i64>, s: i64, e: i64) -> string {
+        var sb = string_builder()
+        var i: i64 = s
+        while i < e {
+            sb_append_byte(sb, b[i])
+            i = i + 1
+        }
+        return sb_build(sb)
+    }
+
+    // 字符串 → 字节表（UTF-8 字节逐个入表）。
+    func str_bytes(s: string) -> table<i64> {
+        var out = table_new_i64()
+        var n: i64 = len(s)
+        var i: i64 = 0
+        while i < n {
+            table_push(out, str_byte(s, i))
+            i = i + 1
+        }
+        return out
+    }
+
+    // 在字节表中找首个 "\r\n\r\n"（0x0D0A0D0A）起点下标；未找到返回 -1。
+    func find_head_end(b: table<i64>) -> i64 {
+        var n = len(b)
+        var i: i64 = 0
+        while i + 3 < n {
+            if b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10 {
+                return i
+            }
+            i = i + 1
+        }
+        return -1
+    }
+
+// ============================================================================
+// 三、纯请求解析（非 socket，可离线测试）
+// ============================================================================
+
+    // 从头文本解析请求行 + headers（不涉 body）。方法/路径/版本取第 1 行
+    // "METHOD SP path SP version"；headers_text = 请求行之后原样头文本。
+    func parse_head(head: string) -> Request {
+        var req = Request("", "/", "HTTP/1.1", "", "")
+        var lines = str.split(head, "\r\n")
+        if len(lines) >= 1 {
+            var parts = str.split(lines[0], " ")
+            if len(parts) >= 3 {
+                req.method = parts[0]
+                req.path = parts[1]
+                req.version = parts[2]
+            }
+        }
+        var le = str.find(head, "\r\n")
+        if le < 0 {
+            req.headers_text = ""
+        } else {
+            req.headers_text = str.slice(head, le + 2, str_len(head))
+        }
+        return req
+    }
+
+    // 从累积字节流中解析一个完整请求（纯函数，读输入不消费）：头 \r\n\r\n 完成 +
+    // 按 Content-Length 的 body 满 → (ok=true, consumed, Request)；不完整/头未完成 →
+    // ok=false。consumed 为本次请求占用的字节数；调用方用 buff[consumed..] 为残余。
+    pub func receive_next(input: table<i64>) -> (bool, i64, Request) {
+        var blank = Request("", "/", "HTTP/1.1", "", "")
+        var hh = find_head_end(input)
+        if hh < 0 {
+            return (false, 0, blank)
+        }
+        var hdr_end = hh + 4
+        var head = bytes_slice_str(input, 0, hh)
+        var req = parse_head(head)
+        // body 长度：按 Content-Length
+        var cl = header(req, "Content-Length")
+        var body_len: i64 = 0
+        if str_len(cl) > 0 {
+            var w = parse_int(cl)
+            if w < 0 {
+                w = 0
+            }
+            body_len = w
+        }
+        if len(input) < hdr_end + body_len {
+            return (false, 0, blank)
+        }
+        var consumed = hdr_end + body_len
+        req.body = bytes_slice_str(input, hdr_end, consumed)
+        return (true, consumed, req)
+    }
+
+    // 从字节表解析一个完整请求（假定调用方保证其完整；非 socket，纯解析）。
+    // 复用得 receive_next 的解析主路径。
+    pub func parse_request(bytes: table<i64>) -> Request {
+        var (ok, consumed, req) = receive_next(bytes)
+        return req
+    }
+
+// ============================================================================
+// 四、路由表 + 匹配/分发
+// ============================================================================
+
+    // 注册路由：method（如 "GET"）+ pattern + handler。pattern 支持：
+    //   - `/users/:id` 以 ':' 前缀段为路径参数（捕获按出现顺序）
+    //   - `/static/*` 以 '*' 为通配段（匹配任意剩余段，不捕获）
+    pub func route(method: string, pattern: string, handler: fn(table<string>) -> string) {
+        table_push(g_routes_methods, method)
+        table_push(g_routes_patterns, pattern)
+        table_push(g_routes_handlers, handler)
+    }
+
+    // pattern 是否匹配 path；命中的 ':param' 段值追加进 params（按出现顺序）。
+    func match_pattern(pattern: string, path: string, params: table<string>) -> bool {
+        var psegs = str.split(pattern, "/")
+        var gsegs = str.split(path, "/")
+        var pi: i64 = 0
+        var gi: i64 = 0
+        var n = len(psegs)
+        var m = len(gsegs)
+        while pi < n {
+            var pseg = psegs[pi]
+            if pseg == "*" {
+                // 通配段：匹配任意剩余路径（含零段）
+                return true
+            }
+            if gi >= m {
+                return false
+            }
+            var gseg = gsegs[gi]
+            if str.starts_with(pseg, ":") {
+                table_push(params, gseg)
+            } else if pseg != gseg {
+                return false
+            }
+            pi = pi + 1
+            gi = gi + 1
+        }
+        return gi >= m
+    }
+
+    // 路由匹配/分发：按 method 精确匹配 + pattern 形态匹配。
+    // 返回第一个命中路由下标 + 路径参数值表（按出现顺序）；无匹配 (-1, 空表)。
+    pub func match_route(method: string, path: string) -> (i64, table<string>) {
+        var i: i64 = 0
+        while i < len(g_routes_methods) {
+            if g_routes_methods[i] == method {
+                var params = table_new_string()
+                if match_pattern(g_routes_patterns[i], path, params) {
+                    return (i, params)
+                }
+            }
+            i = i + 1
+        }
+        return (-1, table_new_string())
+    }
+
+// ============================================================================
+// 五、静态文件
+// ============================================================================
+
+    // 扩展名 → MIME 类型（大小写不敏感；缺省 application/octet-stream）。
+    pub func static_content_type(path: string) -> string {
+        var lp = str.to_lower(path)
+        if str.ends_with(lp, ".html") || str.ends_with(lp, ".htm") {
+            return "text/html"
+        }
+        if str.ends_with(lp, ".css") {
+            return "text/css"
+        }
+        if str.ends_with(lp, ".js") {
+            return "text/javascript"
+        }
+        if str.ends_with(lp, ".mjs") {
+            return "text/javascript"
+        }
+        if str.ends_with(lp, ".json") {
+            return "application/json"
+        }
+        if str.ends_with(lp, ".png") {
+            return "image/png"
+        }
+        if str.ends_with(lp, ".jpg") || str.ends_with(lp, ".jpeg") {
+            return "image/jpeg"
+        }
+        if str.ends_with(lp, ".gif") {
+            return "image/gif"
+        }
+        if str.ends_with(lp, ".webp") {
+            return "image/webp"
+        }
+        if str.ends_with(lp, ".ico") {
+            return "image/x-icon"
+        }
+        if str.ends_with(lp, ".svg") {
+            return "image/svg+xml"
+        }
+        if str.ends_with(lp, ".txt") {
+            return "text/plain"
+        }
+        if str.ends_with(lp, ".xml") {
+            return "application/xml"
+        }
+        if str.ends_with(lp, ".pdf") {
+            return "application/pdf"
+        }
+        if str.ends_with(lp, ".woff") {
+            return "font/woff"
+        }
+        if str.ends_with(lp, ".woff2") {
+            return "font/woff2"
+        }
+        if str.ends_with(lp, ".mp4") {
+            return "video/mp4"
+        }
+        return "application/octet-stream"
+    }
+
+    // 静态路径安全性（防穿越）：须以 '/' 开头，且任一路径段不得为 ".."。
+    pub func safe_static_path(p: string) -> bool {
+        if !str.starts_with(p, "/") {
+            return false
+        }
+        var segs = str.split(p, "/")
+        var i: i64 = 0
+        while i < len(segs) {
+            if segs[i] == ".." {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
+    // 服务静态文件：静态根 + 请求路径拼接（防穿越后）。存在 → 200 + CT + CL +
+    // 字节正文（tcp_send_bytes，二进制安全）；不存在/目录 → 404。响应 keep-alive，
+    // 连接的 close 与否由调用方（handle_conn）统一决策。
+    pub func serve_static(conn: i64, path: string, static_dir: string) {
+        if !safe_static_path(path) {
+            write_response(conn, 400, "text/plain", "Bad Request", true)
+            return
+        }
+        var full = static_dir + path
+        if !fs.exists(full) || fs.is_dir(full) {
+            write_response(conn, 404, "text/plain", "Not Found", true)
+            return
+        }
+        var ct = static_content_type(path)
+        var data = fs.read_bytes(full)
+        // 响应头仍字符串拼装（ASCII），再按字节发送正文（二进制安全）
+        var head = "HTTP/1.1 200 OK\r\n"
+        head = head + "Content-Type: " + ct + "\r\n"
+        head = head + "Content-Length: " + to_string(len(data)) + "\r\n"
+        head = head + "Connection: keep-alive\r\n\r\n"
+        net.tcp_send(conn, head)
+        net.tcp_send_bytes(conn, data)
+    }
+
+// ============================================================================
+// 六、响应构造（keep-alive 语义）
+// ============================================================================
+
+    // 写文本响应（不关闭连接；close 决策由调用方做）。keepalive → Connection: keep-alive。
+    func write_response(conn: i64, status: i64, content_type: string, body: string, keepalive: bool) {
+        var head = "HTTP/1.1 " + to_string(status) + " " + reason(status) + "\r\n"
+        head = head + "Content-Type: " + content_type + "\r\n"
+        head = head + "Content-Length: " + to_string(len(body)) + "\r\n"
+        if keepalive {
+            head = head + "Connection: keep-alive\r\n\r\n"
+        } else {
+            head = head + "Connection: close\r\n\r\n"
+        }
+        net.tcp_send(conn, head + body)
+    }
+
+// ============================================================================
+// 七、keep-alive 服务循环
+// ============================================================================
+
+    // 处理一条连接上的请求循环（分派路由/静态后讲 keep-alive）。按 Content-Length
+    // 定界多请求：先 receive_next 从缓冲定界，不足则 tcp_recv_bytes 补字节；响应带
+    // Content-Length；请求头 Connection: close / HTTP/1.0 / 解析失败 → 关闭断开。
+    // 返回本连接处理的请求数（对端关闭/解析失败时返回；便于探针注入假连接离线测试）。
+    pub func handle_conn(conn: i64) -> i64 {
+        var count: i64 = 0
+        var buff = table_new_i64()
+        while true {
+            var (ok, consumed, req) = receive_next(buff)
+            if !ok {
+                // 需更多字节：从 socket 增量读
+                var chunk = net.tcp_recv_bytes(conn, 8192)
+                if len(chunk) == 0 {
+                    return count          // 对端关闭
+                }
+                bytes_cat(buff, chunk)
+                continue
+            }
+            count = count + 1
+            // 弹掉已消费前缀（残余 = 后续请求）
+            buff = bytes_slice(buff, consumed, len(buff))
+            // keep-alive 决策
+            var keepalive = true
+            if req.method == "" {
+                keepalive = false          // 请求行解析失败
+            }
+            if keepalive && req.version != "HTTP/1.1" {
+                keepalive = false
+            }
+            if keepalive {
+                if str.contains(str.to_lower(header(req, "Connection")), "close") {
+                    keepalive = false
+                }
+            }
+            // 分派：路由 → 静态 → 404
+            var (idx, params) = match_route(req.method, req.path)
+            if idx >= 0 {
+                var body = g_routes_handlers[idx](params)
+                write_response(conn, 200, "text/plain", body, keepalive)
+            } else if req.method == "GET" && str_len(g_static_dir) > 0 && safe_static_path(req.path) {
+                serve_static(conn, req.path, g_static_dir)
+            } else {
+                write_response(conn, 404, "text/plain", "Not Found", keepalive)
+            }
+            if !keepalive {
+                return count
+            }
+        }
+        return count
+    }
+
+    // 阻塞服务：监听 pport，循环 accept + handle_conn。static_dir 设定后启用静态服务。
+    pub func serve(pport: i64, static_dir: string) {
+        g_static_dir = static_dir
+        var srv = net.tcp_listen(pport)
+        if srv < 0 {
+            return
+        }
+        while true {
+            var conn = net.tcp_accept(srv)
+            if conn < 0 {
+                break
+            }
+            handle_conn(conn)
+        }
+    }
+
+// ============================================================================
+// 八、SSE 服务端推送（帧格式与 std/sse 客户端解析同线：字段行 name: value\n + 空行 flush）
+// ============================================================================
+
+    // SSE 帧构造函数（纯字节，供测试；非 socket 版）：`event: <event>\ndata: <data>\n\n`；
+    // event 为空时省略 event 行 → `data: <data>\n\n`。
+    pub func sse_frame(event: string, data: string) -> table<i64> {
+        var sb = string_builder()
+        if str_len(event) > 0 {
+            sb_append(sb, "event: ")
+            sb_append(sb, event)
+            sb_append_byte(sb, 0x0A)
+        }
+        sb_append(sb, "data: ")
+        sb_append(sb, data)
+        sb_append_byte(sb, 0x0A)
+        sb_append_byte(sb, 0x0A)
+        return str_bytes(sb_build(sb))
+    }
+
+    // SSE 响应头行表（调用方据此拼写 event-stream 响应头）：text/event-stream +
+    // no-cache + keep-alive。
+    pub func sse_headers() -> table<string> {
+        var h = table_new_string()
+        table_push(h, "Content-Type: text/event-stream")
+        table_push(h, "Cache-Control: no-cache")
+        table_push(h, "Connection: keep-alive")
+        return h
+    }
+
+    // 向 conn 写一帧 SSE 事件（event 空则省略 event 行）。成功返回 true。
+    pub func sse_send(conn: i64, event: string, data: string) -> bool {
+        var frame = sse_frame(event, data)
+        var n = net.tcp_send_bytes(conn, frame)
+        return n >= 0
+    }
+
+// ============================================================================
+// 九、JWT 会话门控
+// ============================================================================
+
+    // 从 Authorization 头提取 `Bearer <token>` → jwt.verify(token, secret)。
+    // 返回 0=有效（令牌签名正确且未过期），负码= jwt.verify 的错误码（篡改/过期等），
+    // -100=无 token 或 scheme 非 Bearer 或格式错。
+    pub func jwt_session(secret: string, auth_header_val: string) -> i64 {
+        var s = str.trim(auth_header_val)
+        if !str.starts_with(s, "Bearer ") && !str.starts_with(s, "bearer ") {
+            return -100
+        }
+        var token = str.slice(s, 7, str_len(s))
+        if str_len(token) == 0 {
+            return -100
+        }
+        return jwt.verify(token, secret)
     }
 }
