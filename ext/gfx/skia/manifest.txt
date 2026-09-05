@@ -90,7 +90,15 @@ skia_enable_skparagraph=false
 skia_enable_skshaper=false
 skia_enable_tools=false
 skia_enable_spirv_validation=false
+# 确定性构建开关（p.6.8.5）：MSVC /Brepro 消除 codeview 时间戳/绝对路径注入，
+# 使 .obj 字节不随重build时间漂移。见模块清单与依赖收窄+可复现探针。
+# Determinism switch (p.6.8.5): MSVC /Brepro removes codeview timestamps and
+# absolute-path injection so .obj bytes don't drift with rebuild wall-clock.
+extra_cflags=["/Brepro"]
+extra_ldflags=["/Brepro"]
 
 # ------------------------ 体积基线 / Size baseline (bytes) -----------------
+# lib_bytes@ /Brepro 确定性构建后实测（2026-09-05）；smoke 见 README。
+# lib_bytes measured after enabling /Brepro determinism (2026-09-05).
 [size]
-lib_bytes=169329356
+lib_bytes=168338664
