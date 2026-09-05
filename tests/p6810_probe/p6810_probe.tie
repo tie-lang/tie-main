@@ -1,0 +1,210 @@
+type tie<logic>
+// tests/p6810_probe/p6810_probe.tie —— p.6.8.10 验收：事件系统 E3
+// （事件队列：鼠标/键盘含位置/键码/时间戳 + 信号标志：WM_PAINT→重绘、WM_TIMER→定时）。
+// EN: acceptance probe for the E3 event system (event queue mouse/keyboard with pos/
+// keycode/timestamp + signal flags WM_PAINT→redraw, WM_TIMER→timer).
+//
+// 分层策略 / Layering：
+//   * **信号标志 paint_pending（沿用 6.8.9）**：离屏 320x200 Surface → present（置
+//     bmi_valid）→ pump 若干轮，WM_PAINT 置 paint_pending → 断言重绘信号。
+//   * **确定性合成注入（主路径，无用户输入依赖）**：向自身 hwnd PostMessageW 注入
+//     WM_MOUSEMOVE@(30,40) / WM_LBUTTONDOWN@(55,66) / WM_KEYDOWN(VK_F1=0x70) /
+//     WM_TIMER(id=7) → win_pump 排空 → ev.take 断言事件队列**按注入顺序**弹出（移动→
+//     按下→按键），类型/坐标/键码/时间戳单调不减；容量内不触发 overflow。
+//   * **SetTimer 真实定时（先进出 FIFO + 信号双通道）**：set_timer(50) 后 pump 轮询
+//     ≤2s 断言 TIMER 事件出现 + timer_flag 信号置位（轮询上限兜底，禁无限等待）。
+//   * 退出沿用 sk_flush_std() + ExitProcess(0)；全程合成注入为主，确定性。
+//
+// 说明：窗口短暂可见。坐标断言用精确定值（注入即精确）；时间戳断言只断**单调不减**
+// （GetMessageTime 允许同一毫秒内相等，禁精确值）。
+
+import "../../ext/gfx/gfx.tie" as gfx
+import "../../ext/gfx/window.tie" as win
+import "../../ext/gfx/event.tie" as ev
+import "../../ext/gfx/thunk_binding.tie" as tb
+using tb;
+
+var W: i64 = 320
+var H: i64 = 200
+
+// Win32 消息常量 / VK_F1
+var WM_MOUSEMOVE: i64 = 512      // 0x0200
+var WM_LBUTTONDOWN: i64 = 513    // 0x0201
+var WM_KEYDOWN: i64 = 256        // 0x0100
+var WM_TIMER: i64 = 275          // 0x0113
+var VK_F1: i64 = 112             // 0x70
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+    unsafe { sk_flush_std() }
+}
+
+// 在平面事件表里找第一个满足 type/位次字段的事件序号；找不到返回 -1。
+// 鼠标按 type+x+y 匹配；键盘按 type+key（x=y=0）匹配；定时器按 type+key 匹配。
+func find_ev(evs: table<i64>, ty: i64, want_x: i64, want_y: i64, want_key: i64,
+             need_key_or_coord: bool) -> i64 {
+    var n = ev.count(evs)
+    var i: i64 = 0
+    while i < n {
+        if ev.ev_type(evs, i) == ty {
+            if need_key_or_coord {
+                if ev.ev_key(evs, i) == want_key && ev.ev_x(evs, i) == 0 && ev.ev_y(evs, i) == 0 {
+                    return i
+                }
+            } else {
+                if ev.ev_x(evs, i) == want_x && ev.ev_y(evs, i) == want_y {
+                    return i
+                }
+            }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func main() {
+    println("start")
+    unsafe { sk_flush_std() }
+
+    // === 1. 窗口 + 离屏 present（置 paint_pending 前提 bmi_valid）===
+    var hwnd = win.open("TieWin6.8.10", W, H)
+    check(hwnd != 0, "window open: hwnd != 0, got " + to_string(hwnd))
+    win.show(hwnd)
+    win.update(hwnd)   // 在 present 前同步刷一次（bmi_valid=0 → 仅填底色，不置 paint_pending）
+    var s = gfx.surface_create(W, H)
+    check(s.h != 0, "offscreen surface create (non-null)")
+    var c = gfx.surface_canvas(s)
+    gfx.canvas_clear(c, 4294967295)   // 白
+    var info = gfx.surface_peek(s)
+    var rc = win.present(hwnd, info.pixels, info.row_bytes, info.w, info.h)
+    check(rc == 0, "present blit rc=0 (prep paint_pending)")
+
+    // === 2. paint_pending 信号标志（沿用 6.8.9；WM_PAINT 置位，每轮 pump 复位）===
+    var seen_paint: i64 = 0
+    var pi: i64 = 0
+    while pi < 6 {
+        var n = win.pump(hwnd)
+        if win.paint_pending(hwnd) != 0 {
+            seen_paint = 1
+        }
+        if n == 0 {
+            win.sleep(3)
+        }
+        pi = pi + 1
+    }
+    check(seen_paint == 1, "signal paint_pending: WM_PAINT observed after pump")
+    check(win.closed(hwnd) == 0, "window alive after pump: closed==0")
+
+    // 排空注入前窗口可能产生的真实事件（无用户输入下通常为空）——确保从干净队列开始。
+    var _drain0 = ev.take(hwnd)
+
+    // === 3. 确定性合成注入（移动 → 按下 → 按键 → 定时器(PostMessage)）===
+    // lParam 鼠标 = HIWORD=y << 16 | LOWORD=x；键盘 wParam = vk。
+    var lpmove = 40 * 65536 + 30
+    var lpdown = 66 * 65536 + 55
+    var pa = ev.post(hwnd, WM_MOUSEMOVE, 0, lpmove)
+    var pb = ev.post(hwnd, WM_LBUTTONDOWN, 0, lpdown)
+    var pc = ev.post(hwnd, WM_KEYDOWN, VK_F1, 0)
+    var pd = ev.post(hwnd, WM_TIMER, 7, 0)
+    check(pa != 0 && pb != 0 && pc != 0 && pd != 0, "4 synthetic messages posted (PostMessageW nonnull)")
+
+    win.pump(hwnd)   // 排空 → WndProc 入队
+    win.pump(hwnd)   // 再排一轮，确保已全部出线程队列（防 WM_PAINT/其他抢占单轮）
+
+    var evs = ev.take(hwnd)
+    var ntotal = ev.count(evs)
+    check(ntotal >= 4, "queue drained: >=4 events, got " + to_string(ntotal))
+
+    // 位置/键码/类型存在性
+    var imove = find_ev(evs, ev.t_mouse_move(), 30, 40, 0, false)
+    var idown = find_ev(evs, ev.t_lbutton_down(), 55, 66, 0, false)
+    var ikey = find_ev(evs, ev.t_key_down(), 0, 0, VK_F1, true)
+    var itimer = find_ev(evs, ev.t_timer(), 0, 0, 7, true)
+    check(imove >= 0, "WM_MOUSEMOVE captured in queue")
+    check(idown >= 0, "WM_LBUTTONDOWN captured in queue")
+    check(ikey >= 0, "WM_KEYDOWN(VK_F1) captured in queue")
+    check(itimer >= 0, "PostMessage WM_TIMER captured in queue")
+    // 坐标 / 键码精确断言
+    check(imove >= 0 && ev.ev_x(evs, imove) == 30 && ev.ev_y(evs, imove) == 40,
+        "move coords (x=30,y=40), got (" + to_string(imove >= 0 ? ev.ev_x(evs, imove) : -1) +
+        "," + to_string(imove >= 0 ? ev.ev_y(evs, imove) : -1) + ")")
+    check(idown >= 0 && ev.ev_x(evs, idown) == 55 && ev.ev_y(evs, idown) == 66,
+        "down coords (x=55,y=66), got (" + to_string(idown >= 0 ? ev.ev_x(evs, idown) : -1) +
+        "," + to_string(idown >= 0 ? ev.ev_y(evs, idown) : -1) + ")")
+    check(ikey >= 0 && ev.ev_key(evs, ikey) == VK_F1,
+        "key keycode VK_F1=0x70, got " + to_string(ikey >= 0 ? ev.ev_key(evs, ikey) : -1))
+
+    // 顺序：注入应为 移动 < 按下 < 按键（子序列即可，容忍注入前后的真实事件）
+    check(idown >= 0 && imove >= 0 && idown > imove, "order: LBUTTON_DOWN after MOUSE_MOVE")
+    check(ikey >= 0 && idown >= 0 && ikey > idown, "order: KEY_DOWN after LBUTTON_DOWN")
+
+    // 时间戳：整条队列单调不减（GetMessageTime 允许相等，禁精确值）
+    var mono = true
+    var mi: i64 = 1
+    while mi < ntotal {
+        if ev.ev_ts(evs, mi) < ev.ev_ts(evs, mi - 1) {
+            mono = false
+        }
+        mi = mi + 1
+    }
+    check(mono, "timestamps monotonic non-decreasing across queue (" + to_string(ntotal) + " evs)")
+
+    // 溢出不触发（容量 256 内）；定时器信号标志置位
+    check(ev.overflow(hwnd) == 0, "no overflow (capacity 256)")
+    check(ev.timer_flag(hwnd) != 0, "signal timer_flag set by posted WM_TIMER")
+
+    // === 4. SetTimer 真实定时：TIMER 事件 + timer_flag 信号（轮询 ≤2s 兜底）===
+    var _drain1 = ev.take(hwnd)      // 清残留
+    var _tf = ev.timer_flag(hwnd)    // 复位信号
+    ev.set_timer(hwnd, 50)
+    var got_timer = false
+    var deadline: i64 = 0
+    while deadline < 2000 {
+        win.pump(hwnd)
+        var e2 = ev.take(hwnd)
+        var n2 = ev.count(e2)
+        var j: i64 = 0
+        while j < n2 {
+            if ev.ev_type(e2, j) == ev.t_timer() {
+                got_timer = true
+            }
+            j = j + 1
+        }
+        if got_timer {
+            break
+        }
+        win.sleep(10)
+        deadline = deadline + 10
+    }
+    check(got_timer, "SetTimer(50ms) → real WM_TIMER event within 2s (FIFO queue)")
+    check(ev.timer_flag(hwnd) != 0, "signal timer_flag set by real SetTimer WM_TIMER")
+
+    // === 5. 清理：destroy → 关闭语义/窗口消失 ===
+    win.destroy(hwnd)
+    check(win.closed(hwnd) == 0, "closed==0 after destroy (slot cleared)")
+    check(win.find("TieWinClass", "TieWin6.8.10") == 0, "window gone after destroy")
+
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+    var ec: i32 = 0
+    if fails > 0 {
+        ec = 1
+    }
+    unsafe {
+        sk_flush_std()
+        ExitProcess(ec)
+    }
+}
