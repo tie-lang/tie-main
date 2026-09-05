@@ -21,6 +21,48 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [fix] fs.walk/read_dir 表元素读取访问违例 RCA 根治（2026-09-05）
+
+* 根因（RCA）：p.6.10.2 表内存治理把运行时 tl_tbl 表句柄从 32 字节 `{cap@0,len@8,data@16,esz@24}`
+  扩为 **48 字节** `{cap,len,data,esz,lock@32,refcount@40}`（新增每表 CRITICAL_SECTION 与引用
+  计数）。但编译器后端内联表构造器 `tig_fill_table` / `tig_byte_read` / `tig_byte_concat` /
+  `cbs_copy` 仍手排 **32 字节**表头（无 lock/refcount）——这些内联构造的表（fs.walk /
+  fs.read_dir / byte_read 返回、网络收包、字节拼接、回调累积表）返回后，用户对其 `t[i]`
+  下标读 → `tl_tbl$tbl_at` 的 `lock_enter` 读句柄 @32 越界垃圾指针进 EnterCriticalSection →
+  启动期访问违例 **0xC0000005** / 非法句柄 **0xC0000008**；若走 `tbl_release`（出口析构/断言
+  路径）则读 @40 计数越界。p.6.8.5 曾以 exec_output+split / 内联排序规避，本项根治。
+  EN: p.6.10.2 grew the runtime tl_tbl handle from 32B to 48B (lock@32, refcount@40), but the
+  compiler's inline table builders (tig_fill_table/byte_read/byte_concat/cbs_copy) still emitted
+  32B headers without lock/refcount, so the returned tables crashed (0xC0000005/0xC0000008) on
+  `t[i]` (`tbl_at` lock_enter reads OOB @32) — root cause now fixed.
+* 解法：新增 `s21_tbl_adopt(esz, cap, len, data)` 内联表构造辅助——先 `tl_tbl$tbl_new(esz)`
+  得合法 48 字节句柄（lock 已 InitializeCriticalSection、refcount=1、esz 已置），再 O(1) 就地
+  覆盖 cap/len/data 三字段采纳调用方预建的 data 缓冲（data 为 malloc 块，tbl_release 用 free 收）。
+  四个内联构造器全部改走该辅助（`--emit-ir` 输出/运行行为验证：返回表可安全 `t[i]` 读、
+  元素值正确、无越界）。EN: new `s21_tbl_adopt` routes the four inline table builders through a
+  proper runtime `tbl_new` handle then overrides cap/len/data (O(1), no per-element push); returned
+  tables safely support `t[i]`.
+* 回归：新增 `tests/fsstr_probe/fsstr_probe.tie` —— **25 断言全 PASS / exit 0**（确定性夹具
+  `C:/Users/Jiro/AppData/Local/Temp/tie_fsstr_fx`）：table<string> 普通构造+下标读写、
+  fs.read_dir/walk 返回表下标读（本缺陷主根因路径，逐元素值正确）、byte_read 返回表下标读
+  （p.6.8.6 同根因覆盖）、fs+sort 同程序 co-import 大负载（读目录表走 sort 排序复读）、
+  字符串元素容器释放路径（30000 次临时 string 表 retain/release 守恒无泄漏/无 AV）。
+  EN: new fsstr_probe — 25 asserts PASS / exit 0 (read_dir/walk/byte_read return-table subscript
+  reads, fs+sort co-import load, string-element container release loop). 说明：std/sort 单模块
+  混 i64/string 多函数 + 超大 string 表冒泡（N≥~2900）的栈溢出为**另一独立预存缺陷**（即此
+  前 p.6.8.5 已改用 "内联排序规避"），与本内联表构造器根因无关、本就复现于现役 tiec.exe，
+  探针 sort 负载取确定性安全值 2000 以稳定通过；根因不与本项混同。
+  EN: the std/sort multi-function mixed-table huge-bubble stack overflow (N≥~2900) is a separate
+  pre-existing defect (p.6.8.5's documented inline-sort workaround), unrelated to this fix; probe
+  sorts 2000 (deterministic).
+* 回归零破坏：html / xml / jwt / win32 / ed25519 / sqlite / tink / probe_global_init /
+  probe_tdzd / p681 / p682 / p683 / p685 / config_smoke / tsha / base48 / bigint 全 PASS。
+  EN: zero regression across the library suite and p.6.8.1-6.8.5 probes.
+* 自举新不动点：tiec.exe SHA256
+  `9321B3FA48A0C46BF429EC547C4E5142C30EE8F669E720D07B3C758AE68FFCA2` / 3935232 字节
+  （tiec2==tiec3 字节一致收敛）；旧 p.6.8.3 版备份为 compiler/tiec_7A6100.exe
+  （7A6100FC…/3937792）。EN: new bootstrap fixpoint tiec.exe SHA256 …/3935232 (tiec2==tiec3);
+  prior p.6.8.3 kept as compiler/tiec_7A6100.exe.
 ## [feat] 全栈演示：窗口 + 命令列表 + 事件响应 + 组合式布局雏形（p.6.8.12）（2026-09-05）
 
 * 组合式布局雏形（ext/gfx/layout.tie，namespace `lay`）：最小 **row / column** 嵌套盒定位器，

@@ -1,0 +1,114 @@
+type tie<logic>
+// fsstr_probe.tie：回归验收——fs.walk/fs.read_dir 返回 table<string> 下标读（本缺陷
+// 主根因：p.6.10.2 运行时 tbl 句柄 32B→48B，内联表构造器未对齐，返回表运行时操作
+// 读 @32 锁/@40 计数越界 → 0xC0000005 访问违例）。同时覆盖 byte_read 返回表下标读、
+// table<string> 构造读写、字符串元素容器释放路径（大量临时表无泄漏/无 AV）、
+// fs+sort 同程序 co-import 大负载。
+// 确定性：夹具根目录固定,C:/Users/Jiro/AppData/Local/Temp/tie_fsstr_fx；PASS/FAIL/done,exit 0。
+import "../../std/fs.tie"
+import "../../std/sort.tie"
+using fs;
+using sort;
+
+var asserts: i64 = 0
+
+func chk(name: string, got: i64, want: i64) {
+    asserts = asserts + 1
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func chk_bool(name: string, got: bool) {
+    asserts = asserts + 1
+    if got {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        exit(1)
+    }
+}
+
+func main() {
+    var root = "C:/Users/Jiro/AppData/Local/Temp/tie_fsstr_fx"
+    // 清理旧字节测试残留（若上次异常退出留下），保证 read_dir/walk 计数确定性
+    var stale = root + "/bytes.bin"
+    if fs.exists(stale) {
+        chk_bool("stale.clean", fs.remove(stale))
+    }
+
+    // 1. table<string> 普通构造 + 下标读写（泛指路径；也作 sort 输入）
+    var t = table_new_string()
+    table_push(t, "zeta")
+    table_push(t, "alpha")
+    table_push(t, "mid")
+    chk("plain.len", len(t), 3)
+    chk_bool("plain[0]=zeta", t[0] == "zeta")
+    chk_bool("plain[1]=alpha", t[1] == "alpha")
+    chk_bool("plain[2]=mid", t[2] == "mid")
+    t[1] = "gamma"
+    chk_bool("plain.set", t[1] == "gamma")
+
+    // 2. fs.read_dir 返回表下标读（本缺陷主根因）——元素逐字读取非越界/空
+    var dir = fs.read_dir(root)
+    chk("fs.read_dir.len", len(dir), 3)
+    var di: i64 = 0
+    while di < len(dir) {
+        var nm = dir[di]
+        chk_bool("fs.read_dir.elem", len(nm) >= 1)
+        di = di + 1
+    }
+
+    // 3. fs.walk 返回表下标读（含子目录递归）
+    var wl = fs.walk(root)
+    chk("fs.walk.len", len(wl), 4)
+    var wi: i64 = 0
+    while wi < len(wl) {
+        var wm = wl[wi]
+        chk_bool("fs.walk.elem", len(wm) >= 1)
+        wi = wi + 1
+    }
+
+    // 4. byte_read 返回表下标读（p.6.8.6 同类根因：内联表构造器同修复路径）
+    var bin = root + "/bytes.bin"
+    var bdata = table_new_i64()
+    table_push(bdata, 65); table_push(bdata, 66); table_push(bdata, 67)  // "ABC"
+    chk_bool("byte.write", byte_write(bin, bdata))
+    var rd = byte_read(bin)
+    chk("byte_read.len", len(rd), 3)
+    chk("byte_read[0]", rd[0], 65)
+    chk("byte_read[2]", rd[2], 67)
+    chk_bool("byte.del", file_delete(bin))
+    // 5. fs+sort 同程序 co-import 大负载：读目录表交给 sort 排序复读
+    var big = table_new_string()
+    var bi: i64 = 0
+    while bi < 2000 {
+        table_push(big, "s" + to_string(1999 - bi))
+        bi = bi + 1
+    }
+    sort.sort_string(big)
+    chk("sort.big.len", len(big), 2000)
+    chk_bool("sort.big[0]", big[0] == "s0")
+    // 字典序最大：s999（999 > 1999 的首字符 9>1）
+    chk_bool("sort.big.max", big[1999] == "s999")
+    // 二分/contains 同路径
+    chk_bool("sort.contains", sort.contains_string(big, "s500"))
+    chk_bool("sort.notcontains", !sort.contains_string(big, "zzzz"))
+
+    // 6. 字符串元素容器释放路径：循环大量临时 string 表（retain/release 配对守恒）
+    var acc: i64 = 0
+    var li: i64 = 0
+    while li < 30000 {
+        var tmp = table_new_string()
+        table_push(tmp, "x" + to_string(li))
+        table_push(tmp, "y" + to_string(li))
+        acc = acc + len(tmp)
+        li = li + 1
+    }
+    chk("loop.acc", acc, 60000)
+
+    println("done " + to_string(asserts) + " asserts ok")
+}

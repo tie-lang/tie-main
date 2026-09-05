@@ -2478,19 +2478,14 @@ func cbs_remove(nid: i64) {
     g_cbs_acc = outa
 }
 
-// 私有累积表新建 + 拷贝 t 现有内容（表基座 32B {cap,len,data,esz}）。
+// 私有累积表新建 + 拷贝 t 现有内容（模板：走运行时建表 + 采纳拷贝缓冲）。
 func cbs_copy(t: i64) -> i64 {
     var T64 = types.named(TK_I64)
     var lv = s21_load(s21_gep(t, 8, true), T64)
     var eszv = s21_load(s21_gep(t, 24, true), T64)
-    var h = s21_raw_alloc_str(tig_int_lit(32))
-    s21_store(s21_gep(h, 0, true), lv, T64)
-    s21_store(s21_gep(h, 8, true), lv, T64)
     var buf = s21_raw_alloc_str(s21_bin(2, lv, eszv))
     s21_memcpy_if(buf, t21_data(t), s21_bin(2, lv, eszv))
-    s21_store(s21_gep(h, 16, true), buf, types.named(TK_STR))
-    s21_store(s21_gep(h, 24, true), eszv, T64)
-    return h
+    return s21_tbl_adopt(eszv, lv, lv, buf)
 }
 
 // 就地追加段 x 到累积表 acc：ensure 扩容（免费旧块）→ memcpy → set_len。

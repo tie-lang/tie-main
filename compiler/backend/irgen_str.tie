@@ -760,6 +760,25 @@ func s21_table_new(esz_v: i64) -> i64 {
     return t21_intp(tl_i64_1("tl_tbl$tbl_new", esz_v))
 }
 
+// p.6.10.2 修复（2026-09-05）：内联表构造器统一走运行时建表 + 采纳预建数据缓冲。
+// 背景：p.6.10.2 表内存治理把运行时 tl_tbl 句柄从 32 字节 {cap@0,len@8,data@16,esz@24}
+// 扩为 48 字节 {cap,len,data,esz,lock@32,refcount@40}（新增每表 CRITICAL_SECTION 与
+// 引用计数）。编译器内联表构造器（tig_fill_table/tig_byte_read/tig_byte_concat/cbs_copy）
+// 若仍手排 32 字节头（无 lock/refcount），返回表的任何运行时操作（t[i]→tl_tbl$tbl_at
+// 读 @32 锁、tbl_release 读 @40 计数）都会读越界垃圾 → 启动期访问违例 0xC0000005 /
+// 非法句柄 0xC0000008（fs.walk/fs.read_dir/byte_read 返回表下标读崩溃的根因）。
+// 本辅助：先 call tl_tbl$tbl_new(esz) 得合法 48 字节句柄（lock 已 InitializeCriticalSection、
+// refcount=1、esz 已置），再就地覆盖 cap/len/data 三字段采纳调用方预建的 data 缓冲
+// （stdlib32 级 O(1)，不逐元素 push）。data 须为 malloc 块（tbl_release 用 free 收）。
+func s21_tbl_adopt(esz_v: i64, cap_v: i64, lenn_v: i64, dat: i64) -> i64 {
+    var T64 = types.named(TK_I64)
+    var h = s21_table_new(esz_v)
+    s21_store(s21_gep(h, 0, true), cap_v, T64)
+    s21_store(s21_gep(h, 8, true), lenn_v, T64)
+    s21_store(s21_gep(h, 16, true), dat, types.named(TK_STR))
+    return h
+}
+
 // 表长度：len(t) = load i64 [t+8]（句柄布局与 tl_tbl 一致，保留内联）
 func s21_table_len(t: i64) -> i64 {
     return s21_load(s21_gep(t, 8, true), types.named(TK_I64))

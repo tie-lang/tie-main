@@ -3426,11 +3426,7 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         g_cur_block = ex
         tig_bt_fclose(f)
         tig_ext_call1("free", tmp, types.named(TK_STR), -1)
-        var h = s21_raw_alloc_str(tig_int_lit(32))
-        s21_store(s21_gep(h, 0, true), size, T64)    // cap
-        s21_store(s21_gep(h, 8, true), size, T64)    // len
-        s21_store(s21_gep(h, 16, true), tb, types.named(TK_STR))  // data
-        s21_store(s21_gep(h, 24, true), e8, T64)     // esz = 8
+        var h = s21_tbl_adopt(e8, size, size, tb)
         s21_store(sv, h, types.named(TK_STR))
         var brm = ir.new_inst(g_cur_block, 30, -1)
         ir.add_operand(brm, mg, 1)
@@ -3613,11 +3609,7 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         var buf = s21_raw_alloc_str(s21_bin(2, n, esz))
         s21_memcpy_if(buf, da, ab)                     // 段 A（la 元素，空表 data null 保护）
         s21_memcpy_if(s21_gep(buf, ab, false), db, s21_bin(2, lb, esz))  // 段 B
-        var h = s21_raw_alloc_str(tig_int_lit(32))
-        s21_store(s21_gep(h, 0, true), n, T64)    // cap
-        s21_store(s21_gep(h, 8, true), n, T64)    // len
-        s21_store(s21_gep(h, 16, true), buf, types.named(TK_STR))  // data
-        s21_store(s21_gep(h, 24, true), esz, T64)  // esz
+        var h = s21_tbl_adopt(esz, n, n, buf)
         return h
     }
     // ============ p.6.4.1 内联基础原语 + UTF-16 宽字符桥 ============
@@ -4510,13 +4502,7 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         return s21_sb_build(hv)
     }
     func tig_fill_table(dat: i64, n: i64, lenn: i64) -> i64 {
-        var T64 = types.named(TK_I64)
-        var th = s21_raw_alloc_str(tig_int_lit(32))
-        s21_store(s21_gep(th, 0, true), n, T64)
-        s21_store(s21_gep(th, 8, true), lenn, T64)
-        s21_store(s21_gep(th, 16, true), dat, types.named(TK_STR))
-        s21_store(s21_gep(th, 24, true), tig_int_lit(8), T64)
-        return th
+        return s21_tbl_adopt(tig_int_lit(8), n, lenn, dat)
     }
 
     // ==================== p.6.4.5 网络原语内联（Winsock2 直调，去 Rust 桥） ====================
