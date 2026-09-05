@@ -1,0 +1,448 @@
+type tie<logic>
+// build.tie —— tie gfx Skia 裁剪构建驱动（p.6.8.4）
+// EN: trimmed-Skia build driver, written in tie (no PowerShell build logic).
+//
+// 职责 / Duties：
+//   1) 解析 manifest.txt（cfg.parse_kv，INI 节 → "节.键"）——单一事实源
+//   2) 按需 fetch：skia 源码 tarball、libpng tarball、zlib(git)、gn zip
+//   3) gn gen（写 out/<config>/args.gn 后执行）
+//   4) ninja 构建静态库
+//   5) 拷贝产物到 ext/gfx/lib/skia.lib
+//   6) --smoke：c++ 冒烟编译+运行+PNG 魔数校验
+//
+// 幂等 / Idempotency：产物存在且 .build_state 指纹 == 当前指纹 → 跳过；
+// --force 强制重建。
+//
+// 外部命令一律经 process.exec_code → libc system → cmd.exe（MSVC 环境经
+// vcvarsall 注入，见 toolchain 节）。Windows 用 C:/ 正斜杠路径。
+
+import "../../../std/process.tie" as process
+import "../../../std/fs.tie" as fs
+import "../../../std/args.tie" as args
+import "../../config.tie" as cfg
+
+// ---------- 全局配置（main 解析 manifest 后填充） ----------
+var g_cfg: table<string>
+var g_skia_rel: string = "ext/gfx/skia"     // 源码目录（相对仓库根，脚本在仓库根运行）
+var g_config: string = "tie_raster_release"
+var g_product: string = "ext/gfx/lib/skia.lib"
+var g_gn: string = ""
+var g_ninja: string = ""
+var g_vcv: string = ""
+var g_arch: string = "x64"
+// gn 二进制（相对 skia 源码根；filesystem 检查需拼 g_skia_rel 前缀）
+var g_gn_inskia: string = ".tools/gn.exe"
+func gn_fs_path() -> string {
+    return g_skia_rel + "/" + g_gn_inskia
+}
+
+// ---------- 字符串工具 ----------
+func slic(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+func starts(s: string, p: string) -> bool {
+    var sn: i64 = str_len(s)
+    var pn: i64 = str_len(p)
+    if pn > sn {
+        return false
+    }
+    var i: i64 = 0
+    while i < pn {
+        if str_char(s, i) != str_char(p, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+func has_flag() -> bool {
+    var i: i64 = 0
+    var n: i64 = args.count()
+    while i < n {
+        if args.get(i) == "--force" {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+func has_sub(sub: string) -> bool {
+    var i: i64 = 0
+    var n: i64 = args.count()
+    while i < n {
+        if args.get(i) == sub {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+func cv(key: string, def: string) -> string {
+    return cfg.get(g_cfg, key, def)
+}
+func logmsg(msg: string) {
+    println("[build.tie] " + msg)
+}
+func fail(msg: string) {
+    println("[build.tie] ERROR: " + msg)
+    exit(1)
+}
+
+// ---------- GN args 处理 ----------
+func args_lines() -> table<string> {
+    var lines = table_new_string()
+    var n: i64 = len(g_cfg)
+    var i: i64 = 0
+    while i + 1 < n {
+        var k = g_cfg[i]
+        var v = g_cfg[i + 1]
+        if starts(k, "args.") {
+            var name = slic(k, 5, str_len(k))
+            table_push(lines, name + "=" + v)
+        }
+        i = i + 2
+    }
+    return lines
+}
+func join_lines(lines: table<string>) -> string {
+    var acc: string = ""
+    var n: i64 = len(lines)
+    var i: i64 = 0
+    while i < n {
+        acc = acc + lines[i]
+        if i + 1 < n {
+            acc = acc + "\n"
+        }
+        i = i + 1
+    }
+    return acc
+}
+func fingerprint() -> string {
+    var lines = args_lines()
+    var acc: string = cv("skia.commit", "") + "|" + g_ninja + "|" + g_out_rel()
+    var n: i64 = len(lines)
+    var i: i64 = 0
+    while i < n {
+        acc = acc + ";" + lines[i]
+        i = i + 1
+    }
+    return acc
+}
+
+func g_out_dir() -> string {
+    return g_skia_rel + "/out/" + g_config
+}
+func g_out_rel() -> string {
+    return "out/" + g_config
+}
+func state_path() -> string {
+    return g_out_dir() + "/.build_state"
+}
+
+// ---------- fetch ----------
+func ensure_gn() -> bool {
+    if fs.exists(gn_fs_path()) {
+        return true
+    }
+    logmsg("gn not found, downloading ...")
+    var tools = g_skia_rel + "/.tools"
+    if !mkdir_all(tools) {
+        fail("mkdir .tools failed")
+    }
+    var zip = tools + "/gn.zip"
+    var url = cv("gn.url", "")
+    if !process_exec("curl -L -sS -o \"" + zip + "\" \"" + url + "\"") {
+        fail("download gn.zip failed: " + url)
+    }
+    if !fs.exists(zip) {
+        fail("gn.zip not produced")
+    }
+    if !fs.unzip(zip, tools) {
+        fail("unzip gn.zip failed")
+    }
+    return fs.exists(g_gn)
+}
+func ensure_skia() -> bool {
+    if fs.exists(g_skia_rel + "/include/core/SkSurface.h") {
+        return true
+    }
+    logmsg("skia source tree missing, downloading tarball ...")
+    var tmp = ".tools/skia_" + cv("skia.commit", "src") + ".tar.gz"
+    var tarball = g_skia_rel + "/" + tmp
+    mkdir_all(g_skia_rel + "/.tools")
+    if !process_exec("curl -L -sS -o \"" + tarball + "\" \"" + cv("skia.source_url", "") + "\"") {
+        fail("download skia tarball failed")
+    }
+    if !process_exec("tar -xzf \"" + tarball + "\" -C \"" + g_skia_rel + "\" --strip-components=1") {
+        fail("extract skia tarball failed")
+    }
+    if !fs.exists(g_skia_rel + "/include/core/SkSurface.h") {
+        fail("skia extract did not produce include/core/SkSurface.h")
+    }
+    return true
+}
+func ensure_externals() -> bool {
+    var ed = g_skia_rel + "/third_party/externals"
+    // libpng
+    if !fs.exists(ed + "/libpng/png.h") {
+        logmsg("libpng missing, fetching ...")
+        if mkdir_all(ed + "/libpng") {
+        }
+        var lp = ed + "/libpng.tar.gz"
+        if !process_exec("curl -L -sS -o \"" + lp + "\" \"" + cv("libpng.url", "") + "\"") {
+            fail("download libpng failed")
+        }
+        if !process_exec("tar -xzf \"" + lp + "\" -C \"" + ed + "/libpng\" --strip-components=1") {
+            fail("extract libpng failed")
+        }
+        if !fs.exists(ed + "/libpng/png.h") {
+            fail("libpng extract missing png.h")
+        }
+    }
+    // zlib
+    if !fs.exists(ed + "/zlib/zlib.h") {
+        logmsg("zlib missing, fetching via git ...")
+        var zd = ed + "/zlib"
+        if mkdir_all(zd) {
+        }
+        var zurl = cv("zlib.url", "")
+        var zsha = cv("zlib.sha", "")
+        if !process_exec("git init \"" + zd + "\" && git -C \"" + zd + "\" remote add origin \"" + zurl + "\" && git -C \"" + zd + "\" fetch --depth 1 origin " + zsha + " && git -C \"" + zd + "\" checkout FETCH_HEAD") {
+            fail("fetch zlib failed")
+        }
+        if !fs.exists(ed + "/zlib/zlib.h") {
+            fail("zlib fetch missing zlib.h")
+        }
+    }
+    return true
+}
+
+// ---------- 构建 ----------
+func gn_gen() -> bool {
+    if !mkdir_all(g_out_dir()) {
+        fail("mkdir out failed")
+    }
+    var content = join_lines(args_lines())
+    if !fs.write_text(g_out_dir() + "/args.gn", content) {
+        fail("write args.gn failed")
+    }
+    var cmd = "call \"" + g_vcv + "\" " + g_arch + " && cd /d \"" + g_skia_rel + "\" && \"" + g_gn_inskia + "\" gen out/" + g_config
+    return process_exec(cmd)
+}
+func ninja_build() -> bool {
+    var target = cv("out.target", "skia")
+    var cmd = "call \"" + g_vcv + "\" " + g_arch + " && cd /d \"" + g_skia_rel + "\" && \"" + g_ninja + "\" -C out/" + g_config + " " + target
+    return process_exec(cmd)
+}
+func copy_product() -> bool {
+    var src = g_out_dir() + "/" + cv("out.lib", "skia.lib")
+    if !fs.exists(src) {
+        fail("built lib not found: " + src)
+    }
+    if !mkdir_all("ext/gfx/lib") {
+        fail("mkdir ext/gfx/lib failed")
+    }
+    if !fs.copy(src, g_product) {
+        fail("copy product failed")
+    }
+    return true
+}
+func process_exec(cmd: string) -> bool {
+    var rc = process.exec_code(cmd)
+    return rc == 0
+}
+func is_up_to_date() -> bool {
+    if !fs.exists(g_product) {
+        return false
+    }
+    if !fs.exists(state_path()) {
+        return false
+    }
+    var st = file_read(state_path())
+    return st == fingerprint()
+}
+func write_state() {
+    file_write(state_path(), fingerprint())
+}
+
+// ---------- 冒烟 ----------
+func do_smoke() -> bool {
+    var smoke_dir = g_skia_rel + "/smoke"
+    var src = smoke_dir + "/smoke.cpp"
+    var exe = smoke_dir + "/skia_smoke.exe"
+    var out_dir = smoke_dir + "/out"
+    var png = out_dir + "/smoke.png"
+    if !fs.exists(src) {
+        fail("smoke source missing: " + src)
+    }
+    if mkdir_all(out_dir) {
+    }
+    logmsg("compiling smoke ...")
+    var linklibs = "gdi32.lib user32.lib dwrite.lib ole32.lib oleaut32.lib shell32.lib advapi32.lib windowscodecs.lib"
+    var cmd = "call \"" + g_vcv + "\" " + g_arch + " && cl /nologo /std:c++17 /EHsc /O2 /MT /W3 /I \"" + g_skia_rel + "\" \"" + src + "\" \"" + g_product + "\" /Fe:\"" + exe + "\" /link " + linklibs
+    if !process_exec(cmd) {
+        fail("smoke compile/link failed")
+    }
+    logmsg("running smoke (detached) ...")
+    // 分离启动（start /b）：tie system() 等待 DirectWrite 子进程会触发
+    // 退出期访问违例（tie-UCRT 与 DWrite 子进程交互怪癖）；分离后父进程
+    // 存活，随后轮询等待 PNG 落盘再校验。
+    var runcmd = "cd /d \"" + to_bs(smoke_dir) + "\" && start \"\" /b skia_smoke.exe out\\smoke.png"
+    process.exec_code(runcmd)
+    // 轮询 PNG（上限 ~12s，成功即提前退出）
+    var sz: i64 = 0
+    var tries: i64 = 0
+    while tries < 60 {
+        if fs.exists(png) {
+            sz = fs.size(png)
+            if sz > 0 {
+                tries = 999
+                break
+            }
+        }
+        process.exec_code("ping -n 1 -w 200 127.0.0.1 >nul")
+        tries = tries + 1
+    }
+    if sz <= 0 {
+        fail("smoke PNG missing/empty")
+    }
+    // 文本标记校验（smoke 自行上报 PNG 魔数/尺寸/字节数）。
+    // 不使用 fs.read_bytes：tie 的 byte_read 对该 PNG 中段字节内容崩溃
+    // （tie stdlib 二进制读取缺陷，p.6.8.4 之外；以文本标记绕开）。
+    var res = smoke_dir + "/out/smoke.result"
+    var tries2: i64 = 0
+    while tries2 < 30 && !fs.exists(res) {
+        process.exec_code("ping -n 1 -w 200 127.0.0.1 >nul")
+        tries2 = tries2 + 1
+    }
+    if !fs.exists(res) {
+        fail("smoke result marker missing")
+    }
+    var resTxt = cfg.parse_kv(file_read(res))
+    if cfg.get(resTxt, "status", "") != "OK" {
+        fail("smoke result status != OK")
+    }
+    var magic = cfg.get(resTxt, "magic", "")
+    if magic != "89504e470d0a1a0a" {
+        fail("smoke PNG magic mismatch: " + magic)
+    }
+    var w = cfg.get_int(resTxt, "width", 0)
+    var h = cfg.get_int(resTxt, "height", 0)
+    var bcnt = cfg.get_int(resTxt, "bytes", 0)
+    if w <= 0 || h <= 0 || bcnt <= 0 {
+        fail("smoke result bad w/h/bytes")
+    }
+    logmsg("SMOKE OK: " + png + " bytes=" + to_string(bcnt) + " " + to_string(w) + "x" + to_string(h) + " magic=" + magic)
+    return true
+}
+// 正斜杠 → 反斜杠（cmd 运行程序路径需要反斜杠；tie fs 其余处正斜杠即可）
+func to_bs(s: string) -> string {
+    var out: string = ""
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(s, i)
+        if c == "/" {
+            out = out + "\\"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ---------- 主流程 ----------
+func main() {
+    logmsg("tie gfx Skia trimmed build (p.6.8.4)")
+    // 解析 manifest
+    var mp = g_skia_rel + "/manifest.txt"
+    if !fs.exists(mp) {
+        fail("manifest not found: " + mp)
+    }
+    g_cfg = cfg.parse_kv(file_read(mp))
+    g_config = cv("out.config", "tie_raster_release")
+    g_product = cv("out.product_lib", "ext/gfx/lib/skia.lib")
+    g_gn_inskia = cv("gn.exe", ".tools/gn.exe")
+    g_ninja = cv("ninja.exe", "")
+    g_vcv = cv("toolchain.vcvarsall", "")
+    g_arch = cv("toolchain.arch", "x64")
+    if str_len(g_ninja) == 0 || str_len(g_vcv) == 0 {
+        fail("manifest missing ninja.exe / toolchain.vcvarsall")
+    }
+
+    if has_sub("--check") {
+        logmsg("version=" + cv("skia.version", "?") + " commit=" + cv("skia.commit", "?"))
+        if fs.exists(g_product) {
+            logmsg("product lib size(bytes)=" + to_string(fs.size(g_product)))
+        } else {
+            logmsg("product lib NOT built yet")
+        }
+        if is_up_to_date() {
+            logmsg("state: up to date")
+        } else {
+            logmsg("state: stale / needs rebuild")
+        }
+        exit(0)
+    }
+    if has_sub("--clean") {
+        if remove_dir_all(g_out_dir()) {
+            logmsg("removed " + g_out_dir())
+        } else {
+            logmsg("nothing to clean (no out dir)")
+        }
+        exit(0)
+    }
+
+    // 准备
+    if !ensure_gn() {
+        fail("ensure_gn failed")
+    }
+    if !ensure_skia() {
+        fail("ensure_skia failed")
+    }
+    if !ensure_externals() {
+        fail("ensure_externals failed")
+    }
+
+    if has_sub("--gen") {
+        if !gn_gen() {
+            fail("gn gen failed")
+        }
+        logmsg("gn gen done -> out/" + g_config + "/args.gn")
+        exit(0)
+    }
+    if has_sub("--smoke") {
+        if !do_smoke() {
+            exit(1)
+        }
+        exit(0)
+    }
+
+    // 默认构建
+    if !has_flag() && is_up_to_date() {
+        logmsg("up to date (manifest unchanged, product present); use --force to rebuild")
+        exit(0)
+    }
+    if !gn_gen() {
+        fail("gn gen failed")
+    }
+    logmsg("gn gen ok")
+    if !ninja_build() {
+        fail("ninja build failed")
+    }
+    logmsg("ninja build ok")
+    if !copy_product() {
+        fail("copy product failed")
+    }
+    write_state()
+    var libsz = fs.size(g_product)
+    logmsg("DONE: product lib=" + g_product + " size(bytes)=" + to_string(libsz))
+    exit(0)
+}
