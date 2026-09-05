@@ -65,6 +65,16 @@ neither continues the other**.
   main\_unsplit 未拆分 extract official-s19 518 文件完整通过（65 棋子/35 羁绊/157 装备/258 符文）；
   自举 tiec\_s1→s2→s3 --emit-ir 逐字节一致（不动点）；tests/language 全量 PASS=96 与基线零差。
 
+- [ ] p.6.1.7 tiec 编译「非平凡程序」产出即崩（0xC0000005 / 0xC00000FD / 挂起）——代码生成产物级不稳定（2026-09-05 报告）：
+  触发面=含 dpcodec/zstd/pack 装配、calc 引擎、jcc-pack 全量等大程序；{四编译器 × -O0..-O3 × release/debug} 全数
+  复现；小程序与预构建二进制正常 → 编译形态决定产物生死，非数据/逻辑问题，同族 p.6.1.4/6.1.6 已修复形态之外的新覆盖；
+  -O0 亦崩提示涉及 IR 生成层；p.6.10.3/4 后自举新 SHA 未核验。详情与证据矩阵：docs/bugreports/2026-09-05-p6.1.7-tiec-nontrivial-crash.md
+
+- [ ] p.6.1.8 std ext/tls https 公网握手 0xC0000005（2026-09-05 报告）：
+  tls.connect("game.gtimg.cn",443) 即崩（崩溃于 connect 内、无错误返回）；http 明文同 CDN 正常（22816B）；
+  本地 openssl s_server（TLS1.3/1.2）历史通过 → 手写 TLS 客户端对公网握手形态兼容缺陷 + 失败路径无哨兵兜底。
+  详情与最小复现：docs/bugreports/2026-09-05-p6.1.8-tls-https-public-av.md
+
 - [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns\_call\_full\_name 的 using 支持（落地 2026-09-01）：
   ① **语句级宏**（块式准引用 `/` 展开为多条语句）探针全绿（tests/s33\_probe/b10\_stmt\_macro、
   \_probe62/s\_stmt\_macro\*：多语句展开 + 插值 + 宏内循环控制结构）；② **命名空间路径调用
