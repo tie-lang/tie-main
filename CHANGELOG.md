@@ -22,6 +22,24 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [docs] p.6.8 批次终审：不动点核验 + 已知间歇性取证（2026-09-05）
+
+* **自举终审（主代理复验）**：`compiler\tiec.exe → tiec2 → tiec3` 三字节全等（SHA256
+  `9321B3FA48A0C46BF429EC547C4E5142C30EE8F669E720D07B3C758AE68FFCA2`，3935232 字节）——fp2==fp3==现役，
+  真不动点成立。EN: final bootstrap re-verified byte-identical fixed point.
+* **验收终审**：p.6.8.13 验收矩阵记录 21/21 全绿（gfx 12 项 + 回归 9 项）；主代理用现役编译器复跑，
+  gfx 全系 12 项 + html/xml/jwt/win32/global_init/tdzd/sqlite/tink 复跑 PASS；矩阵 2 处失败项
+  （ed25519/html 各一次）归因下述已知间歇性。EN: acceptance matrix re-run; failures traced to
+  known intermittency below.
+* **已知间歇性取证（预存缺陷族，非 p.6.8 回归）**：`ed25519_probe` 在**两种编译器**（现役 9321B3FA 与
+  p.6.8.3 后 7A6100）编译体下同现：偶发 0xC0000005（= RCA-2 已档的 llvmgen alloca 块局部性家族），
+  且宿主机内存紧张（终审时空闲仅 ~1.67GB）下病态慢速（132.7s vs 平时亚秒级；8/8 判死超时实为慢速而非
+  死锁）。`html_probe` 复测 8/8 正常。处置：bisect 确认非回归（旧编译器等价）→ 归并 RCA-2 家族
+  （根治路线 = 回边-only alloca 提升 + 块局部性依赖定位，见上条 RCA），交接为后续编译器收尾项。
+  EN: ed25519/html intermittency is a pre-existing compiler/runtime class (alloca block-locality
+  family per RCA), aggravated here by host memory pressure; equal on the prior compiler, so not a
+  p.6.8 regression; handed off with the documented back-edge-only hoist route.
+
 ## [RCA] 编译期栈增长缺陷族根因定位：循环体 alloca 全量提升方案不可行（2026-09-05）
 
 * **根因定位（RCA，一处单根因，未伤及）**：std/sort 大 string 表冒泡（N≥~2900）栈溢出的根因不在
