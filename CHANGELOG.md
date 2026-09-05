@@ -22,6 +22,25 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] 表内存治理：tl_tbl 引用计数 API + irgen 表赋值插桩（p.6.10.2）（2026-09-05）
+
+- 背景：tie 无自动回收（trm-lite GC 显式 collect 制、与表容器无关），表内存 malloc 裸分配只增不减——
+  长跑哈希基准/网络服务内存无界增长（p.6.10.1 已去每块分配，本项补运行时与编译器两侧回收基座）。
+- 运行时（trm-lite）：tl_tbl 句柄 40B→48B（refcount@40）；`tbl_new` 置 1；新增
+  `tbl_retain`（句柄拷贝到新槽时增）/`tbl_release`（减，归零释放 data+lock CS+句柄块，
+  空句柄 0 安全跳过）；`trm_lite.a` 已重建。
+- 编译器插桩（irgen）：表变量**赋值** `a=b`（RHS 表类型、目标局部）→ retain(新值) → store →
+  release(旧值)，别名计数守恒防悬垂/双释放；无 init 表类型变量槽预置空句柄（null）；桥参数
+  ptrtoint 转 i64 匹配符号签名。
+- 验收：`probe_tbl_assign`/`probe_tbl_copy` 探针 PASS（覆盖赋值不误伤别名）；`config_smoke`
+  48/48；move_semantics 零回归；自举新不动点收敛（rc2==rc3）。
+
+EN: Table memory governance — tl_tbl refcount API + irgen instrumentation (p.6.10.2).
+Runtime: 40B→48B handle with refcount@40, tbl_retain/tbl_release (null-guarded free of
+data+lock+handle at zero). Compiler: table-variable assignment `a=b` emits retain(new)
+→ store → release(old), alias counts stay balanced (no dangling/double-free); uninitialized
+table slots preset to null. Probes PASS; config_smoke 48/48; bootstrap converged rc2==rc3.
+
 ## [fix] std/json 嵌套对象/数组子条目污染父键/元素区间——收集-登记两阶段根治（2026-09-05）
 
 - 根因（RCA）：json.parse_object/parse_array 旧实现先 push 键（或记 start）+ 值占位、再解析值，
