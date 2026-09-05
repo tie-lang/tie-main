@@ -1174,7 +1174,21 @@ func tig_stmt(id: i64) -> i64 {
             if iv >= 0 && init >= 0 {
                 var iv4 = node_types[init]
                 if iv4 >= 0 && types.is_table(iv4) && s_tags[init] != 7 {
-                    tig_tbl_retain_call(iv)
+                    // p.6.1.7-RCA-3【2026-09-06】：元组**解构**字段读（var (a,b)=f() 由
+                    // 解析器降级为 `var a = _tmp.Item1`，tag 15）——元素表所有权已随被调
+                    // 函数返回转移给调用方，此处再 retain(+1) 会与 loopvar 的 -1 不对等，
+                    // 剩 base 孤儿每欧几里得步泄漏（invmod 的 qx/rem/mag）。跳过：解构
+                    // 槽直接持有那单份引用；结构体字段（K_STRUCT）仍 retain。
+                    var skip_ret: bool = false
+                    if s_tags[init] == 15 {
+                        var bnode = sstate.child(init, 0)
+                        if bnode >= 0 && node_types[bnode] >= 0 && types.kind(node_types[bnode]) == K_TUPLE {
+                            skip_ret = true
+                        }
+                    }
+                    if !skip_ret {
+                        tig_tbl_retain_call(iv)
+                    }
                 }
             }
             // p.6.10.3：entry 级析构候选登记——表变量且在 entry 块创建（循环/分支内
@@ -1775,12 +1789,14 @@ func tig_stmt(id: i64) -> i64 {
             var vt3 = node_types[val]
             if vt3 >= 0 && types.is_table(vt3) {
                 assign_is_tbl = true
+                // p.6.1.7-RCA-3【2026-09-06】：RHS 是**函数调用**（tag 7）→ 被调方
+                // 已在其 return 路径 retain 并交出所有权（含 table_new 直接构造、用户
+                // 函数、clone/zeros 等纯表返回）→ 这里不再 retain(+1)，否则 base+retain
+                // 双引用、覆盖时只 -1 → 每个欧几里得步的 clone 重赋值泄漏 ~2KB（enode
+                // 失控根因）。仅**变量/别名** RHS（rx=nx、sy1=red，tag 6）仍 retain（两
+                // 槽共享同一表，需各自持引用）。
                 if s_tags[val] == 7 {
-                    var cnm4 = sstate.name_str(val)
-                    if cnm4 == "table_new_i64" || cnm4 == "table_new_f64" ||
-                        cnm4 == "table_new_string" || cnm4 == "table_new_bool" {
-                        assign_new_tbl = true
-                    }
+                    assign_new_tbl = true
                 }
             }
         }
