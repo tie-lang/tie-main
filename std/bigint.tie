@@ -452,6 +452,17 @@ pub func mul(a: table<i64>, b: table<i64>) -> table<i64> {
 
 pub func divrem(a: table<i64>, b: table<i64>) -> (table<i64>, table<i64>) {
     var z = table_new_i64()
+    // p.6.1.7-RCA-2【2026-09-06】：多 limb 算法（含早退分支/归一化循环）的重局部在
+    // 非 entry 块，编译器出口析构（p.6.10.3）只释放 entry 级表局部 → 每次 divrem 泄漏
+    // V/D/U/q/r0（Euclid 每步 ~215 次 → invmod × 2/点运算 × 256 阶梯 = 内存失控）。
+    // 在 entry 预声明同名空表槽（alloca 在 entry，出口析构可覆盖），多 limb 路径原地
+    // 赋值复用同一槽 —— 出口析构据此释放最终值，泄漏收敛。pt-局部在此改名避免与预声明
+    // 冲突；单 limb 快路径不触多 limb 槽（空表）亦由出口析构释放。
+    var V = table_new_i64()
+    var D = table_new_i64()
+    var U = table_new_i64()
+    var q = table_new_i64()
+    var r0 = table_new_i64()
     if len(b) == 0 {
         return (clone(z), clone(z))   // 除 0 未定义，返回 (0,0)
     }
@@ -467,21 +478,21 @@ pub func divrem(a: table<i64>, b: table<i64>) -> (table<i64>, table<i64>) {
     // ---- 单 limb 除数快路径 ----
     if bn == 1 {
         var v0: u128 = as_u128(b[0])
-        var q = zeros(an)
+        var qb1 = zeros(an)   // 改名避免与 entry 预声明 q 冲突（p.6.1.7-RCA-2）
         var r: u128 = as_u128(0)
         var i: i64 = an - 1
         while i >= 0 {
             var cur: u128 = (r << 32) | as_u128(a[i])
             var qi: u128 = cur / v0
             r = cur % v0
-            q[i] = as_i64(qi & 0xFFFFFFFFu128)
+            qb1[i] = as_i64(qi & 0xFFFFFFFFu128)
             i = i - 1
         }
         var rt = table_new_i64()
         if r != as_u128(0) {
             table_push(rt, as_i64(r))
         }
-        return (trim(q), rt)
+        return (trim(qb1), rt)
     }
 
     // ---- 多 limb：归一化，使 v 最高 limb ≥ 2^31 ----
@@ -492,12 +503,12 @@ pub func divrem(a: table<i64>, b: table<i64>) -> (table<i64>, table<i64>) {
         tt = tt << 1
         k = k + 1
     }
-    var V = shl_bits(b, k)
+    V = shl_bits(b, k)
     var n = len(V)
-    var D = shl_bits(a, k)
+    D = shl_bits(a, k)
     var M = len(D)
     // U = D 后补一个 0 limb（Knuth 的 u[n+m] 顶部占位）
-    var U = table_new_i64()
+    U = table_new_i64()
     var ii: i64 = 0
     while ii < M {
         table_push(U, D[ii])
@@ -505,7 +516,7 @@ pub func divrem(a: table<i64>, b: table<i64>) -> (table<i64>, table<i64>) {
     }
     table_push(U, 0)
     var m = M - n
-    var q = zeros(m + 1)
+    q = zeros(m + 1)
 
     var vn1: i64 = V[n - 1]
     var vn2: i64 = V[n - 2]
@@ -584,7 +595,7 @@ pub func divrem(a: table<i64>, b: table<i64>) -> (table<i64>, table<i64>) {
     }
 
     // 余数 = U[0..n-1] / 2^k
-    var r0 = table_new_i64()
+    r0 = table_new_i64()
     var rr: i64 = 0
     while rr < n {
         table_push(r0, U[rr])

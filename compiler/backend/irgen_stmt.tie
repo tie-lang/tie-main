@@ -1179,7 +1179,17 @@ func tig_stmt(id: i64) -> i64 {
             }
             // p.6.10.3：entry 级析构候选登记——表变量且在 entry 块创建（循环/分支内
             // var 的 alloca 在非 entry 块，出口析构 load 会触发「not dominate」）。
-            if g_cur_block == g_entry_block && types.is_table(ty) {
+            // p.6.1.7-RCA-2【2026-09-06】：此前仅登记 is_table(ty)，而表变量推断时
+            // ty 已被 line 1046 clobber 成 TK_STR → 出口析构从不释放 inferred 表局部
+            // → 关键泄漏（bigint/ed25519 的 点阶梯每轮泄漏全部中间表）。补齐：init 的
+            // 类型是 table/map 的表局部亦登记（decl retain 或 table_new 槽所有权由
+            // 出口析构 release 守恒）。
+            var cand_tbl: bool = types.is_table(ty) || types.is_map(ty)
+            if !cand_tbl && init >= 0 && node_types[init] >= 0 &&
+               (types.is_table(node_types[init]) || types.is_map(node_types[init])) {
+                cand_tbl = true
+            }
+            if g_cur_block == g_entry_block && cand_tbl {
                 table_push(g_tblcand_allocas, av)
             }
             // p.6.10.4：循环/分支内表变量自遮蔽——非 entry 块声明的表变量，槽在回边
@@ -1189,6 +1199,20 @@ func tig_stmt(id: i64) -> i64 {
             // 表），内存有界且安全。entry 级表变量由 p.6.10.3 出口析构覆盖，不在此列。
             var ivla = node_types[init]
             if g_cur_block != g_entry_block && ivla >= 0 && types.is_table(ivla) {
+                // p.6.1.8-RCA【2026-09-06】：alloca 生成在 g_cur_block（循环体内）——
+                // 回边重执行时**重新分配全新未初始化槽**，而哨兵是全局（跨迭代持久=1）
+                // → tig_loopvar_release 读到的"上一轮表"实为栈垃圾 → release(垃圾指针)
+                // → 内存破坏（TLS 公网握手 0xC0000005 真因：flight 内层循环 full/mbody
+                // 第二次迭代 release 垃圾 → 主返回路径被破坏，进程以 0xC0000005 无异常
+                // 退出）。修复：release 前先向槽写 null——回边重写读到的"旧值"为 null →
+                // 运行时守卫跳过 release（旧表泄漏，本设计已普遍接受泄漏；杜绝释放垃圾）。
+                // 不做全量 alloca 提升：循环局部存在「首 store 前被读」隐性契约，依赖
+                // 逐迭代新鲜栈（p.6.1.7 已证全提升破坏自举/html/ed25519）。
+                var np = tig_null_ptr()  // 常量生成先存变量（避免 add_operand 序列交错）
+                var nullslot = ir.new_inst(g_cur_block, 22, -1)  // store null
+                ir.add_operand(nullslot, ty, 2)
+                ir.add_operand(nullslot, np, 0)
+                ir.add_operand(nullslot, av, 0)
                 tig_loopvar_release(av)
             }
             var store = ir.new_inst(g_cur_block, 22, -1)  // store
@@ -1280,6 +1304,13 @@ func tig_stmt(id: i64) -> i64 {
         // BoolLit 适配 trit：返回 trit 的函数里 `return false/true` → i8
         var v = sstate.child(id, 0)
         if v >= 0 {
+            // p.6.1.7-RCA-2【2026-09-06】：tuple 返回含表元素 → 构造时对表元素 retain
+            //（交给调用方），出口析构减回；先判 tuple 再求值（rty 须在 tig_expr 前）。
+            var vty = node_types[v]
+            var tup_ret: bool = (vty >= 0 && types.kind(vty) == K_TUPLE)
+            if tup_ret {
+                g_ret_tup_tbl = 1
+            }
             var rv: i64 = -1
             if s_tags[v] == 4 && g_cur_ret_ty == types.named(TK_TRIT) {
                 var tv: i64 = -1
@@ -1290,6 +1321,7 @@ func tig_stmt(id: i64) -> i64 {
             } else {
                 rv = tig_expr(v)
             }
+            g_ret_tup_tbl = 0   // p.6.1.7-RCA-2：标记仅作用于返回表达式构造
             if rv < 0 {
                 return -1
             }

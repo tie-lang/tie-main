@@ -75,6 +75,14 @@ func tig_tuple_lit_typed(id: i64, agg: i64) -> i64 {
         ir.add_operand(st, fty, 2)
         ir.add_operand(st, v, 0)
         ir.add_operand(st, gpp, 0)
+        // p.6.1.7-RCA-2【2026-09-06】：tuple **返回**（Return 置 g_ret_tup_tbl）的
+        // 表元素 retain 交调用方——仅当元素是**直接变量引用**（tag==6，即 exit_release
+        // 会释放的本地槽，如 point_add 的 return (x3,y3)）：retain 给调用方、出口减回。
+        // 元素是表达式/调用（tag==7，如 divrem 的 return (trim(q),trim(r0))）→ 返回的
+        // 是全新临时表，非被析构槽，不 retain（否则调用方多持 +1 → 循环内孤儿泄漏）。
+        if g_ret_tup_tbl == 1 && types.is_table(fty) && s_tags[vnode] == 6 {
+            tig_tbl_retain_call(v)
+        }
         i = i + 1
     }
     var ld = ir.new_inst(g_cur_block, 21, agg)  // load 聚合值
@@ -210,6 +218,30 @@ func tig_field_assign(id: i64) -> i64 {
                 return -1
             }
             vv = bx5
+        }
+        // p.6.1.8-RCA【2026-09-06】：struct/元组**字段**表赋值缺引用计数——p.6.1.7
+        // 的变量赋值修复未覆盖字段槽：不 retain(新) 则字段只是「借用」源局部（TLS
+        // Session 实测：finish13 把 sched_keys 返回的表存入 s.c_key，返回时源局部
+        // ca_k 经出口 release 计数到 0 → 字段悬垂 → 应用数据阶段 UAF）。修：store
+        // 前 retain(新) 使字段持有自己的引用（RHS 直接构造 table_new_* 所有权已转移
+        // 则免；参数 base 借用语义不插桩；下标元素 base 的元素生命周期已持有）。
+        // **不 release(旧)**：struct 是值类型、复制别名同一表指针，旧值可能仍被
+        // 另一份 struct 副本引用——提前 release 会提前释放（p.6.1.8 自举验证：
+        // release 旧字段使编译器自编译失稳，非不动点）。旧字段泄漏，本设计普遍接受。
+        var fld_is_tbl: bool = false
+        var fld_new_tbl: bool = false
+        if fty >= 0 && types.is_table(fty) {
+            fld_is_tbl = true
+            if s_tags[val] == 7 {
+                var cnmf2 = sstate.name_str(val)
+                if cnmf2 == "table_new_i64" || cnmf2 == "table_new_f64" ||
+                    cnmf2 == "table_new_string" || cnmf2 == "table_new_bool" {
+                    fld_new_tbl = true
+                }
+            }
+        }
+        if fld_is_tbl && !fld_new_tbl {
+            tig_tbl_retain_call(vv)
         }
         var st2 = ir.new_inst(g_cur_block, 22, -1)  // store
         ir.add_operand(st2, fty, 2)

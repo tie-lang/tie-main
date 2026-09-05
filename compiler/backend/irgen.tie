@@ -121,6 +121,10 @@ var g_param_nids: table<i64>;
 // 在非 entry 块，排除以避免 LLVM「instruction does not dominate」）。
 var g_entry_block: i64 = 0;
 var g_tblcand_allocas: table<i64>;
+// p.6.1.7-RCA-2【2026-09-06】：tuple **返回**路径需要对表元素 retain 的标记（见
+// irgen_stmt Return / irgen_agg tig_tuple_lit_typed）——返回的元组表元素 retain 后
+// 交给调用方，出口析构减回；普通 tuple 构造不置位。
+var g_ret_tup_tbl: i64 = 0;
 // p.6.10.4：非 entry 块（循环/分支）表变量声明的「首次进入」哨兵计数——每个此类
 // 声明唯一分配一个零值全局标志，用于区分首次写槽（槽未初始化，禁止负载）与
 // 回边重写（槽持上一轮表，store 前须 release）。零值全局天然首版为 0，无需入口

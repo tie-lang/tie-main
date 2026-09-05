@@ -1,0 +1,13 @@
+type tie<logic>
+import "../../std/ed25519.tie"
+using ed25519;
+func main() {
+    var i: i64 = 0
+    while i < 3 {
+        var seed = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+        var pubk = ed25519.keygen(seed)
+        file_write("e_tr.txt", "k" + to_string(i) + " pub=" + to_string(str_len(pubk)))
+        i = i + 1
+    }
+    exit(0)
+}
