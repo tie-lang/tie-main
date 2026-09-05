@@ -551,6 +551,75 @@ func field_align(t: i64) -> i64 {
     }
     return 8
 }
+// ---------- p.6.8.2 repr(C) struct 显式 C ABI 布局表 ----------
+// 编译期按 C 自然对齐规则（每字段按自身对齐放置、struct 对齐 = 最大成员对齐、
+// 总大小向上取整到对齐）为每个 struct 计算字段绝对字节偏移/总大小/对齐，存入
+// g_stl_* 表。与 LLVM 对 `%struct.<name> = type { <字段 LLVM 类型> }` 经 datalayout
+// 的 GEP 偏移一致（默认 struct 亦同，故本表零行为改变、只提供显式布局查询）。
+// struct_field_off / struct_align_of 读取本表（type_byte_size 保持原递归算法不变）。
+func agg_ensure_layout() {
+    if g_stl_done == 1 {
+        return
+    }
+    // 先按 struct 总数逐槽占位（si 可乱序——st_vals 按名排序），再按索引填值
+    var nst = len(cls_parent)
+    var i: i64 = 0
+    while i < nst {
+        table_push(g_stl_fbase, 0)
+        table_push(g_stl_size, 0)
+        table_push(g_stl_align, 1)
+        i = i + 1
+    }
+    var n = len(st_vals)
+    var k: i64 = 0
+    while k < n {
+        var si = st_vals[k]
+        var off = cls_fldoff[si]
+        var cnt = cls_nfld[si]
+        g_stl_fbase[si] = len(g_stl_offs)
+        var cur: i64 = 0
+        var ma: i64 = 1
+        var j: i64 = 0
+        while j < cnt {
+            var ft = fld_tys[off + j]
+            var fa = field_align(ft)
+            if fa > ma {
+                ma = fa
+            }
+            var r = cur % fa
+            if r != 0 {
+                cur = cur + (fa - r)
+            }
+            table_push(g_stl_offs, cur)
+            cur = cur + field_size(ft)
+            j = j + 1
+        }
+        var r2 = cur % ma
+        if r2 != 0 {
+            cur = cur + (ma - r2)
+        }
+        g_stl_size[si] = cur
+        g_stl_align[si] = ma
+        k = k + 1
+    }
+    g_stl_done = 1
+}
+
+// struct 类型 t 的第 fidx 个字段的绝对字节偏移（C 自然对齐；与 LLVM GEP 一致）。
+// t 须为 K_STRUCT（调用方保证）；fidx 有效（0..cls_nfld-1，调用方保证）。
+pub func struct_field_off(t: i64, fidx: i64) -> i64 {
+    var si = t - BASE_STRUCT
+    agg_ensure_layout()
+    return g_stl_offs[g_stl_fbase[si] + fidx]
+}
+
+// struct 类型的对齐（最大成员对齐；与 C 对齐）。t 须为 K_STRUCT。
+pub func struct_align_of(t: i64) -> i64 {
+    var si = t - BASE_STRUCT
+    agg_ensure_layout()
+    return g_stl_align[si]
+}
+
 func type_byte_size(t: i64) -> i64 {
     var k = types.kind(t)
     if k == K_STRUCT {

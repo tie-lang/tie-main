@@ -48,6 +48,7 @@ var cls_parent: table<i64>;   // struct 父名 id（-1=无）
 var cls_fldoff: table<i64>;   // 字段段偏移（fld_names/fld_tys）
 var cls_nfld: table<i64>;     // 字段数（含继承拍平）
 var cls_done: table<i64>;     // struct 字段收集完成标志（0/1，拍平递归防重）
+var st_reprc: table<i64>;     // struct 索引 -> repr(C) 显式 C ABI 布局标志（1=repr(C)/0=默认；p.6.8.2）
 var fld_names: table<i64>;    // 拍平字段名 id
 var fld_tys: table<i64>;      // 拍平字段类型 id
 var fld_defs: table<i64>;     // 拍平字段默认值表达式节点 id（-1 = 无；Point.y = 10）
@@ -1145,6 +1146,7 @@ pub func reg_struct(name: string, parent: string) -> i64 {
     table_push(cls_fldoff, len(fld_names))
     table_push(cls_nfld, 0)
     table_push(cls_done, 0)
+    table_push(st_reprc, 0)
     sorted_insert(st_keys, st_vals, nid, idx)
     // struct 名登记由上层（stype）经 types.set_struct_name 完成
     return idx

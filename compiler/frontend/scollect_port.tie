@@ -536,6 +536,13 @@ pub func collect_struct_fields(si: i64) -> i64 {
         sm_err_msg = "内部错误：struct '" + nm + "' 定义节点未找到"
         return -1
     }
+    // p.6.8.2：传播 repr(C) 显式 C ABI 布局标记（N_STRUCT.val = reprc；1=repr(C)）。
+    // 默认 struct 亦为 C 自然对齐（LLVM datalayout），此处仅登记显式声明；供
+    // irgen 布局表与后续 extern/dynlib 互操作判定使用（本批零行为改变）。
+    st_reprc[si] = 0
+    if s_vals[snode] == 1 {
+        st_reprc[si] = 1
+    }
     // 自身字段：Struct children = [泛型槽, ClassField...]，字段从 children[1] 起
     var soff = sstate.slot_off(snode)  // struct 泛型槽偏移（恒 1；防御读取）
     var nf = sstate.nchild(snode) - soff

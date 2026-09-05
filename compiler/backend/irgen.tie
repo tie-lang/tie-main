@@ -149,6 +149,16 @@ var g_builtin_res: i64 = 0;
 // op36（llvmgen 推导 declare + 字符串返回自动扫描 char* → {ptr,len}）。
 var g_extern_ids: table<i64>;
 var g_extern_ready: i64 = 0;
+// p.6.8.2：repr(C) struct 显式 C ABI 布局表（编译期计算，C 自然对齐——每字段按
+// 自身对齐放置、struct 对齐 = 最大成员对齐、总大小向上取整到对齐）。
+//   g_stl_fbase[si] -> g_stl_offs 段起点；g_stl_offs[..] -> 拍平字段绝对字节偏移
+//   g_stl_size[si]  -> struct 总大小；g_stl_align[si] -> struct 对齐；g_stl_done 幂等。
+// 由 irgen_str.agg_ensure_layout 惰性构建（幂等），struct_field_off / struct_align_of 读取。
+var g_stl_fbase: table<i64>;
+var g_stl_offs: table<i64>;
+var g_stl_size: table<i64>;
+var g_stl_align: table<i64>;
+var g_stl_done: i64 = 0;
 // 循环内字符串自加提升（p.6.1.4 增强）：捕捉 `out = out + x`（循环体内 string
 // 变量自加拼接）→ 自动 StringBuilder 提升（s21_sb_*），根治 O(n²) 无名分配
 // 引起的内存无界增长（str_cat 每次新分配、旧中间串从不释放，tie 无 GC）。
