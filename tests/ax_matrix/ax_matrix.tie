@@ -1,0 +1,249 @@
+type tie<logic>
+// tests/ax_matrix/ax_matrix.tie —— p.6.8.13 验收 + 回归矩阵驱动（tie 写，纯构建/批处理）
+// EN: acceptance + regression matrix driver (p.6.8.13), written in tie (pure build/batch).
+//
+// 职责 / Duties（仓库根运行；自身纯 tie，仅链 trm_lite + compiler-rt）：
+//   1) 验收段：按依赖序编排 p.6.8 全系探针 (p.6.8.1..6.8.13)。每个探针经
+//      process.exec_code 调 tiec_7A6100 编译、clang 链接（按类别最小化链 thunk/win/bench
+//      + skia/trm_lite + 系统库），再运行探针 exe，逐项比对退出码与输出含 PASS 关键字。
+//   2) 回归段：一键执行既有关键回归探针 exe（html/xml/jwt/win32/ed25519/global_init/
+//      tdzd/sqlite/tink），比对退出码 + 输出含 PASS。
+//   3) 汇总：全 PASS → exit 0；任一失败 → exit 1 并打印失败明细。
+//
+// 类别 / category（决定惊链最小集合；矩阵自身不链 gfx）：
+//   PURE  ：tiec→clang -c→link trm_lite（p681/p682/p683/p6812）
+//   PROC  ：同 PURE + -lshell32（p685，fs.remove_all→SHFileOperationW）
+//   GFX   ：+ thunk.obj + skia.lib + 系统库（p686/p687/p688）
+//   GFXWIN：+ thunk.obj + win.obj + skia.lib + 系统库（p689/p6810/p6811）
+//   BENCH ：+ bench.obj + thunk.obj + skia.lib + 系统库（p6813，性能基线）
+//
+// 时序 / Runtime：p685 为干净重建类（完整重建 skia.lib，约 60s），标注 SLOW；其余探针
+// 秒级。总时长约 1–4 分钟。系统库列表沿用 p.6.8.8 惯例（user32 gdi32 shell32 dwrite
+// ole32 oleaut32 advapi32 windowscodecs）；CRT 静态 /MT 与 skia.lib 一致。
+//
+// 退出：全 PASS → exit(0)；任一 FAIL → exit(1)。
+
+import "../../std/process.tie" as process
+
+// ---------- 常量 ----------
+var g_tiec: string = "compiler\\tiec_7A6100.exe"
+var g_skia_src: string = "ext\\gfx\\skia"
+var g_skia_lib: string = "ext\\gfx\\lib\\skia.lib"
+var g_trmlite: string = "..\\trm-lite\\trm_lite.a"
+var g_thunk_cpp: string = "ext\\gfx\\skia\\thunk\\thunk.cpp"
+var g_thunk_obj: string = "ext\\gfx\\skia\\thunk\\thunk.obj"
+var g_win_cpp: string = "ext\\gfx\\win\\win.cpp"
+var g_win_obj: string = "ext\\gfx\\win\\win.obj"
+var g_bench_cpp: string = "ext\\gfx\\bench\\bench.cpp"
+var g_bench_obj: string = "ext\\gfx\\bench\\bench.obj"
+var g_syslibs: string = "-luser32 -lgdi32 -lshell32 -ldwrite -lole32 -loleaut32 -ladvapi32 -lwindowscodecs"
+
+// ---------- 工具 ----------
+func logmsg(m: string) {
+    println("[matrix] " + m)
+}
+func to_bs(s: string) -> string {
+    var n: i64 = str_len(s)
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(s, i)
+        if c == "/" {
+            out = out + "\\"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+func contains(hay: string, needle: string) -> bool {
+    var hn: i64 = str_len(hay)
+    var un: i64 = str_len(needle)
+    if un == 0 || un > hn {
+        return false
+    }
+    var i: i64 = 0
+    while i <= hn - un {
+        var m: bool = true
+        var j: i64 = 0
+        while j < un {
+            if str_char(hay, i + j) != str_char(needle, j) {
+                m = false
+                j = 2000000000
+                break
+            }
+            j = j + 1
+        }
+        if m {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+func run(cmd: string) -> i64 {
+    return process.exec_code(cmd)
+}
+
+// 编译 + 链接单个探针 → 探针.exe。category 决定最小链接集合。返回 0=成功 非0=失败。
+func build_tie_probe(name: string, category: string) -> i64 {
+    var ll = "tests\\" + name + "_probe\\" + name + "_probe.ll"
+    var obj = "tests\\" + name + "_probe\\" + name + "_probe.obj"
+    var exe = "tests\\" + name + "_probe\\" + name + "_probe.exe"
+    var src = "tests\\" + name + "_probe\\" + name + "_probe.tie"
+
+    if run(g_tiec + " " + src + " --emit-ir -o " + ll) != 0 {
+        logmsg("  [build:" + name + "] tiec IR failed")
+        return 1
+    }
+    if run("clang -O2 -c " + ll + " -o " + obj) != 0 {
+        logmsg("  [build:" + name + "] clang -c failed")
+        return 1
+    }
+
+    var lcmd = "clang -fuse-ld=link " + obj + " "
+    if category == "GFX" || category == "GFXWIN" || category == "BENCH" {
+        lcmd = lcmd + g_thunk_obj + " "
+    }
+    if category == "GFXWIN" {
+        lcmd = lcmd + g_win_obj + " "
+    }
+    if category == "BENCH" {
+        lcmd = lcmd + g_bench_obj + " "
+    }
+    if category == "GFX" || category == "GFXWIN" || category == "BENCH" {
+        lcmd = lcmd + g_skia_lib + " "
+    }
+    lcmd = lcmd + g_trmlite + " -o " + exe + " -rtlib=compiler-rt "
+    if category == "PROC" {
+        lcmd = lcmd + "-luser32 -lshell32"
+    } else if category == "GFX" || category == "GFXWIN" || category == "BENCH" {
+        lcmd = lcmd + g_syslibs
+    }
+    if run(lcmd) != 0 {
+        logmsg("  [build:" + name + "] link failed")
+        return 1
+    }
+    return 0
+}
+
+// ---------- 汇总 ----------
+var g_pass: i64 = 0
+var g_fail: i64 = 0
+func record(okflag: bool, name: string, detail: string) {
+    if okflag {
+        g_pass = g_pass + 1
+        println("[matrix]  ok: " + name)
+    } else {
+        g_fail = g_fail + 1
+        println("[matrix]  FAIL: " + name + "  (" + detail + ")")
+    }
+}
+
+// 运行一个探针 exe：返回 (rc, out) 通过 out_exp 与 rc 判定 PASS。
+// slow=true（p685 干净重建，其自身输出可达 ~9MB ninja 日志）时只用 exec_code 取退出码、
+// 输出重定向到 nul —— 规避 tie file_read 对超大字节内容的崩溃缺陷（p.6.8.4/6.8.5 已知），
+// 也避免二次运行成本。
+func exec_probe(exe: string, name: string, slow: bool) -> bool {
+    if slow {
+        var rc = process.exec_code(exe + " >nul 2>&1")
+        var ok = rc == 0
+        if ok {
+            record(true, name, "")
+        } else {
+            record(false, name, "rc=" + to_string(rc) + " (slow, rc-gated)")
+        }
+        return ok
+    }
+    // 快探针：执行两次（rc + 捕获输出）判定退出码与 PASS 关键字。
+    var rc = process.exec_code(exe)
+    var out = process.exec_output(exe)
+    var ok = (rc == 0) && contains(out, "PASS")
+    if ok {
+        record(true, name, "")
+    } else {
+        record(false, name, "rc=" + to_string(rc) + " hasPASS=" + bool_str(contains(out, "PASS")))
+    }
+    return ok
+}
+func bool_str(b: bool) -> string {
+    if b {
+        return "true"
+    }
+    return "false"
+}
+
+// 编译探针到 exe 并运行；返回是否 PASS。
+func run_p6(name: string, category: string, slow: bool) -> bool {
+    if build_tie_probe(name, category) != 0 {
+        record(false, name, "build failed (category=" + category + ")")
+        return false
+    }
+    var exe = "tests\\" + name + "_probe\\" + name + "_probe.exe"
+    return exec_probe(exe, name, slow)
+}
+
+// 运行回归探针（预构建 exe）。path 为仓库根相对路径。
+func run_reg(path: string, name: string, slow: bool) -> bool {
+    return exec_probe(to_bs(path), name, slow)
+}
+
+// ---------- 主流程 ----------
+func main() {
+    logmsg("tie acceptance+regression matrix (p.6.8.13)")
+
+    // 0) 预编译共享 C thunk（GFX 系/Win/Bench 需要；幂等）
+    if run("clang-cl /MT /std:c++17 /O2 /EHsc /c " + g_thunk_cpp + " /I " + g_skia_src +
+        " /Fo:" + g_thunk_obj) != 0 {
+        logmsg("ERROR: thunk.obj compile failed")
+        exit(1)
+    }
+    if run("clang-cl /MT /O2 /c " + g_win_cpp + " /Fo:" + g_win_obj) != 0 {
+        logmsg("ERROR: win.obj compile failed")
+        exit(1)
+    }
+    if run("clang-cl /MT /std:c++17 /O2 /EHsc /c " + g_bench_cpp + " /I " + g_skia_src +
+        " /Fo:" + g_bench_obj) != 0 {
+        logmsg("ERROR: bench.obj compile failed")
+        exit(1)
+    }
+    logmsg("shared thunk/win/bench objects built")
+
+    // 1) 验收段：p.6.8 全系探针（依赖序 1→13）
+    logmsg("== acceptance: p.6.8.1..6.8.13 gfx probe family ==")
+    run_p6("p681", "PURE", false)
+    run_p6("p682", "PURE", false)
+    run_p6("p683", "PURE", false)
+    run_p6("p685", "PROC", true)      // SLOW: 干净重建 skia.lib 约 60s
+    run_p6("p686", "GFX", false)
+    run_p6("p687", "GFX", false)
+    run_p6("p688", "GFX", false)
+    run_p6("p689", "GFXWIN", false)
+    run_p6("p6810", "GFXWIN", false)
+    run_p6("p6811", "GFXWIN", false)
+    run_p6("p6812", "PURE", false)
+    run_p6("p6813", "BENCH", false)
+
+    // 2) 回归段：既有关键回归探针一键执行（预构建 exe）
+    logmsg("== regression: html/xml/jwt/win32/ed25519/global_init/tdzd/sqlite/tink ==")
+    run_reg("tests/html_probe/html_probe.exe", "html_probe", false)
+    run_reg("tests/xml_probe/xml_probe.exe", "xml_probe", false)
+    run_reg("tests/jwt_probe/jwt_probe.exe", "jwt_probe", false)
+    run_reg("tests/win32_probe/win32_probe.exe", "win32_probe", false)
+    run_reg("tests/asym_probe/ed25519_probe.exe", "asym/ed25519_probe", false)
+    run_reg("tests/probe_global_init.exe", "probe_global_init", false)
+    run_reg("tests/probe_tdzd.exe", "probe_tdzd", false)
+    run_reg("tests/sqlite_probe/sqlite_probe.exe", "sqlite_probe", false)
+    run_reg("std/tink_probe.exe", "tink_probe", false)
+
+    // 3) 汇总
+    println("")
+    println("[matrix] SUMMARY  pass=" + to_string(g_pass) + " fail=" + to_string(g_fail))
+    if g_fail == 0 && g_pass > 0 {
+        println("[matrix] MATRIX GREEN (all PASS, exit 0)")
+        exit(0)
+    }
+    println("[matrix] MATRIX RED (" + to_string(g_fail) + " failure(s); exit 1)")
+    exit(1)
+}
