@@ -1,0 +1,37 @@
+type tie<logic>
+// repro2_sort.tie —— 场景2缺陷复现（NOT a passing probe）：std/sort 大 string 表冒泡栈溢出。
+// 现状（现役 tiec 9321B3FA）：sort_string 是标准库多函数中的非首函数，其循环体内
+// 临时 alloca 未被提升到入口块（g_hoisted_allocas 跨函数累积 bug，见 CHANGELOG p.6.8.14
+// RCA），N≥~2900 时逐迭代动态栈分配 → 0xC00000FD。**本文件用现役 tiec 编译运行预期
+// 栈溢出崩溃（非 exit 0），仅作缺陷复现文档；修复发布后再回归为 PASS。**
+import "../../std/sort.tie" as sort
+
+func main() {
+    var n: i64 = 3000
+    var t = table_new_string()
+    var i: i64 = 0
+    while i < n {
+        // 逆序字符串，便于验证排序正确性
+        table_push(t, "s" + to_string(n - i))
+        i = i + 1
+    }
+    sort.sort_string(t)
+    // 断言排序正确（string 比较为码点序，故应非递减）
+    var j: i64 = 0
+    var ok: bool = true
+    while j < n - 1 {
+        if t[j] > t[j + 1] {
+            ok = false
+            println("unsorted at " + to_string(j) + " t[j]=" + t[j] + " t[j+1]=" + t[j + 1])
+            j = n
+            break
+        }
+        j = j + 1
+    }
+    if ok {
+        println("PASS")
+    } else {
+        println("FAIL")
+    }
+    exit(0)
+}

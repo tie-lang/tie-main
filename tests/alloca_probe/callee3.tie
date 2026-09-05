@@ -1,0 +1,21 @@
+type tie<class>
+// callee3.tie —— 跨模块大表辅助（repro3 的 callee 一侧）。
+namespace callee3 {
+pub func fill(t: ref table<i64>, n: i64) {
+    var i: i64 = 0
+    while i < n {
+        table_push(t, i * 3)
+        i = i + 1
+    }
+}
+
+pub func sum(t: table<i64>) -> i64 {
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < len(t) {
+        s = s + t[i]
+        i = i + 1
+    }
+    return s
+}
+}

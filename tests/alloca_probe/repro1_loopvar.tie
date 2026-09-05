@@ -1,0 +1,18 @@
+type tie<logic>
+// repro1_loopvar.tie —— 场景1最小复现：循环体内局部变量 alloca。
+// 160k+ 次迭代含块内 var 声明 + 表 push（防止被优化掉），验证栈是否有界。
+var acc: i64 = 0
+
+func main() {
+    var i: i64 = 0
+    while i < 160000 {
+        var tmp = i * 2
+        var lp = table_new_i64()
+        table_push(lp, tmp)
+        acc = acc + len(lp)
+        i = i + 1
+    }
+    println(acc)
+    println("PASS")
+    exit(0)
+}

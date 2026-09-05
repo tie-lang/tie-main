@@ -22,6 +22,41 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [RCA] 编译期栈增长缺陷族根因定位：循环体 alloca 全量提升方案不可行（2026-09-05）
+
+* **根因定位（RCA，一处单根因，未伤及）**：std/sort 大 string 表冒泡（N≥~2900）栈溢出的根因不在
+  irgen（局部变量本就按块落 alloca），而在 llvmgen 的「F1 全量 alloca 提升」收集器
+  （`compiler/backend/llvmgen.tie` `gen_func`）：`g_hoisted_allocas` 只重置计数器
+  `g_hoisted_cnt=0`、**未清数组**。多函数程序里 fid>0 的函数，其收集结果 push 到数组尾部，而出口
+  全量提升（`llvmgen_inst.tie` `gen_inst` op==20 的跳过判定）只扫 `g_hoisted_allocas[0..cnt)`
+  → 输出的是**上一个函数**的 alloca，本函数（含循环体内）的 alloca 未提升到入口块 → LLVM 合法但
+  逐迭代动态栈分配 → 线性涨栈 → 0xC00000FD。EN: the std/sort large-bubble overflow traces to one
+  root — the F1 alloca-hoist collector in `gen_func` resets the counter but never clears the
+  `g_hoisted_allocas` array, so every function after the first hoists the previous function's allocas
+  and leaves its own loop-body allocas in-place → dynamic stack growth → 0xC00000FD.
+* **三场景合并验证**（现役 tiec 9321B3FA 编译+运行，实测）：场景2（std/sort 3000 string 冒泡）**复现
+  0xC00000FD**，确为上述单根因（sort_string 为非首函数）；场景1改写的最小复现（单函数 main 160k 循环含块内
+  var + 表 push）**不溢出**（单函数时收集正确，F1 本已覆盖）；场景3改写的最小复现（跨模块 10 万 i64 表
+  ref 填充 + 整体迭代求和）**不溢出**（跨模块函数无热点循环体临时量，栈有界）。即：缺陷族中只有「多函数
+  + 循环体内临时 alloca」形态在现役 tiec 复现。EN: merge-verify — only the multi-function + loop-body
+  temp-alloca shape (std/sort) reproduces on the current tiec; single-function loop and cross-module
+  100k-table (100k) stay bounded.
+* **根治尝试被否决（实测回退，未发布）**：把 `g_hoisted_allocas` 改为每函数重建（正确全量提升到入口）后，
+  **回归探针 html_probe / ed25519 运行时崩溃（0xC0000005），且自举失稳**——固定编译器（33E72C8D…）
+  生成下一代（8DAEC2…），后者连 `tig_read_file`（`irgen_expr.tie`，bOk 块级表槽 ats/avs）都会访问违例，
+  `tiec driver -o tiec2` 无法收敛到真不动点。结论：**本 codebase 的代码生成对「alloca 块局部性」存在隐性依赖
+  （个别程序依赖非入口块 alloca 的逐块新鲜语义，全量提升并非语义透明）**；故任务约定的「提升到入口块」方向
+  在现役编译器上不可行，已整体回退，编译器保持 9321B3 自举不动点未动。EN: the naive "reset the
+  g_hoisted_allocas array per function" fix breaks html/ed25519 probes (0xC0000005) and destabilizes
+  self-hosting (the next-gen compiler AVs in `tig_read_file`), so the full-hoist approach is infeasible on
+  the current codegen — fully reverted, toolchain left at the 9321B3 self-host fixed point.
+* **后续替代形态（推荐）**：对外部可见的循环体临时 alloca 采用「仅提升回边（loop-body）块内的 alloca」的
+  外科手术式修复（保留非 loop 块 alloca 原地，规避块局部性依赖）；需要为 llvmgen 补 CFG 回边/支配分析
+  （当前无现成工具），配合调试器定位 html/ed25519 的具体块局部性依赖后再落地。本子项未引入任何编译器改动，
+  已剔除全部 scratch/产物（探针只交 .tie）。EN: recommended follow-up — surgical loop-only (back-edge)
+  alloca hoisting that preserves non-loop in-place allocas, after locating the block-locality dependence
+  with a debugger; this sub-item shipped no compiler change and no scratch artifacts.
+
 ## [feat] 验收矩阵 + 软件光栅性能基线（vs GDI）（p.6.8.13）（2026-09-05）
 
 * 验收矩阵驱动（tests/ax_matrix/ax_matrix.tie，tie 写、纯构建/批处理，自身仅链 trm_lite）：
