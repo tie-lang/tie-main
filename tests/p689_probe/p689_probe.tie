@@ -1,0 +1,152 @@
+type tie<logic>
+// tests/p689_probe/p689_probe.tie —— p.6.8.9 验收：Win32 窗口嵌入层
+// （CreateWindow + 消息泵 + 后备缓冲 Surface + 呈现 blit 上屏）。
+// EN: acceptance probe for the Win32 window-embedding layer.
+//
+// 分层策略 / Layering：
+//   * **离屏部分探针化（CI 可跑语义）**：320x200 后备 Surface 经 p.6.8.8 命令列表
+//     （CLEAR 白 → FILL_RECT 红 → TEXT）渲染 → peek 逐像素断言（背景/矩形/文本
+//     Glyph 计数），与 p.6.8.6-6.8.8 同一确定性验证路径。
+//   * **窗口部分人工/本地**：open/show/update → present（blit 上屏，断言返回 0 成功）
+//     → pump 若干轮（每轮 sleep 兜底，处理 WM_PAINT 即置 paint_pending）→ 断言
+//     closed==0 + find 窗口存活 → destroy → 断言 find 归零、pump 失效句柄安全返回 0。
+//   * 禁无限等待：全部 pump 为 PeekMessage 非阻塞 + p0ms sleep，总耗时 < 数秒。
+//   * 退出沿用 sk_flush_std() + ExitProcess(0)（规避 DirectWrite teardown 访问违例）。
+//
+// 全程窗口（进程内即 Win32 顶层窗口）会在本机短暂可见，blit 正确性以 present 返回
+// 0 + 上下文像素正确 + 上屏无异常为准（肉眼可见性留待 p.6.8.12 全栈演示）。
+
+import "../../ext/gfx/gfx.tie" as gfx
+import "../../ext/gfx/commands.tie" as commands
+import "../../ext/gfx/window.tie" as win
+import "../../ext/gfx/thunk_binding.tie" as tb
+using tb;
+
+var W: i64 = 320
+var H: i64 = 200
+
+var C_WHITE: u32 = 4294967295
+var C_RED: u32 = 4294901760
+var C_BLACK: u32 = 4278190080
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+    unsafe { sk_flush_std() }
+}
+
+// 读 peek 缓冲某像素某通道（0=B 1=G 2=R 3=A）。
+func px(info: Pixels, x: i64, y: i64, off: i64) -> i64 {
+    unsafe {
+        var rb = as_i64(info.row_bytes)
+        var addr = info.pixels + y * rb + x * 4 + off
+        var p: ptr<u8> = int_to_ptr(addr)
+        return as_i64(deref(p))
+    }
+}
+
+// 补充背景区域（跳过文本区）的暗色 Glyph 计数：文本「p689」黑像素数。
+func count_dark(info: Pixels, x0: i64, x1: i64, y0: i64, y1: i64) -> i64 {
+    var cnt: i64 = 0
+    var y = y0
+    while y < y1 {
+        var x = x0
+        while x < x1 {
+            if px(info, x, y, 2) <= 128 && px(info, x, y, 1) <= 128 && px(info, x, y, 0) <= 128 {
+                cnt = cnt + 1
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return cnt
+}
+
+func main() {
+    println("start")
+    unsafe { sk_flush_std() }
+
+    // === 1. 窗口创建 / 显示 ===
+    var hwnd = win.open("TieWin6.8.9", W, H)
+    check(hwnd != 0, "window open: hwnd != 0, got " + to_string(hwnd))
+    win.show(hwnd)
+    win.update(hwnd)
+
+    // === 2. 离屏渲染：p.6.8.8 命令列表（CLEAR 白 → FILL_RECT 红 → TEXT）===
+    var s = gfx.surface_create(W, H)
+    check(s.h != 0, "offscreen surface handle (non-null)")
+    var c = gfx.surface_canvas(s)
+    var cs = commands.cmd_new()
+    commands.cmd_clear(cs, C_WHITE)
+    commands.cmd_fill_rect(cs, 10.0, 10.0, 110.0, 60.0, C_RED, 0)
+    commands.cmd_text(cs, 32.0, 10.0, 130.0, C_BLACK, "p689")
+    gfx.run_commands(c, cs)
+    var info = gfx.surface_peek(s)
+    check(as_i64(info.w) == W && as_i64(info.h) == H,
+        "peek 320x200, got " + to_string(as_i64(info.w)) + "x" + to_string(as_i64(info.h)))
+
+    // === 3. 离屏逐像素断言（CI 可跑确定性）===
+    check(px(info, 5, 180, 0) == 255 && px(info, 5, 180, 1) == 255 &&
+        px(info, 5, 180, 2) == 255, "offscreen bg clear (5,180) white")
+    check(px(info, 60, 35, 2) == 255 && px(info, 60, 35, 0) == 0 &&
+        px(info, 60, 35, 1) == 0, "offscreen filled red rect center (60,35) red")
+    check(px(info, 10, 130, 2) == 255 && px(info, 10, 130, 1) == 255 &&
+        px(info, 10, 130, 0) == 255, "offscreen text baseline area white bg")
+    var dark = count_dark(info, 10, 130, 122, 140)
+    check(dark > 5, "offscreen text 'p689' rendered (dark glyph px >5), got " +
+        to_string(dark))
+
+    // === 4. 呈现：后备缓冲 blit 上屏（断言返回 0 成功）===
+    var rc = win.present(hwnd, info.pixels, info.row_bytes, info.w, info.h)
+    check(rc == 0, "win_present blit success rc=0, got " + to_string(rc))
+
+    // === 5. 消息泵若干轮（每轮 sleep 兜底；处理 WM_PAINT 即置 paint_pending）===
+    var seen_paint: i64 = 0
+    var i: i64 = 0
+    while i < 6 {
+        var n = win.pump(hwnd)
+        if win.paint_pending(hwnd) != 0 {
+            seen_paint = 1
+        }
+        if n == 0 {
+            win.sleep(3)
+        }
+        i = i + 1
+    }
+    check(seen_paint == 1, "pump rounds: WM_PAINT observed (paint_pending set)")
+    check(win.closed(hwnd) == 0, "window alive after pump: closed==0")
+
+    // === 6. 窗口句柄有效性（find 可定位到 TieWinClass/TieWin6.8.9）===
+    var found = win.find("TieWinClass", "TieWin6.8.9")
+    check(found != 0, "FindWindowW locates TieWinClass window (live)")
+
+    // === 7. 销毁与 closed 语义 ===
+    win.destroy(hwnd)
+    check(win.find("TieWinClass", "TieWin6.8.9") == 0,
+        "window gone after destroy (FindWindowW == 0)")
+    check(win.pump(hwnd) == 0, "pump on destroyed slot safe returns 0")
+    check(win.paint_pending(hwnd) == 0, "paint_pending on destroyed slot == 0")
+
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+    var ec: i32 = 0
+    if fails > 0 {
+        ec = 1
+    }
+    unsafe {
+        sk_flush_std()
+        ExitProcess(ec)
+    }
+}
