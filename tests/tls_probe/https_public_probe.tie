@@ -1,0 +1,29 @@
+type tie<logic>
+// p.6.1.8 公网 https 回归探针：httpc.get_bytes 对多个 https 目标全量正文。
+// 修复前 https 走 ext/tls 公网握手即崩（0xC0000005）；修复后 3 站全量正文可下载。
+import "../../std/httpc.tie" as httpc
+
+func test(url: string) {
+    println("== " + url + " ==")
+    var b = httpc.get_bytes(url)
+    println("bytes=" + to_string(len(b)))
+    if len(b) == 0 {
+        println("  NOTE empty (handshake/request failed gracefully)")
+        return
+    }
+    var hex: string = ""
+    var i: i64 = 0
+    while i < len(b) && i < 12 {
+        var c = b[i]
+        var hexs = "0123456789abcdef"
+        hex = hex + str_char(hexs, (c >> 4) & 0xF) + str_char(hexs, c & 0xF)
+        i = i + 1
+    }
+    println("  head=" + hex)
+}
+
+func main() {
+    test("https://www.cloudflare.com/")
+    test("https://www.bing.com/")
+    test("https://www.github.com/")
+}

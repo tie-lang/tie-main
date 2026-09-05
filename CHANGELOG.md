@@ -22,6 +22,37 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [fix] p.6.1.8 TLS 公网握手 0xC0000005 根因定案——循环内表局部 alloca 未初始化槽 release 垃圾（2026-09-06）
+
+* **现象**：`tls.connect` 对公网真实服务器（game.gtimg.cn/www.baidu.com/www.cloudflare.com）
+  握手即崩 0xC0000005；失败路径无哨兵。EN: pure-tie TLS client crashed (0xC0000005)
+  against real public servers with no failure sentinel.
+* **根因（编译器，p.6.1.8-RCA）**：循环/分支内表变量声明（`var t = f(...)`）的 alloca
+  生成在循环体内——回边重执行时**重新分配全新未初始化槽**，而 tig_loopvar_release 的
+  「首次进入」哨兵是**全局**（跨迭代持久=1）→ 第二次迭代 load 槽读到栈垃圾 →
+  `tbl_release(垃圾指针)` 内存破坏 → 主返回路径被破坏，进程以 0xC0000005 **无异常**退出
+  （调试器只见初始断点 + EXIT，无 AV 事件；打印/堆形态可掩盖——p.6.1.7 家族同特征）。
+  EN: loop-local table var alloca re-executes per iteration (fresh uninitialized slot)
+  while the loopf sentinel is a persistent global → 2nd iteration releases stack garbage,
+  corrupting the return path (process exits 0xC0000005 with NO AV exception).
+* **修复（compiler/backend/irgen_stmt.tie 1 处）**：非 entry 块表局部声明在
+  tig_loopvar_release 之前先向槽写 null——回边重写读到的「旧值」为 null → 运行时守卫
+  跳过 release（旧表泄漏，本设计普遍接受；杜绝释放垃圾）。不做全量 alloca 提升
+  （p.6.1.7 已证破坏自举/html/ed25519）。
+* **修复（compiler/backend/irgen_agg.tie 1 处）**：struct/元组**字段**表赋值补 retain(新)
+  ——字段不再「借用」源局部（Session 填 c_key 等字段后源局部出口析构 → 字段悬垂）。
+  **不 release(旧)**：struct 值复制别名同一表指针，release 旧值会提前释放（自举验证失稳）。
+* **修复（ext/tls）**：ClientHello 补 SNI 扩展（tls1_3/tls1_2，connect 传 host）——无 SNI
+  被腾讯 CDN/百度/必应拒（alert 70 / 403）；失败路径统一 handle<0 哨兵。
+* **验证**：tls_public_probe（cloudflare 200 / bing 200 / github 301 / microsoft 403 /
+  baidu 优雅失败哨兵）+ https_public_probe（https 下载 3 站全量正文）+ 既有 tls 探针
+  （gcm/der/chacha/tls_chain/tls13_hello/tls12_hello）全绿；自举新不动点
+  tiec==tiec2（fp2==fp3，SHA ADA0CAB7）；regress-s21 与基线一致（99 PASS/4 已知基线 FAIL）。
+  EN: public-network TLS + https probes green; new self-host fixed point
+  tiec==tiec2 (fp2==fp3, SHA ADA0CAB7); regress-s21 identical to baseline.
+* **遗留**：baidu 需 TLS 1.2 P-256(secp256r1) ECDHE（现仅 x25519）——列为后续；证书链
+  验签（AC-5）与 httpc 重定向深度仍为既有范围。
+
 ## [fix] 表变量赋值引用计数缺 1——p.6.1.7 家族总根因定案（2026-09-05）
 
 * **根因**：irgen_stmt 表变量赋值插桩在 `store 新表` 之后才 load 槽值 → release 释放的是

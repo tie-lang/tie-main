@@ -1,0 +1,59 @@
+type tie<logic>
+// p.6.1.8 公网 TLS 握手回归探针：多公网域 connect+GET。
+// 期望行为：握手成功的域返回 handle>0 且可收发应用数据；不兼容域优雅失败（handle<0），
+// 绝不进程崩溃 0xC0000005（修复前 cloudflare 等 100% 崩——根因见
+// docs/bugreports/2026-09-05-p6.1.8-tls-https-public-av.md §七）。
+import "../../ext/tls/tls.tie" as tls
+import "../../ext/tls/tool.tie" as tbt
+import "../../std/net.tie" as net
+
+func test_host(host: string) {
+    var s = tls.connect(host, 443)
+    println(host + " -> handle=" + to_string(s.handle) + " mode=" + to_string(s.mode))
+    if s.handle <= 0 {
+        println("  NOTE " + host + " failed gracefully")
+        return
+    }
+    // 尝试 HTTP GET 验证应用数据
+    var req: table<i64> = table_new_i64()
+    var reqs: string = "GET / HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"
+    var i: i64 = 0
+    while i < len(reqs) {
+        table_push(req, str_byte(reqs, i))
+        i = i + 1
+    }
+    var ok = tls.send(s, req)
+    println("  send=" + to_string(ok))
+    var buf = table_new_i64()
+    var nrec = 0
+    while nrec < 8 {
+        var chunk = tls.recv(s, 4096)
+        if len(chunk) == 0 {
+            break
+        }
+        var i2: i64 = 0
+        while i2 < len(chunk) {
+            table_push(buf, chunk[i2])
+            i2 = i2 + 1
+        }
+        nrec = nrec + 1
+    }
+    tls.close(s)
+    var first_hex: string = ""
+    var j: i64 = 0
+    while j < len(buf) && j < 12 {
+        var b = buf[j]
+        var hexs = "0123456789abcdef"
+        first_hex = first_hex + str_char(hexs, (b >> 4) & 0xF) + str_char(hexs, b & 0xF)
+        j = j + 1
+    }
+    println("  resp bytes=" + to_string(len(buf)) + " head=" + first_hex)
+}
+
+func main() {
+    test_host("www.baidu.com")
+    test_host("www.cloudflare.com")
+    test_host("www.microsoft.com")
+    test_host("www.bing.com")
+    test_host("www.github.com")
+}

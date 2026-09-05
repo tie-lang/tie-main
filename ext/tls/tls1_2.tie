@@ -99,7 +99,7 @@ pub func hs_message(mtype: i64, body: table<i64>) -> table<i64> {
 // ---- ClientHello ----
 
 // 构造并返回 (明文记录, 握手结构体, 客户端私钥 hex, 32B 客户端随机数)。
-pub func make_client_hello() -> (table<i64>, table<i64>, string, table<i64>) {
+pub func make_client_hello(host: string) -> (table<i64>, table<i64>, string, table<i64>) {
     var sk_bytes = rand_bytes(32)
     var sk_hex: string = ""
     var i: i64 = 0
@@ -141,6 +141,21 @@ pub func make_client_hello() -> (table<i64>, table<i64>, string, table<i64>) {
     tbt.push_be(exts, 0x0804, 2)         // rsa_pss_rsae_sha256
     tbt.push_be(exts, 0x0401, 2)         // rsa_pkcs1_sha1
     tbt.push_be(exts, 0x0403, 2)         // rsa_pkcs1_sha256
+
+    // server_name 0x0000（SNI，p.6.1.8）：host 非空时携带（同 tls1_3）。
+    if str_len(host) > 0 {
+        var hn = str_len(host)
+        tbt.push_be(exts, 0x0000, 2)
+        tbt.push_be(exts, hn + 5, 2)
+        tbt.push_be(exts, hn + 3, 2)
+        table_push(exts, 0)              // name_type = host_name
+        tbt.push_be(exts, hn, 2)
+        var hi: i64 = 0
+        while hi < hn {
+            table_push(exts, str_byte(host, hi))
+            hi = hi + 1
+        }
+    }
 
     tbt.push_be(body, len(exts), 2)      // extensions 总长度
     i = 0

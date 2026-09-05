@@ -74,7 +74,7 @@ func has_server_hello_done(s: table<i64>) -> bool {
 
 func main() {
     // ---- 1) ClientHello golden ----
-    var (rec, ch_msg, sk_hex, c_rand) = tls12.make_client_hello()
+    var (rec, ch_msg, sk_hex, c_rand) = tls12.make_client_hello("")
     if rec[0] == 0x16 && rec[1] == 0x03 && rec[2] == 0x03 {
         println("PASS clienthello_header_160303")
     } else {

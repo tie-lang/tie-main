@@ -71,7 +71,7 @@ pub func hs_message(mtype: i64, body: table<i64>) -> table<i64> {
 
 // 构造并返回 (明文记录, 握手结构体, 客户端私钥 hex)。
 // 记录用于直接发送；握手结构体用于 transcript 与 golden 断言。
-pub func make_client_hello() -> (table<i64>, table<i64>, string) {
+pub func make_client_hello(host: string) -> (table<i64>, table<i64>, string) {
     // 客户端 x25519 密钥对
     var sk_bytes = rand_bytes(32)
     var sk_hex: string = ""
@@ -136,6 +136,24 @@ pub func make_client_hello() -> (table<i64>, table<i64>, string) {
     i = 0
     while i < len(ks) {
         table_push(exts, ks[i]); i = i + 1
+    }
+
+    // server_name 0x0000（SNI，p.6.1.8）：host 非空时携带——公网服务器（腾讯 CDN/
+    // 百度/必应等）对无 SNI 的 ClientHello 直接回 alert 70（protocol_version）或
+    // 403。结构：type(2) + 总长(2) + list 长(2) + name_type 0x00(1) + name 长(2) +
+    // 主机名 ASCII 字节。
+    if str_len(host) > 0 {
+        var hn = str_len(host)
+        tbt.push_be(exts, 0x0000, 2)
+        tbt.push_be(exts, hn + 5, 2)     // 内部数据长度（list 长 2 + type 1 + len 2 + host）
+        tbt.push_be(exts, hn + 3, 2)     // server_name_list 长度
+        table_push(exts, 0)              // name_type = host_name
+        tbt.push_be(exts, hn, 2)
+        var hi: i64 = 0
+        while hi < hn {
+            table_push(exts, str_byte(host, hi))
+            hi = hi + 1
+        }
     }
 
     tbt.push_be(body, len(exts), 2)      // extensions 总长度

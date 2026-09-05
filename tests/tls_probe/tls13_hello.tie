@@ -139,7 +139,7 @@ func main() {
         "1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac")
 
     // ---- 2) ClientHello golden ----
-    var (rec, ch_msg, sk_hex) = tls13.make_client_hello()
+    var (rec, ch_msg, sk_hex) = tls13.make_client_hello(" ")
     if rec[0] == 0x16 && rec[1] == 0x03 && rec[2] == 0x03 {
         println("PASS clienthello_header_160303")
     } else {

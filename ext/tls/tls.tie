@@ -192,8 +192,8 @@ func finish13(s: Session, h: i64, ch_msg: table<i64>, sh_body: table<i64>, serve
 }
 
 // ---- TLS 1.2 完整握手（发 CH 起，含 CKE/CCS/Finished 双向）----
-func finish12(s: Session, h: i64) -> Session {
-    var (rec, ch_msg, sk_hex, c_rand) = tls12.make_client_hello()
+func finish12(s: Session, h: i64, host: string) -> Session {
+    var (rec, ch_msg, sk_hex, c_rand) = tls12.make_client_hello(host)
     net.tcp_send_bytes(h, rec)
 
     // 读服务器明文 Flight（ServerHello..ServerHelloDone）。
@@ -329,8 +329,8 @@ pub func connect(host: string, pport: i64) -> Session {
         s.handle = -1
         return s
     }
-    // 优先 TLS 1.3：发 ClientHello，看 ServerHello 是否为 0x1301。
-    var (rec, ch_msg, sk_hex) = tls13.make_client_hello()
+    // 优先 TLS 1.3：发 ClientHello（带 SNI），看 ServerHello 是否为 0x1301。
+    var (rec, ch_msg, sk_hex) = tls13.make_client_hello(host)
     net.tcp_send_bytes(h, rec)
     var (otype, body) = tls13.recv_record(h)
     if otype == 22 {
@@ -340,14 +340,14 @@ pub func connect(host: string, pport: i64) -> Session {
             return finish13(s, h, ch_msg, body, server_pub, sk_hex)
         }
     }
-    // 回退 TLS 1.2：关闭重连后走 tls12 完整握手。
+    // 回退 TLS 1.2：关闭重连后走 tls12 完整握手（同样带 SNI）。
     net.close(h)
     var h2 = net.tcp_connect(host, pport)
     if h2 < 0 {
         s.handle = -1
         return s
     }
-    return finish12(s, h2)
+    return finish12(s, h2, host)
 }
 
 // 记录层加密发送明文，成功返回 true。
