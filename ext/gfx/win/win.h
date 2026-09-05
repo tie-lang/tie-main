@@ -50,6 +50,36 @@ void   win_destroy(long long hwnd);
 // 累计 pump 处理消息数（诊断用）。
 long   win_message_count(void);
 
+// ---------------------------------------------------------------------------
+// p.6.8.10 事件系统 E3：鼠标/键盘/定时器事件队列 + 信号标志
+// E3 event queue (mouse/keyboard/timer) + signal flags.
+//
+// 事件结构体（C 端 WinSlot 内环形队列，容量 EVENT_CAP=256，满则丢最旧并置 overflow）：
+//   { type:i32, x:i32, y:i32, key:i32, t_ms:i32 }
+//   type：1 MOUSE_MOVE  2 LBUTTON_DOWN  3 LBUTTON_UP  4 RBUTTON_DOWN
+//         5 RBUTTON_UP  6 KEY_DOWN  7 KEY_UP  8 TIMER
+//   鼠标事件 x/y = lParam 客户区坐标（LOWORD/HIWORD）；key = 0。
+//   键盘事件 x=y=0，key = WM_KEYDOWN/UP 的 vk 键码（WM_CHAR 亦入 KEY 类、key=字符码）。
+//   TIMER 事件 x=y=0，key = 定时器 id（wParam）。
+//   t_ms = GetMessageTime()（进程内单调，不用精确值断言，只断言单调不减）。
+//
+// 跨模块 struct 不能写（仓库惯例：跨模块类型用标量参数/i64 槽），故 `win_event_pop`
+// 经 out 写 5 个 i64 槽 [type, x, y, key, t_ms]（t_ms 用 i64 槽承载，避免 32 位截断/
+// 符号扩展），out 需持 5*i64 字节，返回是否弹出一条（0=空 1=弹出）。
+// EN: pop writes 5 i64 slots [type, x, y, key, t_ms] (t_ms carried in an i64 slot to
+// avoid 32-bit truncation/sign-extension); returns 1 popped / 0 empty.
+
+// 队列剩余事件条数（O(1)）。
+int    win_events_avail(long long hwnd);
+// 弹出一条事件到 out[0..4] = {type,x,y,key,t_ms}；返回 1=弹出 / 0=空。
+int    win_event_pop(long long hwnd, long long* out);
+// 溢出标志：容量已满时丢弃最旧事件会置位（仅向上置位，不自动复位）。
+int    win_event_overflow(long long hwnd);
+// SetTimer：为窗口配对定时器 id=1，ms 毫秒后周期性投递 WM_TIMER。
+void   win_set_timer(long long hwnd, int ms);
+// WM_TIMER 信号标志：返回最近是否发生过 WM_TIMER，读取即复位（一次性信号语义）。
+int    win_timer_flag(long long hwnd);
+
 #ifdef __cplusplus
 }
 #endif

@@ -22,6 +22,35 @@
 
 #define WIN_SLOT_MAX 8
 
+// ---- p.6.8.10 事件系统 E3 ----
+// 事件结构（C 端，环形队列承载）。t_ms 取 GetMessageTime()（进程内单调）。
+#define EVENT_CAP 256          // 每窗口事件队列容量；满则丢最旧并置 overflow
+#define EVENT_MOUSE_MOVE   1
+#define EVENT_LBUTTON_DOWN 2
+#define EVENT_LBUTTON_UP   3
+#define EVENT_RBUTTON_DOWN 4
+#define EVENT_RBUTTON_UP   5
+#define EVENT_KEY_DOWN     6
+#define EVENT_KEY_UP       7
+#define EVENT_TIMER        8
+#define TIMER_ID           1   // win_set_timer 配对 SetTimer 的定时器 id
+
+typedef struct {
+    int          type;
+    int          x;            // 鼠标客户区坐标；键盘/TIMER 为 0
+    int          y;
+    int          key;          // 键盘= vk 键码 / WM_CHAR 字符码；TIMER=定时器 id；鼠标=0
+    unsigned int t_ms;         // GetMessageTime() 原始 DWORD
+} EvEntry;
+
+// O(1) 环形队列：head=出队位置，count=在队条数；满则移动 head 丢最旧 + overflow。
+typedef struct {
+    EvEntry      evs[EVENT_CAP];
+    int          head;
+    int          count;
+    int          overflow;
+} EvQueue;
+
 typedef struct {
     HWND              hwnd;
     int               closed;         // 1=已关闭（WM_CLOSE/WM_DESTROY 置位）
@@ -33,6 +62,9 @@ typedef struct {
     long              cap;            // buf 已分配字节数
     BITMAPINFOHEADER  bmi;            // 有效后备缓冲的 DIB 头（top-down BGRA）
     int               bmi_valid;      // 1=已 present 过、可 blit
+    // p.6.8.10 事件域：
+    int               timer_flag;     // WM_TIMER 信号标志；win_timer_flag 读取即复位
+    EvQueue           eq;             // 事件队列
 } WinSlot;
 
 static WinSlot      g_slots[WIN_SLOT_MAX];
@@ -57,6 +89,26 @@ static WinSlot* slot_alloc(void) {
         }
     }
     return (WinSlot*)0;
+}
+
+// p.6.8.10：事件入队。O(1) 环形；满则丢最旧并置 overflow。t_ms 取 GetMessageTime()
+// （须在 DispatchMessage→WndProc 内调用，返回当前消息投递时间，进程内单调）。
+static void ev_push(WinSlot* s, int type, int x, int y, int key) {
+    if (!s) {
+        return;
+    }
+    if (s->eq.count >= EVENT_CAP) {
+        s->eq.head = (s->eq.head + 1) % EVENT_CAP;   // 丢最旧
+        s->eq.count--;
+        s->eq.overflow = 1;
+    }
+    int idx = (s->eq.head + s->eq.count) % EVENT_CAP;
+    s->eq.evs[idx].type = type;
+    s->eq.evs[idx].x = x;
+    s->eq.evs[idx].y = y;
+    s->eq.evs[idx].key = key;
+    s->eq.evs[idx].t_ms = (unsigned int)GetMessageTime();
+    s->eq.count++;
 }
 
 // 把已留存的后备缓冲经 StretchDIBits 缩放到客户区上屏（BGRA 32bpp top-down）。
@@ -112,6 +164,41 @@ static LRESULT CALLBACK win_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             if (s) {
                 s->closed = 1;
+            }
+            break;
+        // ---- p.6.8.10 事件捕获（追加分支，不动 6.8.9 既有语义）----
+        // 鼠标：lParam 低字=客户区 x，高字=客户区 y（LOWORD/HIWORD 拆分）。
+        case WM_MOUSEMOVE:
+            if (s) ev_push(s, EVENT_MOUSE_MOVE, (int)(lp & 0xFFFF), (int)((lp >> 16) & 0xFFFF), 0);
+            break;
+        case WM_LBUTTONDOWN:
+            if (s) ev_push(s, EVENT_LBUTTON_DOWN, (int)(lp & 0xFFFF), (int)((lp >> 16) & 0xFFFF), 0);
+            break;
+        case WM_LBUTTONUP:
+            if (s) ev_push(s, EVENT_LBUTTON_UP, (int)(lp & 0xFFFF), (int)((lp >> 16) & 0xFFFF), 0);
+            break;
+        case WM_RBUTTONDOWN:
+            if (s) ev_push(s, EVENT_RBUTTON_DOWN, (int)(lp & 0xFFFF), (int)((lp >> 16) & 0xFFFF), 0);
+            break;
+        case WM_RBUTTONUP:
+            if (s) ev_push(s, EVENT_RBUTTON_UP, (int)(lp & 0xFFFF), (int)((lp >> 16) & 0xFFFF), 0);
+            break;
+        // 键盘：key = vk 键码；WM_CHAR 亦入 KEY 类、key=字符码（探针用 VK_F1 无 WM_CHAR，
+        // 可打印键会额外产生一条 KEY 事件，属预期。坐标=0）。
+        case WM_KEYDOWN:
+            if (s) ev_push(s, EVENT_KEY_DOWN, 0, 0, (int)wp);
+            break;
+        case WM_KEYUP:
+            if (s) ev_push(s, EVENT_KEY_UP, 0, 0, (int)wp);
+            break;
+        case WM_CHAR:
+            if (s) ev_push(s, EVENT_KEY_DOWN, 0, 0, (int)wp);
+            break;
+        // 定时器：置 timer_flag 信号标志 + 入队（key = 定时器 id, wParam）。
+        case WM_TIMER:
+            if (s) {
+                s->timer_flag = 1;
+                ev_push(s, EVENT_TIMER, 0, 0, (int)wp);
             }
             break;
         default:
@@ -287,6 +374,57 @@ void win_destroy(long long hwnd) {
 
 long win_message_count(void) {
     return g_message_count;
+}
+
+// ---- p.6.8.10 事件系统 E3 入口（追加，不动 6.8.9 既有入口）----
+
+// 队列剩余事件条数（O(1)）。
+int win_events_avail(long long hwnd) {
+    WinSlot* s = slot_find((HWND)(intptr_t)hwnd);
+    return (s) ? s->eq.count : 0;
+}
+
+// 弹出一条事件到 out[0..4] = {type, x, y, key, t_ms}（5 个 i64 槽，t_ms 用 i64 承载，
+// 避免 32 位截断/符号扩展）。返回 1=弹出 / 0=空。O(1)。
+int win_event_pop(long long hwnd, long long* out) {
+    WinSlot* s = slot_find((HWND)(intptr_t)hwnd);
+    if (!s || s->eq.count <= 0) {
+        return 0;
+    }
+    EvEntry* e = &s->eq.evs[s->eq.head];
+    out[0] = e->type;
+    out[1] = e->x;
+    out[2] = e->y;
+    out[3] = e->key;
+    out[4] = (long long)(unsigned int)e->t_ms;
+    s->eq.head = (s->eq.head + 1) % EVENT_CAP;
+    s->eq.count--;
+    return 1;
+}
+
+// 溢出标志：容量已满丢过最旧事件即置位（自上次读后若曾溢出为 1，仅向上置位）。
+int win_event_overflow(long long hwnd) {
+    WinSlot* s = slot_find((HWND)(intptr_t)hwnd);
+    return (s && s->eq.overflow) ? 1 : 0;
+}
+
+// SetTimer：为窗口配对定时器 TIMER_ID=1，ms 毫秒后周期性投递 WM_TIMER。
+void win_set_timer(long long hwnd, int ms) {
+    HWND h = (HWND)(intptr_t)hwnd;
+    if (h) {
+        SetTimer(h, TIMER_ID, (UINT)ms, NULL);
+    }
+}
+
+// WM_TIMER 信号标志：返回最近是否发生 WM_TIMER，读取即复位（一次性信号语义，供断言）。
+int win_timer_flag(long long hwnd) {
+    WinSlot* s = slot_find((HWND)(intptr_t)hwnd);
+    if (!s) {
+        return 0;
+    }
+    int f = s->timer_flag;
+    s->timer_flag = 0;
+    return f;
 }
 
 }  // extern "C"

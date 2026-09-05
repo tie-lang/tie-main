@@ -1,0 +1,114 @@
+type tie<class>
+// ext/gfx/event.tie —— p.6.8.10 事件系统 E3 tie 封装（namespace ev）
+// EN: tie-side wrapper for the E3 event queue (mouse/keyboard with pos/keycode/
+// timestamp) + signal flags (namespace ev).
+//
+// 设计 / Design：
+//   * 本模块把 p.6.8.10 thunk（ext/gfx/win/win.cpp 追加的 E3 入口）直透为 namespace
+//     `ev` 的函数。C 端每窗口一个环形事件队列（容量 EVENT_CAP=256，满则丢最旧并置
+//     overflow 标志），事件结构 `{type, x, y, key, t_ms}`；WndProc 捕获 WM_MOUSEMOVE /
+//     WM_LBUTTONDOWN/UP / WM_RBUTTONDOWN/UP / WM_KEYDOWN/UP / WM_CHAR / WM_TIMER。
+//   * 跨模块 struct 不能写（仓库惯例：跨模块类型用标量参数/i64 槽）。`ev.take(hwnd)`
+//     经 C 面 `win_event_pop` 循环弹出，每个事件展开为 **5 个 i64 槽的平面记录**
+//     `[type, x, y, key, t_ms]`（t_ms 用 i64 承载，避免 32 位截断/符号扩展），一次取
+//     完当前队列。tie 读到 i64 槽：C 写入经 8 字节小端缓冲，本模块 rd_i64 手工拼回
+//     （与 sys/win32.rd_u64 同风格）。
+//   * 访问器 `ev.type/ev.x/ev.y/ev.key/ev.ts(flat, i)` 按事件序号 i 读平面记录的字段；
+//     `ev.count(flat)` 返回事件条数。
+//   * 事件类型常量以函数形式暴露（tie 命名空间跨模块只导出函数，不导出 var —— 见
+//     p.6.8.7 记录）：`ev.t_mouse_move()` / `ev.t_lbutton_down()` / `ev.t_lbutton_up()` /
+//     `ev.t_rbutton_down()` / `ev.t_rbutton_up()` / `ev.t_key_down()` / `ev.t_key_up()` /
+//     `ev.t_timer()`。
+//   * 信号标志：`ev.timer_flag(hwnd)` 读取 WM_TIMER 信号并复位（一次性）；paint_pending
+//     语义沿用 p.6.8.9 `win.paint_pending`。`ev.overflow(hwnd)` 读溢出标志。
+//   * `ev.post(hwnd, msg, wparam, lparam)` 直绑 PostMessageW，供探针向自身窗口注入合成
+//     消息（确定性验证主路径）。`ev.set_timer(hwnd, ms)` 直绑 SetTimer 触发真实 WM_TIMER。
+//
+// 队列语义：先入先出；每次 `ev.take` 全部取出。性能 O(1) 弹/推（C 端环形数组）。
+
+// ---- Windows extern（文件顶层；user32 默认链入）----
+unsafe extern fn win_events_avail(p0: i64) -> i32
+unsafe extern fn win_event_pop(p0: i64, p1: ptr<u8>) -> i32
+unsafe extern fn win_event_overflow(p0: i64) -> i32
+unsafe extern fn win_set_timer(p0: i64, p1: i32)
+unsafe extern fn win_timer_flag(p0: i64) -> i32
+unsafe extern fn PostMessageW(p0: i64, p1: u32, p2: i64, p3: i64) -> i64
+
+// 从字节缓冲 off 处读小端 8 字节 → i64（C 写入的 i64 槽位）。
+unsafe fn rd_i64(p: ptr<u8>, off: i64) -> i64 {
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < 8 {
+        v = v | (as_i64(deref(ptr_add(p, off + k))) << (8 * k))
+        k = k + 1
+    }
+    return v
+}
+
+namespace ev {
+
+// ---- 事件类型常量（i64；命名空间跨模块只导出函数，故以访问函数暴露）----
+pub func t_mouse_move() -> i64 { return 1 }
+pub func t_lbutton_down() -> i64 { return 2 }
+pub func t_lbutton_up() -> i64 { return 3 }
+pub func t_rbutton_down() -> i64 { return 4 }
+pub func t_rbutton_up() -> i64 { return 5 }
+pub func t_key_down() -> i64 { return 6 }
+pub func t_key_up() -> i64 { return 7 }
+pub func t_timer() -> i64 { return 8 }
+
+// 队列剩余事件条数。
+pub func avail(hwnd: i64) -> i64 {
+    unsafe { return as_i64(win_events_avail(hwnd)) }
+}
+
+// 取一次全部事件 → 平面 table<i64>，每个事件占 5 槽 [type, x, y, key, t_ms]。
+// 空队列返回空表；C 端循环弹出直至空（O(1) 每弹）。
+pub func take(hwnd: i64) -> table<i64> {
+    var out = table_new_i64()
+    while avail(hwnd) > 0 {
+        unsafe {
+            var buf: ptr<u8> = alloc(40)
+            var got = win_event_pop(hwnd, buf)
+            if got != 0 {
+                table_push(out, rd_i64(buf, 0))
+                table_push(out, rd_i64(buf, 8))
+                table_push(out, rd_i64(buf, 16))
+                table_push(out, rd_i64(buf, 24))
+                table_push(out, rd_i64(buf, 32))
+            }
+            free(buf)
+        }
+    }
+    return out
+}
+
+// ---- 平面记录访问器（按事件序号 i，每条 5 槽）----
+pub func count(t: table<i64>) -> i64 { return len(t) / 5 }
+pub func ev_type(t: table<i64>, i: i64) -> i64 { return t[i * 5 + 0] }
+pub func ev_x(t: table<i64>, i: i64) -> i64 { return t[i * 5 + 1] }
+pub func ev_y(t: table<i64>, i: i64) -> i64 { return t[i * 5 + 2] }
+pub func ev_key(t: table<i64>, i: i64) -> i64 { return t[i * 5 + 3] }
+pub func ev_ts(t: table<i64>, i: i64) -> i64 { return t[i * 5 + 4] }
+
+// 溢出标志（容量已满丢过最旧事件即 1，仅向上置位）。
+pub func overflow(hwnd: i64) -> i64 {
+    unsafe { return as_i64(win_event_overflow(hwnd)) }
+}
+
+// SetTimer：真实触发 WM_TIMER（每 ms 毫秒一次，直到窗口销毁）。信号与队列双通道。
+pub func set_timer(hwnd: i64, ms: i64) {
+    unsafe { win_set_timer(hwnd, as_i32(ms)) }
+}
+
+// WM_TIMER 信号标志：读到即复位（一次性信号语义，供断言）。
+pub func timer_flag(hwnd: i64) -> i64 {
+    unsafe { return as_i64(win_timer_flag(hwnd)) }
+}
+
+// 向窗口投递合成消息（PostMessageW 非 0 成功）——探针确定性注入主路径。
+pub func post(hwnd: i64, msg: i64, wparam: i64, lparam: i64) -> i64 {
+    unsafe { return PostMessageW(hwnd, as_u32(msg), wparam, lparam) }
+}
+
+}   // namespace ev
