@@ -21,6 +21,41 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] repr(C) 结构体显式 ABI 布局（p.6.8.2）（2026-09-05）
+
+* `repr(C) struct` 显式 C ABI 布局落地：repr(C) 标记自 AST 传播进类型注册表（`st_reprc`，
+  补齐 irgen「repr(C) 标记未传播到类型注册表」注释缺口）；新增编译期显式布局表
+  （`agg_ensure_layout` / `struct_field_off` / `struct_align_of`，C 自然对齐：每字段按自身
+  对齐放置、struct 对齐 = 最大成员对齐、总大小向上取整到对齐），与 LLVM `getelementptr`
+  偏移一致（默认 struct 亦为 C 自然对齐，故本批默认 struct 行为零改变，仅显式登记）。
+* 按引用传 extern 打通：repr(C) struct 经 `addr_of` 将结构体地址作 `ptr<Struct>` 传
+  extern（p.6.8.1 类型化指针之上），被调方按 C ABI 收到结构体指针——Win32 实函双向验证：
+  `GetSystemTime(SYSTEMTIME*)` 写字段 tie 回读一致、`CompareFileTime` 按指针读字段判定序。
+* 验收：`tests/p682_probe/p682_probe.tie`（32 断言：5 组含 padding 的 repr(C) struct 逐字段
+  偏移 vs C offsetof 全等——期望值写死，来源本机 clang 22.1.8 / gcc 13.2.0 / 32 位 clang 全一致，
+  `tests/p682_probe/ref.c` 可再生成；窄整数混排 u8/u16/i32/u32/i64/f32/f64 布局正确；默认
+  struct 零回归仍 C 对齐；按引用传结构体 PASS）全 PASS、exit 0。
+* 回归零破坏：html/xml/jwt/win32（重度 ptr）/ ed25519 / probe_global_init / probe_tdzd /
+  sqlite / std/tink_probe 全 PASS、exit 0。
+* 自举新不动点收敛：tiec.exe SHA256
+  `759C047D85DF2A2788D52F8819E78BB8318B6732ADBF90DFCD93D1644C79BAD9`，3934208 字节
+  （tiec2==tiec3 字节一致核验）。
+
+EN: repr(C) struct explicit ABI layout (p.6.8.2) — propagated the repr(C) flag from the AST
+into the type registry (`st_reprc`, closing the "repr(C) flag not propagated" gap), and added
+a compile-time explicit C-layout table (`agg_ensure_layout` / `struct_field_off` /
+`struct_align_of`; C natural alignment — each field at its own alignment, struct alignment =
+max member alignment, size rounded up), consistent with LLVM getelementptr offsets (default
+structs are already C-natural aligned, so default behavior is unchanged; the flag is now
+explicitly registered). Struct-by-reference passing to extern works via `addr_of` feeding a
+`ptr<Struct>` argument (on top of p.6.8.1 typed pointers); verified against real Win32
+functions — GetSystemTime writes fields through the pointer (tie reads back) and
+CompareFileTime reads fields through the pointer. Acceptance:
+`tests/p682_probe/p682_probe.tie` 32 assertions all PASS exit 0 (5 padded repr(C) structs
+field-wise equal to C offsetof, expectations hard-coded and regenerable via
+tests/p682_probe/ref.c; narrow-int mixed layout; default struct unchanged; by-ref extern
+PASS). Zero regression across html/xml/jwt/win32 (heavy ptr)/ed25519/probe_global_init/
+probe_tdzd/sqlite/tink. Bootstrap fixpoint: tiec.exe SHA256 759C047D... / 3934208 bytes.
 ## [feat] typed ptr 类型化指针 + unsafe 门禁（p.6.8.1）（2026-09-05）
 
 - `ptr<T>` 类型化指针一等化：补齐指针地址等值比较 `==`/`!=`（语义层放行 ptr 比较，
