@@ -1,0 +1,141 @@
+type tie<logic>
+// ext/gfx/app.tie —— p.6.8.11 主循环与呈现：主循环整合 + 脏矩形重绘 + 帧节流。
+// EN: trm.ui main loop: pump + event dispatch + dirty-rect redraw gating + frame throttle.
+//
+// 设计 / Design：
+//   * `app.run(d, hwnd, tick)`：一段可中断的帧循环。每帧顺序 =
+//       1) (SKIA 才做) win.pump → closed 则 break；paint_pending → 视为脏；
+//       2) 事件分发：把事件队列 ev.take 汇入 app 累计表 g_evlog（EventSource 消费）；
+//       3) 脏判断：g_dirty 或 paint_pending → 本帧 render（tick 收 action=1），否则 skip
+//          （tick 收 action=0）；rendered/skipped 分别计数；
+//       4) 帧节流：记帧时间，Sleep 补齐至 throttle_ms（0/off 关闭）。
+//   渲染（gfx.run_commands 到后备缓冲）+ present 由调用方闭包 tick 完成（见下）。
+//   * tick 签名 `fn(frame_idx, render_this_frame) -> i64`：
+//       - frame_idx：0 起帧号；render_this_frame：本帧是否因脏而渲染（1/0）。
+//       - 返回 1 → 请求下一帧脏（mark_dirty）；返回 99 → 提前 break（broken=1）。
+//     tick 内在闭包里用捕获的真实 Canvas/Surface 绘制（跨模块不能写 gfx struct，见
+//      p.6.8.11 记录），并可用共享 table 与探针交换像素/时间戳。
+//   * `app.mark_dirty()`：置脏矩形信号（布尔；已被渲染帧消费则清，多次置仍算 1 次）。
+//   * 呈现目标：OFFSCREEN 无窗口（渲染结果留在 surface 供断言）；SKIA 经 hwnd 上屏。
+//
+// ✔ 复杂度：每帧 O(1)（pump/判断/Sleep），事件累计 O(uv 事件数)，禁 O(n²)。
+// ✔ vsync 说明：本子项用 Sleep 节流近似 vsync（Game Loop 每帧 Sleep 补齐）；真正的
+//   DWM/flip 垂直同步 flush 后置（见 p.6.8.11 设计文档，GPU/DWM 后置项）。
+
+import "./port.tie" as pt
+import "./window.tie" as win
+import "./event.tie" as ev
+
+// 单调毫秒钟（Win32 GetTickCount64；kernel32 默认链入）。
+unsafe extern fn GetTickCount64() -> i64
+
+// ---- 主循环状态（模块顶级变量，命名空间体外；inside-namespace 只允许函数/结构体）----
+// 脏矩形信号（布尔；被渲染帧消费则清，多次置仍算 1 次）。
+var g_dirty: i64 = 0
+// 主循环事件累计（EventSource 消费点汇总；每次 run 清零重建）。
+var g_evlog: table<i64>
+var g_evcount: i64 = 0
+
+// ---- 主循环结构类型（须定义在模块顶级；命名空间内跨模块取用报错）。名取 AppDesc/
+// AppStats 避免与 port 的 PortDesc 冲突；跨模块取用走 maker 函数 app.desc/app.stats。----
+repr(C) struct AppDesc {
+    var kind: i64          // pt.k_offscreen()=0 / pt.k_skia()=1
+    var w: i64
+    var h: i64
+    var throttle_ms: i64   // 每帧最短间隔（帧节流）；0=off
+    var iters: i64         // 帧循环上限
+}
+repr(C) struct AppStats {
+    var rendered: i64      // 脏（含 paint_pending）实际渲染帧数
+    var skipped: i64       // 非脏跳过的帧数
+    var frames: i64        // 本轮实际执行的帧数
+    var broken: i64        // 1 = 因 closed / tick(99) 提前退出
+}
+
+namespace app {
+
+pub func desc(kind: i64, w: i64, h: i64, throttle_ms: i64, iters: i64) -> AppDesc {
+    return AppDesc(kind, w, h, throttle_ms, iters)
+}
+func stats(rendered: i64, skipped: i64, frames: i64, broken: i64) -> AppStats {
+    return AppStats(rendered, skipped, frames, broken)
+}
+
+// ---- 脏矩形信号 ----
+pub func mark_dirty() {
+    g_dirty = 1
+}
+pub func clear_dirty() {
+    g_dirty = 0
+}
+
+// ---- 主循环事件累计（EventSource 消费点汇总）----
+pub func ev_count() -> i64 { return g_evcount }
+
+// ---- 时钟 / 节流辅助 ----
+pub func now_ms() -> i64 {
+    unsafe { return GetTickCount64() }
+}
+pub func sleep_ms(ms: i64) {
+    win.sleep(ms)
+}
+
+// run：主循环。见文件头。tick 由探针闭包实现（持有真实 canvas，绘制 + present）。
+pub func run(d: AppDesc, hwnd: i64, tick: fn(i64, i64) -> i64) -> AppStats {
+    var rendered: i64 = 0
+    var skipped: i64 = 0
+    var broken: i64 = 0
+    g_evlog = table_new_i64()
+    g_evcount = 0
+    var i: i64 = 0
+    var last = now_ms()
+    while i < d.iters {
+        if d.kind == pt.k_skia() && hwnd != 0 {
+            win.pump(hwnd)
+            if win.closed(hwnd) != 0 {
+                broken = 1
+                break
+            }
+            if win.paint_pending(hwnd) != 0 {
+                g_dirty = 1
+            }
+            // 事件分发：把窗口事件队列排进累计表（EventSource）。
+            var drained = ev.take(hwnd)
+            var e: i64 = 0
+            while e < len(drained) {
+                table_push(g_evlog, drained[e])
+                e = e + 1
+            }
+            g_evcount = g_evcount + ev.count(drained)
+        }
+        var render_now: i64 = 0
+        if g_dirty != 0 {
+            render_now = 1
+        }
+        var r = tick(i, render_now)
+        if render_now != 0 {
+            rendered = rendered + 1
+            g_dirty = 0
+        } else {
+            skipped = skipped + 1
+        }
+        if r == 99 {
+            broken = 1
+            return stats(rendered, skipped, i + 1, broken)
+        }
+        // tick 返回 1 → 请求下一帧脏（供探针声明「脏计划」：在帧 k 决定帧 k+1 渲染）。
+        if r == 1 {
+            g_dirty = 1
+        }
+        // 帧节流：Sleep 补齐至 throttle_ms（仅加时，不减）。
+        var el = now_ms() - last
+        if d.throttle_ms > 0 && el < d.throttle_ms {
+            sleep_ms(d.throttle_ms - el)
+        }
+        last = now_ms()
+        i = i + 1
+    }
+    return stats(rendered, skipped, i, broken)
+}
+
+}   // namespace app

@@ -1,0 +1,135 @@
+type tie<logic>
+// ext/gfx/port.tie —— p.6.8.11 trm.ui port 抽象面：Window / Painter / EventSource 三件套，
+// 双实现（SKIA 真实窗口 / OFFSCREEN 纯离屏）可切换，两实现共享同一命令列表渲染代码路径。
+// EN: trm.ui port surface: a Window / Painter / EventSource trio with a switchable dual
+// implementation (SKIA windowed / OFFSCREEN windowless) sharing one command-list render path.
+//
+// 设计对齐 docs/plans/tucore-arch.md §4（port 抽象 API）。tucore 用语言级 `port` 声明 +
+// 显式 impl + --backend 选实现；tie 暂无 trait/port 关键字（`port` 已被保留为关键字），
+// 故以 **desc 字段 + 分支** 落地：`pt.desc(kind, w, h)` 里首个字段 kind 即 i64 开关
+// （pt.k_offscreen()=0 纯离屏 / pt.k_skia()=1 真实窗口），render 内部按 kind 分支。两实现
+// 都先把命令列表经 `gfx.run_commands` 渲到一块离屏后备缓冲 Surface（**共享渲染代码**），
+// 区别只在：
+//   * OFFSCREEN：无窗口，不 present；渲染结果像素留在 out 表供读取/逐像素断言。
+//   * SKIA：额外形成 Win32 窗口并 present 上屏（冒烟：open→show→update→present→pump→destroy）。
+//
+// ✔ 关键限制（p.6.8.7 记录 + 本文实测）：tie 跨模块不能写 struct 类型（注解/构造/字段
+//   声明均报错；struct 名全编译单元全局且须定义在模块顶级），Surface/Canvas 只能以
+//   「调用 gfx 返回值推断的局部量」存活。故 port 的 render_pixels 一次调用内自建
+//   surface→渲染→拷像素→release，不跨函数保留；这正是本抽象面在此阶段的落地形态
+//   （每个 Painter.render 是自包含的一次绘制）。
+//
+// Window 面：pt.open/show/update/present/destroy/closed/paint_pending（直透 win thunk，
+// hwnd 为 i64，无 struct 障碍）。
+// Painter 面：pt.render_pixels（把命令列表渲进后备缓冲并拷贝出像素字节表）。
+// EventSource 面：pt.drain_events（排空一窗口事件队列 → 平面 table，复用 ev.take）。
+
+import "./gfx.tie" as gfx
+import "./window.tie" as win
+import "./event.tie" as ev
+
+// 注：`port` 是 tie 的保留关键字（tucore 计划的 port 声明语法，见 tucore-arch.md §4），
+// 故本抽象面命名空间与 import 别名一律用 `pt`（模块文件名仍为 port.tie 以对应文档）。
+// EN: `port` is a reserved tie keyword (planned port-declaration syntax), so this
+// surface's namespace and import alias use `pt` (the module filename stays port.tie).
+
+// ---- PortDesc：port 描述（kind 开关 + 尺寸）。Struct 必须定义在模块**顶级**——
+// 命名空间内 struct 跨模块取用报「定义节点未找到」（同 gfx.tie 的 Surface/Canvas）；
+// tie struct 名全编译单元全局，故取 PortDesc 避免与 app 的 AppDesc 冲突。----
+repr(C) struct PortDesc {
+    var kind: i64
+    var w: i64
+    var h: i64
+}
+
+namespace pt {
+
+// ---- PortKind 开关（i64；命名空间跨模块只导出函数，故以常量函数暴露）----
+pub func k_offscreen() -> i64 { return 0 }   // OFFSCREEN：纯离屏，无窗口，供读取/断言
+pub func k_skia() -> i64 { return 1 }        // SKIA：离屏后备缓冲 + 真实窗口 present
+
+pub func desc(kind: i64, w: i64, h: i64) -> PortDesc {
+    return PortDesc(kind, w, h)
+}
+
+// =========================================================================
+// Painter：把命令列表渲染到离屏后备缓冲 Surface，并把 BGRA 像素字节拷进一张新表返回。
+// 返回 BGRA 字节表（table<i64>，每槽一个字节，rowbytes*h 长度）；len()=字节数。
+// 注：大像素表经「调用方传表参填充」跨模块取回会堆栈损坏（探针实测 0xC00000FD），
+// 故按 gfx/make_tbl 惯例用**返回值**搬运（table 为引用类型，移动零拷贝）。
+// 双实现共享 gfx.run_commands 渲染；SKIA 额外做瞬时窗口 present 冒烟。
+// =========================================================================
+pub func render_pixels(d: PortDesc, cmds: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var s = gfx.surface_create(d.w, d.h)
+    var c = gfx.surface_canvas(s)
+    gfx.run_commands(c, cmds)
+    var info = gfx.surface_peek(s)
+    var row = info.row_bytes
+    var nbytes = as_i64(row) * as_i64(info.h)
+    unsafe {
+        var base: ptr<u8> = int_to_ptr(info.pixels)
+        var i: i64 = 0
+        while i < nbytes {
+            table_push(out, as_i64(deref(ptr_add(base, i))))
+            i = i + 1
+        }
+    }
+    if d.kind == k_skia() && info.pixels != 0 {
+        // SKIA 冒烟：形成真实窗口并 present 上屏（短暂可见，进程内自建自毁）。
+        var hwnd = win.open("TieWin6.8.11", d.w, d.h)
+        if hwnd != 0 {
+            win.show(hwnd)
+            win.update(hwnd)
+            var pr = win.present(hwnd, info.pixels, row, info.w, info.h)
+            var p: i64 = 0
+            while p < 4 {
+                win.pump(hwnd)
+                p = p + 1
+            }
+            win.destroy(hwnd)
+        }
+    }
+    gfx.release_surface(s)
+    return out
+}
+
+// =========================================================================
+// Window：打开/显示/pump/closed/present/destroy 直透（hwnd 为 i64）。
+// =========================================================================
+pub func open(title: string, w: i64, h: i64) -> i64 {
+    return win.open(title, w, h)
+}
+pub func show(hwnd: i64) {
+    win.show(hwnd)
+}
+pub func update(hwnd: i64) {
+    win.update(hwnd)
+}
+pub func pump(hwnd: i64) -> i32 {
+    return win.pump(hwnd)
+}
+pub func closed(hwnd: i64) -> i32 {
+    return win.closed(hwnd)
+}
+pub func paint_pending(hwnd: i64) -> i32 {
+    return win.paint_pending(hwnd)
+}
+pub func present(hwnd: i64, addr: i64, rowbytes: i32, w: i32, h: i32) -> i32 {
+    return win.present(hwnd, addr, rowbytes, w, h)
+}
+pub func destroy(hwnd: i64) {
+    win.destroy(hwnd)
+}
+
+// =========================================================================
+// EventSource：drain/drain_count（复用 ev 事件队列；OFFSCREEN 无窗口，hwnd=0 则空）。
+// =========================================================================
+pub func drain_events(hwnd: i64) -> table<i64> {
+    if hwnd == 0 {
+        return table_new_i64()
+    }
+    return ev.take(hwnd)
+}
+
+}   // namespace pt
