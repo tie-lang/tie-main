@@ -1,0 +1,57 @@
+// win.h —— p.6.8.9 Win32 窗口嵌入层 thunk（C 入口面）
+// EN: Win32 window-embedding thunk — C entry-point surface.
+//
+// p.6.8.9 采用 Flutter 嵌入模型：窗口创建/消息泵/呈现由本 thunk（纯 Win32 C API，
+// 无 C++ 特性）承担，Skia 只负责把命令列表渲染到离屏后备缓冲 Surface，经
+// win_present 把 BGRA 像素 blit 上屏。tie 无法传 WndProc 回调，故窗口状态机
+// （closed / paint_pending 标志、后备缓冲留存副本）全部收敛在 C 端。
+//
+// EN: p.6.8.9 follows the Flutter embedding model: windowing/message-pump/
+// presentation lives in this thunk (pure Win32 C API, no C++ features); Skia only
+// renders the command list into an offscreen back-buffer Surface, which is then
+// blitted on-screen via win_present. tie cannot pass a WndProc callback, so the
+// window state machine (closed / paint_pending flags + a retained back-buffer copy)
+// lives entirely on the C side.
+
+#ifndef TIE_GFX_WIN_H
+#define TIE_GFX_WIN_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// title16：探针端以宽字符桥（wide_from 同款 UTF-16LE 编码）产出的字节缓冲，
+// title_bytes 为其字节长度（不含尾 0）。w/h 为窗口尺寸。
+// EN: title16 is a UTF-16LE byte buffer (NUL-terminated) as produced by the
+// tie-side wide bridge; title_bytes is its length excluding the trailing NUL.
+
+// 创建并注册窗口（类名 TieWinClass）；返回 HWND（i64），失败 0。
+long long win_open(const void* title16, int title_bytes, int w, int h);
+
+// 显示窗口 / 立即处理待定 WM_PAINT（UpdateWindow 同步刷一次）。
+void   win_show(long long hwnd);
+void   win_update(long long hwnd);
+
+// 消息泵单步（PeekMessage+DispatchMessage 排空当前线程队列）；返回本轮处理消息数。
+int    win_pump(long long hwnd);
+
+// 状态机查询：1=窗口已关闭（WM_CLOSE/WM_DESTROY 置位）；
+// paint_pending：最近一次 win_pump 是否处理过 WM_PAINT/WM_SIZE（每次 pump 开始清零）。
+int    win_closed(long long hwnd);
+int    win_paint_pending(long long hwnd);
+
+// 把 BGRA 后备缓冲像素留存副本上屏并 InvalidateRect（WM_PAINT 时 StretchDIBits）。
+// 返回 0 成功（slot 找到、尺寸合理、拷贝完成）。
+int    win_present(long long hwnd, const void* pixels, int rowbytes, int w, int h);
+
+// DestroyWindow + 释放后备缓冲 + 移除 slot（清理映射）。
+void   win_destroy(long long hwnd);
+
+// 累计 pump 处理消息数（诊断用）。
+long   win_message_count(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // TIE_GFX_WIN_H

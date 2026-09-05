@@ -140,3 +140,15 @@ hello_b2.exe
 /tests/p688_probe/*.obj
 /tests/p688_probe/*.ll
 /tests/p688_probe/out.png
+
+# ---- p.6.8.9 Win32 窗口嵌入层 / window embedding thunk ----
+# 仅 win.h/win.cpp 源码入库；win.obj 等产物不入库（*.obj 通配 + ! 否定白名单）。
+/ext/gfx/win/*
+!/ext/gfx/win/win.h
+!/ext/gfx/win/win.cpp
+
+# p.6.8.9 窗口嵌入层探针编译/运行产物（.tie 源入库，.exe/.ll/.obj 不入库）
+/tests/p689_probe/*.exe
+/tests/p689_probe/*.obj
+/tests/p689_probe/*.ll
+/tests/p689_probe/out.png

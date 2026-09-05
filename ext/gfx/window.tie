@@ -1,0 +1,161 @@
+type tie<class>
+// ext/gfx/window.tie —— p.6.8.9 Win32 窗口嵌入层 tie 封装（namespace win）
+// EN: tie-side wrapper for the Win32 window-embedding layer (namespace win).
+//
+// 设计 / Design：
+//   * 本模块把 p.6.8.9 thunk（ext/gfx/win/win.cpp，纯 Win32 C 入口）的 C 面直透为
+//     namespace `win` 的函数，探针以 `import "../../ext/gfx/window.tie" as win` 使用
+//     `win.open(...)`。C 端持有窗口状态机（closed / paint_pending + 后备缓冲副本）；
+//     tie 侧负责标题 UTF-16 编码与像素地址收发。
+//   * 标题：UTF-16LE（含尾双 0）由本模块内联编码（复用 sys/win32.wide_from 同款
+//     码点→代理对拆分逻辑），经 alloc 缓冲指针 + 字节长传给 win_open，调用后 free。
+//   * 呈现：后备缓冲 = p.6.8.8 离屏 Surface（peek 取 BGRA 像素地址）；`win.present`
+//     收该地址 + rowbytes/w/h → win_present 拷留存副本并 InvalidateRect 上屏。
+//   * sleep(fn) 直绑 kernel32 Sleep 供消息泵兜底（探针禁无限等待，p0 级延时）。
+//   * find(cls,title) 直绑 FindWindowW，供探针校验窗口存活/销毁语义。
+//
+// 说明：全进程内核的 Win32 对象（HWND/窗口类）不在 tie GC 域内；本模块不持有
+// 窗口句柄所有权，探针在终止前自行 win.destroy。
+
+// ---- Windows extern（文件顶层；user32/kernel32 默认链入）----
+unsafe extern fn win_open(p0: ptr<u8>, p1: i32, p2: i32, p3: i32) -> i64
+unsafe extern fn win_show(p0: i64)
+unsafe extern fn win_update(p0: i64)
+unsafe extern fn win_pump(p0: i64) -> i32
+unsafe extern fn win_closed(p0: i64) -> i32
+unsafe extern fn win_paint_pending(p0: i64) -> i32
+unsafe extern fn win_present(p0: i64, p1: ptr<u8>, p2: i32, p3: i32, p4: i32) -> i32
+unsafe extern fn win_destroy(p0: i64)
+unsafe extern fn Sleep(p0: u32)
+unsafe extern fn FindWindowW(lpClassName: ptr<u8>, lpWindowName: ptr<u8>) -> i64
+
+namespace win {
+
+// 计算 s 的 UTF-16LE 字节数（含代理对按 4 字节；不含尾 0）。
+func wide_byte_len(s: string) -> i64 {
+    var n = str_len(s)
+    var total: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var cp = char_code(str_char(s, i))
+        total = total + 2
+        if cp > 0xFFFF {
+            total = total + 2
+        }
+        i = i + 1
+    }
+    return total
+}
+
+// 打开窗口：把 title 编码为 UTF-16LE（尾双 0）传给 win_open，返回 HWND(i64)，失败 0。
+// 标题编码在 unsafe 块内即时 alloc/free。
+pub func open(title: string, width: i64, height: i64) -> i64 {
+    unsafe {
+        var n = str_len(title)
+        var total = wide_byte_len(title)
+        var buf: ptr<u8> = alloc(total + 2)
+        var o: i64 = 0
+        var i: i64 = 0
+        while i < n {
+            var cp = char_code(str_char(title, i))
+            if cp > 0xFFFF {
+                var v = cp - 0x10000
+                var hi = 0xD800 + (v >> 10)
+                var lo = 0xDC00 + (v & 0x3FF)
+                deref_write(ptr_add(buf, o), as_u8(hi & 0xFF))
+                deref_write(ptr_add(buf, o + 1), as_u8((hi >> 8) & 0xFF))
+                deref_write(ptr_add(buf, o + 2), as_u8(lo & 0xFF))
+                deref_write(ptr_add(buf, o + 3), as_u8((lo >> 8) & 0xFF))
+                o = o + 4
+            } else {
+                deref_write(ptr_add(buf, o), as_u8(cp & 0xFF))
+                deref_write(ptr_add(buf, o + 1), as_u8((cp >> 8) & 0xFF))
+                o = o + 2
+            }
+            i = i + 1
+        }
+        deref_write(ptr_add(buf, o), as_u8(0))
+        deref_write(ptr_add(buf, o + 1), as_u8(0))
+        var hw = win_open(buf, as_i32(total), as_i32(width), as_i32(height))
+        free(buf)
+        return hw
+    }
+}
+
+pub func show(hwnd: i64) {
+    unsafe { win_show(hwnd) }
+}
+
+pub func update(hwnd: i64) {
+    unsafe { win_update(hwnd) }
+}
+
+// 消息泵单步，返回本轮 pump 处理消息数（0=无）。
+pub func pump(hwnd: i64) -> i32 {
+    unsafe { return win_pump(hwnd) }
+}
+
+pub func closed(hwnd: i64) -> i32 {
+    unsafe { return win_closed(hwnd) }
+}
+
+pub func paint_pending(hwnd: i64) -> i32 {
+    unsafe { return win_paint_pending(hwnd) }
+}
+
+// 把离屏后备缓冲 BGRA 像素 blit 上屏。addr = peek 出的像素地址；成功返回 0。
+pub func present(hwnd: i64, addr: i64, rowbytes: i32, w: i32, h: i32) -> i32 {
+    unsafe {
+        var p: ptr<u8> = int_to_ptr(addr)
+        return win_present(hwnd, p, rowbytes, w, h)
+    }
+}
+
+pub func destroy(hwnd: i64) {
+    unsafe { win_destroy(hwnd) }
+}
+
+// 兜底延时（消息泵之间）：避免忙等/死等，探针用 p0 级毫秒。
+pub func sleep(ms: i64) {
+    unsafe { Sleep(as_u32(ms)) }
+}
+
+// 按类名/窗口名找顶层窗口句柄（FindWindowW）；找不到返回 0。探针校验存活。
+pub func find(cls: string, title: string) -> i64 {
+    unsafe {
+        var cb = wide_byte_len(cls)
+        var tb = wide_byte_len(title)
+        var cbuf: ptr<u8> = alloc(cb + 2)
+        var tbuf: ptr<u8> = alloc(tb + 2)
+        var o: i64 = 0
+        var i: i64 = 0
+        var n = str_len(cls)
+        while i < n {
+            var cp = char_code(str_char(cls, i))
+            deref_write(ptr_add(cbuf, o), as_u8(cp & 0xFF))
+            deref_write(ptr_add(cbuf, o + 1), as_u8((cp >> 8) & 0xFF))
+            o = o + 2
+            i = i + 1
+        }
+        deref_write(ptr_add(cbuf, o), as_u8(0))
+        deref_write(ptr_add(cbuf, o + 1), as_u8(0))
+        o = 0
+        i = 0
+        n = str_len(title)
+        while i < n {
+            var cp = char_code(str_char(title, i))
+            deref_write(ptr_add(tbuf, o), as_u8(cp & 0xFF))
+            deref_write(ptr_add(tbuf, o + 1), as_u8((cp >> 8) & 0xFF))
+            o = o + 2
+            i = i + 1
+        }
+        deref_write(ptr_add(tbuf, o), as_u8(0))
+        deref_write(ptr_add(tbuf, o + 1), as_u8(0))
+        var hw = FindWindowW(cbuf, tbuf)
+        free(cbuf)
+        free(tbuf)
+        return hw
+    }
+}
+
+}   // namespace win
