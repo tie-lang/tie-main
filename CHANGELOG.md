@@ -31,14 +31,18 @@
   gfx 全系 12 项 + html/xml/jwt/win32/global_init/tdzd/sqlite/tink 复跑 PASS；矩阵 2 处失败项
   （ed25519/html 各一次）归因下述已知间歇性。EN: acceptance matrix re-run; failures traced to
   known intermittency below.
-* **已知间歇性取证（预存缺陷族，非 p.6.8 回归）**：`ed25519_probe` 在**两种编译器**（现役 9321B3FA 与
-  p.6.8.3 后 7A6100）编译体下同现：偶发 0xC0000005（= RCA-2 已档的 llvmgen alloca 块局部性家族），
-  且宿主机内存紧张（终审时空闲仅 ~1.67GB）下病态慢速（132.7s vs 平时亚秒级；8/8 判死超时实为慢速而非
-  死锁）。`html_probe` 复测 8/8 正常。处置：bisect 确认非回归（旧编译器等价）→ 归并 RCA-2 家族
-  （根治路线 = 回边-only alloca 提升 + 块局部性依赖定位，见上条 RCA），交接为后续编译器收尾项。
-  EN: ed25519/html intermittency is a pre-existing compiler/runtime class (alloca block-locality
-  family per RCA), aggravated here by host memory pressure; equal on the prior compiler, so not a
-  p.6.8 regression; handed off with the documented back-edge-only hoist route.
+* **已知间歇性取证（预存缺陷族，非 p.6.8 回归；后更正，见 2026-09-05 追加）**：`ed25519_probe`
+  （纯 tie Curve25519 向量套件）今日出现**稳定性 CPU-bound 降速**：墙钟 132–146s（批次期间秒级），
+  实测运行中 97.3% 单核持续占用 = 真实计算量暴增而非等待/分页；两种编译器（现役 9321B3FA 与
+  7A6100）编译体等价，`html_probe` 复测 8/8 正常。矩阵处 `rc=-1073741819(0xC0000005)` 为
+  `process.exec_code` 超时终止的退出码特征，不必然是访问违例（历史上一次真实 AV 未能排除）。
+  **更正**：初稿误归因「宿主机内存紧张（空闲 ~1.67GB）」已撤回——整机 32GB、可用
+  （含备用缓存）23.2GB、i5-12490F 满频 3.0GHz、卓越性能电源方案，与内存无关。降速候选根因 =
+  编译期/运行时预存性能缺陷族（llvmgen alloca 块局部性候选，见下条 RCA），待专项定位
+  （交叉验证宿主虚拟化/时段 + 指令量与栈形态）。EN: corrected - ed25519 slowdown is real
+  CPU-bound work inflation (~60-100x, 97% single-core), not memory pressure (32GB box, 23.2GB
+  available, full clock); matrix 0xC0000005 was the exec_timeout terminate exit-code signature;
+  attributed to the pre-existing alloca codegen family, pending dedicated RCA.
 
 ## [RCA] 编译期栈增长缺陷族根因定位：循环体 alloca 全量提升方案不可行（2026-09-05）
 
