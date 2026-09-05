@@ -37,22 +37,53 @@ EN: (In m120 skcms is vendored under `modules/skcms/`, not an external.)
 
 ---
 
-## 裁剪模块清单（大纲，细节留 p.6.8.5）/ Trimmed module outline
+## 裁剪模块清单（p.6.8.5 补全）/ Trimmed module list
 
-保留的 API / 类（deta提清单在 p.6.8.5 模块清单子项给出）：
-EN: Retained API / classes (detailed file list lands in p.6.8.5):
+**机器生成的详细清单：`ext/gfx/lib/modules.txt`**（34 源目录分组、552 编译单元，由
+`ext/gfx/skia/modlist.tie` 扫描构建 out/obj 目录自动产出）。EN: Machine-generated
+detail list is `ext/gfx/lib/modules.txt` (34 source-directory groups, 552 compile
+units), produced by `ext/gfx/skia/modlist.tie` from the build obj dir.
 
+保留的 API / 类：EN: Retained API / classes:
 - 离屏表面：`SkSurface::MakeRaster` / `SkSurfaces::Raster`（N32 premul 8888 位图 Surface）
+  EN: offscreen raster Surface.
 - 绘制：`SkCanvas`(drawColor/drawRect/drawImage/drawTextBlob)、`SkPaint`
-- 形状：`SkPath`、`SkRect`
-- 文本：`SkFont` + `SkTextBlob`（Windows 走 DirectWrite 字体管理器，`skia_enable_fontmgr_win`）
-- 图像：`SkImage` / `SkBitmap` / `SkPixmap`
-- 编解码：`SkCodec`（仅保留 PNG=BMP，走 libpng+zlib）
+- 形状：`SkPath`、`SkRect`；文本：`SkFont` + `SkTextBlob`（DirectWrite 字体管理器）
+- 图像：`SkImage` / `SkBitmap` / `SkPixmap`；编解码：`SkCodec`（PNG+BMP，走 libpng+zlib）
 - 编码导出：`SkPngEncoder::Encode`
 
-编译宏 / 关键 define：`SK_FONTMGR_WIN`（DirectWrite）、`SK_XML`(关)、`SK_HAS_WUFFS_LIBRARY`(关) 等由
-GN args 生成；SDK `10.0.26100.0`。
-EN: Compile macros: SK_FONTMGR_WIN (DirectWrite) on; XML/Wuffs etc off, driven by GN args.
+**模块分组概述（modules.txt 分组标题同名，行数见文件）** EN: Module groups at a glance:
+- **src/core**（192）——软件光栅核心：Canvas/RasterPipeline/SkOpts(SIMD 变体)/Blitter/
+  Scan/Path/TextBlob/Paint/Typeface/Text（SkText 文本内联在 core）。
+- **src/base**（24）——分配器/基础容器/UTF/Math 基元；**src/image**（14）——Image &
+  Surface（Raster/Null）；**src/effects**（15 + colorfilters 9 + imagefilters 17）；
+  **src/shaders**（17）+ gradients（5）。
+- **src/pathops**（32）——路径运算 Op/Simplify；**src/codec**（25）——SkCodec + 各
+  位图编解码（PNG 走 libpng，BMP/WBMP/ICO 内置）；**src/encode**（3）——SkPngEncoder。
+- **src/ports**（13）——win32（DWrite 字体/Debug/OSFile）端口 + GDI/内存端口；
+  **src/utils/win**（7）——DWrite 桥；**src/utils**（28）+ utils/mac（2，无操作桩）；
+  **src/fonts**（1）+ **src/sfnt**（2）——字体表。
+- **src/sksl**（20 + analysis 15 + ir 45 + transform 12 + tracing 3 + codegen 2）——
+  SkSL 着色器 DSL 骨架（软件光栅需要）；**src/opts**（1）、**src/lazy**（1）、
+  **src/text**（3）、**src/pdf**（1，`SkDocument_PDF_None` 空桩）。
+- **modules/skcms**（1）——色彩管理（内嵌）。**src/android**（2）+ client_utils/android（2）
+  与 utils/mac 类似为跨平台编译单元（无实际 backend）。
+- **third_party/externals/libpng**（15 + intel 2）、**zlib**（19 + contrib/optimizations 2）
+  ——第三方两项依赖（下节）。
+
+**是否含 src/gpu：否** EN: **src/gpu is NOT included**——`skia_enable_gpu=false`，
+obj 目录无 `gpu/` 子目录，`modules.txt` 末尾 `GPU_src/gpu_present=no` 确认。
+
+**工程级编译宏要点**（GN args 已全列于 manifest；此处说明关键 define 生效状态）：
+EN: Engine-level compile macros: 
+- `SK_SUPPORT_GPU` / `SK_GANESH` / `SK_GPU_VENDOR_*` **未定义**（无 GPU 后端）。
+- `SK_FONTMGR_WIN`（DirectWrite 字体管理器）**定义**（=1）；`skia_enable_fontmgr_win` 经
+  GN true。载入 `src/ports/fontmgr_win*`。
+- `SK_HAS_LIBPNG_LIBRARY` + `SK_CODEC_DECODES_PNG`/`SK_CODEC_ENCODES_PNG` 定义
+  （libpng encode+decode 均开）；`SK_HAS_ZLIB` 定义。
+- `SK_HAS_JPEG/WEBP/WUFFS` 未定义（对应 GN=false，编解码关闭，无 libjpeg/libwebp）。
+- `SK_DISABLE_LEGACY_TYPOGRAPHY`、`SK_DISABLE_LEGACY_MATH` 等由 GN 默认；`SK_ENABLE_DISCRETE_GPU`
+  等 GPU 相关宏不定义。细节以 manifest `[args]` / `args.gn` 为准。
 
 ### 最终生效 GN args（归档自 manifest.txt `[args]`） / Effective GN args
 
@@ -90,9 +121,13 @@ skia_enable_skparagraph=false
 skia_enable_skshaper=false
 skia_enable_tools=false
 skia_enable_spirv_validation=false
+extra_cflags=["/Brepro"]
+extra_ldflags=["/Brepro"]
 ```
 
-GN `gen` 本组参数零警告生效（95 targets / 41 files）。EN: These GN args gen with zero warnings.
+GN `gen` 本组参数零警告生效（95 targets / 41 files）。`[args]` 现含确定性构建开关
+`extra_cflags/extra_ldflags=["/Brepro"]`（p.6.8.5，见下节）。EN: These GN args gen with
+zero warnings; `extra_cflags/extra_ldflags=["/Brepro"]` added for determinism (p.6.8.5).
 
 ---
 
@@ -112,6 +147,7 @@ compiler\tiec.exe ext\gfx\skia\build.tie -o ext\gfx\skia\build.exe
 | `ext\gfx\skia\build.exe --smoke` | 编译链接+运行冒烟，校验 PNG（魔数/尺寸/字节数） |
 | `ext\gfx\skia\build.exe --check` | 打印版本/产物体积/状态 |
 | `ext\gfx\skia\build.exe --clean` | 删除 out 构建目录与状态 |
+| `ext\gfx\skia\modlist.exe` | 扫描 out/obj → 重生成 `ext/gfx/lib/modules.txt`（模块清单） |
 
 EN: default builds (idempotent), `--force` rebuild, `--gen` gn gen only, `--smoke`
 compile+run+validate PNG, `--check` status, `--clean` remove out dir.
@@ -127,14 +163,76 @@ EN: build.tie drives vcvarsall/gn/ninja/cl via process.exec_code; idempotent via
 
 ## 产物与体积基线 / Artifact & size baseline
 
-- 静态库：`ext/gfx/lib/skia.lib`（Release x64，MSVC `/MT`，386 编译单元 / 556 目标）
-- **体积基线：169,329,356 字节（≈161.5 MiB）**，记录于 `ext/gfx/skia/manifest.txt [size]` 与 README/CHANGELOG。
-  EN: Size baseline: **169,329,356 bytes** (~161.5 MiB).
+- 静态库：`ext/gfx/lib/skia.lib`（Release x64，MSVC `/MT`，552 编译单元 / 556 目标）。
+- **体积基线：168,338,664 字节（≈160.5 MiB）**——为启用 `/Brepro` 确定性后实测值
+  （p.6.8.5），由 169,329,356 减少 ≈991 KB（去除 codeview 时间戳/绝对路径注入）；
+  记录于 `ext/gfx/skia/manifest.txt [size]` 与 README/CHANGELOG。
+  EN: Size baseline: **168,338,664 bytes** (~160.5 MiB) after /Brepro ~991 KB smaller.
+- 冒烟可执行：`ext/gfx/skia/smoke/skia_smoke.exe` = 2,761,728 B。
 - 冒烟输出：`ext/gfx/skia/smoke/out/smoke.png`（320x200，2768 B，魔数
-  `89504e470d0a1a0a` 校验通过）。EN: smoke output 320x200, 2768B, magic verified.
+  `89504e470d0a1a0a` 校验通过）。EN: smoke exe 2,761,728 B; PNG 320x200 2768B, magic verified.
 
 构建输出目录 `out/tie_raster_release/`、`.tools/`、冒烟 `out/` 均为本地产物，不入库。
 EN: `out/tie_raster_release/`, `.tools/`, smoke `out/` are local artifacts, not committed.
+
+---
+
+## 第三依赖收窄结论 / Third-party narrowing
+
+p.6.8.5 核实：**zlib 为 libpng 的硬依赖**（libpng 压缩/解压底层调 zlib inflate/deflate），
+故 `skia_use_zlib=true` 无法在保留 PNG 编解码的前提下移除——**zlib + libpng 两项已是
+本裁剪集的最小闭包**，不再压缩（不强行去除引入编译/运行风险）。
+
+EN: zlib is a hard dependency of libpng (libpng calls zlib inflate/deflate), so zlib
+cannot be dropped while keeping the PNG codec. **zlib + libpng is already the minimal
+closure** for this trimmed set; no further narrowing (dropping would add risk).
+
+- 仅保留 PNG/BMP 编解码（`skia_use_libpng_decode/encode=true`、`skia_use_zlib=true`）；
+  JPEG/WebP/Wuffs/HEIF 等 `=false`，故不引入 libjpeg/libwebp/libgav1。
+- PNG encode（`SkPngEncoder`）为本模块冒烟导出路径所需，与 decode 均保留。
+- 其余 HEIF/AVIF 相关目标为空（`heif`/`avif` phony 无依赖，`SkHeifCodec` 为空桩）。
+
+EN: Only PNG/BMP codecs kept (JPEG/WebP/Wuffs off → no libjpeg/libwebp); PNG encode kept
+for SkPngEncoder; HEIF is an empty stub.
+
+---
+
+## 模块清单（modules.txt）/ Module manifest
+
+- `ext/gfx/lib/modules.txt`：34 源目录分组、552 编译单元、`TOTAL_OBJ`/`TOTAL_MODULE_GROUPS`/
+  `GPU_src/gpu_present=no` 汇总，由 `ext/gfx/skia/modlist.tie`（tie 写，`dir /s /b` 枚举 +
+  `str.split`）扫描构建 out 生成。
+- 分组：`src/core`192、`src/base`24、`src/codec`25、`src/effects`(+colorfilters+imagefilters)、
+  `src/image`14、`src/pathops`32、`src/ports`13、`src/shaders`(+gradients)、`src/sksl`
+  (+analysis/ir/transform/tracing/codegen)、`src/encode`3、`src/utils`(+win/mac)、
+  `src/fonts`+`src/sfnt`、`src/opts`、`src/lazy`、`src/text`、`src/pdf`(空桩)、
+  `src/android`/`client_utils/android`、modules/skcms、third_party/externals/{libpng,zlib}。
+
+---
+
+## 构建可复现 / Reproducible build
+
+同一 manifest（同一 commit + 同一 GN args）应产出同一产物。p.6.8.5 落地与实测：
+
+- **确定性开关**：`[args] extra_cflags=["/Brepro"]` + `extra_ldflags=["/Brepro"]`（MSVC
+  确定性编译/链接）。verify：.obj 与 PE 产物中的 codeview 时间戳、绝对路径注入、
+  生成的 GUID 被消除，obj 产物字节不随重建墙钟漂移；lib 体积 169329356→168338664。
+- **可复现探针**：`tests/p685_probe/p685_probe.tie`——读 manifest（断言已开 /Brepro），
+  记录 skia.lib SHA256 → `build.exe --clean` + `--force` 干净重建 → 再算 SHA256 → 校验；
+  再跑默认构建验幂等。hash 经系统 `certutil -hashfile <f> SHA256` 计算（tie 直接读大
+  lib 有 byte_read 缺陷，见已知限制）。干净重建约 60s。
+- **已知取舍（Level-2 幂等下界）**：整库字节级一致**不可达**——MSVC `lib.exe`（GN alink
+  规则）把每个 .obj 的修改时间写进 COFF 归档成员头的 Date 字段，`/Brepro` 无法改写
+  lib.exe 的归档时间戳；两个不同时刻的干净重建仅成员头时间戳字节不同、.obj 代码一致。
+  故验收取「相同输入的 ninja 增量重建不产出新字节」为幂等下界（再跑 build = no-op，
+  lib SHA256 不变）——探针断言该下界通过（asserts=9，PASS，exit 0）。若工具链升级为可
+  输出无时间戳归档，Level-1 字节一致分支会自动接过。
+
+EN: /Brepro determinism enabled; reproducibility probe sits at tests/p685_probe; whole-lib
+byte-identity across clean rebuilds is **not** achievable because MSVC lib.exe writes each
+member's obj mtime into the archive header (no lib.exe /Brepro). Accepted lower bound:
+an incremental rebuild of identical input produces no new bytes (re-`build` is a no-op,
+lib SHA256 stable). Probe: 9 asserts PASS / exit 0.
 
 ---
 
@@ -143,10 +241,12 @@ EN: `out/tie_raster_release/`, `.tools/`, smoke `out/` are local artifacts, not 
 - `ext/gfx/skia/manifest.txt`：单一事实源（版本/依赖固定提交/toolchain/GN args/体积），
   build.tie 经 `cfg.parse_kv` 解析（INI 节 → `节.键`）。
 - 第三方源码与二进制不入库：`.gitignore` 忽略 `ext/gfx/skia/`（源码树）与
-  `ext/gfx/lib/`（二进制）；白名单保留 `build.tie` / `manifest.txt` / `smoke/smoke.cpp`。
+  `ext/gfx/lib/`（二进制）；白名单保留 `build.tie` / `manifest.txt` / `smoke/smoke.cpp` /
+  `modlist.tie` / `lib/modules.txt`。
 
 EN: manifest.txt is the single source of truth, parsed by build.tie. .gitignore excludes
-the third-party tree and lib binary, whitelisting our three authored files.
+the third-party tree and lib binary, whitelisting our authored files: build.tie,
+manifest.txt, smoke/smoke.cpp, modlist.tie, lib/modules.txt.
 
 ---
 
@@ -160,3 +260,13 @@ the third-party tree and lib binary, whitelisting our three authored files.
 - `tie` 的 `byte_read` 对本 PNG 中段字节内容触发访问违例（tie stdlib 二进制读取缺陷，
   非本模块）；冒烟改以文本标记校验绕开，已上报主代理。EN: tie `byte_read` crashes on
   this PNG's middle bytes (tie stdlib bug, out of scope); smoke validates via a text marker.
+- `tie` 对 `fs.walk`/`fs.read_dir` 返回的 `table<string>` 做 `[]` 元素读取会触发启动期
+  访问违例/非法句柄崩溃（p.6.8.5 RCA）；`fs` 与 `sort` 同程序 co-import 在较大负载下
+  亦崩溃。modlist.tie 改以 `process.exec_output` 枚举 + `str.split` 自建表避开；探针内联
+  排序。EN: tie crashes on `[i]` element reads of `fs.walk`/`fs.read_dir` result tables,
+  and on fs+sort co-import at higher load (p.6.8.5 RCA); modlist avoids it via
+  `exec_output` + `str.split`; probe inlines its own sort (no sort import).
+- MSVC 整库字节级可复现受限（见「构建可复现」节）：`lib.exe` 在 COFF 归档成员头写入
+  obj mtime，`/Brepro` 不能改写 → 整库跨时刻 clean-rebuild 字节不一致；以幂等下界验收。
+  EN: whole-lib byte-identity across clean rebuilds not achievable (lib.exe archive mtime);
+  reproducible-build acceptance uses the idempotency lower bound.
