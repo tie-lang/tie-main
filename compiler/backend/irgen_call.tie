@@ -116,6 +116,16 @@ func tig_user_call_from(full: string, id: i64, arg_start: i64) -> i64 {
         table_push(argkinds, arg_kind)
         k = k + 1
     }
+    // 记录实参原始节点（p.6.8.3：extern repr(C) struct 按引用需反查 Var 槽地址）。
+    // 并行表仅登记[0, len(argvals))，调用点实参节点 = child(id, arg_start + idx)。
+    var extern_arg_nodes: table<i64> = table_new_i64()
+    if !has_var {
+        var ni2: i64 = 0
+        while ni2 < len(argvals) && ni2 < nparams {
+            table_push(extern_arg_nodes, sstate.child(id, arg_start + ni2))
+            ni2 = ni2 + 1
+        }
+    }
     // 默认值参数补齐（p.6.2.3）：实参数 < 形参数时，缺失的可选形参用函数
     // 定义参数节点的默认值字面量表达式生成（限字面量/空表，无作用域依赖、
     // 无副作用——scollect 已校验）。补齐到固定形参数（变参位置由下方打包）。
@@ -183,6 +193,19 @@ func tig_user_call_from(full: string, id: i64, arg_start: i64) -> i64 {
                     ety = types.named(TK_STR)   // ref 实参：槽地址 → ptr
                 } else {
                     ety = ptys[ek]
+                    // p.6.8.3：repr(C) struct 形参按引用传（C ABI 传指针）——Var
+                    // 实参直接传变量槽地址（callee 写可见），非变量表达式落临时
+                    // alloca 后传地址；LLVM 实参类型由按值聚合改为 ptr<T>。
+                    if types.kind(ety) == K_STRUCT {
+                        var nid_st: i64 = -1
+                        if ek < len(extern_arg_nodes) {
+                            nid_st = extern_arg_nodes[ek]
+                        }
+                        if nid_st >= 0 {
+                            eav = tig_struct_byref(nid_st, ety, eav)
+                            ety = types.ptr_of(ety)
+                        }
+                    }
                     // 数字族缩窄/拓宽转换已在实参生成阶段完成（call 创建前，含
                     // extern 实参——实参循环先于本 extern 判定）；此处**不得**再
                     // tig_coerce：eav 已是形参类型，重复转换会让 trunc 源错
@@ -617,6 +640,28 @@ func tig_struct_method_call(full: string, id: i64, recv: i64, rty: i64) -> i64 {
 }
 
 // 外部桥调用（extern_call 36）通用生成。argtys/argv 并行表（实参 LLVM 类型 id + 值 id）。
+// p.6.8.3：extern repr(C) struct 实参按引用（C ABI 传指针）取地址值。
+// Var 实参 → 直接传变量槽地址 g_lookup_alloca（callee 就地写，调用方写可见）；
+// 非变量表达式 → 求值后落临时 alloca 再传其地址（副本，写不回调——与 C 值
+// 隐式转型一致，最小集接受）。agg_ty 为 struct 类型、value 为聚合值（Var 时
+// 已按值 load，此处忽略，仅经 scope_get_global 取槽地址）。
+func tig_struct_byref(arg_node: i64, agg_ty: i64, value: i64) -> i64 {
+    if s_tags[arg_node] == 6 {
+        var nidb = interner.intern(sstate.name_str(arg_node))
+        if scope_get_global(nidb) >= 0 {
+            return g_lookup_alloca
+        }
+    }
+    var alloca_b = ir.new_inst(g_cur_block, 20, agg_ty)
+    ir.add_operand(alloca_b, agg_ty, 2)
+    var apb = ir.get_value(alloca_b)
+    var stb = ir.new_inst(g_cur_block, 22, -1)
+    ir.add_operand(stb, agg_ty, 2)
+    ir.add_operand(stb, value, 0)
+    ir.add_operand(stb, apb, 0)
+    return apb
+}
+
 // 返回结果值 id（void 桥返回 -1，指令 ty=-1 无结果寄存器）。
 // 操作数布局：[0]=符号池id, [1]=返回类型id(IMM), 然后每参数 [类型id(IMM), 值]。
 // is_libc：true = libc 符号（不置 g_used_interp）；false = tie_interp 桥。

@@ -54,12 +54,33 @@ func is_scalar_t(t: i64) -> bool {
 // S10：extern 边界合格类型 = 标量（is_scalar_t）或 ptr<T>/slice<T>。
 // 平台桥允许 unsafe extern 用指针传引用/出参（桥原生 Win32/OS API，如
 // GetConsoleMode 的指针形参、CreatePipe 的句柄出参）。表/map/struct 等堆布局仍拒绝。
+//（本判定同时用于返回类型——struct 按值返回的 C ABI（sret 隐藏指针）不在本最小集。）
 func is_extern_ok_t(t: i64) -> bool {
     if is_scalar_t(t) {
         return true
     }
     var k = types.kind(t)
     return k == K_PTR || k == K_SLICE
+}
+
+// p.6.8.3：extern 参数合格类型 = 标量/string/ptr/slice 或 **repr(C) struct**。
+// repr(C) struct 按引用传（C ABI 传指针，callee 就地改读写）；非 repr(C) struct
+// 拒绝——布局非显式 C 契约，跨 FFI 边界字段偏移不确定（生成侧见 irgen_call.tig_struct_byref）。
+func is_extern_param_ok_t(t: i64) -> bool {
+    if is_extern_ok_t(t) {
+        return true
+    }
+    if types.kind(t) == K_STRUCT {
+        // repr(C) 判定：直接查 struct 定义节点的 repr(C) 标注（val=1）。
+        // 不依赖 st_reprc——该表在 collect_struct_fields 惰性填充，可能晚于
+        // extern 收集（此时字段未解析），此时读取为 0 会误拒 repr(C) 结构体。
+        var rname = types.type_name(t)
+        var rnode = find_struct_node(rname)
+        if rnode >= 0 && s_vals[rnode] == 1 {
+            return true
+        }
+    }
+    return false
 }
 
 // 顶层函数签名收集（含参数/返回类型解析 + 默认值/ref 校验）

@@ -1253,11 +1253,16 @@ pub func collect_top() -> i64 {
                 if pt < 0 {
                     return -1
                 }
-                // extern 参数必须是标量/string/ptr/slice（对齐 + 扩展 is_scalar_extern_ty）
-                if !is_extern_ok_t(pt) {
+                // extern 参数必须是标量/string/ptr/slice 或 repr(C) struct（p.6.8.3
+                // 扩展：repr(C) struct 按引用传指针；其余容器堆布局无法映射 C ABI）
+                if !is_extern_param_ok_t(pt) {
                     sm_err_line = s_lines[s]
                     sm_err_col = s_cols[s]
-                    sm_err_msg = "extern 函数 '" + full + "' 的参数 '" + sstate.name_str(p) + "' 必须是标量/string/ptr/slice 类型，实际是 " + types.type_name(pt)
+                    if types.kind(pt) == K_STRUCT {
+                        sm_err_msg = "extern 函数 '" + full + "' 的参数 '" + sstate.name_str(p) + "' 必须是标量/string/ptr/slice 类型，或 repr(C) struct（按引用传指针）；'" + types.type_name(pt) + "' 不是 repr(C)，需显式标注 repr(C)"
+                    } else {
+                        sm_err_msg = "extern 函数 '" + full + "' 的参数 '" + sstate.name_str(p) + "' 必须是标量/string/ptr/slice 类型，实际是 " + types.type_name(pt)
+                    }
                     return -1
                 }
                 table_push(p_tys, pt)
