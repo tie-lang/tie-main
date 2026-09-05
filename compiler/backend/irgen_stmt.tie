@@ -146,6 +146,32 @@ func tig_index_read(id: i64) -> i64 {
     return s21_table_at(t, iv, ok_addr, ret_ty)
 }
 
+// p.6.10.2 步2：表句柄引用计数插桩辅助——生成 tl_tbl$tbl_retain / tl_tbl$tbl_release
+// 桥调用（trm_lite.a 静态链接；表变量赋值/覆盖时保持别名计数守恒，防悬垂与双释放）。
+// 参数 hv = 表句柄指令值（LLVM ptr，表槽指针）。桥形参为 i64（x64 ABI 指针复用
+// 整数 8 字节通道）——先 ptrtoint（opcode 24）转 i64 再按 TK_I64 发射实参，
+// 保证 call void @tl_tbl$tbl_retain(i64 %N) 与符号签名类型匹配。
+func tig_tbl_retain_call(hv: i64) -> i64 {
+    g_used_trmlite = true
+    var hv64 = ir.new_inst(g_cur_block, 24, types.named(TK_I64))
+    ir.add_operand(hv64, hv, 0)
+    var atys = table_new_i64()
+    var avs = table_new_i64()
+    table_push(atys, types.named(TK_I64))
+    table_push(avs, ir.get_value(hv64))
+    return tig_trmlite_call("tl_tbl$tbl_retain", atys, avs, -1)
+}
+func tig_tbl_release_call(hv: i64) -> i64 {
+    g_used_trmlite = true
+    var hv64 = ir.new_inst(g_cur_block, 24, types.named(TK_I64))
+    ir.add_operand(hv64, hv, 0)
+    var atys = table_new_i64()
+    var avs = table_new_i64()
+    table_push(atys, types.named(TK_I64))
+    table_push(avs, ir.get_value(hv64))
+    return tig_trmlite_call("tl_tbl$tbl_release", atys, avs, -1)
+}
+
 // 表下标赋值 t[i] = v → tie_table_set_<suffix> 桥（void）。
 // AST：IndexAssign[val=op, children=[目标(Index), 值]]。
 func tig_index_assign(id: i64) -> i64 {
@@ -1083,6 +1109,16 @@ func tig_stmt(id: i64) -> i64 {
             ir.add_operand(store, ty, 2)
             ir.add_operand(store, iv, 0)
             ir.add_operand(store, av, 0)
+        } else {
+            // p.6.10.2 步2：无 init 的表类型变量 → 槽预置空句柄（null）——赋值插桩的
+            // 旧值 release 依赖槽初值确定（避免释放未初始化的垃圾句柄）。
+            if types.is_table(ty) {
+                var nv0 = tig_null_ptr()
+                var st0 = ir.new_inst(g_cur_block, 22, -1)  // store
+                ir.add_operand(st0, ty, 2)
+                ir.add_operand(st0, nv0, 0)
+                ir.add_operand(st0, av, 0)
+            }
         }
         scope_put(nm, av, ty)
         // 表变量元素类型登记（table_push/table_at 选桥用）：
@@ -1595,6 +1631,21 @@ func tig_stmt(id: i64) -> i64 {
             }
             vv = cv
         }
+        // p.6.10.2 步2：表变量赋值引用计数配对（防别名悬垂）——仅普通赋值（非复合）、
+        // RHS 显式表类型、目标为局部槽。新值 retain（槽接收新句柄）→ store →
+        // 旧值 release（槽覆盖腾退；空句柄由 tl_tbl.tbl_release 守卫跳过）。
+        // 函数返回表场景调用方接管路径会在接收后持 +1 残留（V1 泄漏受控、安全优先，
+        // 后续波次以「函数返回表调用点不 retain」收敛）。
+        var assign_is_tbl: bool = false
+        if op < 0 && tgt_global <= 0 {
+            var vt3 = node_types[val]
+            if vt3 >= 0 && types.is_table(vt3) {
+                assign_is_tbl = true
+            }
+        }
+        if assign_is_tbl {
+            tig_tbl_retain_call(vv)
+        }
         var st = ir.new_inst(g_cur_block, 22, -1)  // store
         ir.add_operand(st, tgt_ty, 2)
         ir.add_operand(st, vv, 0)
@@ -1602,6 +1653,12 @@ func tig_stmt(id: i64) -> i64 {
             ir.add_operand(st, tgt_alloca, 3)  // OK_GLOBAL 全局地址（池 id）
         } else {
             ir.add_operand(st, tgt_alloca, 0)  // 本地 alloca
+        }
+        if assign_is_tbl {
+            var old = ir.new_inst(g_cur_block, 21, tgt_ty)  // load 旧值
+            ir.add_operand(old, tgt_alloca, 0)
+            var old_v = ir.get_value(old)
+            tig_tbl_release_call(old_v)
         }
         return 0
     }

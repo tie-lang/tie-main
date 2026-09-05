@@ -1,0 +1,12 @@
+type tie<logic>
+// tbl_copy_probe.tie：判定 tie 表赋值是深拷贝还是浅拷贝（句柄共享）。
+// 结果：len(a) 打印 1 → 深拷贝（b 独立）；打印 2 → 浅拷贝（共享句柄）。
+var ga: table<i64> = []
+
+func main() {
+    table_push(ga, 1)
+    var b: table<i64> = ga
+    table_push(b, 2)
+    println(len(ga))
+    println(len(b))
+}
