@@ -21,6 +21,29 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] 主循环与呈现：脏矩形重绘 + 帧节流 + trm.ui port 双实现（p.6.8.11）（2026-09-05）
+
+* 主循环（ext/gfx/app.tie，namespace `app`）：`app.run(desc, hwnd, tick)` 可中断帧循环 = pump
+  + 事件分发（ev.take 汇入累计表，`app.ev_count()`）+「脏→重绘」门控（g_dirty / paint_pending
+  本帧渲染，否则跳过，`Stats{rendered,skipped,frames,broken}` 计数）+ 帧节流（GetTickCount64
+  记帧 + Sleep 补齐至 throttle_ms；0=off）。tick 为探针闭包（持有真实 Canvas draw+present），
+  返回 1 请求下一帧脏、99 提前 break。vsync 以 Sleep 节流近似，DWM/flip flush 后置。
+  EN: `app.run` interruptible frame loop — pump + event dispatch + dirty-gated render/skip +
+  Sleep-hosted throttle (vsync proxy, DWM flush deferred).
+* port 抽象面（ext/gfx/port.tie，namespace `pt`）：trm.ui Window/Painter/EventSource 三件套；
+  tie 的 `port` 为保留关键字，以 **desc 字段 + 分支** 落地双实现（kind 开关：`pt.k_offscreen()`=0
+  纯离屏 / `pt.k_skia()`=1 真实窗口）。两实现共享 `gfx.run_commands` 渲染路径，区别仅在
+  present/窗口绑定；`pt.render_pixels` 把命令列表渲到离屏后备缓冲并回读 BGRA 字节表（按
+  make_tbl 惯例返回值搬运）。EN: port trio landed as desc-branch dual impl (SKIA/OFFSCREEN),
+  sharing one render path, differing only in present/window binding.
+* 验收探针 tests/p6811_probe/（p6811_probe.tie + build_p6811.tie，链 thunk.obj+win.obj）：
+  ① 脏矩形 rendered==dirty 次数、内容颜色自增逐像素回读；② 双实现同一命令列表 region+网格
+  逐像素一致；③ 帧节流 8 帧间隔 ≥ 下限；④ SKIA 窗口冒烟 + 主循环事件分发。**asserts=17，PASS /
+  exit 0**。RCA 记档：跨模块大 surface i64 表整体迭代触发 trm_lite 上界栈损坏（0xC00000FD），
+  探针用连续区+散布网格规避（后续 RCA）；跨模块大表用返回值而非传参填充。
+  EN: acceptance probe (17 asserts PASS / exit 0) — dirty-rect, dual-impl pixel identity,
+  throttle lower-bound, SKIA window smoke + main-loop event dispatch.
+
 ## [feat] 事件系统 E3：鼠标/键盘事件队列 + 信号标志（p.6.8.10）（2026-09-05）
 
 * 事件队列（ext/gfx/win/win.cpp 追加，不动 6.8.9 既有入口）：每窗口 WinSlot 内环形事件队列

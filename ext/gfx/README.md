@@ -700,3 +700,86 @@ EN: asserts=23 PASS / exit 0 — synthetic-injection-driven, deterministic.
   而验收强制二者断言，故明确为 5 槽契约并文档化。
 EN: pop writes 5 i64 slots (the original 4 could not carry both keycode and timestamp,
 which the acceptance must assert); timestamp asserted non-decreasing only.
+
+## p.6.8.11 主循环与呈现 / Main loop + presentation
+
+*EN: main-loop integration + dirty-rect redraw + frame throttle/vsync (Sleep proxy); trm.ui
+port surface (Window/Painter/EventSource) with a switchable SKIA / OFFSCREEN dual impl.*
+
+p.6.8.11 落地设计文档 §4 表行的**主循环与呈现** + tucore-arch.md §4 的 **port（接口模型）**。
+两个 tie 模块：
+
+```
+ext/gfx/app.tie     namespace app   —— 主循环/脏矩形/帧节流
+ext/gfx/port.tie    namespace pt    —— trm.ui port 抽象面（Window/Painter/EventSource）
+```
+
+### 主循环 / main loop（`ext/gfx/app.tie`, namespace `app`）
+
+`app.run(d, hwnd, tick)` 一段可中断帧循环，每帧顺序：
+1.（SKIA 才做）`win.pump`；`closed` → break；`paint_pending` → 视为脏；
+2. 事件分发：`ev.take` 排入 app 累计表（EventSource 消费点），`app.ev_count()` 可取；
+3. 脏判断：`g_dirty` 或 paint_pending → 本帧渲染（tick 收 `render=1`），否则跳过
+  （tick 收 `render=0`）；累积 `Stats{rendered, skipped, frames, broken}`；
+4. 帧节流：`GetTickCount64` 记帧时间 + `Sleep` 补齐至 `throttle_ms`（0=off）。
+
+`tick(frame_idx, render_this_frame) -> i64`：由**探针闭包**实现绘制 + present（因跨模块不能
+写 gfx struct，见 p.6.8.7 记录，渲染必须经闭包持有的真实 Canvas）。返回 `1` → 请求下一帧脏
+（供「脏计划」：在帧 k 决定帧 k+1 渲染）；返回 `99` → 提前 break。
+
+`app.desc(kind, w, h, throttle_ms, iters) -> AppDesc` / `app.mark_dirty()` / `app.run(...)`
+返回 `AppStats`。vsync 本子项用 **Sleep 节流近似**（Game Loop 每帧 Sleep 补齐）；DWM/flip
+垂直同步 flush 为设计文档明确的后置项（GPU/DWM 后置，见 2026-09-03 设计文档 §4 表 p.6.8.12+）。
+EN: `app.run` is a per-frame interruptible loop (pump → event dispatch → dirty-gated render/skip
+→ throttle); O(1) per frame; Sleep-hosted frame throttle stands in for vsync (DWM flip deferred).
+
+### port 抽象面 / port surface（`ext/gfx/port.tie`, namespace `pt`）
+
+对齐 tucore-arch.md §4 三件套：**Window**（`pt.open/show/update/present/destroy/closed/
+paint_pending`，hwnd=i64 直透 win thunk）、**Painter**（`pt.render_pixels(d, cmds) → table<i64>`
+把命令列表渲进离屏后备缓冲并拷贝出 BGRA 字节表）、**EventSource**（`pt.drain_events(hwnd)`）。
+
+tucore 用语言级 `port` 声明 + 显式 impl + `--backend`；tie 的 `port` 已**保留为关键字**
+（无该语法），故以 **desc 字段 + 分支** 落地：`pt.desc(kind, w, h)` 里 `kind` 即 i64 双实现
+开关（`pt.k_offscreen()=0` 纯离屏 / `pt.k_skia()=1` 真实窗口）。两实现**共享同一命令列表渲染
+代码路径**（`gfx.run_commands` → 离屏后备缓冲），区别只在**呈现/窗口绑定**：OFFSCREEN 无窗口
+（像素供读取/断言），SKIA 额外开窗 + present 上屏（冒烟）。这正是 port 抽象在本阶段的落地形态
+（跨模块 struct 约束下，Painter.render 为自包含一次绘制，见记录）。
+EN: the port trio is landed as a desc-branch instead of a language `port` (reserved keyword);
+both impls share the one `gfx.run_commands` render path and differ only in present/window binding.
+
+### 验收探针 / acceptance probe
+
+`tests/p6811_probe/p6811_probe.tie`（构建驱动 `build_p6811.tie`，链 thunk.obj+win.obj）
+**asserts=17，PASS / exit 0**：
+1. **脏矩形（OFFSCREEN）**：脏计划帧 0/4 渲染 2 次、其余跳过；`rendered==2==dirty 次数`、
+   `skipped==4`、`rendered+skipped==frames`；每次渲染内容**颜色自增**，逐像素回读证明
+   每次重绘确实刷新后备缓冲。
+2. **双实现一致**：同一命令列表经 SKIA 与 OFFSCREEN 两 port 渲染 → 缓冲长度相等 + **连续区
+   （W×50）逐字节 + 全帧散布网格**逐像素一致（共享渲染路径）。
+3. **帧节流**：throttle=50ms（≈20fps），8 帧间隔 ≥ 下限（≥40ms）、总耗时限下限放宽。
+4. **SKIA 冒烟**：真实窗口起主循环 3 帧（tick 内 draw+present）+ 合成 WM_MOUSEMOVE 验主循环
+   事件分发（`app.ev_count()≥1`）→ destroy → `closed` 复位。
+时序断言只断**下限/计数**（禁精确毫秒，仓库时序教训）；像素/计数为确定性断言。
+EN: asserts=17 PASS / exit 0 — dirty-rect (rendered==dirty-count, self-incrementing color),
+dual-impl region+grid pixel-identical, throttle lower-bound frame gaps, SKIA window smoke +
+main-loop event dispatch. Timing asserts are lower-bounded only.
+
+### 本子项记录 / notes（RCA）
+
+- **跨模块 struct 全编译单元全局且须定义在模块顶级**：命名空间内 struct / 跨模块注解/构造
+  全部不可用（同 p.6.8.7 记录 + 实测）；类型名须全局唯一（PortDesc/AppDesc 防冲突）；
+  `port` 是 tie 保留关键字 → 命名空间/别名用 `pt`。
+- **大 i64 表（值取自离屏 surface，>~30000 元素）整体连续迭代 → trm_lite 上界栈损坏**
+  （0xC00000FD，探针实测；算术表/自建小表不受影响）。这是 tie 表运行时 + Skia 内存交叉的
+  bug；本子项在探针里规避（双实现一致用「连续区+散布网格」而非整帧全表迭代），并为后续
+  trm_lite RCA 记档。ASCII 值经 `as_i64(deref)` 读到 >127 会符号扩展为负 i64，比较语义不变。
+- **跨模块大表传「调用方传表参填充」取回也会栈损坏** → 改用**返回值**搬运（table 引用类型，
+  移动零拷贝，同 gfx/make_tbl 惯例）。
+- 模块级 `var` 必须在命名空间体外（namespace 内只允许函数/结构体，同 gfx.tie arena 记账）。
+- `Sleep` 已在 window.tie 声明 extern → app.tie 复用 `win.sleep`（禁重复 extern）。
+- 时间戳/帧间隔只用**下限**断言（GetTickCount64 单调、Sleep 只加时，宿主噪声只会放宽）。
+EN: RCA notes — cross-module struct restrictions (module-top-level, globally-unique names),
+the large gfx-derived i64 table upper-region iteration bug in trm_lite (avoided via region+grid;
+filed for later RCA), return-value table transport across modules, module vars outside namespace,
+reusing win.sleep, lower-bound timing asserts.
