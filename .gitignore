@@ -168,3 +168,8 @@ hello_b2.exe
 /tests/p6812_probe/*.exe
 /tests/p6812_probe/*.obj
 /tests/p6812_probe/*.ll
+
+# p.6.8.12 全栈演示编译/运行产物（.tie 源入库，.exe/.obj/.ll 不入库）
+/ext/gfx/demo/*.exe
+/ext/gfx/demo/*.obj
+/ext/gfx/demo/*.ll

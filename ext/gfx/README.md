@@ -783,3 +783,75 @@ EN: RCA notes — cross-module struct restrictions (module-top-level, globally-u
 the large gfx-derived i64 table upper-region iteration bug in trm_lite (avoided via region+grid;
 filed for later RCA), return-value table transport across modules, module vars outside namespace,
 reusing win.sleep, lower-bound timing asserts.
+
+---
+
+## p.6.8.12 全栈演示 + 组合式布局雏形 / Full-stack demo + composable layout
+
+*EN: the p.6.8.12 full-stack demo (window + command-list drawing + event response) built on
+an interactive main loop, plus the minimal row/column composable **layout kernel** that the
+demo uses and a deterministic probe covers.*
+
+### 组合式布局雏形 / layout kernel（`ext/gfx/layout.tie`, namespace `lay`）
+
+设计文档 ff非目标区（tieui 完整组件框架属 S4.3）之下的**布局雏形**：只做「在一条主轴上
+一次排布一组子盒」的**位置计算**，不做 hit-test / 尺寸协商 / 递归 measure。区域为平面
+`table<i64>`，每格 4 槽 `{x,y,w,h}`（输入输出同构）。
+
+| 函数 / fn | 作用 / effect |
+|---|---|
+| `lay.row(children, start_x, size, gap, align)` | 主轴=水平；子盒 `y` 按 `lay.cross(align,size,h)`（0:顶/1:中/2:底）定位，`x=cursor` 逐格推进 + gap。EN: main axis horizontal; cross-axis y by align |
+| `lay.column(children, start_y, size, gap, align)` | 主轴=垂直；子盒 `x` 按 `lay.cross(align,size,w)`（0:左/1:中/2:右）定位，`y=cursor` 逐格推进 + gap。EN: main axis vertical |
+| `lay.offset(regions, dx, dy)` | 对每格平移 (dx,dy)（只改 x/y）。EN: translate every region |
+| `lay.cross(align, size, extent) -> i64` | 交叉轴定位：align 0→0；1→`(size-extent)/2`；2→`size-extent`。EN: cross-axis alignment |
+
+复杂度 O(k)/趟（k=子盒数），单遍游标、无嵌套表、无 O(n²)。**嵌套组合范式**：
+`outer` 列布局 → 取出中盒绝对区 → 内层 `row/column` 算相对区 → `lay.offset` 位移到父盒位，
+即「row 内的 cell 再 column / column 内的 cell 再 row」。EN: single-pass O(k), deterministic;
+nesting = run an inner layout relative then `lay.offset` into a parent cell's absolute box.
+
+### 全栈演示 / full-stack demo（`ext/gfx/demo/demo.tie` + `build_demo.tie`）
+
+构建 / build（仓库根运行）：
+```
+compiler\tiec_7A6100.exe ext\gfx\demo\build_demo.tie -o ext\gfx\demo\build_demo.exe
+ext\gfx\demo\build_demo.exe      # 编译（thunk.obj+win.obj+demo.obj）→ 链接 demo.exe → 运行
+```
+产物 `demo.exe`/`build_demo.exe`/`.obj`/`.ll` 由根 `.gitignore` 忽略，不入库。
+
+窗口 640x400，标题 **「TieGfx Demo p.6.8.12」**；命令列表渲染到离屏后备缓冲后 `pt.present`
+blit 上屏。场景由 `lay.column`（头部文本 → 主 row → 底部状态）+ 内嵌 `lay.row`（红 FILL_RECT、
+绿 PATH 折线描边、内联 8x8 PNG IMAGE）组合。
+
+**交互按键 / interaction keys**（源码 `demo.tie` 头部注释同样标注）:
+
+| 输入 / input | 效果 / effect |
+|---|---|
+| 鼠标左键点击 | 点击点画一个主题色方点 + 切换明/暗主题，底部状态文本更新坐标。日志 `click@(x,y) theme->N`。EN: draw accent rect at cursor + toggle light/dark theme + status coords |
+| 空格 SPACE (0x20) / R (0x52) | 切换预览模式：完整着色场景 ⇄ 布局线框。日志 `key=.. preview->N`。EN: toggle preview mode (full scene ⇄ layout wireframe) |
+| 关窗 × | `app.run` 收到 `closed` → 主循环 `broken=1` 提前退出，进程确定性结束。EN: close window → main loop breaks cleanly |
+
+demo 的 tick 闭包经 `app.ev_log()`（app 侧新增只读访问器，纯增量不改语义）读取 `app.run`
+已成队排空后的真实用户事件做交互响应；事件触发 `app.mark_dirty()` 驱动脏矩形重绘。
+
+### 验收探针 / acceptance probe
+
+`tests/p6812_probe/p6812_probe.tie`（纯 tie，无 FFI；`build_p6812.tie` 仅链 trm_lite.a）
+**asserts=23，PASS / exit 0**：row（top/middle/bottom）、column（left/middle/right）、
+嵌套（outer column→mid 内嵌 inner row→`lay.offset` 到父盒位，坐标手算）、边界（负坐标/
+零尺寸）、`lay.cross` 单测（含负/零 extent）。坐标期望全部**手算**写死、确定性。
+EN: 23 deterministic asserts PASS / exit 0 — row/column align, nested offset composition,
+edge cases (negative coords / zero-size), cross() unit checks; all hand-computed.
+demo 已本机人工验收（窗口打开、首帧渲染、点击/按键响应、关窗 clean 退出）。
+
+### 已知边界 / known limits（p.6.8.12）
+
+- **demo 持续整帧重绘**：每帧 `present→InvalidateRect→WM_PAINT→paint_pending` 使主循环
+  `g_dirty` 恒置位 → 非动画也逐帧渲染（`rendered`≈全部帧、`skipped`≈0）。对演示可接受；
+  真「事件驱动重绘」需 present 不无差别失效（改增量/显式失效），留待组件框架 S4.x。
+  EN: demo continuously repaints every frame because present invalidates + paint_pending re-dirts
+  (acceptable for the demo; event-driven-only redraw deferred to the fuller component framework).
+- 布局雏形不做 hit-test / 尺寸协商；坐标计算只负责「排布」，命中/协商归后续组件框架。
+- `app.ev_log()` 读取 app 累计事件**表**（跨帧需自行记录已处理下标；demo 在 `g_state[4]` 记）。
+  EN: consumer must track a processed index across frames (demo uses a slot in g_state).
+- 跨模块/大表/闭包捕获语义沿用 p.6.8.7/6.8.11 记录；demo 交互状态存共享表经模块函数读写。

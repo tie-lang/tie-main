@@ -21,6 +21,37 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] 全栈演示：窗口 + 命令列表 + 事件响应 + 组合式布局雏形（p.6.8.12）（2026-09-05）
+
+* 组合式布局雏形（ext/gfx/layout.tie，namespace `lay`）：最小 **row / column** 嵌套盒定位器，
+  纯 tie、单遍游标、确定性。区域为平面 `table<i64>`（每格 4 槽 `{x,y,w,h}`）。`lay.row(
+  children,start_x,size,gap,align)`/`lay.column(children,start_y,size,gap,align)` 沿主轴逐格
+  推进、交叉轴按 `lay.cross(align,size,extent)` 定位（align 0=start/1=中/2=end）；`lay.offset(
+  regions,dx,dy)` 平移内层布局到父盒绝对位，实现「row 内的 cell 再 column」（嵌套组合范式）。
+  无 O(n²)、无嵌套表。EN: minimal row/column nested box-layout kernel — flat region tables,
+  single-pass, deterministic; nesting via offset-translating an inner layout into a parent cell.
+* 全栈演示（ext/gfx/demo/demo.tie + build_demo.tie）：窗口 640x400「TieGfx Demo p.6.8.12」，
+  命令列表渲染（8 带渐变背景/白面 + lay.column 头部文本→主 row→底部状态，主 row 内嵌
+  lay.row：红 FILL_RECT + 绿 PATH 折线描边 + 内联 8x8 PNG IMAGE）；事件响应：左键点击点在
+  点击点画主题色方点 + 切换明/暗主题、状态文本更新坐标；VK_SPACE/VK_R 切换预览模式（完整
+  着色 ⇄ 布局线框）；`app.run` 主循环 + 脏矩形重绘 → 关窗退出。交互按键已注释标注。
+  EN: interactive full-stack demo — live window rendering a command list laid out with
+  row/column, responding to mouse clicks (theme toggle + accent rect + status coords) and
+  keyboard (SPACE/R toggle preview), run by the app.run main loop with dirty-rect redraw.
+  demo.exe / build_demo.exe 产物本地忽略不入库。
+* app 侧追加只读 `app.ev_log() -> table<i64>`（纯增量访问器）：让主循环消费者（如 demo 的
+  tick 闭包）在 app.run 已成队排空后读取真实用户事件做交互响应，不改既有语义。
+  EN: added read-only `app.ev_log()` so a run-loop consumer can read the real user events
+  that app.run already drained (purely additive, no semantic change).
+* 验收探针 tests/p6812_probe/（p6812_probe.tie + build_p6812.tie，纯 tie 无 FFI）：
+  row（top/middle/bottom）、column（left/middle/right）、**嵌套**（outer column→mid 内嵌
+  inner row→offset 到父盒位）、边界（负坐标/零尺寸）、cross 单测；坐标期望全部**手算**写死。
+  **asserts=23，PASS / exit 0**。演示本机人工验收：窗口打开、首帧渲染、点击/按键响应
+  （日志 `click@(x,y) theme->N` / `key=.. preview->N`）、关窗 clean 退出（broken=1）。
+  EN: acceptance probe (23 asserts PASS / exit 0) for the layout kernel; demo manually verified
+  locally (window, first frame, click/key response logs, clean close). 已知边界：demo 每帧
+  present→InvalidateRect→paint_pending 置脏 → 持续重绘（非动画也整帧重绘，演示可接受）。
+
 ## [feat] 主循环与呈现：脏矩形重绘 + 帧节流 + trm.ui port 双实现（p.6.8.11）（2026-09-05）
 
 * 主循环（ext/gfx/app.tie，namespace `app`）：`app.run(desc, hwnd, tick)` 可中断帧循环 = pump
