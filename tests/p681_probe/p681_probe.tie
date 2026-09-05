@@ -1,0 +1,109 @@
+type tie<logic>
+// tests/p681_probe/p681_probe.tie —— p.6.8.1 验收：typed ptr 类型化指针 + unsafe 门禁。
+// 全离线确定性探针。覆盖：
+//   1. 取址 addr_of(var) → ptr<元素类型>
+//   2. 解引用读 deref(p) / 写 deref_write(p, v)（按元素类型 load/store）
+//   3. 指针算术 ptr_add(p, n) 带元素步长（ptr<i64> 步长 8、ptr<u8> 步长 1）
+//   4. 比较：ptr ==/!=（ICmp）、is_null
+//   5. ptr 作为 unsafe fn 形参 / 返回值
+// 期望全部 PASS / exit 0。
+unsafe extern fn putchar(c: i32) -> i32;
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// unsafe fn 形参传指针 + 返回值传指针（unsafe fn 调用必须在 unsafe 上下文）
+unsafe fn add_one(p: ptr<i64>) -> ptr<i64> {
+    deref_write(p, deref(p) + 1)
+    return p
+}
+
+func arith_section() {
+    unsafe {
+        var x: i64 = 42
+        var pa: ptr<i64> = addr_of(x)
+        var base_b = ptr_to_int(pa)
+        var next_b = ptr_to_int(ptr_add(pa, 1))
+        check(next_b - base_b == 8, "ptr<i64> element stride = 8, got " + to_string(next_b - base_b))
+
+        var pb: ptr<u8> = int_to_ptr(base_b)
+        var nb_b = ptr_to_int(ptr_add(pb, 1))
+        check(nb_b - base_b == 1, "ptr<u8> element stride = 1, got " + to_string(nb_b - base_b))
+
+        // 负索引 ptr_add 回退（gep 支持负步长）
+        var back_b = ptr_to_int(ptr_add(pa, -1))
+        check(back_b == base_b - 8, "ptr_add negative index -> base-8, got " + to_string(back_b))
+    }
+}
+
+func deref_section() {
+    unsafe {
+        var x: i64 = 42
+        var pa: ptr<i64> = addr_of(x)
+        // 读
+        check(deref(pa) == 42, "deref(addr_of(x)) reads 42")
+        // 写
+        deref_write(pa, 100)
+        check(x == 100, "deref_write(pa, 100) mutates x -> " + to_string(x))
+        check(deref(pa) == 100, "deref(pa) reads back 100")
+        // unsafe fn 形参通过指针修改调用方
+        var rp: ptr<i64> = add_one(pa)
+        check(x == 101, "unsafe fn via ptr param mutates x -> " + to_string(x))
+        check(rp == pa, "unsafe fn returns same ptr")
+    }
+}
+
+func cmp_section() {
+    unsafe {
+        var x: i64 = 42
+        var pa: ptr<i64> = addr_of(x)
+        // is_null
+        check(!is_null(pa), "is_null(addr_of(x)) == false")
+        var p0: ptr<u8> = int_to_ptr(0)
+        check(is_null(p0), "is_null(int_to_ptr(0)) == true")
+        // ptr ==（同地址）
+        var pa2: ptr<i64> = addr_of(x)
+        check(pa == pa2, "ptr== same address true")
+        check(pa != p0, "ptr!= non-null vs null true")
+        check(!(pa != pa2), "ptr!= same address false")
+
+        var y: i64 = 7
+        var py: ptr<i64> = addr_of(y)
+        check(pa != py, "ptr!= different vars true (distinct address)")
+    }
+}
+
+func fnval_section() {
+    unsafe {
+        var a: i64 = 5
+        var b: i64 = 6
+        var pa: ptr<i64> = addr_of(a)
+        var pb: ptr<i64> = addr_of(b)
+        deref_write(pa, deref(pa) + deref(pb))
+        check(a == 11, "ptr arith via deref: a = " + to_string(a))
+    }
+}
+
+func main() {
+    println("start")
+    arith_section()
+    deref_section()
+    cmp_section()
+    fnval_section()
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+}

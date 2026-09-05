@@ -1,0 +1,8 @@
+// tests/errors/golden/err_071.tie —— p.6.8.1 unsafe 门禁负例：
+// 安全代码（非 unsafe fn / 非 unsafe 块）调用 unsafe 函数（unsafe extern）= 编译错误。
+unsafe extern fn GetTickCount() -> i64;
+
+func main() {
+    var n = GetTickCount()
+    print("ok")
+}

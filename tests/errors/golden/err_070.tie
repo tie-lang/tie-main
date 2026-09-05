@@ -1,0 +1,6 @@
+// tests/errors/golden/err_070.tie —— p.6.8.1 unsafe 门禁负例：
+// 安全代码（非 unsafe fn / 非 unsafe 块）调用 unsafe 指针内置 deref = 编译错误。
+func main() {
+    var v = deref(int_to_ptr(0))
+    print("ok")
+}

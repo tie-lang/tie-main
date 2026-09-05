@@ -222,6 +222,13 @@ func tig_binary(op: i64, lhs: i64, rhs: i64) -> i64 {
         }
         return tig_narrow_bin(op, iop, lv, rv, lhs_t, rhs_t, common)
     }
+    // p.6.8.1 typed ptr ==/!=（一等指针相等）：指针经 ptrtoint 后整数 icmp。
+    // 语义层仅放行 ptr==/ptr!=（见 sinfer 比较分支）；< > <= >= 已被拦截。
+    // 指针比较转 i64 整型比较，避免 llvmgen icmp 对 alloca/gep 地址的 cmp_ty
+    // 推导偏差（ins_ty 承载元素语义类型非 ptr）——先正确后性能，等值语义无损。
+    if types.is_ptr(lhs_t) || types.is_ptr(rhs_t) {
+        return tig_binary_ptr(op, lv, rv, lhs_t, rhs_t)
+    }
     var inst = ir.new_inst(g_cur_block, iop, types.named(3))
     ir.add_operand(inst, lv, 0)
     ir.add_operand(inst, rv, 0)
@@ -250,6 +257,35 @@ func tig_binary(op: i64, lhs: i64, rhs: i64) -> i64 {
 // 公共宽度（有符号 sext / 无符号 zext）。同宽度直传（LLVM 位模式一致）。
 // src 宽于 dst（字面量 i64 → 窄公共宽度）→ trunc 缩窄（常量回绕语义）。
 // 返回新值 id（未拓宽原样返回）。
+func tig_ptrtoint(v: i64) -> i64 {
+    var pi = ir.new_inst(g_cur_block, 24, types.named(TK_I64))
+    ir.add_operand(pi, v, 0)
+    return ir.get_value(pi)
+}
+
+// p.6.8.1 typed ptr ==/!=：指针经 ptrtoint 转 i64 后整数 icmp（等值语义无损）。
+// op 仅 5(==)/6(!=)——语义层已拦截 < > <= >=。左右若是指针则各自 ptrtoint；
+// 非指针侧（理论上不出现）原样保留。
+func tig_binary_ptr(op: i64, lv: i64, rv: i64, lhs_t: i64, rhs_t: i64) -> i64 {
+    var l = lv
+    var r = rv
+    if types.is_ptr(lhs_t) {
+        l = tig_ptrtoint(l)
+    }
+    if types.is_ptr(rhs_t) {
+        r = tig_ptrtoint(r)
+    }
+    var ic = ir.new_inst(g_cur_block, 12, types.named(TK_BOOL))
+    ir.add_operand(ic, l, 0)
+    ir.add_operand(ic, r, 0)
+    if op == 5 {
+        ir.add_operand(ic, 0, 2)  // eq
+    } else {
+        ir.add_operand(ic, 1, 2)  // ne
+    }
+    return ir.get_value(ic)
+}
+
 func tig_widen(v: i64, src_ty: i64, dst_ty: i64) -> i64 {
     if src_ty == dst_ty {
         return v

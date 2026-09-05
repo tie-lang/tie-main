@@ -572,6 +572,11 @@ pub func infer_expr(id: i64) -> i64 {
             // 比较（对齐 Rust 行为）；==/!= 放行，< > <= >= 在下文 op 分组
             // 检查中报「比较运算符不能用于 tuple」
             type_ok = true
+        } else if op >= 5 && op <= 10 && types.is_ptr(lhs) && types.is_ptr(rhs) {
+            // p.6.8.1 指针比较：==/!= 允许任意元素类型（地址等值比较）；< > <= >=
+            // 由比较运算符分组（op 5/6 之外）拒绝——指针是地址值，元素类型不影响
+            // 地址是否相等。
+            type_ok = true
         }
         if !type_ok {
             sm_err_line = s_lines[id]
@@ -601,10 +606,12 @@ pub func infer_expr(id: i64) -> i64 {
                 return -1
             }
         } else if op <= 10 {
-            // 比较：数字/字符串/bool/trit；元组仅 ==/!=（逐字段），< > <= >= 仍报错
-            if types.kind(lhs) == K_TUPLE {
+            // 比较：数字/字符串/bool/trit；元组仅 ==/!=（逐字段），< > <= >= 仍报错；
+            // ptr 仅 ==/!=（typed ptr 一等指针相等门禁，p.6.8.1）
+            if types.kind(lhs) == K_TUPLE || types.is_ptr(lhs) {
                 if op == 5 || op == 6 {
-                    // 元组相等比较：合法（结果 bool，rt 在下方比较分支统一处理）
+                    // 元组/指针相等比较：合法（结果 bool，rt 在下方比较分支统一处理；
+                    // 指针经 ptrtoint 后整数比较，见 tig_binary_ptr）
                 } else {
                     sm_err_line = s_lines[id]
                     sm_err_col = s_cols[id]

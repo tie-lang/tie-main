@@ -1,0 +1,1 @@
+语义错误 @4:13: 调用 unsafe 内置 'deref' 必须在 unsafe 块或 unsafe 函数中（安全代码禁止触底）

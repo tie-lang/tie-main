@@ -1,0 +1,7 @@
+// tests/errors/golden/err_069.tie —— p.6.8.1 unsafe 门禁负例：
+// 安全代码（非 unsafe fn / 非 unsafe 块）声明指针类型变量 = 编译错误。
+func main() {
+    var x: i64 = 42
+    var p: ptr<i64> = addr_of(x)
+    print("ok")
+}
