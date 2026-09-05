@@ -163,3 +163,8 @@ hello_b2.exe
 /tests/p6811_probe/*.exe
 /tests/p6811_probe/*.obj
 /tests/p6811_probe/*.ll
+
+# p.6.8.12 组合式布局雏形探针编译/运行产物（.tie 源入库，.exe/.ll/.obj 不入库）
+/tests/p6812_probe/*.exe
+/tests/p6812_probe/*.obj
+/tests/p6812_probe/*.ll

@@ -1,0 +1,160 @@
+type tie<logic>
+// tests/p6812_probe/p6812_probe.tie —— p.6.8.12 汇编式布局雏形（row/column/offset）确定性探针
+// EN: p.6.8.12 deterministic probe of the composable layout primitives — nested row/column
+// coordinate assertions (hand-computed expectations), incl. negative-coordinate and
+// zero-size edge cases. Pure tie, no FFI, CI-runable.
+//
+// 覆盖 / Coverage：
+//   1. row：横向排布（交叉轴 top/middle/bottom 对齐），坐标写死期望（手算）。
+//   2. column：纵向排布（交叉轴 left/middle/right 对齐），坐标写死期望。
+//   3. 嵌套：outer column 内含一个 mid cell，mid 内嵌 inner row → 内层 offset 到父盒绝对位。
+//   4. 边界：负坐标 + 零尺寸子盒 → 不越界、坐标按公式正确。
+//   5. `lay.cross` 交叉轴定位公共函数单测（align 0/1/2，含负/零 extent）。
+//
+// 坐标期望均为**手算**给出（见每节注释），不依赖任何渲染像素/迭代容差。
+
+import "../../ext/gfx/layout.tie" as lay
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) -> i64 {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+        return 1
+    }
+    println("FAIL " + msg)
+    fails = fails + 1
+    return 0
+}
+
+// 读平面区域表中某格坐标：regions 每格 4 槽 {x,y,w,h}。idx 0=x 1=y 2=w 3=h。
+func slot(regions: table<i64>, i: i64, idx: i64) -> i64 {
+    return regions[i * 4 + idx]
+}
+
+// 构造输入子盒平面表：pairs 依次为 {w,h}；本雏形 x/y 入参填 0（被覆盖）。
+func make_children(w0: i64, h0: i64, w1: i64, h1: i64) -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0); table_push(t, 0); table_push(t, w0); table_push(t, h0)
+    table_push(t, 0); table_push(t, 0); table_push(t, w1); table_push(t, h1)
+    return t
+}
+func make_children3(w0: i64, h0: i64, w1: i64, h1: i64, w2: i64, h2: i64) -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, 0); table_push(t, 0); table_push(t, w0); table_push(t, h0)
+    table_push(t, 0); table_push(t, 0); table_push(t, w1); table_push(t, h1)
+    table_push(t, 0); table_push(t, 0); table_push(t, w2); table_push(t, h2)
+    return t
+}
+
+func main() {
+    println("start")
+
+    // ===================================================================
+    // 1. row：children = [{20,10},{30,20}]，start_x=5，size=30（交叉轴高度），
+    //    gap=4，align=1（middle，y=(size-h)/2，整数除）。
+    //    手算：child0 x=5  y=(30-10)/2=10 → (5,10,20,10)；cursor=5+20+4=29
+    //          child1 x=29 y=(30-20)/2=5  → (29,5,30,20)
+    //====================================================================
+    var r1 = lay.row(make_children(20, 10, 30, 20), 5, 30, 4, 1)
+    check(len(r1) == 8, "row: len==2 regions (8 slots), got " + to_string(len(r1)))
+    check(slot(r1, 0, 0) == 5 && slot(r1, 0, 1) == 10 && slot(r1, 0, 2) == 20 && slot(r1, 0, 3) == 10,
+        "row#0 middle=(5,10,20,10), got " + to_string(slot(r1, 0, 0)) + "," +
+        to_string(slot(r1, 0, 1)) + "," + to_string(slot(r1, 0, 2)) + "," + to_string(slot(r1, 0, 3)))
+    check(slot(r1, 1, 0) == 29 && slot(r1, 1, 1) == 5 && slot(r1, 1, 2) == 30 && slot(r1, 1, 3) == 20,
+        "row#1 middle=(29,5,30,20), got " + to_string(slot(r1, 1, 0)) + "," +
+        to_string(slot(r1, 1, 1)) + "," + to_string(slot(r1, 1, 2)) + "," + to_string(slot(r1, 1, 3)))
+
+    // align=0（top：y=0）与 align=2（bottom：y=size-h）交叉轴边界
+    var rT = lay.row(make_children(20, 10, 30, 20), 5, 30, 0, 0)
+    check(slot(rT, 0, 1) == 0, "row align=top: child.y==0, got " + to_string(slot(rT, 0, 1)))
+    var rB = lay.row(make_children(20, 10, 30, 20), 5, 30, 0, 2)
+    check(slot(rB, 0, 1) == 20, "row align=bottom: child.y==size-h==20, got " + to_string(slot(rB, 0, 1)))
+
+    // ===================================================================
+    // 2. column：children = [{10,12},{24,8}]，start_y=3，size=40（交叉轴宽度），
+    //    gap=2，align=0（left：x=0）。
+    //    手算：child0 y=3  x=0 → (0,3,10,12)；cursor=3+12+2=17
+    //          child1 y=17 x=0 → (0,17,24,8)
+    //====================================================================
+    var c1 = lay.column(make_children(10, 12, 24, 8), 3, 40, 2, 0)
+    check(len(c1) == 8, "column: len==2 regions (8 slots), got " + to_string(len(c1)))
+    check(slot(c1, 0, 0) == 0 && slot(c1, 0, 1) == 3,
+        "column#0=(0,3,10,12), got " + to_string(slot(c1, 0, 0)) + "," + to_string(slot(c1, 0, 1)))
+    check(slot(c1, 1, 0) == 0 && slot(c1, 1, 1) == 17,
+        "column#1=(0,17,24,8), got " + to_string(slot(c1, 1, 0)) + "," + to_string(slot(c1, 1, 1)))
+
+    // align=1（middle：x=(size-w)/2）与 align=2（right：x=size-w）
+    var cM = lay.column(make_children(10, 12, 24, 8), 0, 40, 0, 1)
+    check(slot(cM, 0, 0) == 15, "column align=middle: child.x==(40-10)/2==15, got " +
+        to_string(slot(cM, 0, 0)))
+    var cR = lay.column(make_children(10, 12, 24, 8), 0, 40, 0, 2)
+    check(slot(cR, 0, 0) == 30, "column align=right: child.x==40-10==30, got " +
+        to_string(slot(cR, 0, 0)))
+
+    // ===================================================================
+    // 3. 嵌套：outer column（3 盒，start_y=0，size=60，gap=5，align=0）+ mid 内嵌 row。
+    //    col_children = [{50,20},{50,30},{50,10}]（header/mid/footer）
+    //      手算：c0 (0,0,50,20) → cursor=25；c1 (0,25,50,30) → cursor=60；c2 (0,60,50,10)
+    //    mid 盒 = {0,25,50,30}。mid 内嵌 row（2 盒，start_x=0，size=30，gap=4，align=1）：
+    //      inner = [{20,30},{26,30}] → c0 (0,0,20,30) cursor=24；c1 (24,0,26,30)
+    //    后把 inner 位移到 mid 绝对位 (0,25) → c0 (0,25,20,30)、c1 (24,25,26,30)。
+    //====================================================================
+    var outer = lay.column(make_children3(50, 20, 50, 30, 50, 10), 0, 60, 5, 0)
+    check(len(outer) == 12, "nest: outer has 3 regions, got " + to_string(len(outer) / 4))
+    check(slot(outer, 1, 0) == 0 && slot(outer, 1, 1) == 25 && slot(outer, 1, 2) == 50 && slot(outer, 1, 3) == 30,
+        "nest: mid cell=(0,25,50,30), got " + to_string(slot(outer, 1, 0)) + "," +
+        to_string(slot(outer, 1, 1)) + "," + to_string(slot(outer, 1, 2)) + "," + to_string(slot(outer, 1, 3)))
+    check(slot(outer, 2, 1) == 60, "nest: footer y==60, got " + to_string(slot(outer, 2, 1)))
+    var inner = lay.row(make_children(20, 30, 26, 30), 0, 30, 4, 1)
+    var nested = lay.offset(inner, slot(outer, 1, 0), slot(outer, 1, 1))
+    check(slot(nested, 0, 0) == 0 && slot(nested, 0, 1) == 25,
+        "nest: inner#0 off to mid=(0,25,20,30), got " + to_string(slot(nested, 0, 0)) + "," +
+        to_string(slot(nested, 0, 1)))
+    check(slot(nested, 1, 0) == 24 && slot(nested, 1, 1) == 25,
+        "nest: inner#1 off to (24,25,26,30), got " + to_string(slot(nested, 1, 0)) + "," +
+        to_string(slot(nested, 1, 1)))
+
+    // ===================================================================
+    // 4. 边界：负坐标 + 零尺寸子盒。
+    //    row children=[{0,0},{10,5}]，start_x=-20，size=10，gap=0，align=0
+    //      c0 (-20,0,0,0)，cursor=-20；c1 (-20,0,10,5)
+    //    column children=[{8,0}]，start_y=-7，size=8，gap=0，align=2（右）
+    //      c0 x=8-8=0，y=-7 → (0,-7,8,0)
+    //====================================================================
+    var rneg = lay.row(make_children(0, 0, 10, 5), -20, 10, 0, 0)
+    check(slot(rneg, 0, 0) == -20 && slot(rneg, 0, 2) == 0 && slot(rneg, 0, 3) == 0,
+        "edge: row zero-size child at (-20,0,0,0), got " + to_string(slot(rneg, 0, 0)) + "," +
+        to_string(slot(rneg, 0, 1)) + "," + to_string(slot(rneg, 0, 2)) + "," + to_string(slot(rneg, 0, 3)))
+    check(slot(rneg, 1, 0) == -20 && slot(rneg, 1, 3) == 5,
+        "edge: row second child x==-20 (zero gap), got " + to_string(slot(rneg, 1, 0)))
+    var single = table_new_i64()
+    table_push(single, 0); table_push(single, 0); table_push(single, 8); table_push(single, 0)
+    var cneg = lay.column(single, -7, 8, 0, 2)
+    check(slot(cneg, 0, 0) == 0 && slot(cneg, 0, 1) == -7 && slot(cneg, 0, 3) == 0,
+        "edge: column zero-height right-align at (0,-7,8,0), got " +
+        to_string(slot(cneg, 0, 0)) + "," + to_string(slot(cneg, 0, 1)) + "," +
+        to_string(slot(cneg, 0, 2)) + "," + to_string(slot(cneg, 0, 3)))
+
+    // ===================================================================
+    // 5. lay.cross 交叉轴定位单测（含负 / 零 extent；extent>size 亦按公式，可负）。
+    //====================================================================
+    check(lay.cross(0, 30, 10) == 0, "cross: align0 -> 0")
+    check(lay.cross(1, 30, 10) == 10, "cross: align1 (30-10)/2 -> 10, got " + to_string(lay.cross(1, 30, 10)))
+    check(lay.cross(2, 30, 10) == 20, "cross: align2 size-extent -> 20")
+    check(lay.cross(1, 30, 0) == 15, "cross: align1 zero extent -> size/2 -> 15")
+    check(lay.cross(1, 30, 40) == -5, "cross: align1 extent>size -> (30-40)/2 -> -5")
+
+    // ===================================================================
+    // 收尾
+    //====================================================================
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+    exit(0)
+}

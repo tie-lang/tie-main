@@ -1,0 +1,57 @@
+type tie<logic>
+// tests/p6812_probe/build_p6812.tie —— p.6.8.12 构建驱动（tie 写；布局雏形探针为纯 tie，无 FFI）
+// EN: p.6.8.12 build driver (tie-written): compiles the pure-tie layout probe, links only
+// with trm_lite.a (table runtime) + compiler-rt, runs it; rc==0 → PASS.
+//
+// 说明：本探针只 import ext/gfx/layout.tie（无 gfx/命令/窗口等 FFI），故不链
+// thunk.obj/win.obj/skia.lib，仅需 trm_lite.a（table<T> 运行时）与 compiler-rt。
+// 编译器固定用稳定现役 tiec_7A6100.exe（SHA256 7A6100FC…BC44），不与 RCA 子代理并发改 compiler/。
+
+import "../../std/process.tie" as process
+
+func logmsg(m: string) {
+    println("[build_p6812.tie] " + m)
+}
+func fail(m: string) {
+    println("[build_p6812.tie] ERROR: " + m)
+    exit(1)
+}
+func run(cmd: string) -> i64 {
+    var rc = process.exec_code(cmd)
+    if rc != 0 {
+        println("[build_p6812.tie] command failed (rc=" + to_string(rc) + "): " + cmd)
+    }
+    return rc
+}
+
+var g_tiec: string = "compiler\\tiec_7A6100.exe"
+var g_probe_src: string = "tests\\p6812_probe\\p6812_probe.tie"
+var g_probe_ll: string = "tests\\p6812_probe\\p6812_probe.ll"
+var g_probe_obj: string = "tests\\p6812_probe\\p6812_probe.obj"
+var g_probe_exe: string = "tests\\p6812_probe\\p6812_probe.exe"
+var g_trmlite: string = "..\\trm-lite\\trm_lite.a"
+
+func main() {
+    // 1) 探针 → .ll → .obj（transitively imports ext/gfx/layout.tie）
+    if run(g_tiec + " " + g_probe_src + " --emit-ir -o " + g_probe_ll) != 0 {
+        fail("probe IR failed (tiec)")
+    }
+    if run("clang -O2 -c " + g_probe_ll + " -o " + g_probe_obj) != 0 {
+        fail("probe obj failed (clang)")
+    }
+    logmsg("probe.obj built")
+
+    // 2) 链接（纯布局探针无需 skia/thunk/win；仅 trm_lite.a + compiler-rt）
+    if run("clang -fuse-ld=link " + g_probe_obj + " " + g_trmlite +
+        " -o " + g_probe_exe + " -rtlib=compiler-rt") != 0 {
+        fail("probe link failed")
+    }
+    logmsg("probe.exe linked")
+
+    // 3) 运行（cwd=仓库根）
+    var rc = process.exec_code(g_probe_exe)
+    if rc != 0 {
+        fail("probe run failed rc=" + to_string(rc) + " (探针内部 FAIL / 退出非 0)")
+    }
+    logmsg("PROBE PASS (rc=0)")
+}
