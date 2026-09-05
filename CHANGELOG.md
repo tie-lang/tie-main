@@ -21,7 +21,34 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] typed ptr 类型化指针 + unsafe 门禁（p.6.8.1）（2026-09-05）
 
+- `ptr<T>` 类型化指针一等化：补齐指针地址等值比较 `==`/`!=`（语义层放行 ptr 比较，
+  后端 `tig_binary_ptr` 将指针 `ptrtoint` 转 i64 后 `icmp`，等值语义无损；
+  任意元素类型的指针可比较地址相等）。此前 `p == q` 报「比较运算符不能用于 ptr」。
+- unsafe 安全门禁核验（S1.2 已具备并保持）：ptr 类型变量声明 / unsafe 内置调用 /
+  unsafe 函数（含 extern）在安全代码中一律编译拒绝；文件级逃生舱 `type tie<..., unsafe>`
+  整文件开 unsafe 上下文；`unsafe fn` / `unsafe { }` 块维持既有语义。
+- 验收：正向探针 `tests/p681_probe/p681_probe.tie`（15 断言：取址 addr_of /
+  解引用读写 deref/deref_write / 元素步长算术 ptr_add / 比较 ==、!=、is_null /
+  ptr 作 unsafe fn 形参与返回值）全 PASS、exit 0；负例 golden
+  `err_069/070/071`（安全代码声明 ptr 变量、安全代码调 deref、安全代码调 unsafe extern）
+  退出码非 0 且 stderr 逐一匹配。回归零破坏：html/xml/jwt/win32（重度 ptr 原语）/
+  ed25519/probe_global_init/probe_tdzd/sqlite/tink 全 PASS、exit 0。
+- 自举新不动点收敛：tiec.exe SHA256 `DB062BBC6CDFF267383DC23E9FA062E3C5B5AC9AA476C7966B7BDF1E5928A970`，
+  3932160 字节（tiec2==tiec3 字节一致核验）。
+
+EN: Typed `ptr<T>` first-class + unsafe gating (p.6.8.1) — added pointer address equality
+`==`/`!=` (semantic layer admits ptr comparison; backend `tig_binary_ptr` runs `ptrtoint` to
+i64 then `icmp`, equality semantics preserved; pointers of any element type are comparable by
+address). Verified the existing S1.2 safe-code gate (ptr var declarations / unsafe builtins /
+unsafe fns incl. extern rejected outside unsafe; file-level escape `type tie<..., unsafe>`;
+`unsafe fn` / `unsafe { }` unchanged). Positive probe `tests/p681_probe/p681_probe.tie` (15
+assertions: addr_of / deref / deref_write / ptr_add element-stride arith / == `!=` is_null
+comparisons / ptr as unsafe-fn param & return) all PASS exit 0; negative golden err_069/070/071
+(non-zero exit, stderr matches). Zero regression across html/xml/jwt/win32 (heavy ptr)/
+ed25519/probe_global_init/probe_tdzd/sqlite/tink. Bootstrap converged to new fixpoint: tiec.exe
+SHA256 DB062BBC... / 3932160 bytes.
 ## [feat] 表内存回收收尾：嵌套表 retain + 循环内 var 遮蔽回收（p.6.10.4）（2026-09-05）
 
 - 在 p.6.10.2/3 覆盖 release / 出口析构之上补齐最后回收路径：
