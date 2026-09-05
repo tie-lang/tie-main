@@ -1729,8 +1729,16 @@ func tig_stmt(id: i64) -> i64 {
         //  免（新表所有权已转移给槽）。
         //  release(旧)：局部**非参数**目标覆盖前 -1（参数借用不回收调用方所有权；
         //  全局目标永驻不 release）。空句柄由 tl_tbl.tbl_release 守卫跳过。
+        // p.6.1.7-RCA【2026-09-05】：旧值必须在 **store 之前** load——旧码在 store 后
+        // 才 load 槽，读到的是**新表**：retain(新)+1 与 release(读到的新)-1 相抵 → 新表
+        // 引用计数缺 1（别名方 cur=nxt 仍持有指针）→ 循环内表变量重入时
+        // tig_loopvar_release 把它释放到 0 → 下一轮 tbl_at 悬垂/use-after-free
+        // （0xC0000005，编译形态/分配器状态决定是否崩——p.6.1.7 家族总根因）；旧值
+        // 同时泄漏。修复：先 load 旧值，release 旧值；顺序 = load旧 → retain新 →
+        // store新 → release旧。
         var assign_is_tbl: bool = false
         var assign_new_tbl: bool = false
+        var assign_old_v: i64 = -1
         if op < 0 {
             var vt3 = node_types[val]
             if vt3 >= 0 && types.is_table(vt3) {
@@ -1747,6 +1755,11 @@ func tig_stmt(id: i64) -> i64 {
         if assign_is_tbl && !assign_new_tbl {
             tig_tbl_retain_call(vv)
         }
+        if assign_is_tbl && tgt_global <= 0 && !tig_is_param(nid) {
+            var old = ir.new_inst(g_cur_block, 21, tgt_ty)  // load 旧值（store 前！）
+            ir.add_operand(old, tgt_alloca, 0)
+            assign_old_v = ir.get_value(old)
+        }
         var st = ir.new_inst(g_cur_block, 22, -1)  // store
         ir.add_operand(st, tgt_ty, 2)
         ir.add_operand(st, vv, 0)
@@ -1755,11 +1768,8 @@ func tig_stmt(id: i64) -> i64 {
         } else {
             ir.add_operand(st, tgt_alloca, 0)  // 本地 alloca
         }
-        if assign_is_tbl && tgt_global <= 0 && !tig_is_param(nid) {
-            var old = ir.new_inst(g_cur_block, 21, tgt_ty)  // load 旧值
-            ir.add_operand(old, tgt_alloca, 0)
-            var old_v = ir.get_value(old)
-            tig_tbl_release_call(old_v)
+        if assign_old_v >= 0 {
+            tig_tbl_release_call(assign_old_v)
         }
         return 0
     }

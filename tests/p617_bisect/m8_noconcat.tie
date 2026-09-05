@@ -1,0 +1,27 @@
+type tie<logic>
+// m8: 3 元素但循环内不拼接（直接 push cur[i]）
+func helper(lines: table<string>) -> string {
+    var cur = lines
+    var n = len(cur)
+    while n > 1 {
+        var nxt = table_new_string()
+        var i: i64 = 0
+        while i + 1 < n {
+            table_push(nxt, cur[i])
+            i = i + 2
+        }
+        if i < n { table_push(nxt, cur[i]) }
+        cur = nxt
+        n = len(cur)
+    }
+    return cur[0]
+}
+func main() {
+    var t = table_new_string()
+    table_push(t, "alpha")
+    table_push(t, "beta")
+    table_push(t, "gamma")
+    var s = helper(t)
+    file_write("m8_tr.txt", s)
+    exit(0)
+}

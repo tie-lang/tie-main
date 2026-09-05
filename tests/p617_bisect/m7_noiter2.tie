@@ -1,0 +1,26 @@
+type tie<logic>
+// m7: 仅 2 元素（无第二轮）
+func helper(lines: table<string>) -> string {
+    var cur = lines
+    var n = len(cur)
+    while n > 1 {
+        var nxt = table_new_string()
+        var i: i64 = 0
+        while i + 1 < n {
+            table_push(nxt, cur[i] + "\n" + cur[i + 1])
+            i = i + 2
+        }
+        if i < n { table_push(nxt, cur[i]) }
+        cur = nxt
+        n = len(cur)
+    }
+    return cur[0]
+}
+func main() {
+    var t = table_new_string()
+    table_push(t, "alpha")
+    table_push(t, "beta")
+    var s = helper(t)
+    file_write("m7_tr.txt", s)
+    exit(0)
+}
