@@ -67,8 +67,12 @@
   tiec==tiec2（fp2==fp3，SHA ADA0CAB7）；regress-s21 与基线一致（99 PASS/4 已知基线 FAIL）。
   EN: public-network TLS + https probes green; new self-host fixed point
   tiec==tiec2 (fp2==fp3, SHA ADA0CAB7); regress-s21 identical to baseline.
-* **遗留**：baidu 需 TLS 1.2 P-256(secp256r1) ECDHE（现仅 x25519）——列为后续；证书链
-  验签（AC-5）与 httpc 重定向深度仍为既有范围。
+* **遗留**：~~baidu 需 TLS 1.2 P-256(secp256r1) ECDHE（现仅 x25519）~~ **当日以纯 tie 落地**：
+  新增 ext/tls/p256.tie（纯 tie secp256r1 ECDH，仿射点运算 + bigint 底座），tls1_2
+  supported_groups 扩为 [x25519, P-256]、parse_ecdhe/derive_shared/cke_pubkey 按
+  服务器选定 group 分发——baidu 实测 **TLS 1.2 握手成功 HTTP 200**（openssl 对照证实
+  baidu 仅 P-256、不支持 X25519/TLS1.3）；p256_ecdh_probe（openssl 确定性向量 7 断言）
+  全过；证书链验签（AC-5）与 httpc 重定向深度仍为既有范围。
 
 ## [fix] 表变量赋值引用计数缺 1——p.6.1.7 家族总根因定案（2026-09-05）
 

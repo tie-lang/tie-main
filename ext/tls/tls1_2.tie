@@ -31,6 +31,7 @@ type tie<class>
 import "./tool.tie"
 import "./hash.tie"
 import "./gcm.tie"
+import "./p256.tie"
 import "../../std/x25519.tie"
 import "../../std/random.tie"
 import "../../std/net.tie"
@@ -128,11 +129,13 @@ pub func make_client_hello(host: string) -> (table<i64>, table<i64>, string, tab
     // --- extensions ---
     var exts = table_new_i64()
 
-    // supported_groups 0x000a: [x25519=0x001d]
+    // supported_groups 0x000a: [x25519=0x001d, secp256r1=0x0017]（p.6.1.8：baidu 等
+    // 公网服务器仅支持 P-256 ECDHE，不支持 X25519——单曲线握手必 alert 40）。
     tbt.push_be(exts, 0x000a, 2)
-    tbt.push_be(exts, 4, 2)
-    tbt.push_be(exts, 2, 2)              // groups 数组长度
-    tbt.push_be(exts, 0x001d, 2)
+    tbt.push_be(exts, 6, 2)
+    tbt.push_be(exts, 4, 2)              // groups 数组长度（2 × 2 字节）
+    tbt.push_be(exts, 0x001d, 2)         // x25519
+    tbt.push_be(exts, 0x0017, 2)         // secp256r1 (P-256)
 
     // signature_algorithms 0x000d: [0x0804, 0x0401, 0x0403]
     tbt.push_be(exts, 0x000d, 2)
@@ -228,28 +231,31 @@ func parse_server_hello(mbody: table<i64>) -> (i64, i64, table<i64>) {
     return (ver, cs, rnd)
 }
 
-// 从握手消息体解析 ServerKeyExchange（ECDHE）：返回 x25519 服务器公钥（32B）。
+// 从握手消息体解析 ServerKeyExchange（ECDHE）：返回 (命名曲线 group, 服务器公钥字节)。
 // 结构：curve_type(1)==3(named_curve) + named_curve(2) + pubkey_len(1) + pubkey。
-func parse_ecdhe(mbody: table<i64>) -> table<i64> {
+// x25519（0x001d）公钥 32 字节；secp256r1（0x0017）公钥 65 字节非压缩点（0x04||X||Y）。
+// 不支持/格式非法 → (0, 空表)。
+func parse_ecdhe(mbody: table<i64>) -> (i64, table<i64>) {
     var e = table_new_i64()
     if len(mbody) < 8 {
-        return e
+        return (0, e)
     }
     var curve_type: i64 = mbody[0]
     var group: i64 = tbt.u16_be(mbody, 1)
     var pub_len: i64 = mbody[3]
-    if curve_type == 3 && group == 0x001d && 4 + pub_len <= len(mbody) {
-        return tbt.sub(mbody, 4, pub_len)
+    if curve_type == 3 && (group == 0x001d || group == 0x0017) && 4 + pub_len <= len(mbody) {
+        return (group, tbt.sub(mbody, 4, pub_len))
     }
-    return e
+    return (0, e)
 }
 
-// 遍历服务器明文握手消息帧（srv_hs），返回 (版本, 套件, 服务器随机, 服务器 pubkey)。
-pub func parse_server_flight(srv_hs: table<i64>) -> (i64, i64, table<i64>, table<i64>) {
+// 遍历服务器明文握手消息帧（srv_hs），返回 (版本, 套件, 服务器随机, 服务器 group, 服务器 pubkey)。
+pub func parse_server_flight(srv_hs: table<i64>) -> (i64, i64, table<i64>, i64, table<i64>) {
     var e = table_new_i64()
     var ver: i64 = 0
     var cs: i64 = 0
     var sr = e
+    var grp: i64 = 0
     var spub = e
     var off: i64 = 0
     while off + 4 <= len(srv_hs) {
@@ -263,14 +269,43 @@ pub func parse_server_flight(srv_hs: table<i64>) -> (i64, i64, table<i64>, table
             var (v, c, r) = parse_server_hello(mbody)
             ver = v; cs = c; sr = r
         } else if mtype == 12 {          // ServerKeyExchange（0x0c）
-            var p = parse_ecdhe(mbody)
-            if len(p) > 0 {
-                spub = p
+            var (g, p) = parse_ecdhe(mbody)
+            if g > 0 && len(p) > 0 {
+                grp = g; spub = p
             }
         }
         off = off + 4 + mlen
     }
-    return (ver, cs, sr, spub)
+    return (ver, cs, sr, grp, spub)
+}
+
+// ---- ECDHE 密钥协商分发（p.6.1.8：x25519 / secp256r1 双曲线）----
+
+// 生成第二临时私钥（secp256r1，P-256），供服务器选择 0x0017 时使用。
+pub func gen_p256_sk() -> string {
+    return p256.keygen()
+}
+
+// ECDH 共享密钥：按服务器选定 group 分发（x25519 或 P-256）；返回 32 字节。
+pub func derive_shared(group: i64, spub: table<i64>, sk_x: string, sk_p256: string) -> table<i64> {
+    if group == 0x001d {
+        return tbt.hex_to_bytes(x25519.dh(sk_x, tbt.bytes_to_hex(spub)))
+    }
+    if group == 0x0017 {
+        return p256.dh(sk_p256, spub)
+    }
+    return table_new_i64()
+}
+
+// ClientKeyExchange 公钥字节：x25519 → 32B；P-256 → 65B 非压缩点。
+pub func cke_pubkey(group: i64, sk_x: string, sk_p256: string) -> table<i64> {
+    if group == 0x001d {
+        return tbt.hex_to_bytes(x25519.keygen(sk_x))
+    }
+    if group == 0x0017 {
+        return p256.pubkey(sk_p256)
+    }
+    return table_new_i64()
 }
 
 // ---- 密钥派生（RFC 5246 §6.3 / §6.2.3.1）----

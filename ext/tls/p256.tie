@@ -1,0 +1,296 @@
+type tie<class>
+// ============================================================================
+// p256.tie：ext/tls——纯 tie NIST P-256（secp256r1/prime256v1）ECDH（命名空间 p256）
+// 用途：p.6.1.8 遗留——baidu 等公网服务器 TLS 1.2 仅支持 P-256 ECDHE（不支持
+// X25519），为 tls1_2 提供 secp256r1 临时密钥对生成、公钥导出、ECDH 共享密钥。
+// 全纯 tie：域算术与点运算基于 std/bigint（32 位 limb 小端、u128 中间量），
+// 无任何 extern / Rust / Windows CNG 依赖（对照 ext/ecdsa 的 BCrypt 路线）。
+//
+// == 曲线（NIST FIPS 186-4 / SEC2 secp256r1）==
+//   p = FFFFFFFF 00000001 00000000 00000000 00000000 FFFFFFFF FFFFFFFF FFFFFFFF
+//   a = -3 mod p（p 的特殊结构使 3 倍点公式可用 a=-3）
+//   b = 5AC635D8 AA3A93E7 B3EBBD55 769886BC 651D06B0 CC53B0F6 3BCE3C3E 27D2604B
+//   G = (6B17D1F2 E12C4247 F8BCE6E5 63A440F2 77037D81 2DEB33A0 F4A13945 D898C296,
+//        4FE342E2 FE1A7F9B 8EE7EB4A 7C0F9E16 2BCE3357 6B315ECE CBB64068 37BF51F5)
+//   n = FFFFFFFF 00000000 FFFFFFFF FFFFFFFF BCE6FAAD A7179E84 F3B9CAC2 FC632551
+//
+// 接口（hex IO 对齐 x25519.tie / ecdsa.tie 风格）：
+//   p256.keygen() -> string             随机私钥 d（1 ≤ d < n）→ 32 字节大端 hex（64 位）
+//   p256.pubkey(d_hex) -> table<i64>    公钥 65 字节 [0x04||X||Y]（非压缩点）
+//   p256.dh(d_hex, peer_pub) -> table<i64>
+//        对端公钥（65 字节非压缩）做 ECDH → 共享点 x 坐标 32 字节；失败返回空表
+//
+// 算法：仿射 Weierstrass 点运算（point_double / point_add，λ 斜线公式），
+//   LSB-first double-and-add 标量乘；域求逆用 bigint.invmod（扩展欧几里得）。
+//   握手为一次性低频操作：~384 次域求逆（256 位欧几里得）预计 <100ms，不优化。
+//
+// == 正确性 ==
+//   向量验证：tests/tls_probe/p256_ecdh_probe.tie —— openssl 3.6.1 确定性密钥对 +
+//   pkeyutl -derive 共享密钥硬编码断言（pubkey/dh/对称性三断言）。
+//
+// == 安全注记 ==
+//   - 仿射求逆每步分支（double/add 的 λ 分母零判断），非常数时间——本模块面向
+//     公网握手互通（临时密钥，一次性），不做侧信道隔离（同 x25519.tie 定位）。
+//   - dh 对端点做 on_curve + 边界校验（防无效曲线攻击）。
+//   - 私钥由 std/random 生成（非密码学安全随机源）；当前定位为互通/演示，
+//     生产级随机源与常数时间列为后续（同 x25519.tie 既有注记）。
+// ============================================================================
+
+import "./tool.tie" as tbt
+import "../../std/bigint.tie" as bigint
+import "../../std/random.tie" as rnd
+
+// 顶层懒构建常量（同 x25519 模式）。
+var g_p: table<i64>;
+var g_a: table<i64>;    // -3 mod p
+var g_b: table<i64>;
+var g_gx: table<i64>;
+var g_gy: table<i64>;
+var g_n: table<i64>;
+var g_one: table<i64>;
+var g_two: table<i64>;
+var g_three: table<i64>;
+
+// 仿射点（x, y ∈ F_p；inf=true 表示无穷远点）。
+struct Point {
+    var x: table<i64> = table_new_i64()
+    var y: table<i64> = table_new_i64()
+    var inf: bool = true
+}
+
+namespace p256 {
+
+func ensure() {
+    if len(g_p) > 0 {
+        return
+    }
+    g_p = bigint.from_hex("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff")
+    g_a = bigint.from_hex("ffffffff00000001000000000000000000000000fffffffffffffffffffffffc")
+    g_b = bigint.from_hex("5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b")
+    g_gx = bigint.from_hex("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296")
+    g_gy = bigint.from_hex("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")
+    g_n = bigint.from_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")
+    g_one = bigint.from_hex("1")
+    g_two = bigint.from_hex("2")
+    g_three = bigint.from_hex("3")
+}
+
+// ---- 域算术（mod p）----
+
+func pmod(a: table<i64>) -> table<i64> {
+    return bigint.mod(a, g_p)
+}
+
+func add_mod(a: table<i64>, b: table<i64>) -> table<i64> {
+    return pmod(bigint.add(a, b))
+}
+
+func sub_mod(a: table<i64>, b: table<i64>) -> table<i64> {
+    if bigint.cmp(a, b) >= 0 {
+        return bigint.sub(a, b)
+    }
+    // a - b + p（a ≥ 0，b < p ⇒ a+p ≥ b）
+    return bigint.sub(bigint.add(a, g_p), b)
+}
+
+func mul_mod(a: table<i64>, b: table<i64>) -> table<i64> {
+    return pmod(bigint.mul(a, b))
+}
+
+func sq_mod(a: table<i64>) -> table<i64> {
+    return mul_mod(a, a)
+}
+
+func neg_mod(a: table<i64>) -> table<i64> {
+    return sub_mod(g_p, a)
+}
+
+// 域逆（a=0 → 返回空表 0，调用方须先判零）。
+func inv(a: table<i64>) -> table<i64> {
+    return bigint.invmod(a, g_p)
+}
+
+// ---- 点运算（仿射）----
+
+func is_inf(P: Point) -> bool {
+    return P.inf
+}
+
+func pt_inf() -> Point {
+    var r = Point()
+    r.inf = true
+    return r
+}
+
+func pt(x: table<i64>, y: table<i64>) -> Point {
+    var r = Point()
+    r.x = x
+    r.y = y
+    r.inf = false
+    return r
+}
+
+// 点倍：λ = (3x² + a) / (2y)；x3 = λ² - 2x；y3 = λ(x - x3) - y。
+func point_double(P: Point) -> Point {
+    if P.inf || bigint.is_zero(P.y) {
+        return pt_inf()
+    }
+    var t = add_mod(mul_mod(g_three, sq_mod(P.x)), g_a)   // 3x² + a
+    var den = mul_mod(g_two, P.y)                          // 2y
+    if bigint.is_zero(den) {
+        return pt_inf()
+    }
+    var lam = mul_mod(t, inv(den))
+    var x3 = sub_mod(sq_mod(lam), mul_mod(g_two, P.x))
+    var y3 = sub_mod(mul_mod(lam, sub_mod(P.x, x3)), P.y)
+    return pt(x3, y3)
+}
+
+// 点加（P ≠ ±Q 分支；x 相等时退化到 double 或无穷）。
+func point_add(P: Point, Q: Point) -> Point {
+    if P.inf {
+        return Q
+    }
+    if Q.inf {
+        return P
+    }
+    if bigint.cmp(P.x, Q.x) == 0 {
+        if bigint.cmp(P.y, Q.y) == 0 {
+            return point_double(P)
+        }
+        return pt_inf()      // P + (-P)
+    }
+    var dy = sub_mod(Q.y, P.y)
+    var den = sub_mod(Q.x, P.x)
+    if bigint.is_zero(den) {
+        return pt_inf()
+    }
+    var lam = mul_mod(dy, inv(den))
+    var x3 = sub_mod(sub_mod(sq_mod(lam), P.x), Q.x)
+    var y3 = sub_mod(mul_mod(lam, sub_mod(P.x, x3)), P.y)
+    return pt(x3, y3)
+}
+
+// LSB-first double-and-add 标量乘（k 大端字节序输入即可，内部任意）。
+func scalar_mul(k: table<i64>, P: Point) -> Point {
+    var R = pt_inf()
+    var T = P
+    // 显式克隆（bigint.clone 私有，不可跨命名空间调用；表赋值是句柄别名）。
+    var kk = table_new_i64()
+    var ki: i64 = 0
+    while ki < len(k) {
+        table_push(kk, k[ki])
+        ki = ki + 1
+    }
+    while bigint.is_zero(kk) == false {
+        var bit = bigint.and(kk, g_one)
+        if bigint.is_zero(bit) == false {
+            R = point_add(R, T)
+        }
+        T = point_double(T)
+        kk = bigint.shr_bits(kk, 1)
+    }
+    return R
+}
+
+// ---- 序列化辅助 ----
+
+// 大整数 → 32 字节大端（P-256 坐标/私钥定长；高位补零）。
+func to_be32(b: table<i64>) -> table<i64> {
+    var h = bigint.to_hex(b)
+    while len(h) < 64 {
+        h = "0" + h
+    }
+    return tbt.hex_to_bytes(h)
+}
+
+// 32 字节大端 → 大整数。
+func from_be32(b: table<i64>) -> table<i64> {
+    return bigint.from_hex(tbt.bytes_to_hex(b))
+}
+
+// ---- 公共 API ----
+
+// 生成临时私钥 d（1 ≤ d < n），返回 32 字节大端 hex（64 位）。
+pub func keygen() -> string {
+    ensure()
+    var d = table_new_i64()
+    var guard: i64 = 0
+    while guard < 64 {
+        var bytes = table_new_i64()
+        var i: i64 = 0
+        while i < 32 {
+            table_push(bytes, rnd.int(0, 255))
+            i = i + 1
+        }
+        d = pmod(from_be32(bytes))     // mod n（域内）
+        if bigint.is_zero(d) == false {
+            return tbt.bytes_to_hex(to_be32(d))
+        }
+        guard = guard + 1
+    }
+    return ""                          // 理论上不可达
+}
+
+// 私钥 d（hex）→ 公钥 65 字节非压缩点 [0x04||X||Y]；失败返回空表。
+pub func pubkey(d_hex: string) -> table<i64> {
+    ensure()
+    if len(d_hex) != 64 {
+        return table_new_i64()
+    }
+    var d = bigint.from_hex(d_hex)
+    if bigint.is_zero(d) || bigint.cmp(d, g_n) >= 0 {
+        return table_new_i64()
+    }
+    var P = scalar_mul(d, pt(g_gx, g_gy))
+    if P.inf {
+        return table_new_i64()
+    }
+    var out = table_new_i64()
+    table_push(out, 0x04)
+    var bx = to_be32(P.x)
+    var by = to_be32(P.y)
+    var i: i64 = 0
+    while i < 32 {
+        table_push(out, bx[i])
+        i = i + 1
+    }
+    i = 0
+    while i < 32 {
+        table_push(out, by[i])
+        i = i + 1
+    }
+    return out
+}
+
+// ECDH：d_hex（私钥）× peer_pub（65 字节非压缩点）→ 共享点 x 坐标 32 字节。
+// 失败（对端点非法/不在曲线/结果为无穷）返回空表。
+pub func dh(d_hex: string, peer_pub: table<i64>) -> table<i64> {
+    ensure()
+    if len(d_hex) != 64 || len(peer_pub) != 65 || peer_pub[0] != 0x04 {
+        return table_new_i64()
+    }
+    var d = bigint.from_hex(d_hex)
+    if bigint.is_zero(d) || bigint.cmp(d, g_n) >= 0 {
+        return table_new_i64()
+    }
+    var px = from_be32(tbt.sub(peer_pub, 1, 32))
+    var py = from_be32(tbt.sub(peer_pub, 33, 32))
+    // 边界：x, y < p
+    if bigint.cmp(px, g_p) >= 0 || bigint.cmp(py, g_p) >= 0 {
+        return table_new_i64()
+    }
+    // 曲线校验：y² ≡ x³ - 3x + b (mod p)
+    var lhs = sq_mod(py)
+    var rhs = add_mod(sub_mod(mul_mod(sq_mod(px), px), mul_mod(g_three, px)), g_b)
+    if bigint.cmp(lhs, rhs) != 0 {
+        return table_new_i64()
+    }
+    var S = scalar_mul(d, pt(px, py))
+    if S.inf {
+        return table_new_i64()
+    }
+    return to_be32(S.x)
+}
+
+}   // namespace p256

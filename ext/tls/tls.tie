@@ -194,6 +194,12 @@ func finish13(s: Session, h: i64, ch_msg: table<i64>, sh_body: table<i64>, serve
 // ---- TLS 1.2 完整握手（发 CH 起，含 CKE/CCS/Finished 双向）----
 func finish12(s: Session, h: i64, host: string) -> Session {
     var (rec, ch_msg, sk_hex, c_rand) = tls12.make_client_hello(host)
+    // p.6.1.8：预生成 P-256 临时私钥——服务器可能选 0x0017（baidu 等仅 P-256）。
+    var sk_p256 = tls12.gen_p256_sk()
+    if len(sk_p256) != 64 {
+        s.handle = -1
+        return s
+    }
     net.tcp_send_bytes(h, rec)
 
     // 读服务器明文 Flight（ServerHello..ServerHelloDone）。
@@ -221,17 +227,25 @@ func finish12(s: Session, h: i64, host: string) -> Session {
         return s
     }
 
-    var (ver, cs, s_rand, spub) = tls12.parse_server_flight(srv_hs)
+    var (ver, cs, s_rand, group, spub) = tls12.parse_server_flight(srv_hs)
     if cs != 0xC02F {
         s.handle = -1
         return s
     }
-    if len(s_rand) != 32 || len(spub) != 32 {
+    // 按曲线校验服务器公钥长度：x25519=32B；P-256=65B 非压缩点。
+    var spub_ok: bool = false
+    if group == 0x001d && len(spub) == 32 {
+        spub_ok = true
+    }
+    if group == 0x0017 && len(spub) == 65 {
+        spub_ok = true
+    }
+    if len(s_rand) != 32 || spub_ok == false {
         s.handle = -1
         return s
     }
 
-    var pre = tbt.hex_to_bytes(x25519.dh(sk_hex, tbt.bytes_to_hex(spub)))
+    var pre = tls12.derive_shared(group, spub, sk_hex, sk_p256)
     if len(pre) != 32 {
         s.handle = -1
         return s
@@ -244,7 +258,11 @@ func finish12(s: Session, h: i64, host: string) -> Session {
     var s_salt = tbt.sub(kb, 36, 4)
 
     // ClientKeyExchange（ECDHE 临时公钥）明文 + CCS。
-    var cp = tbt.hex_to_bytes(x25519.keygen(sk_hex))
+    var cp = tls12.cke_pubkey(group, sk_hex, sk_p256)
+    if len(cp) == 0 {
+        s.handle = -1
+        return s
+    }
     var cke_body = table_new_i64()
     table_push(cke_body, len(cp))
     var k2: i64 = 0
