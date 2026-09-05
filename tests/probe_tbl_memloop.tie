@@ -1,0 +1,17 @@
+type tie<logic>
+// probe_tbl_memloop.tie（临时验收）：大循环临时表创建/释放——验证内存有界。
+// 2000 万次迭代：若每迭代泄漏 2 表句柄（~120B）→ 约 4.8GB 必爆；若正确释放 → 稳定。
+var acc: i64 = 0
+
+func main() {
+    var i: i64 = 0
+    while i < 20000000 {
+        var x = table_new_i64()
+        table_push(x, i)
+        var y = x
+        table_push(y, 2)
+        acc = acc + len(y)
+        i = i + 1
+    }
+    println(acc)   // 断言：20000000 * 2 = 40000000
+}

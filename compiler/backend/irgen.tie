@@ -113,6 +113,14 @@ var g_rx_slotsv: i64 = 0;        // 本次匹配尝试的捕获槽表句柄（SS
 // irgen 自己登记 table_new_f64()/table<T> 变量的元素类型。
 var g_tv_keys: table<i64>;
 var g_tv_elems: table<i64>;
+// p.6.10.3：函数参数表名集合（intern id → 1）——出口析构跳过参数（借用语义，
+// 所有权在调用方）；参数槽被赋值覆盖也不 release（避免收回调用方所有权）。
+var g_param_nids: table<i64>;
+// p.6.10.3：entry 级（函数顶层块创建的）局部表变量 alloca 清单——供函数出口
+// 析构（entry alloca 被任意出口块 load 均满足支配关系；循环/分支内 var 的 alloca
+// 在非 entry 块，排除以避免 LLVM「instruction does not dominate」）。
+var g_entry_block: i64 = 0;
+var g_tblcand_allocas: table<i64>;
 // 顶层全局变量登记：name 池 id → 类型 id / 表元素类型 id（对齐 sstate gb_*，
 // 直接查 gb_keys/gb_vals/gb_telem；此处仅缓存 llvm 初始化需要的标记）。
 // （llvmgen 侧维护 g_global_* 登记表，irgen 仅转发登记。）
@@ -1120,6 +1128,8 @@ func tig_fn_def(fn_node: i64, prefix: string) -> i64 {
     g_gt_blks = table_new_i64()
     g_tv_keys = table_new_i64()
     g_tv_elems = table_new_i64()
+    g_param_nids = table_new_i64()
+    g_tblcand_allocas = table_new_i64()
     g_sb_keys = table_new_i64()
     g_sb_hv = table_new_i64()
     g_cbs_keys = table_new_i64()
@@ -1202,6 +1212,7 @@ func tig_fn_def(fn_node: i64, prefix: string) -> i64 {
     ir.func_export_set(fid, is_pub)
     g_cur_func = fid
     var entry = ir.new_block(fid, interner.intern("entry"))
+    g_entry_block = entry     // p.6.10.3：entry 级表变量析构候选登记用
     g_cur_block = entry
     // 参数入作用域（alloca + store；T0.3 by_ref 参数不 alloca，直接绑定参数寄存器）
     var off = ir.func_params_off(fid)
@@ -1237,6 +1248,8 @@ func tig_fn_def(fn_node: i64, prefix: string) -> i64 {
             ir.add_operand(st, av, 0)
         }
         scope_put(interner.intern(pname), av, pty)
+        // p.6.10.3：登记参数名（表参数借用、不析构不 release——所有权在调用方）
+        table_push(g_param_nids, interner.intern(pname))
         i = i + 1
     }
     // 全局表 main 初始化：@g = global ptr null → main 入口 tie_table_new + store
@@ -1265,6 +1278,11 @@ func tig_fn_def(fn_node: i64, prefix: string) -> i64 {
     var r = tig_block_stmts(body)
     if r < 0 {
         return -1
+    }
+    // p.6.10.3：隐式函数尾析构——body 后、补 ret 前，释放本函数非参数局部表
+    //（表参数借用不析构；引用计数由外传点 retain 守恒）
+    if !block_terminated() {
+        tig_tbl_exit_release()
     }
     // 末尾补 ret：main → ret i32 0（void main）；其余 void → ret void
     if s_tags[body] == 122 {

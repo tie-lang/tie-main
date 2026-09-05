@@ -22,6 +22,29 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] 表内存回收闭环：作用域出口析构 + 返回表接管（p.6.10.3）（2026-09-05）
+
+- 在 p.6.10.2 引用计数 API 与赋值配对插桩之上补关键回收路径：
+  - **entry 级出口析构**：函数出口（显式/隐式 return 前）对 entry 块创建的局部表变量
+    `load 槽 → tbl_release`——循环/分支内 var 排除（非 entry 块 alloca 出口 load 违反
+    LLVM 支配关系，实测 opt 报「instruction does not dominate」后收敛）；
+  - **返回表接管**：`return t`（表值）前 retain（返回值归调用方），调用方 `var x = f()`
+    不 retain（callee 已承担），出口析构与之守恒 net 0；
+  - **VarDecl 表引用 retain**：`var b2 = b`（init 为表变量/表达式）→ retain（覆盖原
+    缺失点，否则别名双析构悬垂）；RHS 为 table_new_* 直接构造免 retain（新所有权转移）；
+  - **参数借用纪律**：表参数不析构、覆盖不 release（所有权在调用方）。
+- 验收：`probe_tbl_lifecycle`（隐式尾/借用/VarDecl 别名/覆盖）PASS；`probe_tbl_memloop`
+  **2000 万次临时表循环峰值仅 3MB**（修复前趋势 4.8GB 级无界）——内存有界闭环；tsha1f
+  KAT、config_smoke 48/48 零回归；自举新不动点收敛（rc2==rc3）。
+
+EN: Table memory reclaim loop closed (p.6.10.3) — entry-level exit destruction (local table
+slots released before every return; loop/branch-inner vars excluded to preserve LLVM dominance),
+return-table retain handover (callee retains on `return t`, caller does not re-retain on
+`var x = f()`), VarDecl table-reference retain (`var b2 = b`), and param-borrow discipline
+(no destroy/cover-release of borrowed params). probe_tbl_memloop: 20M-iteration temp-table loop
+peaks at 3MB (memory-bounded). tsha1f KAT, config_smoke 48/48 zero regression; bootstrap
+converged rc2==rc3.
+
 ## [feat] 表内存治理：tl_tbl 引用计数 API + irgen 表赋值插桩（p.6.10.2）（2026-09-05）
 
 - 背景：tie 无自动回收（trm-lite GC 显式 collect 制、与表容器无关），表内存 malloc 裸分配只增不减——

@@ -1,0 +1,49 @@
+type tie<logic>
+// probe_tbl_lifecycle.tie：p.6.10.3 表生命周期验收——
+// 隐式尾析构 / 参数借用 / VarDecl 别名守恒 / 覆盖赋值 / 大循环无崩溃。
+// 期望输出：2 2 2 3 3 1
+
+func mk_use() -> i64 {
+    var t = table_new_i64()
+    table_push(t, 11)
+    table_push(t, 22)
+    return len(t)          // 2（t 出口析构，返回值为标量）
+}
+
+func take(t: table<i64>) -> i64 {
+    table_push(t, 33)
+    return len(t)          // 3（参数借用，不析构参数）
+}
+
+func main() {
+    // 1. 函数临时表生命周期 + 隐式尾析构
+    var a = mk_use()
+    println(a)             // 2
+
+    // 2. 参数借用：调用方表不被误释放
+    var b = table_new_i64()
+    table_push(b, 1)
+    var c = take(b)
+    println(c)             // 2
+    println(len(b))        // 2（借用保持）
+
+    // 3. VarDecl 别名：b2 = b 共享句柄，出口双析构守恒（不悬垂）
+    var b2 = b
+    table_push(b2, 5)
+    println(len(b))        // 3（共享）
+
+    // 4. 覆盖赋值：b = b2（同表）retain/release 抵消
+    b = b2
+    println(len(b))        // 3
+
+    // 5. 大循环临时表：反复创建/别名/释放，无崩溃（分配-释放平衡）
+    var i: i64 = 0
+    while i < 200000 {
+        var x = table_new_i64()
+        table_push(x, i)
+        var y = x
+        table_push(y, 2)
+        i = i + 1
+    }
+    println(1)             // 循环完成未崩溃
+}

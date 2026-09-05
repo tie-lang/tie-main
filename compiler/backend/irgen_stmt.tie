@@ -172,6 +172,32 @@ func tig_tbl_release_call(hv: i64) -> i64 {
     return tig_trmlite_call("tl_tbl$tbl_release", atys, avs, -1)
 }
 
+// 名称是否登记为参数（表参数借用语义：不析构、覆盖不 release——所有权在调用方）。
+func tig_is_param(nid: i64) -> bool {
+    var i: i64 = 0
+    while i < len(g_param_nids) {
+        if g_param_nids[i] == nid {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// p.6.10.3：函数出口析构——释放 entry 级局部表变量（候选 alloca 清单）。引用计数由
+// 外传点（return/全局/赋值）retain 守恒，此处仅为收尾。仅 entry 级候选（循环/分支
+// 内 var 排除：非 entry 块的 alloca 在出口块 load 不满足支配关系）。空槽由 tbl_release
+// 空句柄守卫跳过。
+func tig_tbl_exit_release() {
+    var i: i64 = 0
+    while i < len(g_tblcand_allocas) {
+        var old = ir.new_inst(g_cur_block, 21, types.named(TK_STR))  // load ptr
+        ir.add_operand(old, g_tblcand_allocas[i], 0)
+        tig_tbl_release_call(ir.get_value(old))
+        i = i + 1
+    }
+}
+
 // 表下标赋值 t[i] = v → tie_table_set_<suffix> 桥（void）。
 // AST：IndexAssign[val=op, children=[目标(Index), 值]]。
 func tig_index_assign(id: i64) -> i64 {
@@ -1105,6 +1131,20 @@ func tig_stmt(id: i64) -> i64 {
                     iv = bx
                 }
             }
+            // p.6.10.3：VarDecl 表引用接管——init 是表表达式（非 table_new_* 构造、
+            // 非函数调用返回——后者已在 callee 的 return 处 retain）→ retain（槽接收
+            // 引用，出口析构与之守恒）。
+            if iv >= 0 && init >= 0 {
+                var iv4 = node_types[init]
+                if iv4 >= 0 && types.is_table(iv4) && s_tags[init] != 7 {
+                    tig_tbl_retain_call(iv)
+                }
+            }
+            // p.6.10.3：entry 级析构候选登记——表变量且在 entry 块创建（循环/分支内
+            // var 的 alloca 在非 entry 块，出口析构 load 会触发「not dominate」）。
+            if g_cur_block == g_entry_block && types.is_table(ty) {
+                table_push(g_tblcand_allocas, av)
+            }
             var store = ir.new_inst(g_cur_block, 22, -1)  // store
             ir.add_operand(store, ty, 2)
             ir.add_operand(store, iv, 0)
@@ -1233,12 +1273,19 @@ func tig_stmt(id: i64) -> i64 {
                 rv = bx2
                 rty = types.named(TK_ANY)
             }
+            // p.6.10.3：返回表值 → retain（返回值接管归调用方；出口析构会减回——net 0，
+            // 调用方持有返回表）；随后析构本函数非参数局部表。须在 ret（terminator）之前。
+            if rty >= 0 && types.is_table(rty) {
+                tig_tbl_retain_call(rv)
+            }
+            tig_tbl_exit_release()
             var ret = ir.new_inst(g_cur_block, 32, rty)  // ret
             ir.add_operand(ret, rv, 0)
         } else {
             // void 无值 return：main 特判 ret i32 0（CRT 退出码正确性，对齐 Rust 侧
             // tig_stmt 的 void main return 处理——define i32 @main 与 ret void 不匹配）；
             // 其余 void 函数 ret void。
+            tig_tbl_exit_release()   // p.6.10.3：无值返回前同样析构非参数局部表
             if g_cur_fn_name == "main" {
                 var ret = ir.new_inst(g_cur_block, 32, types.named(TK_I32))  // ret i32 0
                 ir.add_operand(ret, 0, 2)
@@ -1631,19 +1678,27 @@ func tig_stmt(id: i64) -> i64 {
             }
             vv = cv
         }
-        // p.6.10.2 步2：表变量赋值引用计数配对（防别名悬垂）——仅普通赋值（非复合）、
-        // RHS 显式表类型、目标为局部槽。新值 retain（槽接收新句柄）→ store →
-        // 旧值 release（槽覆盖腾退；空句柄由 tl_tbl.tbl_release 守卫跳过）。
-        // 函数返回表场景调用方接管路径会在接收后持 +1 残留（V1 泄漏受控、安全优先，
-        // 后续波次以「函数返回表调用点不 retain」收敛）。
+        // p.6.10.2/3：表变量赋值引用计数插桩——仅普通赋值（非复合）、RHS 表类型。
+        //  retain(新)：局部槽/全局槽接收引用时 +1；RHS 为 table_new_* 直接构造则
+        //  免（新表所有权已转移给槽）。
+        //  release(旧)：局部**非参数**目标覆盖前 -1（参数借用不回收调用方所有权；
+        //  全局目标永驻不 release）。空句柄由 tl_tbl.tbl_release 守卫跳过。
         var assign_is_tbl: bool = false
-        if op < 0 && tgt_global <= 0 {
+        var assign_new_tbl: bool = false
+        if op < 0 {
             var vt3 = node_types[val]
             if vt3 >= 0 && types.is_table(vt3) {
                 assign_is_tbl = true
+                if s_tags[val] == 7 {
+                    var cnm4 = sstate.name_str(val)
+                    if cnm4 == "table_new_i64" || cnm4 == "table_new_f64" ||
+                        cnm4 == "table_new_string" || cnm4 == "table_new_bool" {
+                        assign_new_tbl = true
+                    }
+                }
             }
         }
-        if assign_is_tbl {
+        if assign_is_tbl && !assign_new_tbl {
             tig_tbl_retain_call(vv)
         }
         var st = ir.new_inst(g_cur_block, 22, -1)  // store
@@ -1654,7 +1709,7 @@ func tig_stmt(id: i64) -> i64 {
         } else {
             ir.add_operand(st, tgt_alloca, 0)  // 本地 alloca
         }
-        if assign_is_tbl {
+        if assign_is_tbl && tgt_global <= 0 && !tig_is_param(nid) {
             var old = ir.new_inst(g_cur_block, 21, tgt_ty)  // load 旧值
             ir.add_operand(old, tgt_alloca, 0)
             var old_v = ir.get_value(old)
