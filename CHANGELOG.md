@@ -22,6 +22,26 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [fix] ed25519 长期泄漏根治——RCA-5/6/7 三处引用计数缺口（2026-09-06，commit 24aaa07）
+
+* **根因**：三处编译器引用计数缺口在 ed25519 点阶梯放大为失控——(RCA-5) 出口析构只释放
+  entry 级表局部，非 entry 一次性局部（invmod m/a/r0/r1/sy0/sy1、divrem qb1/rt）从不
+  释放；(RCA-6) p.6.1.8 的「store null 再 loopvar_release」在变体 C（alloca 提升+入口
+  零初始化）下过时，静默丢弃上一轮表引用（refcount 不减）；(RCA-7,主源) return 对任何表
+  返回值无条件 retain，表达式返回（`return trim(r)`/`table_new_i64()`/元组解构读）每调用
+  泄漏返回值 1 引用。EN: three refcount gaps leaked the point-mul ladder per-step bigint
+  tables (non-entry one-shot locals never released; stale store-null dropped old refs;
+  expression returns over-retained +1 per call).
+* **修复（irgen_stmt.tie 47+/16-）**：RCA-5 登记全部表/map 局部到出口析构；RCA-6 恢复
+  哨兵守卫的回边旧值 release；RCA-7 retain 仅对槽持（tag6）/结构体字段（tag15+struct）
+  读生效。EN: register ALL table locals for exit destructor; restore sentinel-guarded
+  back-edge release; retain only slot/struct-held return values.
+* **验证**：e_keygen2 812MB→**10MB**；全量 ed25519_probe >4GB 击杀→**exit 0/163MB/138s/
+  「探针全部通过」**（主代理独立复核一致）；其余探针全绿；**新生产不动点
+  fp2==fp3==F87CF039**（tiec→A→B 全等，旧备份 tiec_ACECEBA5.exe）。EN: e_keygen2
+  812MB→10MB; full ed25519 probe now PASS at 163MB; new production fixed point
+  F87CF039.
+
 ## [fix] RCA-2 落地：循环体 alloca 全量提升+入口零初始化——新生产不动点 ACECEBA5（2026-09-06）
 
 * **落地**（commit 36c54f6）：llvmgen `gen_func` 每函数重建收集数组（修 fid>0 跨函数
