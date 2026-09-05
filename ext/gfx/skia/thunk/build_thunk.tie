@@ -1,0 +1,88 @@
+type tie<logic>
+// build_thunk.tie —— p.6.8.6 thunk 构建驱动（tie 写；构建/链接步骤逻辑全 tie，无 PowerShell）
+// EN: thunk build driver, written in tie (no PowerShell for build/link logic).
+//
+// 职责 / Duties（仓库根运行）：
+//   1) 编译并运行 gen_thunk.tie → 生成 ext/gfx/thunk_binding.tie（签名集中登记）
+//   2) clang-cl /MT 编译 ext/gfx/skia/thunk/thunk.cpp → thunk.obj（与 skia.lib 同列 /MT 静默 CRT）
+//   3) tiec --emit-ir 编译探针 → .ll → clang -c → .obj
+//   4) clang -fuse-ld=link 链接 探针.obj + thunk.obj + skia.lib → 探针.exe
+//   5) 运行探针（cwd=仓库根，PNG 落 tests/p686_probe/out.png）；rc==0 → PASS
+//
+// 工具链：clang-cl（thunk）与 clang（链接）均来自 LLVM（tiec 自身依赖），MSVC 头文件
+// 由 clang 自动发现；skia.lib 为 MSVC /MT 静态库，thunk 用 /MT 对齐避免了 CRT 混链。
+// 需要的系统库（随 linker 报错补齐后固化）：user32 gdi32 shell32 dwrite ole32
+// oleaut32 advapi32 windowscodecs + compiler-rt（i128 除法辅助）——见下方 link_cmd。
+
+import "../../../../std/process.tie" as process
+
+func logmsg(m: string) {
+    println("[build_thunk.tie] " + m)
+}
+func fail(m: string) {
+    println("[build_thunk.tie] ERROR: " + m)
+    exit(1)
+}
+func run(cmd: string) -> i64 {
+    var rc = process.exec_code(cmd)
+    if rc != 0 {
+        println("[build_thunk.tie] command failed (rc=" + to_string(rc) + "): " + cmd)
+    }
+    return rc
+}
+
+var g_binding: string = "ext/gfx/thunk_binding.tie"
+var g_thunk_cpp: string = "ext\\gfx\\skia\\thunk\\thunk.cpp"
+var g_thunk_obj: string = "ext\\gfx\\skia\\thunk\\thunk.obj"
+var g_gen_src: string = "ext\\gfx\\skia\\thunk\\gen_thunk.tie"
+var g_gen_exe: string = "ext\\gfx\\skia\\thunk\\gen_thunk.exe"
+var g_probe_src: string = "tests\\p686_probe\\p686_probe.tie"
+var g_probe_ll: string = "tests\\p686_probe\\p686_probe.ll"
+var g_probe_obj: string = "tests\\p686_probe\\p686_probe.obj"
+var g_probe_exe: string = "tests\\p686_probe\\p686_probe.exe"
+var g_skia_lib: string = "ext\\gfx\\lib\\skia.lib"
+var g_skia_src: string = "ext\\gfx\\skia"
+
+func main() {
+    // 1) 生成绑定模块（签名登记）
+    if run("compiler\\tiec.exe " + g_gen_src + " -o " + g_gen_exe) != 0 {
+        fail("gen_thunk compile failed")
+    }
+    if run(g_gen_exe) != 0 {
+        fail("gen_thunk run failed")
+    }
+    logmsg("binding regenerated -> " + g_binding)
+
+    // 2) thunk.cpp → thunk.obj（/MT 匹配 skia）
+    var tcmd = "clang-cl /MT /std:c++17 /O2 /EHsc /c " + g_thunk_cpp +
+        " /I " + g_skia_src + " /Fo:" + g_thunk_obj
+    if run(tcmd) != 0 {
+        fail("thunk.cpp compile failed")
+    }
+    logmsg("thunk.obj built")
+
+    // 3) 探针 → .ll → .obj
+    if run("compiler\\tiec.exe " + g_probe_src + " --emit-ir -o " + g_probe_ll) != 0 {
+        fail("probe IR failed (tiec)")
+    }
+    if run("clang -O2 -c " + g_probe_ll + " -o " + g_probe_obj) != 0 {
+        fail("probe obj failed (clang)")
+    }
+    logmsg("probe.obj built")
+
+    // 4) 链接（clang 驱动 → link.exe；CRT=静态；skia 系统库清单固化）
+    var lcmd = "clang -fuse-ld=link " + g_probe_obj + " " + g_thunk_obj + " " + g_skia_lib +
+        " -o " + g_probe_exe +
+        " -luser32 -lgdi32 -lshell32 -ldwrite -lole32 -loleaut32 -ladvapi32 -lwindowscodecs -rtlib=compiler-rt"
+    if run(lcmd) != 0 {
+        fail("probe link failed")
+    }
+    logmsg("probe.exe linked")
+
+    // 5) 运行（cwd=仓库根，PNG 落 tests/p686_probe/out.png 相对路径）
+    var rc = process.exec_code(g_probe_exe)
+    if rc != 0 {
+        fail("probe run failed rc=" + to_string(rc) + " (探针内部 FAIL / 退出非 0)")
+    }
+    logmsg("PROBE PASS (rc=0)")
+}
