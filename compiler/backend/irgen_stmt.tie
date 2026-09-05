@@ -1203,7 +1203,20 @@ func tig_stmt(id: i64) -> i64 {
                (types.is_table(node_types[init]) || types.is_map(node_types[init])) {
                 cand_tbl = true
             }
-            if g_cur_block == g_entry_block && cand_tbl {
+            // p.6.1.7-RCA-5【2026-09-06】：登记**全部**表/map 局部（含非 entry 块）到出口
+            // 析构候选。此前仅登记 entry 级：非 entry 块（if/else 分支、早退后块）创建的
+            // 一次性表局部（bigint.invmod 的 m/a/r0/r1/sy0/sy1、divrem 单 limb 的 qb1/rt
+            // 等）在函数出口从未 release → 每 divrem/invmod 泄漏 ~2.5KB → ed25519 阶梯
+            // 累积 800MB+（e_keygen2 812MB 根因）。现在安全的原因：
+            //  1) variant C（36c54f6）llvmgen 已把**全部** op==20 alloca 提升到 entry 并
+            //     入口零初始化（ptr→null）→ 出口块 load 该 alloca 满足支配；
+            //  2) 未执行分支的槽保持 null，tl_tbl$tbl_release(null) 运行时守卫跳过
+            //     （p.6.10.2 既定契约：赋值旧值 release、loopvar 哨兵均依赖空句柄守卫）。
+            //  3) 循环体表局部的「上一轮值」由 loopvar_release 哨兵在声明处逐次释放
+            //     （RCA-6 恢复了回边 release 旧值语义），出口 release 只碰**最终值**
+            //     （槽跨迭代持久）→ 单次释放，无双重释放。
+            //  4) 返回/全局外传的 retain 与出口 release 净 0（p.6.10.3 守恒不变）。
+            if cand_tbl {
                 table_push(g_tblcand_allocas, av)
             }
             // p.6.10.4：循环/分支内表变量自遮蔽——非 entry 块声明的表变量，槽在回边
@@ -1213,20 +1226,18 @@ func tig_stmt(id: i64) -> i64 {
             // 表），内存有界且安全。entry 级表变量由 p.6.10.3 出口析构覆盖，不在此列。
             var ivla = node_types[init]
             if g_cur_block != g_entry_block && ivla >= 0 && types.is_table(ivla) {
-                // p.6.1.8-RCA【2026-09-06】：alloca 生成在 g_cur_block（循环体内）——
-                // 回边重执行时**重新分配全新未初始化槽**，而哨兵是全局（跨迭代持久=1）
-                // → tig_loopvar_release 读到的"上一轮表"实为栈垃圾 → release(垃圾指针)
-                // → 内存破坏（TLS 公网握手 0xC0000005 真因：flight 内层循环 full/mbody
-                // 第二次迭代 release 垃圾 → 主返回路径被破坏，进程以 0xC0000005 无异常
-                // 退出）。修复：release 前先向槽写 null——回边重写读到的"旧值"为 null →
-                // 运行时守卫跳过 release（旧表泄漏，本设计已普遍接受泄漏；杜绝释放垃圾）。
-                // 不做全量 alloca 提升：循环局部存在「首 store 前被读」隐性契约，依赖
-                // 逐迭代新鲜栈（p.6.1.7 已证全提升破坏自举/html/ed25519）。
-                var np = tig_null_ptr()  // 常量生成先存变量（避免 add_operand 序列交错）
-                var nullslot = ir.new_inst(g_cur_block, 22, -1)  // store null
-                ir.add_operand(nullslot, ty, 2)
-                ir.add_operand(nullslot, np, 0)
-                ir.add_operand(nullslot, av, 0)
+                // p.6.1.7-RCA-6【2026-09-06】：回边重写前 **release 旧值**（原 p.6.10.4
+                // 哨兵语义）。p.6.1.8-RCA 的「先 store null 再 loopvar_release」在**非提升
+                // alloca**时代正确（循环体 alloca 每迭代重新分配 → 槽是未初始化垃圾，
+                // release 会释放垃圾 → 0xC0000005）；variant C（36c54f6）已把全部 alloca
+                // 提升到 entry 并入口零初始化 → 槽跨迭代**持久**且首版为 null：
+                //   - 首次进入：哨兵 0 → select(0,槽,null)=null → release(null) 跳过；
+                //   - 回边重写：哨兵 1 → release 槽内**上一轮真表**（不再泄漏），随后
+                //     store 新值。
+                // 移除 store-null：否则旧表引用被静默丢弃（refcount 不减）→ 每欧几里得
+                // 步泄漏 qx/rem 两表（~750B/步 × 200 步 × invmod → e_keygen2 448MB 残余
+                // 主源）。RCA-5 的出口 release 仍守恒最终值（单次释放，无双重释放——
+                // 回边由哨兵逐次减，最终值由出口减）。
                 tig_loopvar_release(av)
             }
             var store = ir.new_inst(g_cur_block, 22, -1)  // store
@@ -1367,7 +1378,27 @@ func tig_stmt(id: i64) -> i64 {
             }
             // p.6.10.3：返回表值 → retain（返回值接管归调用方；出口析构会减回——net 0，
             // 调用方持有返回表）；随后析构本函数非参数局部表。须在 ret（terminator）之前。
-            if rty >= 0 && types.is_table(rty) {
+            // p.6.1.7-RCA-7【2026-09-06】：retain 仅当返回值是**槽持/结构体持引用**：
+            //  - tag 6 普通变量读：其槽被出口析构 -1 平衡（net 0），或形参（调用方仍持有，
+            //    retain +1 转给本层调用方）；
+            //  - tag 15 且基为 K_STRUCT：结构体表字段在存储时已 retain（p.6.1.8），结构体
+            //    仍持引用 → 返回须 retain 复制一份给调用方；
+            //  **表达式返回**（tag 7 调用结果，如 `return trim(r)` / `return table_new_i64()`；
+            //  tag 15 且基为 K_TUPLE——解构字段读）→ 表所有权已由被调方 return 转移
+            //  （rc=1），此处再 retain(+1) 无出口析构平衡 → 每表返回函数泄漏其返回值 1 引用
+            //  （ed25519 阶梯：divrem/mul/sub 各 ~200 次/步的 trim 结果全漏 → invmod
+            //  120KB/次 → keygen 阶梯 800MB+ 主源）。
+            var ret_needs_retain: bool = false
+            if s_tags[v] == 6 {
+                ret_needs_retain = true
+            }
+            if s_tags[v] == 15 {
+                var bnode_v = sstate.child(v, 0)
+                if bnode_v >= 0 && node_types[bnode_v] >= 0 && types.kind(node_types[bnode_v]) == K_STRUCT {
+                    ret_needs_retain = true
+                }
+            }
+            if rty >= 0 && types.is_table(rty) && ret_needs_retain {
                 tig_tbl_retain_call(rv)
             }
             tig_tbl_exit_release()
