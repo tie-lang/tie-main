@@ -46,6 +46,10 @@ enum {
     SK_OBJ_PAINT   = 4    // 保留（本最小面 paint 由 thunk 内部构造，无需句柄）
 };
 
+// SkPath 最小面（p.6.8.7）：对象持有所有权，经 sk_path_free 显式释放。
+// SkPath 走独立 sk_path_free 而非 sk_obj_release，路径生命周期与 surface/image/data
+// 分开管理，避免与 SK_OBJ_* kind 枚举耦合。
+
 // —— 离屏 Surface ——
 void*  sk_surface_create(int w, int h);                          // SkSurface* (N32 premul 8888 raster)
 void*  sk_surface_canvas(void* surface);                         // SkCanvas*（surface 拥有）
@@ -61,6 +65,14 @@ int    sk_data_write_file(void* data, const char* path);         // 写文件（
 void   sk_canvas_clear(void* canvas, unsigned int color);
 void   sk_canvas_draw_line(void* canvas, double x0, double y0, double x1, double y1, const TSkPaint* paint);
 void   sk_canvas_draw_rect(void* canvas, double l, double t, double r, double b, const TSkPaint* paint);
+void   sk_canvas_draw_path(void* canvas, void* path, const TSkPaint* paint);   // SkCanvas::drawPath
+
+// —— SkPath 构造 / 逐点构建（p.6.8.7）——
+void*  sk_path_new(void);                        // new SkPath（所有权交付；sk_path_free 释放）
+void   sk_path_free(void* path);                 // SkPath 值类型：delete 配对，非 unref
+void   sk_path_move_to(void* path, double x, double y);  // moveTo
+void   sk_path_line_to(void* path, double x, double y);  // lineTo
+void   sk_path_close(void* path);                       // close（闭合）
 
 // —— 生命周期 ——
 void   sk_obj_release(void* obj, int kind);

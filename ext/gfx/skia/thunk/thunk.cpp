@@ -15,6 +15,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkRect.h"
+#include "include/core/SkPath.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkData.h"
@@ -138,6 +139,44 @@ void sk_obj_release(void* obj, int kind) {
         case SK_OBJ_DATA:    static_cast<SkData*>(obj)->unref();    break;
         default: break;  // 未知 kind 忽略（最小面 paint 无句柄）
     }
+}
+
+// ==================== p.6.8.7 SkPath 追加面（append，未动既有条目） ====================
+
+void sk_canvas_draw_path(void* canvas, void* path, const TSkPaint* paint) {
+    SkCanvas* c = static_cast<SkCanvas*>(canvas);
+    SkPath*   p = static_cast<SkPath*>(path);
+    if (!c || !p || !paint) return;
+    SkPaint sp = make_paint(paint);
+    c->drawPath(*p, sp);
+}
+
+void* sk_path_new(void) {
+    return (new SkPath());
+}
+
+void sk_path_free(void* path) {
+    SkPath* p = static_cast<SkPath*>(path);
+    if (!p) return;
+    delete p;   // SkPath 是值类型（内部 ref-counted SkPathRef），new/delete 配对
+}
+
+void sk_path_move_to(void* path, double x, double y) {
+    SkPath* p = static_cast<SkPath*>(path);
+    if (!p) return;
+    p->moveTo((SkScalar)x, (SkScalar)y);
+}
+
+void sk_path_line_to(void* path, double x, double y) {
+    SkPath* p = static_cast<SkPath*>(path);
+    if (!p) return;
+    p->lineTo((SkScalar)x, (SkScalar)y);
+}
+
+void sk_path_close(void* path) {
+    SkPath* p = static_cast<SkPath*>(path);
+    if (!p) return;
+    p->close();
 }
 
 void sk_flush_std(void) {
