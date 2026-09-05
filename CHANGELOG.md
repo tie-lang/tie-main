@@ -22,6 +22,23 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [fix] RCA-2 落地：循环体 alloca 全量提升+入口零初始化——新生产不动点 ACECEBA5（2026-09-06）
+
+* **落地**（commit 36c54f6）：llvmgen `gen_func` 每函数重建收集数组（修 fid>0 跨函数
+  累积）+ 入口零初始化（含 ren_ref 形参撞号守卫）→ 循环体 alloca 全部静态化，根治
+  「逐迭代动态栈分配 → 0xC00000FD」。**repro2_sort（std/sort 3000 字符串冒泡）PASS**；
+  repro1/repro3/hammer/m8/html/xml/jwt/sqlite/hello 全绿。EN: landed full alloca hoist +
+  entry zero-init; repro2_sort big-bubble now PASS.
+* **新生产不动点**：tiec2v==tiec3v==tiec4v==**ACECEBA5**（提升后 tiec→tiecA→tiecB 三会
+  全等）；晋升为 compiler\tiec.exe，旧种子备份 tiec_9321B3FA.exe。EN: new production
+  compiler at byte-stable fixed point ACECEBA5; old seed backed up.
+* **ed25519 已知限制（定案，随 8e62a46/81b5775 压减）**：阶梯 divrem/invmod 一次性
+  非 entry 表局部 + 返回绑定孤儿泄漏（每欧几里得步 ~2.5KB、每 point_mul ~92MB）——种子
+  与现编译器同源触发（历史「3MB PASS」为分配器运气；AV/爆炸同源随复用顺序漂移）；
+  根治需 irgen 非 entry 局部入口提升（支配安全，高风险，独立后续项）。EN:
+  documented-known-limitation — pre-existing ed25519 ladder refcount leak/UAF;
+  mitigations shipped; full fix deferred to an irgen dominator-safe surgery.
+
 ## [fix] p.6.1.8 TLS 公网握手 0xC0000005 根因定案——循环内表局部 alloca 未初始化槽 release 垃圾（2026-09-06）
 
 * **现象**：`tls.connect` 对公网真实服务器（game.gtimg.cn/www.baidu.com/www.cloudflare.com）
