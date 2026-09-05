@@ -1,0 +1,140 @@
+type tie<logic>
+// tests/p683_probe/p683_probe.tie —— p.6.8.3 验收：extern 扩展（E3）。
+// 全离线确定性探针。覆盖：
+//   1. 双向 ptr：C→tie（malloc 返回 ptr<u8>，tie deref 读）与 tie→C
+//      （tie 把 typed ptr 传给 C 的 memset 写入，tie deref 回读字节 = 0xAB）。
+//   2. string↔char* 往返：getenv 返回 char* → string（auto-scan；NULL → 空串）；
+//      再把 string 传 extern strlen（当作 char* 读），两测长一致。
+//   3. 结构体按引用（直接 repr(C) struct 形参）：SystemTimeToFileTime(st, ft)
+//      ——tie 把 SYSTEMTIME 按引用传（C 读字段），C 按引用写回 FILETIME，
+//      tie 读回字段并校验复合值在 2026 年的合理区间。
+//   4. 结构体按引用（ptr<Struct> + addr_of）：GetSystemTime 经 ptr 填 SYSTEMTIME。
+//   5. repr(C) 布局与布局表咬合：addr_of_field 偏移 vs C offsetof（u16/u32）。
+// 期望全部 PASS / exit 0。
+
+unsafe extern fn malloc(n: i64) -> ptr<u8>;
+unsafe extern fn strlen(s: string) -> i64;
+unsafe extern fn getenv(name: string) -> string;
+
+repr(C) struct SYSTEMTIME {
+    var wYear: u16
+    var wMonth: u16
+    var wDayOfWeek: u16
+    var wDay: u16
+    var wHour: u16
+    var wMinute: u16
+    var wSecond: u16
+    var wMilliseconds: u16
+}
+repr(C) struct FILETIME {
+    var dwLow: u32
+    var dwHigh: u32
+}
+// 直接 repr(C) struct 形参（C ABI 按引用传指针）：读 st、写 ft。
+unsafe extern fn SystemTimeToFileTime(st: SYSTEMTIME, ft: FILETIME) -> i32;
+// ptr<Struct> 形参（addr_of 传指针）：C 按引用写 st。
+unsafe extern fn GetSystemTime(lp: ptr<SYSTEMTIME>);
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// 双向 ptr：同一 C 分配的缓冲上往返（C→tie 返回 ptr，tie→C 传 ptr 写入，tie deref 回读）。
+func bidir_ptr_section() {
+    unsafe {
+        // C→tie：malloc 返回 ptr<u8>（C 侧返回指针，tie 以 typed ptr 接收）
+        var buf: ptr<u8> = malloc(16)
+        check(!is_null(buf), "C->tie: malloc returns non-null ptr<u8>")
+        // tie→C：tie 把 ptr 传给 C 的 memset（按字节写 0xAB）
+        memset(buf, 0xAB, 8)
+        // tie deref 回读 C 写入的字节
+        check(deref(buf) == 0xAB, "tie->C->tie: deref(buf)==0xAB, got " + to_string(deref(buf)))
+        check(deref(ptr_add(buf, 1)) == 0xAB, "tie->C->tie: deref(buf+1)==0xAB, got " + to_string(deref(ptr_add(buf, 1))))
+        check(deref(ptr_add(buf, 7)) == 0xAB, "tie->C->tie: deref(buf+7)==0xAB, got " + to_string(deref(ptr_add(buf, 7))))
+        free(buf)
+    }
+}
+
+// string↔char* 往返：char* → string（返回 auto-scan），string → char*（strlen）。
+func string_roundtrip_section() {
+    unsafe {
+        // char* → string：getenv 返回 NUL 结尾 char*，编译器 auto-scan 补头
+        var path = getenv("PATH")
+        check(str_len(path) > 0, "char*->string: getenv(PATH) len>0, got " + to_string(str_len(path)))
+        var unset = getenv("TIE_FFI_UNSET_9x")
+        check(str_len(unset) == 0, "char*->string: getenv(undefined)==NULL->empty, got " + to_string(str_len(unset)))
+        // string → char*：把 tie string 传 strlen（C 当 char* 读），两测长一致
+        var n = strlen(path)
+        check(n == str_len(path), "string->char*->string: strlen(path)==str_len(path): " + to_string(n) + " vs " + to_string(str_len(path)))
+        // 字面量串单程：tie 字面量 → char* strlen
+        check(strlen("hello") == 5, "string literal->char*: strlen(\"hello\")==5, got " + to_string(strlen("hello")))
+    }
+}
+
+// 结构体按引用（直接 repr(C) struct 形参）：C 读 st 字段、写回 ft 字段，tie 读回。
+func struct_byref_direct_section() {
+    unsafe {
+        var st = SYSTEMTIME(2026, 9, 0, 5, 12, 0, 0, 0)
+        var ft = FILETIME(0, 0)
+        var rc = SystemTimeToFileTime(st, ft)
+        check(rc == 1, "struct-by-ref direct: SystemTimeToFileTime returns TRUE=1, got " + to_string(rc))
+        // C 按引用写回 FILETIME（tie 读回字段）
+        var combined = ft.dwHigh * 4294967296 + ft.dwLow
+        var ok_range: bool = combined > 100000000000000000 && combined < 1000000000000000000
+        check(ok_range, "struct-by-ref direct: C wrote FILETIME combined in 2026 range, got " + to_string(combined))
+        check(ft.dwLow != 0 || ft.dwHigh != 0, "struct-by-ref direct: FILETIME fields written (low/high nonzero)")
+    }
+}
+
+// 结构体按引用（ptr<Struct> + addr_of）：C 经 ptr 写，tie 回读。
+func struct_byref_ptr_section() {
+    unsafe {
+        var st = SYSTEMTIME(0, 0, 0, 0, 0, 0, 0, 0)
+        GetSystemTime(addr_of(st))
+        var y = st.wYear
+        var m = st.wMonth
+        var d = st.wDay
+        check(y >= 2000 && y <= 2100, "ptr<Struct> by-ref: GetSystemTime wrote wYear -> " + to_string(y))
+        check(m >= 1 && m <= 12, "ptr<Struct> by-ref: wrote wMonth -> " + to_string(m))
+        check(d >= 1 && d <= 31, "ptr<Struct> by-ref: wrote wDay -> " + to_string(d))
+    }
+}
+
+// repr(C) 布局与布局表咬合（field offsets vs C offsetof）。
+func layout_section() {
+    unsafe {
+        var st = SYSTEMTIME(2000, 1, 0, 1, 0, 0, 0, 0)
+        var base = ptr_to_int(addr_of(st))
+        check(ptr_to_int(addr_of_field(st, "wYear")) - base == 0, "SYSTEMTIME.wYear off=0 (u16, C offsetof)")
+        check(ptr_to_int(addr_of_field(st, "wMonth")) - base == 2, "SYSTEMTIME.wMonth off=2")
+        check(ptr_to_int(addr_of_field(st, "wMilliseconds")) - base == 14, "SYSTEMTIME.wMilliseconds off=14 (8x u16, size 16)")
+        var ft = FILETIME(7, 8)
+        var fbase = ptr_to_int(addr_of(ft))
+        check(ptr_to_int(addr_of_field(ft, "dwLow")) - fbase == 0, "FILETIME.dwLow off=0 (u32)")
+        check(ptr_to_int(addr_of_field(ft, "dwHigh")) - fbase == 4, "FILETIME.dwHigh off=4")
+    }
+}
+
+func main() {
+    println("start")
+    bidir_ptr_section()
+    string_roundtrip_section()
+    struct_byref_direct_section()
+    struct_byref_ptr_section()
+    layout_section()
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+}
