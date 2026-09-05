@@ -21,6 +21,24 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+
+## [feat] 验收矩阵 + 软件光栅性能基线（vs GDI）（p.6.8.13）（2026-09-05）
+
+* 验收矩阵驱动（tests/ax_matrix/ax_matrix.tie，tie 写、纯构建/批处理，自身仅链 trm_lite）：
+  `process.exec_code` 调 tiec_7A6100 编译 + clang（按类别最小化链接）p.6.8 全系探针并运行，
+  逐项比对退出码 + 输出含 PASS；另附回归段一键执行 html/xml/jwt/win32/ed25519/global_init/
+  tdzd/sqlite/tink。**21/21 PASS → exit 0**，任一失败 exit 1 + 明细。p685 标 SLOW（完整重建
+  skia.lib 约 60s，gating 只用退出码、输出重定向 nul 以规避 tie `file_read` 超大字节崩溃）。
+- 软件光栅性能基线（ext/gfx/bench/bench.cpp 独立 thunk，未动 skia/thunk 既有面）：
+  `bench_skia_rects(n,w,h)`（Skia 离屏软光栅填充矩形）与 `bench_gdi_rects(n,w,h)`
+  （GDI FillRect/HBRUSH 内存 DC），均 GetTickCount64 计时；同尺寸同像素格式离屏缓冲公平对照。
+  探针 tests/p6813_probe/p6813_probe.tie（build_p6813.tie 驱动）n=1000/10000 两档、w=320 h=200
+  打印 INFO 基线并做温和断言（skia_ms>0、gdi_ms>=0，禁精确时序）。
+- 性能基线记录（参考值，随宿主/机器浮动）：n=10000 → **skia≈50–62ms、gdi≈78ms、ratio≈0.6–0.8**
+  （Skia 软光栅填充矩形快于 GDI 内存 DC FillRect）；n=1000 → skia≈4ms、gdi≈14ms、ratio≈0.3。
+- 切合纪律：编译器固定用 tiec_7A6100.exe（SHA256 7A6100FC…BC44），未改/替换任何 compiler/ 文件；
+  探针只交 .tie，scratch/产物不入库；无 O(n²)。
+
 ## [docs] p.6.8 收尾：已知限制清单 + 双语文档 + ROAD 全勾（p.6.8.14）（2026-09-05）
 
 * preview.6 p.6.8 最后子项收尾（仅文档，无编译器/代码改动）。EN: final p.6.8 wrap-up, docs only.

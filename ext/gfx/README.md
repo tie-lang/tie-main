@@ -858,6 +858,53 @@ demo 已本机人工验收（窗口打开、首帧渲染、点击/按键响应�
 
 ---
 
+## p.6.8.13 验收矩阵 + 软件光栅性能基线（vs GDI）
+## Acceptance matrix + software-raster perf baseline (vs GDI)
+
+**验收矩阵驱动 / acceptance matrix driver**：`tests/ax_matrix/ax_matrix.tie`（tie 写，纯构建/
+批处理，自身仅链 trm_lite + compiler-rt）。仓库根运行：
+
+- 构建驱动 exe：`tiec_7A6100.exe tests/ax_matrix/ax_matrix.tie -o tests/ax_matrix/ax_matrix.exe`
+- 运行：`tests\ax_matrix\ax_matrix.exe`；**全 PASS → exit 0**；任一失败 → exit 1 + 失败明细。
+
+矩阵分两段（共 21 项）：
+1. **验收段（p.6.8.1–13）**按依赖序把 p.6.8 全系探针用 `process.exec_code` 调 tiec 编译、
+   clang 链接（按类别最小化：PURE 仅 trm_lite / PROC 加 shell32 / GFX 加 thunk+skia /
+   GFXWIN 加 thunk+win+skia / BENCH 加 bench+thunk+skia），再运行探针 exe，逐项比对
+   退出码 + 输出含 PASS。**p685 标 SLOW**（完整重建 skia.lib 约 60s，app gating 只用退出码、
+   输出重定向 nul，规避 tie `file_read` 超大字节崩溃，见已知限制）。
+2. **回归段**一键执行既有关键回归探针：html_probe / xml_probe / jwt_probe / win32_probe /
+   sym/ed25519 (asym) / probe_global_init / probe_tdzd / sqlite_probe / tink_probe。
+
+EN: the acceptance matrix builds+runs every p.6.8 probe (compiler = tiec_7A6100, link per
+category) and the regression set (html/xml/jwt/win32/ed25519/global_init/tdzd/sqlite/tink);
+all-PASS ⇔ exit 0, else exit 1 with the failing item(s). p685 is SLOW (full skia clean-rebuild;
+handled via exit-code, output redirected to nul to dodge the tie file_read large-buffer crash).
+
+**软件光栅性能基线（vs GDI）/ software-raster baseline (vs GDI)**：
+`ext/gfx/bench/bench.cpp`（独立 thunk，未动 skia/thunk 既有面）提供两个基准 C 入口：
+`bench_skia_rects(n,w,h)`（Skia 离屏软光栅填充矩形）与 `bench_gdi_rects(n,w,h)`
+（GDI FillRect/HBRUSH 内存 DC），均 GetTickCount64 计时、返回毫秒；二者同尺寸同像素格式
+（BGRA 32bpp）离屏缓冲，公平对照。低 n 档经内部 passes 校准到可辨刻度（量化基线，参考值）。
+
+探针 `tests/p6813_probe/p6813_probe.tie`（`build_p6813.tie` 驱动）在 n=1000/10000 两档、
+w=320 h=200 打印 INFO 并做温和断言（skia_ms>0、gdi_ms>=0，**禁精确时序断言**）。
+
+**本机基线数字 / representative baseline（fixed buffer 320x200，reference only）**：
+
+| n（矩形数） | skia_ms | gdi_ms | ratio (skia/gdi) |
+| --- | --- | --- | --- |
+| 1000   | ≈4  | ≈14 | ≈0.3（Skia 软光栅更快）|
+| 10000  | ≈50–62 | ≈78 | ≈0.6–0.8（Skia 更快）|
+
+EN: representative run (this host): n=10000 → skia≈50–62ms, gdi≈78ms, ratio≈0.6–0.8; Skia
+software raster FillRect is faster than GDI FillRect to a memory DC. ratio trend varies with
+host / machine / Skia build — recorded once, **reference only** (no precise-timing assertion).
+
+**运行命令 / Run**：`tests\ax_matrix\ax_matrix.exe`（仓库根，数分钟内；含 p685 干净重建）。
+
+---
+
 ## p.6.8.14 收尾：架构总览 / p.6.8.14 wrap-up: architecture overview
 
 **软件栈分层（自底向上）/ software stack (bottom-up)**：
