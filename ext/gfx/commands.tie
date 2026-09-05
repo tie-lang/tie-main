@@ -1,0 +1,106 @@
+type tie<class>
+// ext/gfx/commands.tie —— p.6.8.8 D2 命令列表**构造器**模块（namespace commands）
+// EN: trm.ui.gfx D2 command-list builders: a pure-data flat bytecode + single-pass
+// translator (gfx.run_commands in gfx.tie consumes what this module builds).
+//
+// 命令列表格式（平面 table<i64>，单遍下标推进，无嵌套表，不逐条重建全表）：
+//   Every command is self-delimited: [kind, ...slots]. The decoder (gfx.run_commands)
+//   advances a cursor `i` by each command's length, so cost is O(total slots). Every
+//   f64 slot is stored as its bit pattern via bitcast_f64_i64 and read back in the
+//   translator with bitcast_i64_f64. Text/image byte payloads are stored as i64 byte
+//   values inline; the translator allocs a temp buffer, draws, then frees.
+//
+// kind 编码（以下各条的长度 = 槽数）：
+//   0 CLEAR        [0, color]                                        len=2
+//   1 FILL_RECT    [1, l_bits, t_bits, r_bits, b_bits, color, aa]    len=7
+//   2 STROKE_RECT  [2, l_bits, t_bits, r_bits, b_bits, color, w_bits] len=7
+//   3 TEXT         [3, size_bits, x_bits, y_bits, color, nchars, c0..cN] len=6+N
+//   4 PATH         [4, color, style, aa, width_bits, closed, npts,
+//                   x0,y0, x1,y1, ...]  (moveTo p0, lineTo p1..; closed=1 → close) len=7+2*npts
+//   5 IMAGE        [5, x_bits, y_bits, nbytes, b0..bM] (PNG 字节值)    len=4+M
+// color 为 u32 ARGB premul（SkColor），以 i64 直存；style 0fill/1stroke；
+// aa 0/1；width 为 f64 位模式。
+//
+// 探针用法：`import "../../ext/gfx/commands.tie" as cmds`，`var cs = commands.cmd_new()`
+// → 逐个 `commands.cmd_xxx(...)` 推入 → `gfx.run_commands(canvas, cs)`。
+
+namespace commands {
+    pub func cmd_new() -> table<i64> {
+        return table_new_i64()
+    }
+    // 0 CLEAR：整面清色。
+    pub func cmd_clear(cmds: table<i64>, color: u32) {
+        table_push(cmds, 0)
+        table_push(cmds, as_i64(color))
+    }
+    // 1 FILL_RECT：实填充矩形（aa 0/1）。
+    pub func cmd_fill_rect(cmds: table<i64>, l: f64, t: f64, r: f64, b: f64,
+                           color: u32, aa: i64) {
+        table_push(cmds, 1)
+        table_push(cmds, bitcast_f64_i64(l))
+        table_push(cmds, bitcast_f64_i64(t))
+        table_push(cmds, bitcast_f64_i64(r))
+        table_push(cmds, bitcast_f64_i64(b))
+        table_push(cmds, as_i64(color))
+        table_push(cmds, aa)
+    }
+    // 2 STROKE_RECT：描边矩形（width 线宽 f64）。
+    pub func cmd_stroke_rect(cmds: table<i64>, l: f64, t: f64, r: f64, b: f64,
+                             color: u32, width: f64) {
+        table_push(cmds, 2)
+        table_push(cmds, bitcast_f64_i64(l))
+        table_push(cmds, bitcast_f64_i64(t))
+        table_push(cmds, bitcast_f64_i64(r))
+        table_push(cmds, bitcast_f64_i64(b))
+        table_push(cmds, as_i64(color))
+        table_push(cmds, bitcast_f64_i64(width))
+    }
+    // 3 TEXT：文本绘制。s 逐字符写 UTF-8 字节值（ASCII 即码点；多字节 UTF-8 亦逐字节）。
+    pub func cmd_text(cmds: table<i64>, size: f64, x: f64, y: f64, color: u32,
+                      s: string) {
+        var nc: i64 = str_len(s)
+        table_push(cmds, 3)
+        table_push(cmds, bitcast_f64_i64(size))
+        table_push(cmds, bitcast_f64_i64(x))
+        table_push(cmds, bitcast_f64_i64(y))
+        table_push(cmds, as_i64(color))
+        table_push(cmds, nc)
+        var j: i64 = 0
+        while j < nc {
+            table_push(cmds, str_byte(s, j))
+            j = j + 1
+        }
+    }
+    // 4 PATH：折线/闭合路径。pts 为成对坐标 f64 表（x0,y0,x1,y1..），情 moveTo 起、其余
+    // lineTo；closed=1 时 close 闭合。style 0fill/1stroke。
+    pub func cmd_path(cmds: table<i64>, color: u32, style: i32, aa: i64,
+                      width: f64, closed: i64, pts: table<f64>) {
+        var nvals = len(pts)
+        var npts: i64 = nvals / 2
+        table_push(cmds, 4)
+        table_push(cmds, as_i64(color))
+        table_push(cmds, as_i64(style))
+        table_push(cmds, aa)
+        table_push(cmds, bitcast_f64_i64(width))
+        table_push(cmds, closed)
+        table_push(cmds, npts)
+        var j: i64 = 0
+        while j < nvals {
+            table_push(cmds, bitcast_f64_i64(pts[j]))
+            j = j + 1
+        }
+    }
+    // 5 IMAGE：把编码 PNG 字节表（i64 值，每字节一个槽）解码并绘制。x/y 为左上角。
+    pub func cmd_image(cmds: table<i64>, x: f64, y: f64, bytes: table<i64>) {
+        var nb = len(bytes)
+        table_push(cmds, 5)
+        table_push(cmds, bitcast_f64_i64(x))
+        table_push(cmds, bitcast_f64_i64(y))
+        table_push(cmds, nb)
+        var j: i64 = 0
+        while j < nb {
+            table_push(cmds, bytes[j])
+            j = j + 1
+        }
+    }
+}

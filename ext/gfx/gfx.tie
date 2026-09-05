@@ -63,6 +63,16 @@ repr(C) struct Encoded {
     var bytes: i64
     var len: i64
 }
+// p.6.8.8：SkFont 句柄（走独立 sk_font_free，非 obj_release kind）。
+repr(C) struct Font {
+    var h: i64
+}
+// p.6.8.8：FontMetrics 数值平面（ascent/descent/leading 为 f64 度量，正值/负值语义同 Skia）。
+repr(C) struct FontMetrics {
+    var ascent: f64
+    var descent: f64
+    var leading: f64
+}
 
 // ---------- arena：句柄批量回收记账 ----------
 // g_arena_ptr / g_arena_kind 并行表；kind：0=Surface, 2=Image, 5=Path。
@@ -253,6 +263,173 @@ namespace gfx {
             i = i + 1
         }
         return cnt
+    }
+    // p.6.8.8：SkFont 句柄 + 文本度量桥 -------------------------------------
+    // Font 不纳入 arena（独立 sk_font_free 生命周期），故不用 arena_track。
+    pub func font_new(size: f64) -> Font {
+        unsafe {
+            var f: ptr<u8> = sk_font_create(size)
+            return Font(ptr_to_int(f))
+        }
+    }
+    pub func font_free(f: Font) {
+        unsafe {
+            var fp: ptr<u8> = int_to_ptr(f.h)
+            sk_font_free(fp)
+        }
+    }
+    // font_measure_text：已有 font 句柄下测量某字节表文本宽度（字节表 i64 值 → UTF-8 字节缓冲）。
+    // 内部 alloc 缓冲 → measureText → free；度量 f64（SkScalar advance 总和）。
+    pub func font_measure_bytes(f: Font, bytes: table<i64>) -> f64 {
+        var nc = len(bytes)
+        unsafe {
+            var fp: ptr<u8> = int_to_ptr(f.h)
+            var buf: ptr<u8> = alloc(nc)
+            var j: i64 = 0
+            while j < nc {
+                deref_write(ptr_add(buf, j), as_i8(as_i64(bytes[j])))
+                j = j + 1
+            }
+            var w = sk_font_measure(fp, buf, nc)
+            free(buf)
+            return w
+        }
+    }
+    // font_metrics：ascent/descent/leading 数值平面（f64）。i64 槽经 bitcast_i64_f64 读回。
+    pub func font_metrics(f: Font) -> FontMetrics {
+        var a: i64 = 0
+        var d: i64 = 0
+        var l: i64 = 0
+        unsafe {
+            var fp: ptr<u8> = int_to_ptr(f.h)
+            sk_font_metrics(fp, addr_of(a), addr_of(d), addr_of(l))
+        }
+        return FontMetrics(bitcast_i64_f64(a), bitcast_i64_f64(d), bitcast_i64_f64(l))
+    }
+    // gfx.font_measure(size, s)：一键文本度量桥——建 font → 测宽 → 释放。s 为字符串，
+    // 转 UTF-8 字节缓冲（ASCII 直接逐字符写）经 sk_font_measure 测后即时 free。
+    pub func font_measure(size: f64, s: string) -> f64 {
+        var nc = str_len(s)
+        unsafe {
+            var f: ptr<u8> = sk_font_create(size)
+            var buf: ptr<u8> = alloc(nc)
+            var j: i64 = 0
+            while j < nc {
+                deref_write(ptr_add(buf, j), as_i8(str_byte(s, j)))
+                j = j + 1
+            }
+            var w = sk_font_measure(f, buf, nc)
+            free(buf)
+            sk_font_free(f)
+            return w
+        }
+    }
+
+    // p.6.8.8：D2 命令列表翻译器 -------------------------------------------
+    // 命令列表 = 平面 table<i64>（单遍下标推进，禁逐条重建全表；每条命令自定长，解码器
+    // 以游标 i 递增到表尾）。kind 编码见 ext/gfx/commands.tie 头部注释；凡 f64 数值槽一律
+    // 以 bitcast_f64_i64 位模式存储，此处 bitcast_i64_f64 回读。text/image 的字节负载在
+    // 解码处 alloc 临时缓冲 → 绘制 → free（image 解码后立绘，随即 unref 释放）。
+    pub func run_commands(c: Canvas, cmds: table<i64>) {
+        var i: i64 = 0
+        var n = len(cmds)
+        while i < n {
+            var k = cmds[i]
+            // 0 CLEAR [0, color]
+            if k == 0 {
+                canvas_clear(c, as_u32(as_i64(cmds[i + 1])))
+                i = i + 2
+            } else {
+                // 1 FILL_RECT / 2 STROKE_RECT [k, l,t,r,b, color, extra]
+                if k == 1 || k == 2 {
+                    var l = bitcast_i64_f64(cmds[i + 1])
+                    var t = bitcast_i64_f64(cmds[i + 2])
+                    var r = bitcast_i64_f64(cmds[i + 3])
+                    var b = bitcast_i64_f64(cmds[i + 4])
+                    var color = as_u32(as_i64(cmds[i + 5]))
+                    var extra = cmds[i + 6]
+                    var style: i32 = 0
+                    if k == 2 { style = 1 }
+                    var aa: i32 = 0
+                    var width: f64 = 0.0
+                    if k == 1 {
+                        aa = as_i32(extra)
+                    } else {
+                        width = bitcast_i64_f64(extra)
+                    }
+                    canvas_draw_rect(c, l, t, r, b, paint_make(color, style, aa, width))
+                    i = i + 7
+                } else {
+                    if k == 3 {
+                        // TEXT [3, size_bits, x_bits, y_bits, color, nchars, c0..cN]
+                        var size = bitcast_i64_f64(cmds[i + 1])
+                        var x = bitcast_i64_f64(cmds[i + 2])
+                        var y = bitcast_i64_f64(cmds[i + 3])
+                        var color = as_u32(as_i64(cmds[i + 4]))
+                        var nc = cmds[i + 5]
+                        unsafe {
+                            var cf: ptr<u8> = int_to_ptr(c.h)
+                            var f: ptr<u8> = sk_font_create(size)
+                            var buf: ptr<u8> = alloc(nc)
+                            var j: i64 = 0
+                            while j < nc {
+                                deref_write(ptr_add(buf, j), as_i8(as_i64(cmds[i + 6 + j])))
+                                j = j + 1
+                            }
+                            var pp = TSkPaint(color, 0, 0, 0.0)
+                            sk_canvas_draw_text_blob(cf, f, x, y, buf, nc, addr_of(pp))
+                            free(buf)
+                            sk_font_free(f)
+                        }
+                        i = i + 6 + nc
+                    } else if k == 4 {
+                        // PATH [4, color, style, aa, width_bits, closed, npts, x0,y0, x1,y1, ..]
+                        var color = as_u32(as_i64(cmds[i + 1]))
+                        var style = as_i32(cmds[i + 2])
+                        var aa = as_i32(cmds[i + 3])
+                        var width = bitcast_i64_f64(cmds[i + 4])
+                        var closed = cmds[i + 5]
+                        var npts = cmds[i + 6]
+                        var p = path_new()
+                        path_move_to(p, bitcast_i64_f64(cmds[i + 7]), bitcast_i64_f64(cmds[i + 8]))
+                        var q: i64 = 1
+                        while q < npts {
+                            path_line_to(p, bitcast_i64_f64(cmds[i + 7 + q * 2]),
+                                         bitcast_i64_f64(cmds[i + 8 + q * 2]))
+                            q = q + 1
+                        }
+                        if closed != 0 { path_close(p) }
+                        canvas_draw_path(c, p, paint_make(color, style, aa, width))
+                        release_path(p)
+                        i = i + 7 + npts * 2
+                    } else if k == 5 {
+                        // IMAGE [5, x_bits, y_bits, nbytes, b0..bM]
+                        var x = bitcast_i64_f64(cmds[i + 1])
+                        var y = bitcast_i64_f64(cmds[i + 2])
+                        var nb = cmds[i + 3]
+                        unsafe {
+                            var cf: ptr<u8> = int_to_ptr(c.h)
+                            var buf: ptr<u8> = alloc(nb)
+                            var j: i64 = 0
+                            while j < nb {
+                                deref_write(ptr_add(buf, j), as_i8(as_i64(cmds[i + 4 + j])))
+                                j = j + 1
+                            }
+                            var im: ptr<u8> = sk_image_make_from_encoded(buf, nb)
+                            if is_null(im) == false {
+                                sk_canvas_draw_image(cf, im, x, y)
+                                sk_obj_release(im, 2)
+                            }
+                            free(buf)
+                        }
+                        i = i + 4 + nb
+                    } else {
+                        // 未知 kind：终止（防死循环），后续命令不解释。
+                        i = n
+                    }
+                }
+            }
+        }
     }
     // arena_release：一次释放全部仍未单独释放的句柄，返回本批释放数。
     pub func arena_release() -> i64 {
