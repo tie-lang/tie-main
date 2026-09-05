@@ -21,6 +21,30 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [docs] p.6.8 收尾：已知限制清单 + 双语文档 + ROAD 全勾（p.6.8.14）（2026-09-05）
+
+* preview.6 p.6.8 最后子项收尾（仅文档，无编译器/代码改动）。EN: final p.6.8 wrap-up, docs only.
+* **已知限制清单**（`ext/gfx/README.md` 新增「已知限制清单 / Known limits（p.6.8.14）」，`*` 列表，
+  中英双语，10 条）：GPU 后端（Vulkan/D3D/Metal）后置；X11/Wayland 窗口嵌入后置（仅 Win32）；
+  SkParagraph 复杂文本排版后置（SkFont/measureText）；skia 全量编解码器后置（仅 PNG/BMP）；
+  tieui 完整组件框架后置（仅渲染核心 + 布局雏形）；DirectWrite 退出期 AV（已以 `ExitProcess` 规避）；
+  tie 侧表运行时已知缺陷（大表迭代栈损坏、`byte_read`/fs 系列元素读取 AV——**修复状态见本次批次 RCA
+  收尾**）；软件光栅性能受宿主影响（基线仅供参考）；命令列表非动画全面重绘（事件驱动-only 重绘后置）；
+  整库字节级可复现受限（Level-2 幂等下界）。
+  EN: added a comprehensive Known-limits section (10 bilingual `*` items) to ext/gfx/README.md.
+* **架构总览 + 达成度小结**（`ext/gfx/README.md`）：新增「p.6.8.14 架构总览（软件栈分层自底向上：
+  Skia 子集 / thunk 层 / gfx 句柄层+命令列表 / port·事件·主循环·布局 / Win32 嵌入 / tie 语言+表运行时）
+  」与「p.6.8 达成度小结（p.6.8.1–14 逐行状态表）」；p.6.8.1–12 验收探针全 PASS/exit 0，p.6.8.13
+  并行收尾中，p.6.8.14 文档收尾。
+  EN: added an architecture-overview (6-layer software stack) + a per-item achievement table.
+* **ROAD.md p.6.8.1–14 全勾**：p.6.8.13 / p.6.8.14 补勾 `[x]`；扫清 p.6.10.4 一行终端残留 `<br />`。
+  EN: ticked p.6.8.13 & p.6.8.14 in ROAD.md; removed a stray `<br />` artifact in the p.6.10.4 row.
+* 全文无四级编号（p.w.x.y 三级制）、无「阶段X」分组表述、无误留 `<br/>` 残留。
+  EN: no 4-level numbers, no "stage-X" labels, no stray `<br/>` remain.
+* **最终自举核验（自举 + 零回归）待主代理在 RCA 子代理完成后统一执行**，本收尾不运行自举、不改
+  `compiler/`。EN: **final bootstrap + zero-regression verification is pending the main agent**
+  (the RCA sub-agent still owns compiler/; this wrap-up ran no bootstrap and touched no code).
+
 ## [fix] fs.walk/read_dir 表元素读取访问违例 RCA 根治（2026-09-05）
 
 * 根因（RCA）：p.6.10.2 表内存治理把运行时 tl_tbl 表句柄从 32 字节 `{cap@0,len@8,data@16,esz@24}`

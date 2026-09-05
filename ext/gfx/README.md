@@ -855,3 +855,95 @@ demo 已本机人工验收（窗口打开、首帧渲染、点击/按键响应�
 - `app.ev_log()` 读取 app 累计事件**表**（跨帧需自行记录已处理下标；demo 在 `g_state[4]` 记）。
   EN: consumer must track a processed index across frames (demo uses a slot in g_state).
 - 跨模块/大表/闭包捕获语义沿用 p.6.8.7/6.8.11 记录；demo 交互状态存共享表经模块函数读写。
+
+---
+
+## p.6.8.14 收尾：架构总览 / p.6.8.14 wrap-up: architecture overview
+
+**软件栈分层（自底向上）/ software stack (bottom-up)**：
+
+1. **Skia 子集（软件光栅核心）**——`ext/gfx/lib/skia.lib`：Raster 软件光栅 + 文本（DirectWrite）
+   + 图像 + 离屏位图 Surface + PNG/BMP 编解码。EN: trimmed Skia subset — software raster +
+   text (DirectWrite) + image + offscreen surface + PNG/BMP codecs.
+2. **thunk 层（extern "C" 面）**——`ext/gfx/skia/thunk/{thunk.cpp,thunk.h}` + `ext/gfx/win/win.cpp`：
+   把 Skia 类方法 / Win32 窗口消息泵暴露为 C 入口；对象一律不透明 `ptr<u8>`。
+   EN: handwritten extern "C" thunk for Skia + Win32 windowing/message-pump.
+3. **gfx 句柄层 + 命令列表翻译器**——`ext/gfx/gfx.tie`（repr(C) 句柄 struct + 显式 release /
+   arena 生命周期）+ `ext/gfx/commands.tie`（D2 平面 `table<i64>` 命令列表 → Skia）+ 
+   `gfx.font_measure` 文本度量桥。EN: handle layer + flat command-list translator + text bridge.
+4. **port / 事件 / 主循环 / 布局**——`ext/gfx/port.tie`（trm.ui Window/Painter/EventSource 双实现
+   开关，namespace pt）+ `ext/gfx/event.tie`（E3 事件队列，ev）+ `ext/gfx/app.tie`（主循环/脏矩形/
+   帧节流，app）+ `ext/gfx/layout.tie`（row/column 组合布局雏形，lay）+ `ext/gfx/window.tie`
+   （Win32 直透封装，win）。EN: port surface (dual SKIA/OFFSCREEN), E3 events, main loop +
+   dirty-rect + throttle, composable layout kernel, Win32 wrapper.
+5. **Win32 嵌入层**——窗口创建 / WndProc / `StretchDIBits` 后备缓冲上屏 / 事件捕获，全在 thunk
+   侧 C 状态机（tie 无法跨 FFI 传 WndProc 回调）。EN: window/backend-buffer blit/event capture;
+   the WndProc state machine lives in C.
+6. **tie 语言 + 表运行时**——unsafe `ptr` / `repr(C)` / `extern` 扩展（p.6.8.1-3）+ `trm_lite.a`
+   表/容器运行时。EN: the unsafe language extensions + trm_lite table runtime.
+
+层级边界：tie 程序只经 `gfx.*`/`pt.*`/`ev.*`/`app.*`/`lay.*`/`win.*` 命名空间模块触达 thunk 面，
+thunk 之上无任何 Skia C++ 类型泄漏到 tie 侧（句柄 = i64 地址 / 扁平 repr(C) 描述）。
+EN: tie programs reach the thunk only through the gfx/port/ev/app/lay/win namespaces; no Skia
+C++ type leaks above the thunk (handles are i64 addresses / flat repr(C) descriptors).
+
+---
+
+## p.6.8 达成度小结 / p.6.8 achievement summary（14 子项逐行状态）
+
+| 子项 | 状态 / status |
+| --- | --- |
+| p.6.8.1 `ptr` 类型化指针 + addr_of/deref/算术 + unsafe 门禁 | ✅ 验收探针 PASS；编译拒绝安全码触碰指针 |
+| p.6.8.2 `repr(C)` 结构体显式 ABI 布局 | ✅ repr(C) 布局对照 C offsetof 全等；按引用传 extern PASS |
+| p.6.8.3 extern 扩展（强制 unsafe + ptr/struct-by-ref/string↔char*） | ✅ 双向 ptr 探针；extern_move_check 零回归 |
+| p.6.8.4 Skia 源码裁剪与构建（Raster+文本+图像+离屏） | ✅ 最小 C++ 冒烟画矩形/文本/图像→PNG 成功；档案 160.5 MiB |
+| p.6.8.5 模块清单与依赖收窄 + 构建可复现 | ✅ 清单文档化（zlib+libpng 最小闭包）；/Brepro + 幂等下界探针 |
+| p.6.8.6 extern "C" thunk 绑定 + 生成器 | ✅ thunk 冒烟画线离屏导出校验；asserts=27 PASS |
+| p.6.8.7 trm.ui.gfx 句柄层（repr(C) 句柄 + arena 生命周期） | ✅ 句柄探针创建/使用/释放+arena 计数；asserts=23 PASS |
+| p.6.8.8 D2 命令列表翻译器 + font_measure 文本度量桥 | ✅ 命令列表离屏渲染逐像素/哈希一致；asserts=32 PASS |
+| p.6.8.9 Win32 窗口嵌入层（Win32 起步） | ✅ 窗口显示 + 后备缓冲绘制正确；asserts=14 PASS |
+| p.6.8.10 事件系统 E3（事件队列 + 信号标志） | ✅ 事件驱动探针（移动/点击/按键→队列）；asserts=23 PASS |
+| p.6.8.11 主循环与呈现 + trm.ui port 双实现 | ✅ 帧率/脏矩形正确；SKIA/OFFSCREEN 双实现可切换；asserts=17 PASS |
+| p.6.8.12 全栈演示 + 组合式布局雏形 | ✅ 演示交互正常 + 布局雏形探针化；asserts=23 PASS |
+| p.6.8.13 验收矩阵 + 性能基线 | 🔄 并行子代理收尾中（无窗口 CI 探针 + 基线记录），详见其 p.6.8.13 段落 |
+| p.6.8.14 收尾：已知限制 + 双语文档 + ROAD 全勾 | 🔄 本文档 + CHANGELOG/ROAD 收尾；**最终自举核验（自举 + 零回归）待主代理在 RCA 子代理完成后统一执行** EN: final bootstrap verification pending the main agent |
+
+EN: p.6.8.1-6.8.12 acceptance probes all PASS/exit 0; p.6.8.13 acceptance matrix in-flight
+(parallel sub-agent); p.6.8.14 is this documentation wrap-up — the final bootstrap + zero-regression
+verification is scheduled for the main agent once the RCA sub-agent hands back compiler/.
+
+---
+
+## 已知限制清单 / Known limits（p.6.8.14）
+
+- **GPU 后端后置**：本裁剪 `skia_enable_gpu=false`，仅软件光栅（Vulkan/D3D/Metal 未启用，属设计文档
+  明确后置项）。EN: GPU backends (Vulkan/D3D/Metal) deferred — software raster only.
+- **X11/Wayland 窗口嵌入后置**：当前嵌入层仅 Win32（`CreateWindowExW`/WndProc）；Linux/Wayland
+  嵌入属后续。EN: X11/Wayland window embedding deferred — Win32 only for now.
+- **SkParagraph 复杂文本排版后置**：`skia_enable_skparagraph=false`，文本走 SkFont/measureText
+  （单行/朴素宽度度量，无多段/双向/富文本排版）。EN: SkParagraph complex text layout deferred —
+  plain SkFont measure/drawTextBlob only.
+- **skia 全量编解码器后置**：仅 PNG/BMP（`skia_use_libpng_decode/encode=true`、内置 BMP/WBMP/ICO）；
+  JPEG/WebP/GIF/RAW/HEIF 等关闭。EN: PNG/BMP codecs only; JPEG/WebP/GIF/RAW/HEIF off.
+- **tieui 完整组件框架后置**：本批只交付渲染核心 + 组合式布局雏形（row/column 定位，无 hit-test /
+  尺寸协商）；完整组件框架属 S4.x。EN: full tieui component framework deferred — layout kernel
+  (position-only) shipped; hit-test / sizing negotiation later.
+- **DirectWrite 退出期访问违例（已规避）**：静态 exe 退出期 DWrite 字体管理器静态析构 AV；探针/
+  演示以 `sk_flush_std()` + `ExitProcess` 确定性退出绕开。EN: DirectWrite exit-time teardown AV
+  avoided via ExitProcess.
+- **tie 侧表运行时已知缺陷**（随本批次 RCA 收尾）：大 i64 表（>~30000 元素，如 gfx 离屏表面值）
+  整体迭代触发 trm_lite 上界栈损坏；`byte_read`/`fs.walk`/`fs.read_dir` 的 `t[i]` 元素读取访问违例、
+  fs+sort 大负载 co-import 崩溃。**修复状态见本次批次（std/fs + 编译器）RCA 收尾**；现役探针均在各自
+  段落注明规避方式。EN: known tie table-runtime defects (big-table iteration stack corruption,
+  byte_read / fs-table element-read AV) — fix status to be reported in this batch's RCA wrap-up;
+  probes avoid them as documented.
+- **软件光栅性能受宿主影响（基线仅供参考）**：性能基线在特定宿主/负载下测得，GPU、分辨率、并发宿主
+  后台任务均会改变绝对数值；比较应聚焦相对差异。EN: software-raster perf baseline is host-dependent;
+  treat as a reference, not an absolute guarantee.
+- **命令列表非动画全面重绘（后置）**：demo 当前因 `present→InvalidateRect→paint_pending` 逐帧整帧
+  重绘；真「事件驱动-only」重绘（增量/显式失效）留待组件框架。EN: demo repaints every frame even when
+  static; event-driven-only redraw deferred to the component framework.
+- **整库字节级可复现受限（Level-2 幂等下界）**：MSVC `lib.exe` 在 COFF 归档成员头写 obj mtime，
+  `/Brepro` 不可改写 → 跨时刻 clean-rebuild 整库字节不一致；以「相同输入增量重建不产新字节」为验收
+  下界。EN: whole-lib byte-identity across clean rebuilds not achievable (lib.exe archive mtime);
+  accepted lower bound is idempotency.
