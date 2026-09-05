@@ -71,6 +71,9 @@ pub func clear_dirty() {
 
 // ---- 主循环事件累计（EventSource 消费点汇总）----
 pub func ev_count() -> i64 { return g_evcount }
+// 只读访问已累计的平面事件日志（每事件 5 槽，见 event.tie）。供主循环消费者（如 demo 的
+// tick 闭包）在 app.run 已成队排空后读取真实用户事件做交互响应；纯增量，不改语义。
+pub func ev_log() -> table<i64> { return g_evlog }
 
 // ---- 时钟 / 节流辅助 ----
 pub func now_ms() -> i64 {

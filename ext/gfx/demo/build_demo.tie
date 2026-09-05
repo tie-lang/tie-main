@@ -1,0 +1,87 @@
+type tie<logic>
+// ext/gfx/demo/build_demo.tie —— p.6.8.12 全栈演示构建驱动（tie 写；仓库根运行）
+// EN: p.6.8.12 full-stack demo build driver (tie-written, run from repo root).
+//
+// 职责 / Duties：
+//   1) clang-cl /MT 编译 ext/gfx/skia/thunk/thunk.cpp → thunk.obj（Skia 离屏渲染）
+//   2) clang-cl /MT 编译 ext/gfx/win/win.cpp → win.obj（窗口嵌入层）
+//   3) tiec_7A6100 --emit-ir 编译 demo.tie（transitively imports gfx/commands/port/app/
+//      window/event/layout/thunk_binding）→ .ll → clang -c → .obj
+//   4) clang -fuse-ld=link 链接 demo.obj + thunk.obj + win.obj + skia.lib + trm_lite.a
+//      → demo.exe（trm_lite.a 提供表运行时；系统库清单沿用 p.6.8.6-6.8.11，无新增）
+//   5) 运行 demo（cwd=仓库根，SKIA 窗口可见）。运行多长时间由用户在窗口交互；关窗退出。
+//
+// 说明：固定用稳定现役 tiec_7A6100.exe；产物 demo.exe / build_demo.exe 已被
+// ext/gfx/demo/.gitignore 忽略，不入库。不改 thunk.cpp / win.cpp / 既有 gfx 模块。
+
+import "../../../std/process.tie" as process
+
+func logmsg(m: string) {
+    println("[build_demo.tie] " + m)
+}
+func fail(m: string) {
+    println("[build_demo.tie] ERROR: " + m)
+    exit(1)
+}
+func run(cmd: string) -> i64 {
+    var rc = process.exec_code(cmd)
+    if rc != 0 {
+        println("[build_demo.tie] command failed (rc=" + to_string(rc) + "): " + cmd)
+    }
+    return rc
+}
+
+var g_tiec: string = "compiler\\tiec_7A6100.exe"
+var g_thunk_cpp: string = "ext\\gfx\\skia\\thunk\\thunk.cpp"
+var g_thunk_obj: string = "ext\\gfx\\skia\\thunk\\thunk.obj"
+var g_win_cpp: string = "ext\\gfx\\win\\win.cpp"
+var g_win_obj: string = "ext\\gfx\\win\\win.obj"
+var g_demo_src: string = "ext\\gfx\\demo\\demo.tie"
+var g_demo_ll: string = "ext\\gfx\\demo\\demo.ll"
+var g_demo_obj: string = "ext\\gfx\\demo\\demo.obj"
+var g_demo_exe: string = "ext\\gfx\\demo\\demo.exe"
+var g_skia_lib: string = "ext\\gfx\\lib\\skia.lib"
+var g_skia_src: string = "ext\\gfx\\skia"
+var g_trmlite: string = "..\\trm-lite\\trm_lite.a"
+
+func main() {
+    // 1) thunk.cpp → thunk.obj（/MT 匹配 skia）
+    if run("clang-cl /MT /std:c++17 /O2 /EHsc /c " + g_thunk_cpp +
+        " /I " + g_skia_src + " /Fo:" + g_thunk_obj) != 0 {
+        fail("thunk.cpp compile failed")
+    }
+    logmsg("thunk.obj built")
+
+    // 2) win.cpp → win.obj
+    if run("clang-cl /MT /O2 /c " + g_win_cpp + " /Fo:" + g_win_obj) != 0 {
+        fail("win.cpp compile failed")
+    }
+    logmsg("win.obj built")
+
+    // 3) demo → .ll → .obj
+    if run(g_tiec + " " + g_demo_src + " --emit-ir -o " + g_demo_ll) != 0 {
+        fail("demo IR failed (tiec)")
+    }
+    if run("clang -O2 -c " + g_demo_ll + " -o " + g_demo_obj) != 0 {
+        fail("demo obj failed (clang)")
+    }
+    logmsg("demo.obj built")
+
+    // 4) 链接（CRT=静态 /MT；skia + win thunk + trm_lite 表运行时）
+    var lcmd = "clang -fuse-ld=link " + g_demo_obj + " " + g_thunk_obj + " " + g_win_obj +
+        " " + g_skia_lib + " " + g_trmlite + " -o " + g_demo_exe +
+        " -luser32 -lgdi32 -lshell32 -ldwrite -lole32 -loleaut32 -ladvapi32 -lwindowscodecs -rtlib=compiler-rt"
+    if run(lcmd) != 0 {
+        fail("demo link failed")
+    }
+    logmsg("demo.exe linked")
+
+    // 5) 运行（cwd=仓库根；SKIA 窗口可见；关窗退出）
+    logmsg("running demo.exe (interactive window; close it or press hotkeys) ...")
+    var rc = process.exec_code(g_demo_exe)
+    logmsg("demo.exe exited rc=" + to_string(rc))
+    if rc != 0 {
+        fail("demo run failed rc=" + to_string(rc))
+    }
+    logmsg("DEMO run ok (rc=0)")
+}

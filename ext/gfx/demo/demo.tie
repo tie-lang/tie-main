@@ -1,0 +1,291 @@
+type tie<logic>
+// ext/gfx/demo/demo.tie —— p.6.8.12 全栈演示（窗口 + 命令列表绘制 + 事件响应 + 组合式布局雏形）
+// EN: p.6.8.12 full-stack demo — a live window rendering a command list (rect / text /
+// path / image) laid out with the composable row/column primitives, responding to mouse
+// clicks and keyboard keys, driven by the app.run main loop with dirty-rect redraw.
+//
+// 交互 / Interaction（also noted in the window title bar? no — see below）:
+//   * 鼠标左键点击          → 在点击点画一个主题色加点矩形 + 切换明暗主题，状态文本更新坐标。
+//     left-click            → draw an accent rect at the cursor and toggle light/dark theme;
+//                             the footer status text updates with the new coordinates.
+//   * 空格 (VK_SPACE=0x20)  → 切换「预览模式」：完整着色场景 ⇄ 布局线框（只画 row/column 盒）。
+//     SPACE                 → toggle preview mode: full-color scene ⇄ layout wireframe.
+//   * 按键 R (VK_R=0x52)    → 同上，切换预览模式（备用键）。
+//     KEY R                 → same toggle (alternate hotkey).
+//   * 点窗口右上角 × 关闭  → 主循环 broken 退出，进程确定性结束。
+//     close the window      → the main loop breaks and the process exits deterministically.
+//
+// 构建 / build：
+//   compiler\tiec_7A6100.exe ext\gfx\demo\build_demo.tie -o ext\gfx\demo\build_demo.exe
+//   ext\gfx\demo\build_demo.exe          # 仓库根运行：编译+链接 demo → 运行
+//
+// 渲染管线：命令列表（commands.* 构造）→ gfx.run_commands 到离屏后备缓冲 → pt.present blit
+// 上屏。布局：lay.column（头部文本 + 主 row + 底部状态）内嵌 lay.row（红矩形 / 绿折线 / 图像）。
+
+import "../gfx.tie" as gfx
+import "../commands.tie" as commands
+import "../port.tie" as pt
+import "../app.tie" as app
+import "../event.tie" as ev
+import "../layout.tie" as lay
+import "../thunk_binding.tie" as tb
+using tb;
+
+var W: i64 = 640
+var H: i64 = 400
+
+// 颜色（u32 ARGB premul，decimal）/ colors
+var C_WHITE: u32 = 4294967295      // 0xFFFFFFFF
+var C_BLACK: u32 = 4278190080      // 0xFF000000
+var C_RED: u32 = 4294901760        // 0xFFFF0000
+var C_GREEN: u32 = 4278255360      // 0xFF00FF00
+var C_BLUE: u32 = 4278190335       // 0xFF0000FF
+var C_YELLOW: u32 = 4294967040     // 0xFFFFFF00
+var C_GREY: u32 = 4288256409       // 0xFF999999
+
+// 交互状态（平面表，跨帧经共享表 + 模块函数读写，规避闭包捕获语义）：
+//   [0]=theme(0明/1暗)  [1]=preview(0完整/1线框)  [2]=cx  [3]=cy  [4]=proc(已处理事件索引)
+//   [5]=clicked(是否点击过)  [6]=click_flag(本帧点击高亮是否要画)
+var g_state: table<i64>
+
+func get_state(k: i64) -> i64 { return g_state[k] }
+func set_state(k: i64, v: i64) { g_state[k] = v }
+
+// ---- 梯度背景单带色（8 带线性插值；theme=0 明 / 1 暗）----
+func grad_band(theme: i64, i: i64, n: i64) -> u32 {
+    var r: i64 = 0
+    var g: i64 = 0
+    var b: i64 = 0
+    var hi = n - 1
+    if hi < 1 { hi = 1 }
+    if theme == 0 {
+        r = 239 + (221 - 239) * i / hi
+        g = 242 + (227 - 242) * i / hi
+        b = 247 + (236 - 247) * i / hi
+    } else {
+        r = 27 + (42 - 27) * i / hi
+        g = 30 + (47 - 30) * i / hi
+        b = 38 + (58 - 38) * i / hi
+    }
+    return as_u32(4278190080 | (r << 16) | (g << 8) | b)   // 0xFF000000 | RGB
+}
+
+// ---- 8x8 洋红 RGBA 合法 PNG（p.6.8.8 同款，QI 内联字节表 → IMAGE 命令）----
+func push_png(ib: table<i64>) {
+    table_push(ib, 137); table_push(ib, 80); table_push(ib, 78); table_push(ib, 71)
+    table_push(ib, 13); table_push(ib, 10); table_push(ib, 26); table_push(ib, 10)
+    table_push(ib, 0); table_push(ib, 0); table_push(ib, 0); table_push(ib, 13)
+    table_push(ib, 73); table_push(ib, 72); table_push(ib, 68); table_push(ib, 82)
+    table_push(ib, 0); table_push(ib, 0); table_push(ib, 0); table_push(ib, 8)
+    table_push(ib, 0); table_push(ib, 0); table_push(ib, 0); table_push(ib, 8)
+    table_push(ib, 8); table_push(ib, 6); table_push(ib, 0); table_push(ib, 0)
+    table_push(ib, 0); table_push(ib, 196); table_push(ib, 15); table_push(ib, 190)
+    table_push(ib, 139); table_push(ib, 0); table_push(ib, 0); table_push(ib, 0)
+    table_push(ib, 22); table_push(ib, 73); table_push(ib, 68); table_push(ib, 65)
+    table_push(ib, 84); table_push(ib, 120); table_push(ib, 156); table_push(ib, 99)
+    table_push(ib, 252); table_push(ib, 207); table_push(ib, 240); table_push(ib, 255)
+    table_push(ib, 63); table_push(ib, 3); table_push(ib, 30); table_push(ib, 192)
+    table_push(ib, 132); table_push(ib, 79); table_push(ib, 114); table_push(ib, 248)
+    table_push(ib, 40); table_push(ib, 0); table_push(ib, 0); table_push(ib, 22)
+    table_push(ib, 101); table_push(ib, 3); table_push(ib, 13); table_push(ib, 167)
+    table_push(ib, 36); table_push(ib, 53); table_push(ib, 237); table_push(ib, 0)
+    table_push(ib, 0); table_push(ib, 0); table_push(ib, 0); table_push(ib, 73)
+    table_push(ib, 69); table_push(ib, 78); table_push(ib, 68); table_push(ib, 174)
+    table_push(ib, 66); table_push(ib, 96); table_push(ib, 130)
+}
+
+// 平面区域表追加一格 {x,y,w,h}
+func push_spec(t: table<i64>, w: i64, h: i64) {
+    table_push(t, 0)
+    table_push(t, 0)
+    table_push(t, w)
+    table_push(t, h)
+}
+
+// ---- 构建整帧命令列表（theme / preview / click 决定内容）----
+func build_scene(theme: i64, preview: i64, clicked: i64, cx: i64, cy: i64) -> table<i64> {
+    var cs = commands.cmd_new()
+    var NBAND: i64 = 8
+    var textcol: u32 = C_BLACK
+    if theme != 0 { textcol = C_WHITE }
+
+    // 布局：column [header, main(内嵌 row), status]
+    var col_specs = table_new_i64()
+    push_spec(col_specs, 620, 28)    // header
+    push_spec(col_specs, 620, 200)   // main
+    push_spec(col_specs, 620, 28)    // status
+    var col = lay.column(col_specs, 14, 620, 10, 0)
+    var hx = col[0]; var hy = col[1]; var hw = col[2]; var hh = col[3]
+    var mx = col[4]; var my = col[5]; var mw = col[6]; var mh = col[7]
+    var sx = col[8]; var sy = col[9]; var sw = col[10]; var sh = col[11]
+
+    // 主 row 布局（在 main 盒内），再位移到 main 绝对位
+    var row_specs = table_new_i64()
+    push_spec(row_specs, 180, 150)   // 红矩形
+    push_spec(row_specs, 220, 150)   // 绿折线
+    push_spec(row_specs, 120, 150)   // 图像
+    var inner = lay.row(row_specs, 24, 200, 20, 1)
+    var r = lay.offset(inner, mx, my)
+    var rx = r[0]; var ry = r[1]; var rw = r[2]; var rh = r[3]
+    var gx = r[4]; var gy = r[5]; var gw = r[6]; var gh = r[7]
+    var ix = r[8]; var iy = r[9]; var iw = r[10]; var ih = r[11]
+
+    if preview != 0 {
+        // ---- 预览模式：线框（只画 row/column 盒；深底高亮线）----
+        commands.cmd_clear(cs, grad_band(1, NBAND - 1, NBAND))
+        var lw: f64 = 2.0
+        commands.cmd_stroke_rect(cs, as_f64(hx), as_f64(hy), as_f64(hx + hw), as_f64(hy + hh),
+            C_GREY, lw)
+        commands.cmd_stroke_rect(cs, as_f64(mx), as_f64(my), as_f64(mx + mw), as_f64(my + mh),
+            C_YELLOW, lw)
+        commands.cmd_stroke_rect(cs, as_f64(sx), as_f64(sy), as_f64(sx + sw), as_f64(sy + sh),
+            C_GREY, lw)
+        commands.cmd_stroke_rect(cs, as_f64(rx), as_f64(ry), as_f64(rx + rw), as_f64(ry + rh),
+            C_RED, lw)
+        commands.cmd_stroke_rect(cs, as_f64(gx), as_f64(gy), as_f64(gx + gw), as_f64(gy + gh),
+            C_GREEN, lw)
+        commands.cmd_stroke_rect(cs, as_f64(ix), as_f64(iy), as_f64(ix + iw), as_f64(iy + ih),
+            C_BLUE, lw)
+        commands.cmd_text(cs, 16.0, 24.0, 40.0, C_WHITE,
+            "PREVIEW mode: layout boxes (row/column). SPACE/R to return.")
+        return cs
+    }
+
+    // ---- 完整场景：渐变背景 + 白面 ----
+    commands.cmd_clear(cs, grad_band(theme, 0, NBAND))
+    var bb: i64 = 0
+    while bb < NBAND {
+        var y0 = bb * 50
+        var y1 = y0 + 50
+        commands.cmd_fill_rect(cs, 0.0, as_f64(y0), as_f64(W), as_f64(y1),
+            grad_band(theme, bb, NBAND), 1)
+        bb = bb + 1
+    }
+    // 标题
+    commands.cmd_text(cs, 20.0, 24.0, 36.0, textcol, "TieGfx Demo p.6.8.12  (click=theme+rect  SPACE/R=preview)")
+    // main 盒描边
+    commands.cmd_stroke_rect(cs, as_f64(mx), as_f64(my), as_f64(mx + mw), as_f64(my + mh),
+        textcol, 2.0)
+    // 红矩形（fill）
+    commands.cmd_fill_rect(cs, as_f64(rx), as_f64(ry), as_f64(rx + rw), as_f64(ry + rh),
+        C_RED, 0)
+    commands.cmd_text(cs, 14.0, as_f64(rx) + 8.0, as_f64(ry) + 24.0, C_WHITE, "FILL_RECT")
+    // 绿折线（path stroke）
+    var pts = table_new_f64()
+    table_push(pts, as_f64(gx) + 11.0); table_push(pts, as_f64(gy + gh) - 20.0)
+    table_push(pts, as_f64(gx) + 76.0); table_push(pts, as_f64(gy) + 15.0)
+    table_push(pts, as_f64(gx) + 186.0); table_push(pts, as_f64(gy + gh) - 25.0)
+    table_push(pts, as_f64(gx) + 214.0); table_push(pts, as_f64(gy) + 43.0)
+    commands.cmd_path(cs, C_GREEN, 1, 0, 4.0, 0, pts)
+    commands.cmd_text(cs, 14.0, as_f64(gx) + 8.0, as_f64(gy) + 24.0, textcol, "PATH stroke")
+    // 图像（内联 8x8 PNG）
+    commands.cmd_stroke_rect(cs, as_f64(ix), as_f64(iy), as_f64(ix + iw), as_f64(iy + ih),
+        textcol, 1.0)
+    var ib = table_new_i64()
+    push_png(ib)
+    commands.cmd_image(cs, as_f64(ix) + 20.0, as_f64(iy) + 30.0, ib)
+    commands.cmd_text(cs, 14.0, as_f64(ix) + 8.0, as_f64(iy) + 120.0, textcol, "IMAGE 8x8")
+
+    // 点击高亮（点击点主题色方点）
+    if clicked != 0 {
+        var ac: u32 = C_YELLOW
+        if theme == 0 { ac = C_BLUE }
+        commands.cmd_fill_rect(cs, as_f64(cx), as_f64(cy), as_f64(cx) + 44.0, as_f64(cy) + 44.0,
+            ac, 0)
+    }
+
+    // 底部状态文本
+    var status = "theme=" + to_string(theme) + " preview=" + to_string(preview) +
+        " last-click=(" + to_string(cx) + "," + to_string(cy) + ")"
+    commands.cmd_text(cs, 16.0, 24.0, as_f64(sy) + 22.0, textcol, status)
+    return cs
+}
+
+// ---- 主循环 tick 闭包：事件处理 + 脏帧渲染 ----
+// 将 MutRoot 用到的 hwnd/canvas/surface 以参数闭包捕获（跨模块写 gfx struct 不可行，
+// 渲染经闭包持有的真实 canvas 进行，p.6.8.7/6.8.11 记录）。
+func make_tick(hwnd: i64) -> fn(i64, i64) -> i64 {
+    var s = gfx.surface_create(W, H)
+    var c = gfx.surface_canvas(s)
+    var closure = func (i: i64, render: i64) -> i64 {
+        // 1) 处理 app.run 已成队排空的真实用户事件（经 app.ev_log 只读访问）
+        var log = app.ev_log()
+        var evn = ev.count(log)
+        var p = get_state(4)
+        while p < evn {
+            var t = ev.ev_type(log, p)
+            if t == ev.t_lbutton_down() {
+                set_state(2, ev.ev_x(log, p))
+                set_state(3, ev.ev_y(log, p))
+                set_state(5, 1)
+                set_state(0, 1 - get_state(0))            // 切换主题
+                println("click@(" + to_string(get_state(2)) + "," + to_string(get_state(3)) +
+                    ") theme->" + to_string(get_state(0)))
+                unsafe { sk_flush_std() }
+                app.mark_dirty()
+            } else if t == ev.t_key_down() {
+                var k = ev.ev_key(log, p)
+                if k == 32 || k == 82 {                    // VK_SPACE / VK_R
+                    set_state(1, 1 - get_state(1))
+                    println("key=" + to_string(k) + " preview->" + to_string(get_state(1)))
+                    unsafe { sk_flush_std() }
+                    app.mark_dirty()
+                }
+            }
+            p = p + 1
+        }
+        set_state(4, p)
+        // 2) 脏帧渲染：命令列表 → 后备缓冲 → blit 上屏
+        if render == 1 {
+            var cmds = build_scene(get_state(0), get_state(1), get_state(5),
+                get_state(2), get_state(3))
+            gfx.run_commands(c, cmds)
+            var info = gfx.surface_peek(s)
+            pt.present(hwnd, info.pixels, info.row_bytes, info.w, info.h)
+        }
+        return 0
+    }
+    // surface/canvas 由闭包持有生命周期；进程退出时 gfx.arena_release 兜底回收 surface。
+    return closure
+}
+
+func main() {
+    println("demo start window=640x400 title='TieGfx Demo p.6.8.12'")
+    unsafe { sk_flush_std() }
+
+    // 会话状态表 / shared mutable state across frames
+    g_state = table_new_i64()
+    table_push(g_state, 0)   // theme=0 亮
+    table_push(g_state, 0)   // preview=0 完整
+    table_push(g_state, 0)   // cx
+    table_push(g_state, 0)   // cy
+    table_push(g_state, 0)   // proc
+    table_push(g_state, 0)   // clicked
+
+    var hwnd = pt.open("TieGfx Demo p.6.8.12", W, H)
+    if hwnd == 0 {
+        println("demo ERROR: window open failed")
+        unsafe { sk_flush_std(); ExitProcess(1) }
+    }
+    pt.show(hwnd)
+    pt.update(hwnd)
+    println("demo window open + shown; first frame queued")
+    unsafe { sk_flush_std() }
+
+    app.mark_dirty()
+    var tick = make_tick(hwnd)
+    var dd = app.desc(pt.k_skia(), W, H, 15, 1000000)
+    var st = app.run(dd, hwnd, tick)
+    println("demo main-loop exited: rendered=" + to_string(st.rendered) +
+        " skipped=" + to_string(st.skipped) + " frames=" + to_string(st.frames) +
+        " broken=" + to_string(st.broken) + " ev=" + to_string(app.ev_count()))
+    unsafe { sk_flush_std() }
+
+    pt.destroy(hwnd)
+    gfx.arena_release()
+    println("demo done")
+    unsafe {
+        sk_flush_std()
+        ExitProcess(0)
+    }
+}
