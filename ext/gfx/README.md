@@ -609,3 +609,94 @@ PASS / exit 0**；无无限等待（pump 非阻塞 + p0ms 兜底），全程数�
   （无 O(n²)、无 tie 逐像素 C 面往返），与 p.6.8.8 性能约束一致。
 EN: WndProc stays in C; UTF-16 done on the tie side; pixel transfer is a single C-side row
 memcpy (no O(n²) tie-side per-pixel reads).
+
+---
+
+## p.6.8.10 事件系统 E3 / E3 event system
+
+*EN: E3 event queue (mouse/keyboard with pos/keycode/timestamp) + signal flags
+(WM_PAINT→redraw, WM_TIMER→timer).*
+
+p.6.8.10 落地设计文档 §6 的 **E3（事件 + 信号混合）**：鼠标/键盘等有载荷的离散交互走
+**事件队列**（含位置/键码/时间戳）；`WM_PAINT`→信号 `paint_pending`（p.6.8.9 已置位）、
+`WM_TIMER`→信号 `timer_flag`（本子项新增）为轻量**位标志**。鼠标/键盘捕获为**确定性的合成
+注入**主路径（PostMessageW 向自身窗口投递），加 `SetTimer` 真实定时副验证，无用户输入依赖。
+EN: E3 lands the event+signal hybrid: discrete interactions (mouse/keyboard) carry payload
+and go to a **queue** (pos/keycode/timestamp); WM_PAINT→`paint_pending`, WM_TIMER→`timer_flag`
+are lightweight **bit flags**. Mouse/keyboard capture is driven by deterministic synthetic
+injection (PostMessageW to self), with a SetTimer-based real-timer cross-check.
+
+### 事件结构 / 队列（C 端）/ C-side event struct & queue
+
+事件结构（`ext/gfx/win/win.cpp` 追加面，WinSlot 内环形数组，容量 `EVENT_CAP=256`，
+**满则丢最旧并置 overflow 标志**；O(1) 推/弹，禁 O(n²)）：
+
+```
+{ type:i32, x:i32, y:i32, key:i32, t_ms:i32 }
+type: 1 MOUSE_MOVE 2 LBUTTON_DOWN 3 LBUTTON_UP 4 RBUTTON_DOWN 5 RBUTTON_UP
+      6 KEY_DOWN 7 KEY_UP 8 TIMER
+鼠标 x/y = lParam 客户区坐标（LOWORD/HIWORD）；键盘 x=y=0、key=vk（WM_CHAR 亦入 KEY 类）；
+TIMER x=y=0、key=定时器 id。t_ms = GetMessageTime()（进程内单调，只断言单调不减）。
+```
+
+WndProc 追加捕获分支：`WM_MOUSEMOVE`/`WM_LBUTTONDOWN`/UP/`WM_RBUTTONDOWN`/UP ↘
+`MOUSE` 类（ev_push）；`WM_KEYDOWN`/UP/`WM_CHAR` ↘ `KEY` 类；`WM_TIMER` ↘ 置 `timer_flag`
+信号 + 入队 `TIMER` 类。既有 6.8.9 入口/分支（WM_PAINT/WM_SIZE/WM_ERASEBKGND/CLOSE/DESTROY）
+语义未动。
+EN: FAC — type/x/y/key/t_ms; ring buffer cap 256 (drop-oldest + overflow flag), O(1) push/pop.
+
+### thunk 追加入口（append-only）/ appended C entry points
+
+| C 入口 | 作用 / Purpose |
+| --- | --- |
+| `win_events_avail(hwnd)` | 队列剩余事件条数（O(1)） |
+| `win_event_pop(hwnd, out: i64[5])` | 弹出一条到 `out[0..4]={type,x,y,key,t_ms}`（t_ms 用 i64 槽承载）；返回 1 弹 / 0 空 |
+| `win_event_overflow(hwnd)` | 溢出标志（容量已满丢过最旧=1，仅向上置位） |
+| `win_set_timer(hwnd, ms)` | `::SetTimer`（id=1），真实触发 `WM_TIMER` |
+| `win_timer_flag(hwnd)` | WM_TIMER 信号标志；读取即复位（一次性） |
+
+### tie 封装 / tie wrapper（namespace `ev`，`ext/gfx/event.tie`）
+
+- 常量（以访问函数暴露，tie 命名空间跨模块只导出函数）：`ev.t_mouse_move()`/`t_lbutton_down()`/
+  `t_lbutton_up()`/`t_rbutton_down()`/`t_rbutton_up()`/`t_key_down()`/`t_key_up()`/`t_timer()`。
+- `ev.take(hwnd) → table<i64>`：**一次取全部事件为平面记录**，每个事件 5 槽
+  `[type, x, y, key, t_ms]`（t_ms 用 i64 槽承载）。`ev.count(flat)`、访问器
+  `ev.ev_type/ev_x/ev_y/ev_key/ev_ts(flat, i)`。
+- `ev.avail(hwnd)` / `ev.overflow(hwnd)` / `ev.set_timer(hwnd, ms)` / `ev.timer_flag(hwnd)`。
+- `ev.post(hwnd, msg, wparam, lparam)`：`PostMessageW` 直绑，探针确定性注入主路径。
+EN: flat 5-slot-per-event table + accessors; constants as functions.
+
+### 构建与运行 / build & run
+
+```
+compiler\tiec_7A6100.exe tests\p6810_probe\build_p6810.tie -o tests\p6810_probe\build_p6810.exe
+tests\p6810_probe\build_p6810.exe      # 仓库根运行：thunk.obj + win.obj → 探针obj → 链接 → 运行
+```
+
+链路与 p.6.8.9 相同（clang-cl /MT 编 thunk.cpp+win.cpp → tiec `--emit-ir`+clang 编探针 →
+`clang -fuse-ld=link` 链接探针.obj+thunk.obj+win.obj+skia.lib+trm_lite.a）。事件 API 全在
+user32（PostMessage/SetTimer/GetMessageTime），**无新增系统库**。
+EN: same build pipeline as p.6.8.9; event APIs are all user32 — no new system libs.
+
+### 验收探针 / acceptance probe
+
+`tests/p6810_probe/p6810_probe.tie`：
+1. 离屏 present（置 bmi_valid）→ pump → **paint_pending 信号成立**（沿用 6.8.9）。
+2. PostMessageW 注入 `WM_MOUSEMOVE@(30,40)` → `WM_LBUTTONDOWN@(55,66)` → `WM_KEYDOWN(VK_F1)`
+   → `WM_TIMER(id=7)` → pump → `ev.take`：类型/坐标/键码逐项断言 + **顺序（move<down<key）**
+   + **时间戳单调不减** + 溢出不触发 + 注入 WM_TIMER 置 `timer_flag`。
+3. `set_timer(50)` → pump 轮询 ≤2s → **TIMER 事件出现 + `timer_flag` 信号置位**。
+4. destroy → 关闭/窗口消除语义。
+断言合成注入为主（无用户输入依赖）、定时器用轮询上限兜底。**asserts=23，PASS / exit 0**。
+EN: asserts=23 PASS / exit 0 — synthetic-injection-driven, deterministic.
+
+### 本子项记录 / notes
+
+- 跨模块 struct 不能写（仓库惯例），`win_event_pop` 用 **5 个 i64 槽**承载
+  `[type,x,y,key,t_ms]`（t_ms 用 i64 槽避免 32 位截断/符号扩展）；tie 侧 rd_i64 手工小端回读。
+- `WM_TIMER` 双通道成立：既入事件队列（`TIMER` 类），又置 `timer_flag` 信号标志。
+- 时间戳只断**单调不减**（GetMessageTime 允许同一毫秒相等），禁精确值断言。
+- 每个事件 5 槽（比任务原「4 槽」多一槽承载 t_ms）：4 槽放不下「键码 + 时间戳」同时在场，
+  而验收强制二者断言，故明确为 5 槽契约并文档化。
+EN: pop writes 5 i64 slots (the original 4 could not carry both keycode and timestamp,
+which the acceptance must assert); timestamp asserted non-decreasing only.

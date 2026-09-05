@@ -152,3 +152,9 @@ hello_b2.exe
 /tests/p689_probe/*.obj
 /tests/p689_probe/*.ll
 /tests/p689_probe/out.png
+
+# p.6.8.10 事件系统 E3 探针编译/运行产物（.tie 源入库，.exe/.ll/.obj 不入库；
+#   win.obj/.exe 已在 6.8.9 *.obj 通配 + ! 白名单 覆盖，这里按目录再显式声明）
+/tests/p6810_probe/*.exe
+/tests/p6810_probe/*.obj
+/tests/p6810_probe/*.ll

@@ -21,6 +21,33 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] 事件系统 E3：鼠标/键盘事件队列 + 信号标志（p.6.8.10）（2026-09-05）
+
+* 事件队列（ext/gfx/win/win.cpp 追加，不动 6.8.9 既有入口）：每窗口 WinSlot 内环形事件队列
+  `{type,x,y,key,t_ms}`，容量 256，`WM_MOUSEMOVE`/`WM_LBUTTON*`/`WM_RBUTTON*`（lParam 客户区
+  坐标 LOWORD/HIWORD）、`WM_KEYDOWN`/UP/`WM_CHAR`（vk 键码）、`WM_TIMER`（id）→ WndProc 捕获
+  入队，O(1) 推/弹、满丢最旧置 overflow。新入口 `win_events_avail` / `win_event_pop`（弹一条件
+  `out[0..4]={type,x,y,key,t_ms}`，t_ms 用 i64 槽承载防 32 位截断）/ `win_event_overflow` /
+  `win_set_timer(::SetTimer)` / `win_timer_flag`（WM_TIMER 信号标志，读即复位）。信号：paint_pending
+  （6.8.9 已立）+ 新增 timer_flag，E3「事件+信号」混合双向成立。
+  EN: per-window ring event queue (mouse/keyboard/timer → timestamps), O(1) pop/push with
+  overflow; new C entries incl. SetTimer + read-once timer_flag signal.
+* tie 封装（ext/gfx/event.tie，namespace `ev`）：事件类型常量（`ev.t_mouse_move()`…`t_timer()`）、
+  `ev.take(hwnd)` 一次取全队为平面 table<i64>（每事件 5 槽）+ 访问器 ev_type/x/y/key/ts + count；
+  `ev.post`（PostMessageW 注入）/`ev.set_timer`/`ev.timer_flag`/`ev.overflow`/`ev.avail`。
+  探针 `import ... event.tie as ev`。
+  EN: namespace `ev` wrapper — flat 5-slot records + PostMessageW injector for deterministic
+  synthetic tests.
+* 探针 tests/p6810_probe/p6810_probe.tie：离屏 present → pump（paint_pending 信号沿用 6.8.9）→
+  PostMessageW 注入 WM_MOUSEMOVE@(30,40)/LBUTTONDOWN@(55,66)/KEYDOWN(VK_F1)/WM_TIMER(7) → 断言
+  类型/坐标/键码 + 顺序 move<down<key + 时间戳单调不减 + 溢出不触发 + timer_flag 信号；`set_timer(50)`
+  轮询 ≤2s 断言真实 TIMER 事件 + timer_flag。**asserts=23，PASS / exit 0**，确定性（合成注入为主，
+  定时器轮询兜底）。构建驱动 tests/p6810_probe/build_p6810.tie（沿用 7A6100FC…BC44 稳定 tiec，
+  无新增系统库，事件 API 全在 user32）。
+  EN: 23-assert probe, synthetic-injection-driven, PASS / exit 0.
+EN: E3 event queue (mouse/keyboard with pos/keycode/timestamp) + signal flags
+(WM_TIMER→timer_flag); 23 asserts PASS / exit 0.
+
 ## [feat] Win32 窗口嵌入层：CreateWindow + 消息泵 + 后备缓冲 blit（p.6.8.9）（2026-09-05）
 
 * 窗口嵌入 thunk（ext/gfx/win/win.h + win.cpp，纯 Win32 C API、extern "C" 导出）——落地
