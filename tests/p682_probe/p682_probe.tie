@@ -1,0 +1,168 @@
+type tie<logic>
+// tests/p682_probe/p682_probe.tie —— p.6.8.2 验收：repr(C) 结构体显式 ABI 布局 + 按引用传 extern。
+// 全离线确定性探针。覆盖：
+//   1. 多个含 padding 的 repr(C) struct 逐字段偏移 vs C offsetof 全等
+//      （期望值来自本机 clang/gcc 的 offsetof 输出，见 tests/_p682_tmp/ref.c；clang22/gcc13/32位 全一致）
+//   2. 窄整数混排 struct（u8/i16/u32/i64 交错）布局正确
+//   3. 按引用传结构体：struct 经 addr_of 传 extern（GetSystemTime 写入回读 / CompareFileTime 读字段）
+// 期望全部 PASS / exit 0。
+
+// C 结构体等价定义（declaration order 与 tests/_p682_tmp/ref.c 完全一致）
+repr(C) struct PodA {
+    var a: u8
+    var b: i16
+    var c: i32
+    var d: i64
+}
+repr(C) struct PodB {
+    var a: u32
+    var b: u8
+    var c: u8
+}
+repr(C) struct PodC {
+    var a: u8
+    var b: u32
+    var c: i16
+    var d: u8
+    var e: i64
+}
+repr(C) struct PodD {
+    var x: f32
+    var y: f64
+}
+repr(C) struct PodE {
+    var a: i32
+    var b: u16
+    var c: u32
+    var d: i16
+    var e: i64
+    var f: u8
+}
+// 默认 struct（非 repr(C)）：布局须与此前一致（零回归），同样对照 C。
+struct DefA {
+    var a: u8
+    var b: i16
+    var c: i32
+    var d: i64
+}
+repr(C) struct SYSTEMTIME {
+    var wYear: u16
+    var wMonth: u16
+    var wDayOfWeek: u16
+    var wDay: u16
+    var wHour: u16
+    var wMinute: u16
+    var wSecond: u16
+    var wMilliseconds: u16
+}
+repr(C) struct FILETIME {
+    var dwLowDateTime: u32
+    var dwHighDateTime: u32
+}
+unsafe extern fn GetSystemTime(lp: ptr<SYSTEMTIME>)
+unsafe extern fn CompareFileTime(lp1: ptr<FILETIME>, lp2: ptr<FILETIME>) -> i32
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+func layout_section() {
+    unsafe {
+        // PodA: 期望 (clang/gcc offsetof) a=0 b=2 c=4 d=8, size 16
+        var pa = PodA(0xFF, -2, -3, 4)
+        var baseA = ptr_to_int(addr_of(pa))
+        check(ptr_to_int(addr_of_field(pa, "a")) - baseA == 0, "PodA.a off=0")
+        check(ptr_to_int(addr_of_field(pa, "b")) - baseA == 2, "PodA.b off=2 (C offsetof=2; u8 padding)")
+        check(ptr_to_int(addr_of_field(pa, "c")) - baseA == 4, "PodA.c off=4 (C offsetof=4)")
+        check(ptr_to_int(addr_of_field(pa, "d")) - baseA == 8, "PodA.d off=8 (C offsetof=8; i16 padding)")
+
+        // PodB: 期望 a=0 b=4 c=5, size 8 align 4（尾 padding）
+        var pb = PodB(300, 1, 2)
+        var baseB = ptr_to_int(addr_of(pb))
+        check(ptr_to_int(addr_of_field(pb, "a")) - baseB == 0, "PodB.a off=0")
+        check(ptr_to_int(addr_of_field(pb, "b")) - baseB == 4, "PodB.b off=4 (C offsetof=4)")
+        check(ptr_to_int(addr_of_field(pb, "c")) - baseB == 5, "PodB.c off=5 (C offsetof=5)")
+
+        // PodC: 期望 a=0 b=4 c=8 d=10 e=16, size 24（双 padding）
+        var pc = PodC(9, 400, 5, 6, 7)
+        var baseC = ptr_to_int(addr_of(pc))
+        check(ptr_to_int(addr_of_field(pc, "a")) - baseC == 0, "PodC.a off=0")
+        check(ptr_to_int(addr_of_field(pc, "b")) - baseC == 4, "PodC.b off=4 (C offsetof=4; u8 padding)")
+        check(ptr_to_int(addr_of_field(pc, "c")) - baseC == 8, "PodC.c off=8 (C offsetof=8; i32 padding)")
+        check(ptr_to_int(addr_of_field(pc, "d")) - baseC == 10, "PodC.d off=10 (C offsetof=10)")
+        check(ptr_to_int(addr_of_field(pc, "e")) - baseC == 16, "PodC.e off=16 (C offsetof=16; i16 padding)")
+
+        // PodD: 期望 x=0 y=8, size 16（f32→4、f64→8）
+        var pd = PodD(1.0, 2.0)
+        var baseD = ptr_to_int(addr_of(pd))
+        check(ptr_to_int(addr_of_field(pd, "x")) - baseD == 0, "PodD.x off=0")
+        check(ptr_to_int(addr_of_field(pd, "y")) - baseD == 8, "PodD.y off=8 (C offsetof=8; f32 padding)")
+
+        // PodE: 期望 a=0 b=4 c=8 d=12 e=16 f=24, size 32（窄整数密集混排）
+        var pe = PodE(1, 2, 3, 4, 5, 6)
+        var baseE = ptr_to_int(addr_of(pe))
+        check(ptr_to_int(addr_of_field(pe, "a")) - baseE == 0, "PodE.a off=0")
+        check(ptr_to_int(addr_of_field(pe, "b")) - baseE == 4, "PodE.b off=4 (C offsetof=4)")
+        check(ptr_to_int(addr_of_field(pe, "c")) - baseE == 8, "PodE.c off=8 (C offsetof=8)")
+        check(ptr_to_int(addr_of_field(pe, "d")) - baseE == 12, "PodE.d off=12 (C offsetof=12)")
+        check(ptr_to_int(addr_of_field(pe, "e")) - baseE == 16, "PodE.e off=16 (C offsetof=16)")
+        check(ptr_to_int(addr_of_field(pe, "f")) - baseE == 24, "PodE.f off=24 (C offsetof=24; u16+u8 padding)")
+
+        // 默认 struct（零回归）：仍为 C 自然对齐（a=0 b=2 c=4 d=8）
+        var da = DefA(0, 0, 0, 0)
+        var baseDA = ptr_to_int(addr_of(da))
+        check(ptr_to_int(addr_of_field(da, "a")) - baseDA == 0, "DefA.a off=0 (default struct unchanged)")
+        check(ptr_to_int(addr_of_field(da, "b")) - baseDA == 2, "DefA.b off=2 (default struct, C-natural)")
+        check(ptr_to_int(addr_of_field(da, "c")) - baseDA == 4, "DefA.c off=4 (default struct, C-natural)")
+        check(ptr_to_int(addr_of_field(da, "d")) - baseDA == 8, "DefA.d off=8 (default struct, C-natural)")
+
+        // SYSTEMTIME: 8×u16 → 0..14（Win32 WORD 窄整数排布）
+        var st = SYSTEMTIME(0, 0, 0, 0, 0, 0, 0, 0)
+        var baseSt = ptr_to_int(addr_of(st))
+        check(ptr_to_int(addr_of_field(st, "wMonth")) - baseSt == 2, "SYSTEMTIME.wMonth off=2")
+        check(ptr_to_int(addr_of_field(st, "wMilliseconds")) - baseSt == 14, "SYSTEMTIME.wMilliseconds off=14")
+    }
+}
+
+func byref_extern_section() {
+    unsafe {
+        // extern 写方向：GetSystemTime(SYSTEMTIME*) 经 addr_of 填写，tie 回读字段
+        var st = SYSTEMTIME(0, 0, 0, 0, 0, 0, 0, 0)
+        GetSystemTime(addr_of(st))
+        var y = st.wYear
+        var m = st.wMonth
+        var d = st.wDay
+        check(y >= 2000 && y <= 2100, "GetSystemTime wrote wYear via ptr -> " + to_string(y))
+        check(m >= 1 && m <= 12, "GetSystemTime wrote wMonth via ptr -> " + to_string(m))
+        check(d >= 1 && d <= 31, "GetSystemTime wrote wDay via ptr -> " + to_string(d))
+
+        // extern 读方向：CompareFileTime 按指针读 FILETIME 字段
+        var f1 = FILETIME(100, 200)
+        var f2 = FILETIME(100, 200)
+        var f3 = FILETIME(99, 199)
+        check(CompareFileTime(addr_of(f1), addr_of(f2)) == 0, "CompareFileTime equal -> 0")
+        check(CompareFileTime(addr_of(f1), addr_of(f3)) == 1, "CompareFileTime (hi,lo) greater -> 1")
+        check(CompareFileTime(addr_of(f3), addr_of(f1)) == -1, "CompareFileTime lesser -> -1")
+    }
+}
+
+func main() {
+    println("start")
+    layout_section()
+    byref_extern_section()
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+}
