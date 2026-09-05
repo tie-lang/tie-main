@@ -21,6 +21,46 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] trm.ui.gfx 句柄层：repr(C) 句柄 + 方法转发 + arena 生命周期（p.6.8.7）（2026-09-05）
+
+* trm.ui.gfx 句柄层（ext/gfx/gfx.tie，`type tie<class>` 模块）：对象 = repr(C) 句柄 struct
+  （Surface/Canvas/Path/Image 包裹 i64 地址，repr(C) 字段不支持 ptr<T> 用 i64 存地址），
+  + Paint 扁平 repr(C) 描述 + Pixels/Encoded 扁平回读结构。EN: handle layer module — objects
+  are repr(C) handle structs wrapping i64 addresses; Paint is a flat repr(C) descriptor.
+* 方法绑定 obj.method() 转发：tie 支持 struct 实例方法（infer_struct_method + M2.1.8 首参
+  自动按引用），但方法符号**仅同模块注册、跨模块 import 不导出**；命名空间函数仅 namespace
+  == 模块名时以 `alias.fn()` 可达。故本子项落「句柄作第一参数的函数」转发形态
+  `gfx.canvas_clear(c,...)`（= `Canvas::clear(&c,...)` 跨模块等价），obj.method() 为设计
+  文档 H2 长期形态（待编译器跨模块方法符号注册补齐），不为此扩语言并已在 gfx.tie 与文档记录。
+  EN: tie supports struct instance method forwarding but only within the defining module;
+  cross-module sub-namespace methods do not resolve — so this sub-item adopts handle-first-arg
+  function forwarding (`gfx.canvas_clear(c,...)`) as the released form, with obj.method()
+  deferred to the H2 long-term shape after the compiler registers cross-module methods.
+* thunk 追加 SkPath 最小面（append，未动 p.6.8.6 条目）：`sk_path_new/free/move_to/line_to/
+  close` + `sk_canvas_draw_path`（C 入口 + gen_thunk 签名登记注册 + 绑定重生成）。
+  EN: thunk extended (append-only) with an SkPath surface — sk_path_new/free/move_to/line_to/
+  close + sk_canvas_draw_path, registered in the gen_thunk signature registry.
+* 生命周期：显式 release（release_surface/path/image/data）逐个释放 + arena 批量回收
+  （构造函数自动登记，`gfx.arena_release` 一次释放，计数校验无泄漏；句柄 struct 传值复制
+  不触发移动语义，可复用）。EN: lifecycle — explicit per-handle release + arena bulk reclaim
+  (auto-tracked, arena_release in one pass, count-verified leak-free; handle structs copy on
+  by-value pass, no move, reusable).
+* 验收探针（tests/p687_probe）：Surface/Canvas/Paint/两条 Path（move/line/close）→ 绘制
+  （clear 白/红矩形/蓝竖线/绿 path 折线/黄 path 闭合填充）→ peek 逐像素断言（BGRA）→
+  snapshot→PNG 编码（魔数+IHDR 96x48）→落盘→显式 release+arena 批量回收计数一致 →
+  `ExitProcess` 确定性退出。**asserts=23，PASS / exit 0**。EN: acceptance probe renders
+  offscreen via the handle layer, validates pixels + PNG bytes + arena lifecycle counts,
+  23 asserts PASS / exit 0.
+* 构建/链接逻辑用 tie（build_p687.tie，无 PowerShell）：生成绑定→clang-cl /MT thunk→
+  tiec `--emit-ir`+`clang -c` 探针→clang link（+skia.lib+trm_lite.a 表运行时 tl_tbl\$*）→运行。
+  EN: build driver in tie — gen binding → clang-cl /MT thunk.obj → probe.obj → clang link with
+  skia.lib + trm_lite.a (table runtime) → run probe.
+* 观测与取舍：class 角色 ptr<u8> 局部量须在 unsafe 块内声明初始化；全局 table 须 `var t: table<i64>;`
+  （不带初始化）；struct 需多行字段声明；`ref` 修饰仅支持表参数（结构体不能 ref）。
+  EN: observed trade-offs — ptr<u8> locals must be declared & inited inside unsafe in class
+  role; global tables declared without initializer; struct fields must be multi-line; `ref`
+  modifier only supports table params (not structs).
+
 ## [feat] extern "C" thunk：Skia 类方法 C 入口 + tie 离屏画线闭环（p.6.8.6）（2026-09-05）
 
 * 最小手写 extern "C" thunk（ext/gfx/skia/thunk/thunk.h + thunk.cpp）暴露 Skia 类方法为 C

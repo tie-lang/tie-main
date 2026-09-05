@@ -366,3 +366,78 @@ PASS (27 asserts); pixel + PNG validation use direct ptr deref, not std byte_rea
   解引用逐字节校验（校验的是编码器实际产出字节，更鲁棒）。EN: reproduced byte_read
   element-read access violation; probe deliberately validates the SkData buffer via ptr
   deref instead and reports the defect upstream.
+
+---
+
+## p.6.8.7 trm.ui.gfx 句柄层 / trm.ui.gfx handle layer
+
+本子项在 p.6.8.6 thunk 之上加**句柄层**（`ext/gfx/gfx.tie`，`type tie<class>` 模块）：对象以
+repr(C) 句柄 struct 表示，方法转发 + 显式 release / arena 生命周期。EN: builds the handle layer
+on the p.6.8.6 thunk — objects are repr(C) handle structs, with forwarding + explicit release / arena.
+
+### repr(C) 句柄 / repr(C) handle structs
+
+Surface / Canvas / Path / Image = `repr(C) struct { var h: i64 }` 包裹不透明 C 指针地址
+（repr(C) 字段不支持 `ptr<T>`，用 i64 存地址，跨 FFI `int_to_ptr` 还原）；Paint 为扁平 repr(C)
+描述（对齐 thunk 的 `TSkPaint`，非 Skia 堆句柄）；Pixels / Encoded 为扁平回读结构。
+EN: handles wrap i64 addresses (repr(C) forbids ptr<T>); Paint is the flat TSkPaint-style desc.
+
+### 方法转发形态 / method-binding form（obj.method() 与函数转发）
+
+tie 支持 struct 实例方法（`infer_struct_method` + M2.1.8 首参自动按引用），但**方法符号只在
+定义模块内注册；跨模块 import 时子命名空间（如 `namespace Canvas`）方法不导出**，探针中
+`canvas.clear(...)` 报「Canvas::clear 未定义」；且命名空间函数仅在 namespace == 模块文件名时以
+`alias.fn()` 跨模块可达。**实测**（p.6.8.7）故本子项落到设计文档允许的**「句柄作第一参数的
+函数」转发形态**：`namespace gfx` 内 `gfx.canvas_clear(c, ...)` 即 `Canvas::clear(&c, ...)` 的
+跨模块等价。`obj.method()` 是 H2 长期形态，待编译器补齐跨模块方法符号注册后无缝切换（不为此
+扩语言）。另：句柄 struct 传值触发复制而非移动（repr 按值拷贝，非 string/table 移动语义），
+故同一句柄可安全复用。EN: tie's struct-instance methods only register in the defining module and
+do not cross module import boundaries; so the handle layer ships the handle-first-arg function form
+(`gfx.canvas_clear(c,...)`), the documented fallback; handle structs copy by value (no move), reusable.
+
+### 生命周期 / lifecycle
+
+- **显式 release**：`gfx.release_surface/path/image/data` 逐个释放（SkPath 走 `sk_path_free`，
+  surface/image/data 走 `sk_obj_release`）。
+- **arena 批量回收**：构造函数自动登记（`gfx.arena_count` 返回当前活跃数），
+  `gfx.arena_release()` 一次释放全部未单独释放者并返回本批释放数；单独 release 会自动去记账
+  （标记 -1，防双重释放）。探针断言 create/explicit/arena 全程计数一致（无泄漏）。
+  EN: per-handle explicit release + arena bulk reclaim (auto-tracked; arena_release frees all
+  and returns the batch count; explicit release untracks to avoid double free).
+
+### thunk 追加面 / appended thunk entries
+
+SkPath 最小面（append-only，未动 p.6.8.6 条目）+ gen_thunk 签名登记 + 绑定重生成：
+`sk_path_new/free/move_to/line_to/close` + `sk_canvas_draw_path`。EN: minimal SkPath surface
+appended to the thunk and the signature registry.
+
+### 构建与运行 / build & run
+
+```
+compiler\tiec.exe ext\gfx\skia\thunk\build_p687.tie -o ext\gfx\skia\thunk\build_p687.exe
+ext\gfx\skia\thunk\build_p687.exe     # 仓库根运行：生成绑定→thunk.obj→探针obj→链接→运行
+```
+与 build_thunk 相同链路，**额外链 `..\trm-lite\trm_lite.a`**（gfx arena 用 table<T> 容器，
+`tl_tbl$*` 表运行时符号须由 trm_lite.a 提供）。EN: same pipeline as build_thunk, plus
+`trm_lite.a` (table runtime for the arena's table<T> bookkeeping).
+
+### 验收探针 / acceptance probe
+
+`tests/p687_probe/p687_probe.tie`：Surface/Canvas/Paint/两条 Path（move/line/close）→
+绘制（clear 白 / 红矩形 fill / 蓝竖线 stroke / 绿 path 折线 / 黄 path 闭合填充）→ peek 逐像素
+断言（BGRA 内存序）→ snapshot→PNG 编码（魔数 + IHDR 96x48）→ 落盘 → 显式 release + arena
+批量回收计数一致 → `ExitProcess` 确定性退出。**asserts=23，PASS / exit 0**。
+EN: acceptance probe renders via the handle layer and validates pixels/PNG + lifecycle counts;
+23 asserts PASS / exit 0.
+
+### 本子项踩坑与根治记录 / gotchas & decisions
+
+- 跨模块方法符号不注册 → 落函数转发形态（见上，记录在档）。
+- class 角色 `ptr<u8>` 局部量须在 `unsafe {}` 内声明并初始化。
+- 全局 `table<T>` 声明须 `var t: table<i64>;`（不带初始化器）。
+- struct 字段须多行声明（单行 `{ var x:i64 }` 解析失败）。
+- `ref` 修饰仅支持表参数（结构体不能 `ref` 借引用）。
+- SkPath 是值类型（内部 ref-counted SkPathRef），`new SkPath`/`delete` 配对，非 `unref`。
+EN: key findings during the sub-item — cross-module method symbols don't register (→ function
+form); class-role ptr<u8> locals need unsafe; global tables take no initializer; struct fields
+multi-line; `ref` is tables-only; SkPath is a value type (new/delete, not unref).
