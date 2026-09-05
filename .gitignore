@@ -134,3 +134,9 @@ hello_b2.exe
 /tests/p687_probe/*.obj
 /tests/p687_probe/*.ll
 /tests/p687_probe/out.png
+
+# p.6.8.8 D2 命令列表探针编译/运行产物（.tie 源入库，.exe/.ll/.obj/.png 不入库）
+/tests/p688_probe/*.exe
+/tests/p688_probe/*.obj
+/tests/p688_probe/*.ll
+/tests/p688_probe/out.png

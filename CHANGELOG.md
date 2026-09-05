@@ -21,6 +21,38 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] D2 命令列表翻译器 + font_measure 文本度量桥（p.6.8.8）（2026-09-05）
+
+* 命令列表翻译器（D2 Paint Commands → Skia）：ext/gfx/commands.tie 定义**平面 table<i64>**
+  字节码命令列表（自定长、单遍下标推进、无嵌套表/不逐条重建全表）。六类命令：CLEAR /
+  FILL_RECT / STROKE_RECT / TEXT / PATH / IMAGE（编码注释见模块头）。翻译函数
+  `gfx.run_commands(canvas, cmds)` 逐命令解码 → 调句柄层（rect→draw_rect、text→
+  draw_text_blob、path→path_new/move/line/close+draw_path、image→make_from_encoded+
+  draw_image），f64 槽以 bitcast_f64_i64 位存储/回读。EN: flat single-pass command-list
+  bytecode (table<i64>) + `gfx.run_commands` translator mapping Paint Commands to Skia.
+* font_measure 文本度量桥：`gfx.font_measure(size, text)`（建 font→measureText→free）+
+  `gfx.font_new/font_free/font_metrics`（metrics 的 ascent/descent/leading 以 i64 槽承载
+  f64 位模式，探针端 bitcast_i64_f64 读回）。EN: text-measure bridge over SkFont::measureText.
+* thunk 追加 text/font/image 面（append，未动 p.6.8.6/6.8.7 条目）：`sk_font_create/free/
+  measure/metrics`、`sk_canvas_draw_text_blob`、`sk_image_make_from_encoded`、
+  `sk_canvas_draw_image`（C 入口 + gen_thunk 签名登记 + 绑定重生成）。文本一律裸指针+字节数，
+  规避 string 编解码歧义。EN: appended SkFont/text/image surface to the extern "C" thunk.
+* 探针 tests/p688_probe/p688_probe.tie：加载含四类命令的命令列表离屏渲染 → 逐像素判定点断言
+  （背景/填充/描边/Glyph 计数/路径/图像）+ font_measure 数值断言 + PNG 魔数/IHDR/落盘 +
+  **两次相同命令列表二次渲染 → render1/render2 PNG 字节全等（无损逐像素 「哈希校验一致」）**，
+  全部 PASS、exit 0（无窗口，CI 可跑）。EN: offscreen probe — two identical command lists
+  render identically (render1 and render2 PNG byte-identical), all assertions PASS exit 0.
+  （踩坑：tie 编译器对循环体内局部变量以 alloca 落栈且不提升到入口块 → 大循环（如 16 万次
+  逐像素比对）线性涨栈触发 EXCEPTION_STACK_OVERFLOW——已记录为编译器缺陷，本探针改用 PNG
+  字节全等证明完整帧逐像素等价以避免绕大循环；compiler/ 修复不在本子项范围（由 RCA 子代理
+  处理 std/fs，编译器缺陷另立项）。）EN: note — a compiler codegen gap (loop-body locals
+  lowered as non-hoisted alloca) overflows stack on ~160k-iteration loops; the probe proves
+  full-frame pixel equality via PNG byte identity instead.
+* p.6.8.8 期间 compiler/ 由另一子代理并发修改（std/fs 缺陷 RCA，当前 tiec.exe 处于其中间
+  态），探针以稳定现役 7A6100FC…BC44 的 `compiler\tiec_7A6100.exe` 编译（build_p688.tie
+  固定该路径），未与 RCA 子代理并发改 compiler/。EN: probe built with the known-good
+  tiec_7A6100.exe while the std/fs RCA sub-agent owns compiler/.
+
 ## [feat] trm.ui.gfx 句柄层：repr(C) 句柄 + 方法转发 + arena 生命周期（p.6.8.7）（2026-09-05）
 
 * trm.ui.gfx 句柄层（ext/gfx/gfx.tie，`type tie<class>` 模块）：对象 = repr(C) 句柄 struct

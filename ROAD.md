@@ -308,7 +308,7 @@ neither continues the other**.
 | ------------ | -------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | \[x] p.6.8.6 | extern "C" thunk：Skia 类方法 → C 入口（最小手写 + tie 写生成器脚本）；对象 = 不透明 ptr；SkPaint/SkImageInfo 等映射 repr(C) 结构            | thunk 冒烟：tie 程序经 extern 画线到离屏表面并导出校验 |
 | \[x] p.6.8.7 | trm.ui.gfx 句柄层：repr(C) 句柄 struct（SkCanvas/SkPaint/SkPath/...）+ 方法绑定（obj.method() 转发）+ 生命周期（显式 release / arena） | 句柄探针（创建/使用/释放）；move 语义零回归            |
-| \[ ] p.6.8.8 | 命令列表翻译器：D2 Paint Commands → Skia 调用（rect/text/path/image）+ font\_measure 文本度量桥                                 | 命令列表离屏渲染逐像素/哈希校验一致                   |
+| \[x] p.6.8.8 | 命令列表翻译器：D2 Paint Commands → Skia 调用（rect/text/path/image）+ font\_measure 文本度量桥                                 | 命令列表离屏渲染逐像素/哈希校验一致                   |
 
 | 子项            | 内容                                                                             | 验收                            |
 | ------------- | ------------------------------------------------------------------------------ | ----------------------------- |

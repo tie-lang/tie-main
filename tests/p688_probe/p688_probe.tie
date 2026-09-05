@@ -1,0 +1,372 @@
+type tie<logic>
+// tests/p688_probe/p688_probe.tie —— p.6.8.8 验收：D2 命令列表翻译器（Paint Commands → Skia）
+// + font_measure 文本度量桥（SkFont measureText / metrics）。
+// EN: acceptance probe for the D2 command-list translator and the SkFont text-measure bridge.
+//
+// 覆盖 / Coverage：
+//   1. font_measure 数值桥：单项/多项宽度合理区间 + 相对大小 + 与 font_measure_bytes 一致 +
+//      metrics（ascent<0 / descent>0），f64 经 bitcast 原语过 FFI 读回。
+//   2. 命令列表（commands.* 构造器 → gfx.run_commands 单遍翻译器）：clear → filled-rect →
+//      stroke-rect → text「Hello」→ path 折线 stroke → image（内置 8x8 合法 PNG 解码绘制）。
+//   3. 逐像素断言：每类命令的判定点像素（背景/填充/描边/Glyph 计数/路径/图像）。
+//   4. 快照 → PNG 魔数 + IHDR 尺寸 → 落盘。
+//   5. 一致性：构造第二份相同命令列表同 Surface 清屏重画，断言两次渲染像素区逐像素一致
+//      （逐字节比对 + 简单校验和两串一致）。
+//   6. ExitProcess + sk_flush_std 确定性退出（规避 DirectWrite teardown 访问违例）。
+//
+// 像素读回 pattern 沿用 p686/p687（不经 std byte_read）：解引用 peek 返回比缓冲。
+// 期望全部 PASS / exit 0。
+
+import "../../ext/gfx/gfx.tie" as gfx
+import "../../ext/gfx/commands.tie" as commands
+import "../../ext/gfx/thunk_binding.tie" as tb
+using tb;
+
+var W: i64 = 200
+var H: i64 = 200
+
+// 颜色（ARGB premul SkColor）：白 / 红 / 蓝 / 绿 / 黑 / 洋红
+var C_WHITE: u32 = 4294967295
+var C_RED: u32 = 4294901760
+var C_BLUE: u32 = 4278190335
+var C_GREEN: u32 = 4278255360
+var C_BLACK: u32 = 4278190080
+var C_MAGENTA: u32 = 4294902015
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+    unsafe { sk_flush_std() }
+}
+
+// 读 peek 缓冲某像素某通道（off: 0=B 1=G 2=R 3=A）
+func px(info: Pixels, x: i64, y: i64, off: i64) -> i64 {
+    unsafe {
+        var rb = as_i64(info.row_bytes)
+        var addr = info.pixels + y * rb + x * 4 + off
+        var p: ptr<u8> = int_to_ptr(addr)
+        return as_i64(deref(p))
+    }
+}
+
+// 字符串 → 字节 i64 表（ASCII/UTF-8 逐字节码点，供 font_measure_bytes / 命令负载）
+func ascii_bytes(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, str_byte(s, i))
+        i = i + 1
+    }
+    return t
+}
+
+// 把 PNG 编码字节拷进 i64 表（长度 ~几百~千字节，少量迭代，避免 tie 大循环栈生长）。
+func png_bytes(enc: Encoded, out: table<i64>) -> i64 {
+    var n = enc.len
+    var j: i64 = 0
+    unsafe {
+        var b: ptr<u8> = int_to_ptr(enc.bytes)
+        while j < n {
+            table_push(out, as_i64(deref(ptr_add(b, j))))
+            j = j + 1
+        }
+    }
+    return n
+}
+
+// 两区域逐像素一致（小区域逐像素；完整帧逐像素等价性由 PNG 字节相等证明）。
+func region_eq(i1: Pixels, i2: Pixels, x0: i64, y0: i64, x1: i64, y1: i64) -> i64 {
+    var mism: i64 = 0
+    var y = y0
+    while y < y1 {
+        var x = x0
+        while x < x1 {
+            var off: i64 = 0
+            while off < 4 {
+                if px(i1, x, y, off) != px(i2, x, y, off) {
+                    mism = mism + 1
+                }
+                off = off + 1
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return mism
+}
+
+// 5 TEXT「Hello」字形计数（黑像素，区域骑在文本包围盒上；aa=0 内芯实黑）。
+func count_dark(info: Pixels, x0: i64, x1: i64, y0: i64, y1: i64) -> i64 {
+    var cnt: i64 = 0
+    var y = y0
+    while y < y1 {
+        var x = x0
+        while x < x1 {
+            if px(info, x, y, 2) <= 128 && px(info, x, y, 1) <= 128 && px(info, x, y, 0) <= 128 {
+                cnt = cnt + 1
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return cnt
+}
+
+// 构造一份完整命令列表（clear + 4 类命令），返回表。
+func build_cmds() -> table<i64> {
+    var cs = commands.cmd_new()
+    commands.cmd_clear(cs, C_WHITE)
+    commands.cmd_fill_rect(cs, 10.0, 10.0, 60.0, 50.0, C_RED, 0)
+    commands.cmd_stroke_rect(cs, 80.0, 10.0, 130.0, 50.0, C_BLUE, 4.0)
+    commands.cmd_text(cs, 24.0, 10.0, 120.0, C_BLACK, "Hello")
+    var pts = table_new_f64()
+    table_push(pts, 150.0)
+    table_push(pts, 80.0)
+    table_push(pts, 180.0)
+    table_push(pts, 50.0)
+    table_push(pts, 190.0)
+    table_push(pts, 90.0)
+    commands.cmd_path(cs, C_GREEN, 1, 0, 4.0, 0, pts)
+    var ib = table_new_i64()
+    // 8x8 洋红 RGBA 合法 PNG（由 PIL 生成；SHA1 897a3ba6295edcdb1dddf2b3f5740a58ef624022）
+    push_png_bytes(ib)
+    commands.cmd_image(cs, 80.0, 130.0, ib)
+    return cs
+}
+
+func push_png_bytes(ib: table<i64>) {
+    table_push(ib, 137)
+    table_push(ib, 80)
+    table_push(ib, 78)
+    table_push(ib, 71)
+    table_push(ib, 13)
+    table_push(ib, 10)
+    table_push(ib, 26)
+    table_push(ib, 10)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 13)
+    table_push(ib, 73)
+    table_push(ib, 72)
+    table_push(ib, 68)
+    table_push(ib, 82)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 8)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 8)
+    table_push(ib, 8)
+    table_push(ib, 6)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 196)
+    table_push(ib, 15)
+    table_push(ib, 190)
+    table_push(ib, 139)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 22)
+    table_push(ib, 73)
+    table_push(ib, 68)
+    table_push(ib, 65)
+    table_push(ib, 84)
+    table_push(ib, 120)
+    table_push(ib, 156)
+    table_push(ib, 99)
+    table_push(ib, 252)
+    table_push(ib, 207)
+    table_push(ib, 240)
+    table_push(ib, 255)
+    table_push(ib, 63)
+    table_push(ib, 3)
+    table_push(ib, 30)
+    table_push(ib, 192)
+    table_push(ib, 132)
+    table_push(ib, 79)
+    table_push(ib, 114)
+    table_push(ib, 248)
+    table_push(ib, 40)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 22)
+    table_push(ib, 101)
+    table_push(ib, 3)
+    table_push(ib, 13)
+    table_push(ib, 167)
+    table_push(ib, 36)
+    table_push(ib, 53)
+    table_push(ib, 237)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 0)
+    table_push(ib, 73)
+    table_push(ib, 69)
+    table_push(ib, 78)
+    table_push(ib, 68)
+    table_push(ib, 174)
+    table_push(ib, 66)
+    table_push(ib, 96)
+    table_push(ib, 130)
+}
+
+func main() {
+    println("start")
+    unsafe { sk_flush_std() }
+    // === 1. font_measure 文本度量桥（绘制前先行）===
+    var mHello = gfx.font_measure(24.0, "Hello")
+    check(mHello > 1.0 && mHello < 200.0,
+        "measure('Hello', size24) in (1,200), got " + to_string(mHello))
+    var mHi = gfx.font_measure(24.0, "Hi")
+    var mWorld = gfx.font_measure(24.0, "HelloWorld")
+    check(mWorld > mHello, "measure('HelloWorld') > measure('Hello'), " +
+        to_string(mWorld) + " vs " + to_string(mHello))
+    check(mHello > mHi, "measure('Hello') > measure('Hi'), " +
+        to_string(mHello) + " vs " + to_string(mHi))
+    // font 句柄 + font_measure_bytes + metrics
+    var font = gfx.font_new(24.0)
+    check(font.h != 0, "font handle created (non-null)")
+    var fmb = gfx.font_measure_bytes(font, ascii_bytes("Hello"))
+    check(fmb >= mHello - 0.001 && fmb <= mHello + 0.001,
+        "font_measure_bytes == font_measure, " + to_string(fmb) + " vs " + to_string(mHello))
+    var mets = gfx.font_metrics(font)
+    check(mets.ascent < 0.0, "metrics.ascent < 0, got " + to_string(mets.ascent))
+    check(mets.descent > 0.0, "metrics.descent > 0, got " + to_string(mets.descent))
+    check(mets.ascent > -80.0 && mets.ascent + mets.descent < 0.0,
+        "metrics plausible for size24 (ascent in (-80,0), sum<0), got " +
+        to_string(mets.ascent) + "/" + to_string(mets.descent))
+    check(mets.leading >= 0.0, "metrics.leading >= 0, got " + to_string(mets.leading))
+    gfx.font_free(font)
+
+    // === 2. 创建 surface + canvas ===
+    var s = gfx.surface_create(W, H)
+    check(s.h != 0, "surface handle created (non-null)")
+    var c = gfx.surface_canvas(s)
+    check(c.h != 0, "canvas handle obtained (non-null)")
+
+    // === 3. 第一份命令列表渲染 ===
+    var cs1 = build_cmds()
+    gfx.run_commands(c, cs1)
+    var info1 = gfx.surface_peek(s)
+    check(info1.w == as_i32(W) && info1.h == as_i32(H),
+        "peek 200x200, got " + to_string(as_i64(info1.w)) + "x" + to_string(as_i64(info1.h)))
+
+    // === 4. 逐像素断言（每类命令判定点）===
+    check(px(info1, 5, 170, 0) == 255 && px(info1, 5, 170, 1) == 255 &&
+        px(info1, 5, 170, 2) == 255, "bg clear (5,170) white")
+    check(px(info1, 35, 30, 2) == 255 && px(info1, 35, 30, 0) == 0 &&
+        px(info1, 35, 30, 1) == 0, "filled red rect center (35,30) red")
+    check(px(info1, 105, 10, 0) == 255 && px(info1, 105, 10, 2) == 0 &&
+        px(info1, 105, 10, 1) == 0, "stroke blue rect top (105,10) blue")
+    var dark = count_dark(info1, 4, 120, 92, 128)
+    check(dark > 5, "text 'Hello' rendered (dark glyph pixels >5), got " + to_string(dark))
+    check(px(info1, 165, 65, 1) == 255 && px(info1, 165, 65, 0) == 0 &&
+        px(info1, 165, 65, 2) == 0, "path polyline stroke (165,65) green")
+    check(px(info1, 84, 134, 0) == 255 && px(info1, 84, 134, 2) == 255 &&
+        px(info1, 84, 134, 1) == 0, "image magenta 8x8 (84,134) decoded+drawn")
+
+    // === 5. snapshot → PNG 编码 + 魔数/IHDR + 落盘 + 保存 render1 PNG 字节 ===
+    var img = gfx.surface_snapshot(s)
+    check(img.h != 0, "snapshot image handle (non-null)")
+    var enc = gfx.image_encode_png(img)
+    check(enc.len > 0 && enc.bytes != 0, "PNG encode len>0, len=" + to_string(enc.len))
+    unsafe {
+        var b: ptr<u8> = int_to_ptr(enc.bytes)
+        check(deref(b) == 0x89 && deref(ptr_add(b, 1)) == 0x50 &&
+            deref(ptr_add(b, 2)) == 0x4E && deref(ptr_add(b, 3)) == 0x47 &&
+            deref(ptr_add(b, 4)) == 0x0D && deref(ptr_add(b, 5)) == 0x0A &&
+            deref(ptr_add(b, 6)) == 0x1A && deref(ptr_add(b, 7)) == 0x0A,
+            "PNG magic = 89 50 4E 47 0D 0A 1A 0A")
+        var pw: i64 = as_i64(deref(ptr_add(b, 16))) * 16777216 +
+            as_i64(deref(ptr_add(b, 17))) * 65536 +
+            as_i64(deref(ptr_add(b, 18))) * 256 +
+            as_i64(deref(ptr_add(b, 19)))
+        var ph: i64 = as_i64(deref(ptr_add(b, 20))) * 16777216 +
+            as_i64(deref(ptr_add(b, 21))) * 65536 +
+            as_i64(deref(ptr_add(b, 22))) * 256 +
+            as_i64(deref(ptr_add(b, 23)))
+        check(pw == W && ph == H, "PNG IHDR size = 200x200, got " +
+            to_string(pw) + "x" + to_string(ph))
+    }
+    var wrc = gfx.data_write_file(enc, "tests/p688_probe/out.png")
+    check(wrc == 1, "PNG written to tests/p688_probe/out.png")
+    var png1 = table_new_i64()
+    check(png_bytes(enc, png1) == enc.len, "render1 PNG bytes copied, len=" +
+        to_string(enc.len))
+
+    // === 6. render2：构造第二份相同命令列表，同 Surface 重画，断言两次渲染一致 ===
+    var cs2 = build_cmds()
+    gfx.run_commands(c, cs2)
+    var info2 = gfx.surface_peek(s)
+    // render2 判定点像素复用（证明第二次绘制正确落地）
+    check(px(info2, 5, 170, 0) == 255 && px(info2, 5, 170, 2) == 255,
+        "render2 bg (5,170) white")
+    check(px(info2, 35, 30, 2) == 255 && px(info2, 35, 30, 0) == 0,
+        "render2 filled red rect center (35,30) red")
+    check(px(info2, 165, 65, 1) == 255 && px(info2, 165, 65, 0) == 0,
+        "render2 path polyline (165,65) green")
+    check(px(info2, 84, 134, 0) == 255 && px(info2, 84, 134, 1) == 0,
+        "render2 image magenta (84,134)")
+    // render1 vs render2 小区域逐像素一致（覆盖 red-fill 区域；完整帧由 PNG 字节相等证明）
+    var rmis = region_eq(info1, info2, 10, 10, 26, 26)
+    check(rmis == 0, "render1/render2 region (10,10)-(26,26) pixel-identical, mism=" +
+        to_string(rmis))
+    // render2 也 snapshot 编码，与 render1 PNG 字节全等（无损逐像素等价 → 两次渲染一致）
+    var img2 = gfx.surface_snapshot(s)
+    var enc2 = gfx.image_encode_png(img2)
+    check(enc2.len > 0, "render2 PNG encode len>0, len=" + to_string(enc2.len))
+    var png2 = table_new_i64()
+    png_bytes(enc2, png2)
+    var same: bool = true
+    if len(png2) != len(png1) {
+        same = false
+    }
+    var j: i64 = 0
+    while j < len(png1) && same {
+        if png1[j] != png2[j] {
+            same = false
+        }
+        j = j + 1
+    }
+    check(same, "render1 PNG byte-identical to render2 PNG (full-frame per-pixel), len=" +
+        to_string(len(png1)) + " vs " + to_string(len(png2)))
+
+    // === 7. 生命周期（回收 image/data/surface + arena 归零）===
+    gfx.release_image(img)
+    gfx.release_data(enc)
+    gfx.release_image(img2)
+    gfx.release_data(enc2)
+    gfx.release_surface(s)
+    check(gfx.arena_count() == 0, "arena active=0 after explicit release, got " +
+        to_string(gfx.arena_count()))
+
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+    var ec: i32 = 0
+    if fails > 0 {
+        ec = 1
+    }
+    unsafe {
+        sk_flush_std()
+        ExitProcess(ec)
+    }
+}

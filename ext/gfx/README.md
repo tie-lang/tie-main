@@ -441,3 +441,92 @@ EN: acceptance probe renders via the handle layer and validates pixels/PNG + lif
 EN: key findings during the sub-item — cross-module method symbols don't register (→ function
 form); class-role ptr<u8> locals need unsafe; global tables take no initializer; struct fields
 multi-line; `ref` is tables-only; SkPath is a value type (new/delete, not unref).
+
+---
+
+## p.6.8.8 D2 命令列表翻译器 + font_measure 文本度量桥
+
+*EN: D2 command-list translator (Paint Commands → Skia) + SkFont text-measure bridge.*
+
+### 命令列表格式 / command-list format
+
+命令列表 = **平面 `table<i64>` 字节码**（`ext/gfx/commands.tie` 的 `commands.*` 构造器生成，
+`gfx.run_commands(canvas, cmds)` 消费）。每条命令**自定长**，解码器以单遍下标游标推进到表尾
+（O(总槽数)，不逐条重建全表、无嵌套表）。凡 f64 数值槽一律以 `bitcast_f64_i64` 位模式存储，
+解码端 `bitcast_i64_f64` 回读。TEXT/IMAGE 的字节负载内联为 i64 字节值，解码处 `alloc` 临时缓冲
+→ 绘制 → `free`。kind 编码（长度=槽数）：
+
+| kind | 名称 | 槽布局 | len |
+|---|---|---|---|
+| 0 | CLEAR | `[0, color]` | 2 |
+| 1 | FILL_RECT | `[1, l,t,r,b_{bits}, color, aa]` | 7 |
+| 2 | STROKE_RECT | `[2, l,t,r,b_{bits}, color, w_{bits}]` | 7 |
+| 3 | TEXT | `[3, size_{bits}, x_{bits}, y_{bits}, color, nchars, c0..cN]` | 6+N |
+| 4 | PATH | `[4, color, style, aa, width_{bits}, closed, npts, x0,y0,x1,y1,..]`（moveTo p0 / lineTo 其余；closed=1 close） | 7+2·npts |
+| 5 | IMAGE | `[5, x_{bits}, y_{bits}, nbytes, b0..bM]`（PNG 字节值） | 4+M |
+
+`color` 为 u32 ARGB premul（SkColor），以 i64 直存；`style` 0fill/1stroke；`aa` 0/1。
+映射：FILL_RECT/STROKE_RECT→`drawRect`、TEXT→`measure+drawTextBlob`、PATH→`path_new/
+move_to/line_to/close+drawPath`、IMAGE→`make_from_encoded+drawImage`（绘制后立 unref）。
+EN: a flat single-pass command-list bytecode as `table<i64>` (self-delimited commands,
+single-index decode, no nested tables, no full-table rebuild).
+
+### font_measure 文本度量桥 / text-measure bridge
+
+- `gfx.font_measure(size, text: string) → f64`：一键建 font→`measureText`→free，返回宽度
+  （SkScalar advance 总和）。
+- `gfx.font_new(size) → Font` / `gfx.font_free(font)`：SkFont 句柄（独立 `sk_font_free`，不并入
+  arena）。
+- `gfx.font_measure_bytes(font, bytes: table<i64>) → f64`：字节表文本宽度（UTF-8 逐字节）。
+- `gfx.font_metrics(font) → FontMetrics{ascent,descent,leading: f64}`：ascent/descent/leading
+  以 i64 槽承载 f64 位模式（`sk_font_metrics` 写、tie 端 `bitcast_i64_f64` 读回），与 std/tsha1
+  位重解释同风格。
+EN: convenience/one-shot/clamped measure + metrics bridges over SkFont::measureText / getMetrics.
+
+### thunk 追加面 / appended thunk entries
+
+text/font/image 面（append-only，未动 p.6.8.6/6.8.7 条目）：
+`sk_font_create(size)→ptr` / `sk_font_free` / `sk_font_measure(font,text,len)→f64` /
+`sk_font_metrics(font, &ascent,&descent,&leading)` / `sk_canvas_draw_text_blob(c,font,x,y,
+text,len,paint)` / `sk_image_make_from_encoded(data,len)→ptr` / `sk_canvas_draw_image(c,img,x,y)`。
+文本一律裸指针 + 字节数（UTF-8 → `SkTextEncoding::kUTF8`），规避 string 编解码歧义；SkFont 走
+独立 `sk_font_free`（与 sk_path 同例）；image 复用 `sk_obj_release(obj, IMAGE)` unref。
+EN: appended SkFont/text/image surface + gen_thunk registry entries + regenerated binding.
+
+### 构建与运行 / build & run
+
+```
+compiler\tiec_7A6100.exe tests\p688_probe\build_p688.tie -o tests\p688_probe\build_p688.exe
+tests\p688_probe\build_p688.exe      # 仓库根运行：重生成绑定→thunk.obj→探针obj→链接→运行
+```
+与 p.6.8.7 相同链路，额外链 `..\trm-lite\trm_lite.a`。**p.6.8.8 期间 compiler/ 由另一子代理
+（std/fs 缺陷 RCA）并发修改、tiec.exe 处于中间态**，故本驱动固定用稳定现役 `tiec_7A6100.exe`
+（SHA256 7A6100FC…BC44），不与 RCA 子代理并发改 compiler/。EN: same pipeline as p.6.8.7,
+pinned to the known-good tiec_7A6100.exe while the std/fs RCA sub-agent owns compiler/.
+
+### 验收探针 / acceptance probe
+
+`tests/p688_probe/p688_probe.tie`：font_measure 数值桥 → 命令列表（clear→fill→stroke→text
+「Hello」→path 折线→image(内置 8x8 合法 PNG)）→ render1 逐像素判定点断言（背景/填充/描边/
+Glyph 计数/路径/图像）→ PNG 魔数/IHDR/落盘 → **render2 相同命令列表重画 → render2 判定点 +
+区域逐像素一致 + render1/render2 PNG 字节全等（完整帧无损逐像素「哈希校验一致」）** → 生命周期
+归零。**asserts=32，PASS / exit 0**（无窗口，CI 可跑）。
+EN: acceptance probe loads a 4-kind command list, renders offscreen, asserts decision pixels +
+font_measure values, and proves two identical command lists render identically (render1/render2
+PNG byte-identical); 32 asserts PASS / exit 0.
+
+### 本子项踩坑与根治记录 / gotchas & decisions
+
+- **编译器缺陷（记录，未在本次修）**：tie 编译器把循环体内局部变量以 `alloca` 落下且**不提升到
+  入口块** → 大循环（如 16 万次逐像素比对）线性涨栈 → `EXCEPTION_STACK_OVERFLOW(0xC00000FD)`。
+  本探针以 **render1/render2 PNG 字节全等**证明完整帧逐像素等价，避免超大 tie 循环（PNG 编码在
+  C++ 内完成，tie 侧仅 ~1600 字节比较）；compiler/ 根因修复不在本子项范围（由 RCA 子代理处理
+  std/fs，编译器缺陷另立项），已记入 CHANGELOG。EN: a compiler codegen gap — loop-body locals
+  lowered as non-hoisted `alloca` — linearly grows the stack in big loops; the probe proves
+  full-frame pixel equality via PNG byte identity instead (RCA elsewhere).
+- `text` 是 tie 保留类型名，函数参数不能叫 `text`（换 `s`）；`bytes` 可用。
+- SkImage 解码用 `SkImages::DeferredFromEncodedData`（namespace SkImages，非 SkImage::）。
+- SkFont 默认构造 + `setSize`，由 `SkGraphics::Init()`（surface_create 内幂等启动）托管
+  DirectWrite 字体管理器；文本度量在 surface 创建前调用亦可（驱动 build 先建 surface）。
+EN: key findings — `text` is a reserved type name (use `s`); image decode is
+`SkImages::DeferredFromEncodedData`; SkFont uses the default typeface via SkGraphics::Init.
