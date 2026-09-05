@@ -158,3 +158,8 @@ hello_b2.exe
 /tests/p6810_probe/*.exe
 /tests/p6810_probe/*.obj
 /tests/p6810_probe/*.ll
+
+# p.6.8.11 主循环/port 探针编译/运行产物（.tie 源入库，.exe/.ll/.obj 不入库）
+/tests/p6811_probe/*.exe
+/tests/p6811_probe/*.obj
+/tests/p6811_probe/*.ll

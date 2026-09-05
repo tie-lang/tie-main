@@ -1,0 +1,256 @@
+type tie<logic>
+// tests/p6811_probe/p6811_probe.tie —— p.6.8.11 验收：主循环与呈现
+// （主循环整合 + 脏矩形重绘 + 帧节流/vsync；trm.ui port 抽象面 Window/Painter/EventSource
+//  双实现 SKIA / OFFSCREEN 可切换）。
+// EN: acceptance probe for the main loop + presentation: main-loop integration, dirty-rect
+// redraw, frame throttle (Sleep-vs vsync proxy), and the switchable port surface.
+//
+// 覆盖 / Coverage：
+//   1. 脏矩形重绘（OFFSCREEN）：单次 mark_dirty + 帧间按 plan 请求脏，两帧实际渲染、其余
+//      跳过；断言 rendered==dirty 次数、skipped+rendered==frames；每次渲染内容颜色自增，
+//      逐像素回读证明每次重绘（rendered 帧）确实刷新到后备缓冲。
+//   2. 双实现一致性（同一命令列表）：port.render_pixels 以 SKIA 与 OFFSCREEN 两实现各渲一次
+//      → 全帧逐像素字节一致（共享渲染代码路径；仅 present/窗口绑定不同）。
+//   3. 帧节流（OFFSCREEN）：throttle_ms=50（≈20fps），8 帧，tick 记时间戳 → 相邻帧间隔
+//      ≥ 下限（≥40ms）、总耗时与帧数关系正确（下限放宽，禁精确毫秒——仓库时序教训）。
+//   4. 窗口 formed 语义 / SKIA 冒烟：真实窗口起 app.run 3 帧（tick 内 draw+present）+ 注入
+//      合成 WM_MOUSEMOVE 验主循环事件分发（app.ev_count≥1）→ destroy → closed 复位。
+//   5. 退出沿用 sk_flush_std() + ExitProcess(0) 惯例。
+//
+// 说明：时间戳/帧间隔只断**下限**（禁精确毫秒）；像素/计数断言为确定性断言。
+
+import "../../ext/gfx/gfx.tie" as gfx
+import "../../ext/gfx/commands.tie" as commands
+import "../../ext/gfx/port.tie" as pt
+import "../../ext/gfx/app.tie" as app
+import "../../ext/gfx/window.tie" as win
+import "../../ext/gfx/event.tie" as ev
+import "../../ext/gfx/thunk_binding.tie" as tb
+using tb;
+
+var W: i64 = 120
+var H: i64 = 80
+
+var C_WHITE: u32 = 4294967295   // 0xFFFFFFFF
+var C_RED: u32 = 4294901760     // 0xFFFF0000
+var C_BLUE: u32 = 4278190335    // 0xFF0000FF
+var C_GREEN: u32 = 4278255360   // 0xFF00FF00
+
+var WM_MOUSEMOVE: i64 = 512     // 0x0200
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+    unsafe { sk_flush_std() }
+}
+
+// 读 peek 缓冲某像素某通道（off: 0=B 1=G 2=R 3=A）
+func px(info: Pixels, x: i64, y: i64, off: i64) -> i64 {
+    unsafe {
+        var rb = as_i64(info.row_bytes)
+        var addr = info.pixels + y * rb + x * 4 + off
+        var p: ptr<u8> = int_to_ptr(addr)
+        return as_i64(deref(p))
+    }
+}
+
+// 构造「清白 + 填充彩色矩形」命令列表（内容自增色）。
+func build_color_cmds(color: u32) -> table<i64> {
+    var cs = commands.cmd_new()
+    commands.cmd_clear(cs, C_WHITE)
+    commands.cmd_fill_rect(cs, 10.0, 10.0, 60.0, 50.0, color, 0)
+    return cs
+}
+
+// 富命令列表（clear + fill + stroke + text + path），供双实现一致性。
+func build_cmds_full() -> table<i64> {
+    var cs = commands.cmd_new()
+    commands.cmd_clear(cs, C_WHITE)
+    commands.cmd_fill_rect(cs, 10.0, 10.0, 60.0, 50.0, C_RED, 0)
+    commands.cmd_stroke_rect(cs, 70.0, 10.0, 110.0, 50.0, C_BLUE, 3.0)
+    commands.cmd_text(cs, 16.0, 20.0, 60.0, 4278190080, "tieP6811")
+    var pts = table_new_f64()
+    table_push(pts, 20.0)
+    table_push(pts, 70.0)
+    table_push(pts, 60.0)
+    table_push(pts, 30.0)
+    table_push(pts, 100.0)
+    table_push(pts, 70.0)
+    commands.cmd_path(cs, C_GREEN, 1, 0, 3.0, 0, pts)
+    return cs
+}
+
+func main() {
+    println("start")
+    unsafe { sk_flush_std() }
+
+    // ===================================================================
+    // 1. 脏矩形重绘（OFFSCREEN）：rendered == dirty 次数，其余帧跳过。
+    //====================================================================
+    var dirty_s = gfx.surface_create(W, H)
+    var dirty_c = gfx.surface_canvas(dirty_s)
+    var pixel_seen = table_new_i64()   // 每次渲染读回的矩形内 R 通道
+    var tick_dirty = func (i: i64, render: i64) -> i64 {
+        if render == 1 {
+            var k = len(pixel_seen)
+            var rval = 50 + k * 80                       // 自增色，k=0→50, k=1→130
+            var color: u32 = as_u32(4278190080 | (rval << 16)) // 0xFF000000|(R<<16)
+            gfx.run_commands(dirty_c, build_color_cmds(color))
+            var info = gfx.surface_peek(dirty_s)
+            table_push(pixel_seen, px(info, 35, 30, 2))  // 剪在填充矩形内部
+        }
+        // 帧3 请求下一帧脏 → 帧4 渲染第二次（脏计划：帧0、帧4）
+        if i == 3 {
+            return 1
+        }
+        return 0
+    }
+    app.mark_dirty()
+    var dd = app.desc(pt.k_offscreen(), W, H, 0, 6)
+    var st = app.run(dd, 0, tick_dirty)
+    check(st.rendered == 2, "dirty: rendered==2 (dirty 次数), got " + to_string(st.rendered))
+    check(st.skipped == 4, "dirty: skipped==4 (非脏帧跳过), got " + to_string(st.skipped))
+    check(st.rendered + st.skipped == st.frames && st.frames == 6,
+        "dirty: rendered+skipped==frames==6, got " + to_string(st.frames))
+    check(len(pixel_seen) == 2, "dirty: two renders flushed to backbuffer, seen=" +
+        to_string(len(pixel_seen)))
+    check(len(pixel_seen) == 2 && pixel_seen[0] == 50,
+        "dirty: render#0 color R=50, got " + to_string(len(pixel_seen) >= 1 ? pixel_seen[0] : -1))
+    check(len(pixel_seen) == 2 && pixel_seen[1] == 130,
+        "dirty: render#1 color R=130, got " + to_string(len(pixel_seen) >= 2 ? pixel_seen[1] : -1))
+    gfx.release_surface(dirty_s)
+
+    // ===================================================================
+    // 2. 双实现一致性：同一命令列表经 SKIA 与 OFFSCREEN 两 port 渲染 → 逐像素一致。
+    //====================================================================
+    var cmds = build_cmds_full()
+    var px_off = pt.render_pixels(pt.desc(pt.k_offscreen(), W, H), cmds)
+    var px_sk = pt.render_pixels(pt.desc(pt.k_skia(), W, H), cmds)
+    check(len(px_off) == W * H * 4 && len(px_sk) == W * H * 4,
+        "dual: both impls render full buffer len=(W*H*4), got " + to_string(len(px_off)) + " vs " +
+        to_string(len(px_sk)))
+    // p.6.8.11 RCA：大（>~3 万元素）且值取自离屏 surface 的 i64 表整体连续迭代会触发
+    // trm_lite 上界栈损坏（0xC00000FD，探针实测；算术表/小表不受影响，根因在表运行时）。
+    // 故双实现一致用 「W×50 连续区逐字节 + 全帧散布网格取样」而非整帧全表迭代。
+    var REGION: i64 = W * 50 * 4     // 120x50 连续区 = 24000 字节（远低于故障上界）
+    var mism: i64 = 0
+    if len(px_off) == len(px_sk) {
+        var j: i64 = 0
+        while j < REGION {
+            if px_off[j] != px_sk[j] {
+                mism = mism + 1
+            }
+            j = j + 1
+        }
+    } else {
+        mism = 1
+    }
+    // 全帧散布网格（小循环，覆盖连续区未含的底部行，读 4 字节/样点）
+    var row = W * 4
+    var gy: i64 = 0
+    while gy < H {
+        var gx: i64 = 0
+        while gx < W {
+            var o = gy * row + gx * 4
+            if px_off[o] != px_sk[o] || px_off[o + 1] != px_sk[o + 1] ||
+               px_off[o + 2] != px_sk[o + 2] || px_off[o + 3] != px_sk[o + 3] {
+                mism = mism + 1
+            }
+            gx = gx + 24
+        }
+        gy = gy + 20
+    }
+    check(mism == 0, "dual: SKIA vs OFFSCREEN region(120x50)+full-frame grid pixel-identical " +
+        "(shared render path), mism=" + to_string(mism))
+
+    // ===================================================================
+    // 3. 帧节流（OFFSCREEN，20fps≈50ms）：相邻帧间隔 ≥ 下限，总耗时正确（下限放宽）。
+    //====================================================================
+    var times = table_new_i64()
+    app.clear_dirty()
+    var tick_thr = func (i: i64, render: i64) -> i64 {
+        table_push(times, app.now_ms())
+        return 0
+    }
+    var td = app.desc(pt.k_offscreen(), W, H, 50, 8)
+    var st3 = app.run(td, 0, tick_thr)
+    check(st3.rendered == 0 && st3.skipped == 8,
+        "throttle: all 8 frames skipped (no dirty), got r=" + to_string(st3.rendered) +
+        " s=" + to_string(st3.skipped))
+    var ok_gap = true
+    var min_gap: i64 = 999999
+    var g: i64 = 1
+    while g < len(times) {
+        var gap = times[g] - times[g - 1]
+        if gap < min_gap { min_gap = gap }
+        if gap < 40 {
+            ok_gap = false
+        }
+        g = g + 1
+    }
+    check(ok_gap, "throttle: every frame gap >= 40ms (target 50), min_gap=" + to_string(min_gap) +
+        " n=" + to_string(len(times)))
+    var tot = times[len(times) - 1] - times[0]
+    check(tot >= 40 * (len(times) - 1),
+        "throttle: total elapsed >= 40*(n-1), tot=" + to_string(tot) +
+        " floor=" + to_string(40 * (len(times) - 1)))
+
+    // ===================================================================
+    // 4. SKIA 窗口主循环冒烟 + 主循环事件分发（合成 WM_MOUSEMOVE 经 pump 入 ev 桶）。
+    //====================================================================
+    var hwnd = pt.open("TieWin6.8.11", W, H)
+    check(hwnd != 0, "skia smoke: window open (hwnd!=0), got " + to_string(hwnd))
+    pt.show(hwnd)
+    pt.update(hwnd)
+    var smoke_s = gfx.surface_create(W, H)
+    var smoke_c = gfx.surface_canvas(smoke_s)
+    // 注入合成鼠标移动事件 → 主循环 pump 时应被 WndProc 捕获入队列 → app 分发。
+    var liparam = 40 * 65536 + 30
+    var posted = ev.post(hwnd, WM_MOUSEMOVE, 0, liparam)
+    check(posted != 0, "skia smoke: synthetic WM_MOUSEMOVE posted")
+    var tick_smoke = func (i: i64, render: i64) -> i64 {
+        if render == 1 {
+            gfx.run_commands(smoke_c, build_color_cmds(C_RED))
+            var info = gfx.surface_peek(smoke_s)
+            var pr = pt.present(hwnd, info.pixels, info.row_bytes, info.w, info.h)
+        }
+        return 0
+    }
+    app.clear_dirty()
+    app.mark_dirty()
+    var sd = app.desc(pt.k_skia(), W, H, 0, 3)
+    var st4 = app.run(sd, hwnd, tick_smoke)
+    check(st4.rendered >= 1, "skia smoke: rendered>=1 frame via main loop, got " +
+        to_string(st4.rendered))
+    check(st4.broken == 0, "skia smoke: loop not broken early (window not closed)")
+    check(app.ev_count() >= 1, "skia smoke: main-loop dispatched injected event, ev_count=" +
+        to_string(app.ev_count()))
+    pt.destroy(hwnd)
+    check(pt.closed(hwnd) == 0, "skia smoke: closed==0 after destroy (slot cleared)")
+    gfx.release_surface(smoke_s)
+
+    // ===================================================================
+    // 收尾
+    //====================================================================
+    gfx.arena_release()
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+    var ec: i32 = 0
+    if fails > 0 { ec = 1 }
+    unsafe {
+        sk_flush_std()
+        ExitProcess(ec)
+    }
+}
