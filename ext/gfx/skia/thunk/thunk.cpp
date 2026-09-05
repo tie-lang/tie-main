@@ -21,6 +21,10 @@
 #include "include/core/SkData.h"
 #include "include/core/SkPixmap.h"
 #include "include/core/SkGraphics.h"
+#include "include/core/SkFont.h"
+#include "include/core/SkFontMetrics.h"
+#include "include/core/SkTextBlob.h"
+#include "include/core/SkTypeface.h"
 #include "include/encode/SkPngEncoder.h"
 
 #include <cstdio>
@@ -177,6 +181,70 @@ void sk_path_close(void* path) {
     SkPath* p = static_cast<SkPath*>(path);
     if (!p) return;
     p->close();
+}
+
+// ==================== p.6.8.8 SkFont / 文本 / 图像 追加面（append，未动既有条目） ====================
+// 字体度量(measureText) 与 文本绘制(textBlob) 均以默认 typeface（SkGraphics::Init 已启动
+// DirectWrite 字体管理器）。文本一律裸指针 + 字节数（UTF-8），语义与 SkTextEncoding::kUTF8 对齐。
+
+void* sk_font_create(double size) {
+    // SkFont 值类型，new/delete 配对；setSize 后默认 typeface 惰性解析到系统字体。
+    SkFont* f = new SkFont();
+    f->setSize((SkScalar)size);
+    return f;
+}
+
+void sk_font_free(void* font) {
+    SkFont* f = static_cast<SkFont*>(font);
+    if (!f) return;
+    delete f;   // SkFont 值类型（内部引用计数 typeface），new/delete 配对
+}
+
+double sk_font_measure(void* font, const char* text, long long len) {
+    SkFont* f = static_cast<SkFont*>(font);
+    if (!f || !text || len < 0) return 0.0;
+    SkRect bounds;
+    // 返回 sum of default advance widths；bounds 一并回填（无需，传 nullptr 亦可）。
+    return (double)f->measureText(text, (size_t)len, SkTextEncoding::kUTF8, nullptr);
+}
+
+void sk_font_metrics(void* font, long long* ascent, long long* descent, long long* leading) {
+    SkFont* f = static_cast<SkFont*>(font);
+    SkFontMetrics m;
+    if (f) {
+        f->getMetrics(&m);
+    } else {
+        std::memset(&m, 0, sizeof(m));
+    }
+    // 每个度量以它自身的 f64 位模式写进 i64 槽，tie 侧 bitcast_i64_f64 读回。
+    double a = m.fAscent, d = m.fDescent, l = m.fLeading;
+    if (ascent)  std::memcpy(ascent,  &a, sizeof(a));
+    if (descent) std::memcpy(descent, &d, sizeof(d));
+    if (leading) std::memcpy(leading, &l, sizeof(l));
+}
+
+void sk_canvas_draw_text_blob(void* canvas, void* font, double x, double y,
+                              const char* text, long long len, const TSkPaint* paint) {
+    SkCanvas* c = static_cast<SkCanvas*>(canvas);
+    SkFont*   f = static_cast<SkFont*>(font);
+    if (!c || !f || !text || len < 0 || !paint) return;
+    auto blob = SkTextBlob::MakeFromText(text, (size_t)len, *f, SkTextEncoding::kUTF8);
+    if (!blob) return;
+    SkPaint p = make_paint(paint);
+    c->drawTextBlob(blob.get(), (SkScalar)x, (SkScalar)y, p);
+}
+
+void* sk_image_make_from_encoded(void* data, long long len) {
+    if (!data || len <= 0) return nullptr;
+    auto img = SkImages::DeferredFromEncodedData(SkData::MakeWithCopy(data, (size_t)len));
+    return img ? img.release() : nullptr;   // 对象交付；探针经 sk_obj_release(img, IMAGE) unref
+}
+
+void sk_canvas_draw_image(void* canvas, void* image, double x, double y) {
+    SkCanvas* c = static_cast<SkCanvas*>(canvas);
+    SkImage*  im = static_cast<SkImage*>(image);
+    if (!c || !im) return;
+    c->drawImage(im, (SkScalar)x, (SkScalar)y);
 }
 
 void sk_flush_std(void) {

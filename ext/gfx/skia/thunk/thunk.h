@@ -74,6 +74,21 @@ void   sk_path_move_to(void* path, double x, double y);  // moveTo
 void   sk_path_line_to(void* path, double x, double y);  // lineTo
 void   sk_path_close(void* path);                       // close（闭合）
 
+// —— p.6.8.8 SkFont / 文本度量 / 文本绘制 / 图像解码（append，未动既有条目）——
+// SkFont 走独立 sk_font_free（与 sk_path 同例），不并入 sk_obj_release kind 枚举。
+// 文本一律 p0 缓冲指针（const char*, UTF-8 字节）+ p1 字节数，避免 string 编解码歧义。
+// 度量（ascent/descent/leading）以 i64 槽承载 f64 位模式（bitcast_f64_i64 语义），
+// 探针端用 bitcast_i64_f64 读回，与 std/tsha1 位重解释同风格。
+void*  sk_font_create(double size);              // new SkFont（默认 typeface，setSize）
+void   sk_font_free(void* font);                 // SkFont 值类型：delete 配对
+double sk_font_measure(void* font, const char* text, long long len); // measureText → 宽度
+void   sk_font_metrics(void* font, long long* ascent, long long* descent,
+                       long long* leading);      // SkFontMetrics 三值以 f64 位模式写 i64 槽
+void   sk_canvas_draw_text_blob(void* canvas, void* font, double x, double y,
+                                const char* text, long long len, const TSkPaint* paint);
+void*  sk_image_make_from_encoded(void* data, long long len);  // SkImage::DeferredFromEncodedData（.release() 交付，obj_release IMAGE unref）
+void   sk_canvas_draw_image(void* canvas, void* image, double x, double y);
+
 // —— 生命周期 ——
 void   sk_obj_release(void* obj, int kind);
 
