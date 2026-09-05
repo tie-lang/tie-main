@@ -874,7 +874,7 @@ demo 已本机人工验收（窗口打开、首帧渲染、点击/按键响应�
    退出码 + 输出含 PASS。**p685 标 SLOW**（完整重建 skia.lib 约 60s，app gating 只用退出码、
    输出重定向 nul，规避 tie `file_read` 超大字节崩溃，见已知限制）。
 2. **回归段**一键执行既有关键回归探针：html_probe / xml_probe / jwt_probe / win32_probe /
-   sym/ed25519 (asym) / probe_global_init / probe_tdzd / sqlite_probe / tink_probe。
+   asym/ed25519 (ed25519_probe) / probe_global_init / probe_tdzd / sqlite_probe / tink_probe。
 
 EN: the acceptance matrix builds+runs every p.6.8 probe (compiler = tiec_7A6100, link per
 category) and the regression set (html/xml/jwt/win32/ed25519/global_init/tdzd/sqlite/tink);
