@@ -173,3 +173,19 @@ hello_b2.exe
 /ext/gfx/demo/*.exe
 /ext/gfx/demo/*.obj
 /ext/gfx/demo/*.ll
+
+# ---- p.6.8.13 软件光栅性能基线 thunk ----
+# 仅 bench.cpp/bench.h 源码入库；bench.obj 等产物不入库。
+/ext/gfx/bench/*
+!/ext/gfx/bench/bench.h
+!/ext/gfx/bench/bench.cpp
+
+# p.6.8.13 性能基线探针编译/运行产物（.tie 源入库，.exe/.obj/.ll 不入库）
+/tests/p6813_probe/*.exe
+/tests/p6813_probe/*.obj
+/tests/p6813_probe/*.ll
+
+# p.6.8.13 验收/回归矩阵驱动编译/运行产物（.tie 源入库，.exe/.obj/.ll 不入库）
+/tests/ax_matrix/*.exe
+/tests/ax_matrix/*.obj
+/tests/ax_matrix/*.ll
