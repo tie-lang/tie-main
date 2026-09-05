@@ -1,0 +1,85 @@
+type tie<logic>
+// tests/p6813_probe/p6813_probe.tie —— p.6.8.13 验收：软件光栅性能基线（vs GDI）
+// EN: acceptance probe for the software-raster performance baseline (vs GDI).
+//
+// 职责 / Duty：
+//   1) 调 bench_skia_rects(n,w,h)：Skia 软光栅离屏 Surface 画 n 个填充矩形 → 毫秒。
+//   2) 调 bench_gdi_rects(n,w,h)：GDI FillRect/HBRUSH 内存 DC 画 n 个填充矩形 → 毫秒。
+//   3) n 取 1000 / 10000 两档，w=320，h=200；每档打印 INFO 基线：
+//        INFO skia_ms=.. gdi_ms=.. ratio=..
+//   4) 温和断言：skia_ms>0、gdi_ms>=0（禁精确时序断言，仓库忌时钟教训）。
+//   5) 退出沿用 gfx 惯例：sk_flush_std() + ExitProcess(0)（规避 DirectWrite teardown AV）。
+//
+// 说明 / Note：GetTickCount64 分辨率为量化刻度（约 1–15.6ms），故数字是量化基线
+// （参考值，随宿主/机器浮动）；本探针的验收下界是「skia 正值 + gdi 非负」+ 记录性 INFO，
+// 不做性能断言。基准数字写入 README p.6.8.13 小节。
+
+// ---- FFI：Skia 软件光栅 / GDI 内存 DC 基准 entry（bench.obj）----
+unsafe extern fn bench_skia_rects(p0: i32, p1: i32, p2: i32) -> i64
+unsafe extern fn bench_gdi_rects(p0: i32, p1: i32, p2: i32) -> i64
+
+// ---- 退出惯例（thunk.obj 提供）----
+unsafe extern fn sk_flush_std()
+unsafe extern fn ExitProcess(p0: i32)
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func report(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+    unsafe { sk_flush_std() }
+}
+
+func main() {
+    var W: i32 = 320
+    var H: i32 = 200
+
+    // 记录性基准输出（两档）。ratio = skia_ms/gdi_ms（gdi 为 0 时不除，注明）。
+    var ok: bool = true
+    unsafe {
+        var skia1 = bench_skia_rects(1000, W, H)
+        var gdi1 = bench_gdi_rects(1000, W, H)
+        println("[p6813] INFO skia_ms=" + to_string(skia1) + " gdi_ms=" + to_string(gdi1) +
+            " ratio=" + ratio_str(skia1, gdi1) + " (n=1000 w=320 h=200)")
+        ok = ok && (skia1 > 0) && (gdi1 >= 0)
+    }
+    unsafe {
+        var skia2 = bench_skia_rects(10000, W, H)
+        var gdi2 = bench_gdi_rects(10000, W, H)
+        println("[p6813] INFO skia_ms=" + to_string(skia2) + " gdi_ms=" + to_string(gdi2) +
+            " ratio=" + ratio_str(skia2, gdi2) + " (n=10000 w=320 h=200)")
+        ok = ok && (skia2 > 0) && (gdi2 >= 0)
+    }
+
+    report(ok, "mild sanity: skia_ms>0 && gdi_ms>=0 across both n (no precise-timing assert)")
+
+    println("[p6813] asserts=" + to_string(total) + " fails=" + to_string(fails))
+    unsafe { sk_flush_std() }
+    if fails == 0 && ok {
+        println("[p6813] PASS all " + to_string(total))
+        unsafe { ExitProcess(0) }
+    }
+    unsafe { ExitProcess(1) }
+}
+
+// ratio = skia/gdi，一位小数（tenths = skia*10/gdi）；gdi<=0 时输出 "n/a"。纯 i64，禁浮点
+// /精确时序断言。例：skia=47,gdi=78 → "0.6"（Skia 软光栅快于 GDI FillRect）。
+func ratio_str(skia: i64, gdi: i64) -> string {
+    if gdi <= 0 {
+        return "n/a(gdi0)"
+    }
+    var tenths = skia * 10 / gdi
+    if tenths < 0 {
+        tenths = 0
+    }
+    if tenths > 9999 {
+        tenths = 9999
+    }
+    return to_string(tenths / 10) + "." + to_string(tenths % 10)
+}

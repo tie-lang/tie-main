@@ -1,0 +1,89 @@
+type tie<logic>
+// tests/p6813_probe/build_p6813.tie —— p.6.8.13 构建驱动（tie 写；构建/链接逻辑全 tie，无 PowerShell）
+// EN: p.6.8.13 build driver, written in tie (no PowerShell for build/link logic).
+//
+// 职责 / Duties（仓库根运行）：
+//   1) clang-cl /MT 编译 ext/gfx/skia/thunk/thunk.cpp → thunk.obj（Skia 离屏渲染 + sk_flush_std 退出惯例）
+//   2) clang-cl /MT 编译 ext/gfx/bench/bench.cpp → bench.obj（软件光栅性能基线 thunk，p.6.8.13）
+//   3) tiec_7A6100 --emit-ir 编译探针（探针自声明 bench_* / sk_flush_std / ExitProcess FFI）
+//      → .ll → clang -c → .obj
+//   4) clang -fuse-ld=link 链接 探针.obj + bench.obj + thunk.obj + skia.lib + trm_lite.a
+//      → 探针.exe（trm_lite.a 提供 table<T> 运行时；系统库 gdi32 等）
+//   5) 运行探针（cwd=仓库根）；rc==0 → PASS
+//
+// 说明：沿用 p.6.8.8/6.8.9/6.8.10/6.8.11 固定稳定现役 tiec_7A6100.exe（SHA256 7A6100FC…BC44），
+// 不与并发子代理改 compiler/ 冲突。bench.obj 不需 win.cpp；但探针沿用 gfx 退出惯例
+// sk_flush_std() + ExitProcess(0)（规避 DirectWrite teardown AV），故链 thunk.obj。
+// 系统库：user32 gdi32 shell32 dwrite ole32 oleaut32 advapi32 windowscodecs + compiler-rt；
+// CRT 静态 /MT 与 skia.lib 一致。
+
+import "../../std/process.tie" as process
+
+func logmsg(m: string) {
+    println("[build_p6813.tie] " + m)
+}
+func fail(m: string) {
+    println("[build_p6813.tie] ERROR: " + m)
+    exit(1)
+}
+func run(cmd: string) -> i64 {
+    var rc = process.exec_code(cmd)
+    if rc != 0 {
+        println("[build_p6813.tie] command failed (rc=" + to_string(rc) + "): " + cmd)
+    }
+    return rc
+}
+
+var g_tiec: string = "compiler\\tiec_7A6100.exe"
+var g_thunk_cpp: string = "ext\\gfx\\skia\\thunk\\thunk.cpp"
+var g_thunk_obj: string = "ext\\gfx\\skia\\thunk\\thunk.obj"
+var g_bench_cpp: string = "ext\\gfx\\bench\\bench.cpp"
+var g_bench_obj: string = "ext\\gfx\\bench\\bench.obj"
+var g_probe_src: string = "tests\\p6813_probe\\p6813_probe.tie"
+var g_probe_ll: string = "tests\\p6813_probe\\p6813_probe.ll"
+var g_probe_obj: string = "tests\\p6813_probe\\p6813_probe.obj"
+var g_probe_exe: string = "tests\\p6813_probe\\p6813_probe.exe"
+var g_skia_lib: string = "ext\\gfx\\lib\\skia.lib"
+var g_skia_src: string = "ext\\gfx\\skia"
+var g_trmlite: string = "..\\trm-lite\\trm_lite.a"
+
+func main() {
+    // 1) thunk.cpp → thunk.obj（/MT 匹配 skia；提供 sk_flush_std 退出惯例）
+    if run("clang-cl /MT /std:c++17 /O2 /EHsc /c " + g_thunk_cpp +
+        " /I " + g_skia_src + " /Fo:" + g_thunk_obj) != 0 {
+        fail("thunk.cpp compile failed")
+    }
+    logmsg("thunk.obj built")
+
+    // 2) bench.cpp → bench.obj（软件光栅性能基线 thunk；/MT 匹配 skia）
+    if run("clang-cl /MT /std:c++17 /O2 /EHsc /c " + g_bench_cpp +
+        " /I " + g_skia_src + " /Fo:" + g_bench_obj) != 0 {
+        fail("bench.cpp compile failed")
+    }
+    logmsg("bench.obj built")
+
+    // 3) 探针 → .ll → .obj（探针自声明 bench_* FFI，无需额外绑定模块）
+    if run(g_tiec + " " + g_probe_src + " --emit-ir -o " + g_probe_ll) != 0 {
+        fail("probe IR failed (tiec)")
+    }
+    if run("clang -O2 -c " + g_probe_ll + " -o " + g_probe_obj) != 0 {
+        fail("probe obj failed (clang)")
+    }
+    logmsg("probe.obj built")
+
+    // 4) 链接：探针 + bench + thunk + skia + trm_lite + 系统库
+    var lcmd = "clang -fuse-ld=link " + g_probe_obj + " " + g_bench_obj + " " + g_thunk_obj +
+        " " + g_skia_lib + " " + g_trmlite + " -o " + g_probe_exe +
+        " -luser32 -lgdi32 -lshell32 -ldwrite -lole32 -loleaut32 -ladvapi32 -lwindowscodecs -rtlib=compiler-rt"
+    if run(lcmd) != 0 {
+        fail("probe link failed")
+    }
+    logmsg("probe.exe linked")
+
+    // 5) 运行（cwd=仓库根）
+    var rc = process.exec_code(g_probe_exe)
+    if rc != 0 {
+        fail("probe run failed rc=" + to_string(rc) + " (探针内部 FAIL / 退出非 0)")
+    }
+    logmsg("PROBE PASS (rc=0)")
+}
