@@ -22,6 +22,28 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [RCA] p.6.1.7 深水区：五变体边界化修复全数证伪——未初始化读是隐性契约（2026-09-05）
+
+* **五变体实证**（每个变体均 tiec→tiec2 自举重建 + 探针 + 自举链验证，详见
+  docs/bugreports/2026-09-05-p6.1.7-tiec-nontrivial-crash.md §七）：全量提升 /
+  选择性（在环块）提升 + 入口零初始化 / 原地 + llvm.stacksave-stackrestore 循环回收 /
+  原地 + 零 store——**无一路同时满足「ed25519/html/repro2 探针绿 + 自举真不动点」**。
+  EN: five bounded-stack variants (full/selective hoist ± zero-init, per-loop
+  stacksave/stackrestore, in-place zero store) were all falsified — none keeps both the
+  probe matrix green and the self-host fixed point.
+* **根因定性（新增）**：codebase（编译器自身 tig_read_file/tig_write_file 块级表槽 +
+  std/ed25519/bigint）存在大量「alloca 槽首次 store 前被读、且读值参与控制流」的
+  未初始化读隐性契约——历史上依赖逐迭代动态栈分配（≈0/前帧残留）运转；任何使槽位
+  复用或显式归零的变换都会偏转控制流（0xC0000005/行为错误）。EN: the root cause is
+  latent read-before-write on many stack slots (compiler globals + std libs) that relied
+  on per-iteration fresh dynamic stack; every reuse/zeroing transformation shifts control
+  flow and crashes.
+* **结论与路线**：缺陷族正确修复在 tie 源码层的「首读前必写」清理（先补 compiler/std
+  已定位站点 → 再跑变体 C 自举链直至真不动点重建 → 落定全量提升+零初始化）。当前代码
+  生成保持 9321B3FA 不动点，RCA-2（循环体 alloca 不提升）维持「已 RCA 未根治」。
+  EN: the correct fix is source-level definite-assignment cleanup first, then the hoist
+  variant becomes transparent; toolchain stays at the 9321B3FA fixed point for now.
+
 ## [docs] p.6.8 批次终审：不动点核验 + 已知间歇性取证（2026-09-05）
 
 * **自举终审（主代理复验）**：`compiler\tiec.exe → tiec2 → tiec3` 三字节全等（SHA256
