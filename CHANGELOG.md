@@ -21,6 +21,35 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] Win32 窗口嵌入层：CreateWindow + 消息泵 + 后备缓冲 blit（p.6.8.9）（2026-09-05）
+
+* 窗口嵌入 thunk（ext/gfx/win/win.h + win.cpp，纯 Win32 C API、extern "C" 导出）——落地
+  p.6.8 设计 §2「Skia 仅渲染核心 + 平台嵌入层」的 Flutter 嵌入模型（Win32 起步）。入口：
+  `win_open`（惰性注册类名 TieWinClass + CreateWindowExW）/ `win_show` / `win_update` /
+  `win_pump`（PeekMessage+DispatchMessage 非阻塞排空消息泵，返回处理数）/ `win_closed` /
+  `win_paint_pending`（WM_PAINT/WM_SIZE 置位，供被测）/ `win_present`（按行拷 BGRA 像素
+  到留存副本 + top-down DIB + InvalidateRect，WM_PAINT 内 StretchDIBits 上屏）/ `win_destroy` /
+  `win_message_count`。WndProc 无法经 FFI 传（tie 无函数回调），窗口状态机收敛在 C 端 slot 表。
+  EN: Win32 window-embedding thunk (pure C) lands the Flutter embedding model — CreateWindow+
+  message pump + back-buffer blit; the WndProc and window state machine stay on the C side.
+* tie 封装（ext/gfx/window.tie，namespace `win`）：open/show/update/pump/closed/paint_pending/
+  present/destroy/sleep/find 直透 C 面；标题 UTF-16LE 在 tie 侧编码（wide_from 同款码点→代理对），
+  present 收 p.6.8.8 离屏 Surface peek 像素**地址** → C 单遍 memcpy 行拷贝（无 O(n²)、无 tie
+  逐像素往返）。EN: thin tie wrapper — UTF-16 encoding on the tie side, single C-side row memcpy
+  for the pixel transfer.
+* 探针 tests/p689_probe/p689_probe.tie：open → show/update → 离屏 320x200 命令列表（CLEAR 白 →
+  FILL_RECT 红 → TEXT「p689」）→ peek 逐像素断言（背景/矩形/文本 Glyph 计数）→ present（blit
+  断言返回 0）→ pump 若干轮（sleep 兜底，WM_PAINT 置 paint_pending）→ 断言 closed==0 +
+  FindWindowW 存活 → destroy → 断言窗口消失 + 失效句柄 pump 安全返回 0。**asserts=14，PASS /
+  exit 0**，全程数秒无无限等待（窗口部分本机验证，肉眼可见性留待 p.6.8.12 全栈演示）。
+  EN: probe — offscreen part deterministic/CI-runnable, window part (blit/pump/closed) verified
+  locally; 14 asserts PASS / exit 0.
+* 构建驱动 tests/p689_probe/build_p689.tie：clang-cl /MT 独立登记 win.obj（未改既有 thunk
+  构建）→ 链入探针 exe（探针.obj + thunk.obj + win.obj + skia.lib + trm_lite.a；系统库清单沿用
+  p.6.8.6-6.8.8，无新增）。EN: build driver compiles win.obj and links it into the probe exe.
+* 固定用稳定现役 7A6100FC…BC44 的 `compiler\tiec_7A6100.exe` 编译，未与 RCA 子代理并发改
+  compiler/。EN: pinned to the known-good tiec_7A6100.exe throughout.
+
 ## [feat] D2 命令列表翻译器 + font_measure 文本度量桥（p.6.8.8）（2026-09-05）
 
 * 命令列表翻译器（D2 Paint Commands → Skia）：ext/gfx/commands.tie 定义**平面 table<i64>**

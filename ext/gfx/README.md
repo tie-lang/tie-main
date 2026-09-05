@@ -530,3 +530,82 @@ PNG byte-identical); 32 asserts PASS / exit 0.
   DirectWrite 字体管理器；文本度量在 surface 创建前调用亦可（驱动 build 先建 surface）。
 EN: key findings — `text` is a reserved type name (use `s`); image decode is
 `SkImages::DeferredFromEncodedData`; SkFont uses the default typeface via SkGraphics::Init.
+
+---
+
+## p.6.8.9 Win32 窗口嵌入层 / Win32 window-embedding layer
+
+p.6.8.9 落地设计文档 §2 事实一的 **Flutter 嵌入模型**：Skia 只是渲染核心，窗口创建/消息泵/
+呈现由平台嵌入层承担。本子项以 **Win32 起步**——窗口由 thunk（纯 Win32 C API）承担，
+Skia 把命令列表渲染到**离屏后备缓冲 Surface**，经 `win_present` 把 BGRA 像素 blit 上屏。
+EN: p.6.8.9 lands Fact-1's Flutter embedding model (design doc §2): Skia is only the
+rendering core; windowing/message-pump/presentation are handled by the platform embedding
+layer. Here Win32 first — the thunk (pure Win32 C API) owns the window; Skia renders the
+command list into an **offscreen back-buffer Surface**, blitted on-screen by `win_present`.
+
+### 代码布局 / layout
+
+- `ext/gfx/win/win.h` + `win.cpp` —— Win32 窗口嵌入层 thunk（纯 C 风格、`extern "C"` 导出；
+  tie 无法传 WndProc 回调，故窗口状态机收敛在 C 端）。
+- `ext/gfx/window.tie` —— tie 侧封装（namespace `win`）：直透 C 面 + 标题 UTF-16LE 编码 +
+  像素地址收发 + `Sleep`/`FindWindowW` 兜底。
+- `tests/p689_probe/` —— 探针（离屏部分探针化）+ 构建驱动。
+EN: thunk (C side owns the WndProc + state machine) + tie wrapper + probe.
+
+### thunk 窗口面（C 入口清单）/ window C entry-point surface
+
+| C 入口 | 作用 / Purpose |
+| --- | --- |
+| `win_open(title16, bytes, w, h)` | 惰性注册类名 `TieWinClass` + `CreateWindowExW(WS_OVERLAPPEDWINDOW)`，返回 HWND(i64) |
+| `win_show(hwnd)` / `win_update(hwnd)` | `ShowWindow(SW_SHOW)` / `UpdateWindow`（同步一次 WM_PAINT） |
+| `win_pump(hwnd)` | 消息泵：每轮先清零 paint_pending，再 `PeekMessage+DispatchMessage` **非阻塞排空**队列，返回处理消息数 |
+| `win_closed(hwnd)` | 状态机：`WM_CLOSE`/`WM_DESTROY` 置位的关闭标志 |
+| `win_paint_pending(hwnd)` | 最近一轮 pump 是否处理过 `WM_PAINT`/`WM_SIZE` |
+| `win_present(hwnd, pixels, rowbytes, w, h)` | 按行拷 BGRA 像素字节到留存副本 + 建 top-down DIB + `InvalidateRect`，返回 0 成功 |
+| `win_destroy(hwnd)` | `DestroyWindow` + 释放副本 + 移除 slot（清理映射） |
+| `win_message_count()` | 累计 pump 处理消息数（诊断） |
+
+WndProc 设计：`WM_PAINT` 内 `StretchDIBits` 把留存副本缩放到客户区上屏（Stretch 处理外框
+与客户区尺寸差，避免上溢）；`WM_ERASEBKGND` 返回 1 防闪烁；`WM_CLOSE`/`WM_DESTROY` 置
+closed。EN: WndProc does StretchDIBits blit on WM_PAINT, suppresses erasing, and latches
+closed on WM_CLOSE/WM_DESTROY.
+
+### tie 封装 / tie wrapper（namespace `win`）
+
+`open(title,w,h)→hwnd` / `show` / `update` / `pump(hwnd)→n` / `closed` / `paint_pending` /
+`present(hwnd, addr, rowbytes, w, h)→rc`（addr = `gfx.surface_peek(s).pixels` 地址，
+后备缓冲 = p.6.8.8 离屏 Surface） / `destroy` / `sleep(ms)`（kernel32 `Sleep` 兜底） /
+`find(cls,title)`（`FindWindowW` 供存活校验）。标题 UTF-16LE 在 tie 侧编码（复用
+`sys/win32.wide_from` 同款码点→代理对拆分），alloc 缓冲传 C、调用后 free。
+EN: thin tie wrapper on the C surface; back buffer is the p.6.8.8 offscreen Surface and
+present sends its peeked pixel address.
+
+### 构建与运行 / build & run
+
+```
+compiler\tiec_7A6100.exe tests\p689_probe\build_p689.tie -o tests\p689_probe\build_p689.exe
+tests\p689_probe\build_p689.exe      # 仓库根运行：thunk.obj + win.obj → 探针obj → 链接 → 运行
+```
+链路：`clang-cl /MT` 编 `thunk.cpp` **与** `win.cpp`（win.obj 经本驱动独立登记，未改既有 thunk
+构建）→ tiec `--emit-ir` + `clang -c` 编探针 → `clang -fuse-ld=link` 链接（探针.obj + thunk.obj
++ win.obj + skia.lib + trm_lite.a）→ 运行。系统库清单沿用 p.6.8.6-6.8.8（user32/gdi32/… +
+compiler-rt），无新增。EN: build pipeline extended with win.obj; same system-lib list, no additions.
+
+### 验收探针 / acceptance probe
+
+`tests/p689_probe/p689_probe.tie`：open → show/update → 离屏 320x200 命令列表（CLEAR 白 →
+FILL_RECT 红 → TEXT「p689」）→ peek 逐像素断言（背景/矩形/文本 Glyph 计数）→ **present blit
+（断言返回 0）** → pump 若干轮（每轮 sleep 兜底，WM_PAINT 置 paint_pending）→ 断言 closed==0 +
+`FindWindowW` 定位窗口存活 → destroy → 断言窗口消失 + 失效句柄 pump 安全返回 0。**asserts=14，
+PASS / exit 0**；无无限等待（pump 非阻塞 + p0ms 兜底），全程数秒。窗口可见性/ blit 肉眼正确性
+留待 p.6.8.12 全栈演示。EN: offscreen part is fully deterministic/CI-runnable; window part
+(blit/pump/closed) verified locally; window visibility deferred to the p.6.8.12 full-stack demo.
+
+### 本子项记录 / notes
+
+- tie WndProc 回调无法跨 FFI 传 → 状态机留在 C 端（slot 表：closed/paint_pending/副本）。
+- UTF-16 转换在 tie 侧（wide_from 同款），C 只收字节缓冲。
+- `win::present` 收 peek 像素**地址**而非逐像素读整屏 → 像素搬运经 C 单遍 `memcpy` 行拷贝
+  （无 O(n²)、无 tie 逐像素 C 面往返），与 p.6.8.8 性能约束一致。
+EN: WndProc stays in C; UTF-16 done on the tie side; pixel transfer is a single C-side row
+memcpy (no O(n²) tie-side per-pixel reads).
