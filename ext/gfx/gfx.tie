@@ -1,0 +1,282 @@
+type tie<class>
+// ext/gfx/gfx.tie —— trm.ui.gfx 句柄层（p.6.8.7）
+// EN: trm.ui.gfx handle layer: repr(C) handle structs + function forwarding + lifecycle.
+// =================================================================================
+// 设计（对齐 docs/plans/tucore-arch.md H2 句柄域）：
+//   * 对象 = repr(C) 句柄 struct，包裹不透明 C 指针地址。repr(C) 字段不支持 ptr<T>
+//     （p.6.8.6 实测），用 i64 存地址；跨 FFI 用 int_to_ptr 还原。
+//   * 方法绑定 / method binding：tie 支持 struct 实例方法（infer_struct_method +
+//     M2.1.8 首参自动按引用），但 **struct 方法符号只在定义模块内注册；跨模块 import
+//     时子命名空间（如 `namespace Canvas`）里的方法不导出**，探针中 `canvas.clear(...)`
+//     报「命名空间函数 Canvas::clear 未定义」（p.6.8.7 实测）。另外命名空间函数仅在
+//     namespace 名 == 模块文件名时以 `alias.fn()` 跨模块可达。故本子项落到
+//     「句柄作第一参数的函数」转发形态：`namespace gfx` 内 `gfx.canvas_clear(c, ...)`
+//     即 `Canvas::clear(&c, ...)` 的跨模块等价（obj.method() 是设计文档 H2 的长期形态，
+//     待编译器跨模块方法符号注册补齐后无缝切换，不为此扩语言）。
+//   * 句柄 struct 传值触发复制而非移动（repr struct 按值拷贝；移动语义仅 strings/tables，
+//     p.6.8.7 实测），故同一句柄可安全复用多次。
+//   * Paint 为扁平 repr(C) 描述（对齐 thunk 的 TSkPaint），非 Skia 堆句柄（thunk 每次
+//     绘制把 desc 转内部 SkPaint，无状态、零泄漏）。draw 函数取 Paint 传值，调用点用
+//     paint_make 临时构造（无移动问题）。
+//   * 生命周期：显式 release（release_surface / release_path / release_image /
+//     release_data）逐个释放；arena（本模块全局记账）批量回收——构造函数自动登记，
+//     gfx.arena_release 一次释放全部未单独释放的句柄。
+//
+// 注：ptr<u8> 局部量须在 unsafe 块内声明并初始化（class 角色解析约束，p.6.8.7 实测）；
+// 故每个触碰 FFI 的 gfx 函数内部用单个 unsafe { } 包裹。
+
+import "./thunk_binding.tie" as tb
+using tb;
+
+// ---------- repr(C) 句柄 / 描述 struct（i64 存地址） ----------
+repr(C) struct Surface {
+    var h: i64
+}
+repr(C) struct Canvas {
+    var h: i64
+}
+repr(C) struct Path {
+    var h: i64
+}
+repr(C) struct Image {
+    var h: i64
+}
+// Paint 扁平 desc：color ARGB premul(u32) / style 0fill 1stroke / aa 0/1 / width。
+repr(C) struct Paint {
+    var color: u32
+    var style: i32
+    var antialias: i32
+    var stroke_width: f64
+}
+// Pixels 扁平回读（对齐 thunk TSkImageInfo 布局）：地址为 surface 持有，勿释放。
+repr(C) struct Pixels {
+    var w: i32
+    var h: i32
+    var color_type: i32
+    var alpha_type: i32
+    var row_bytes: i32
+    var pixels: i64
+}
+// Encoded：PNG 编码结果。data=SkData*（须 release_data），bytes=原始字节缓冲，len=字节数。
+repr(C) struct Encoded {
+    var data: i64
+    var bytes: i64
+    var len: i64
+}
+
+// ---------- arena：句柄批量回收记账 ----------
+// g_arena_ptr / g_arena_kind 并行表；kind：0=Surface, 2=Image, 5=Path。
+// 已单独 release 的句柄置 ptr=0 / kind=-1（arena_release 跳过，避免双重释放）。
+var g_arena_ptr: table<i64>;
+var g_arena_kind: table<i64>;
+
+func arena_track(h: i64, kind: i64) {
+    table_push(g_arena_ptr, h)
+    table_push(g_arena_kind, kind)
+}
+func arena_untrack(h: i64) {
+    var n = len(g_arena_ptr)
+    var i: i64 = 0
+    while i < n {
+        if g_arena_ptr[i] == h {
+            g_arena_ptr[i] = 0
+            g_arena_kind[i] = -1
+        }
+        i = i + 1
+    }
+}
+
+// =================================================================================
+// gfx 公共 API（命名空间 gfx，探针以 `import ".../gfx.tie" as gfx`，经 gfx.<fn> 调用）
+// =================================================================================
+namespace gfx {
+    // —— Surface ——
+    pub func surface_create(w: i64, h: i64) -> Surface {
+        unsafe {
+            var p: ptr<u8> = sk_surface_create(as_i32(w), as_i32(h))
+            var s = Surface(ptr_to_int(p))
+            arena_track(s.h, 0)
+            return s
+        }
+    }
+    pub func surface_canvas(s: Surface) -> Canvas {
+        unsafe {
+            var c: ptr<u8> = sk_surface_canvas(int_to_ptr(s.h))
+            return Canvas(ptr_to_int(c))
+        }
+    }
+    pub func surface_snapshot(s: Surface) -> Image {
+        unsafe {
+            var im: ptr<u8> = sk_surface_snapshot(int_to_ptr(s.h))
+            var img = Image(ptr_to_int(im))
+            arena_track(img.h, 2)
+            return img
+        }
+    }
+    pub func surface_peek(s: Surface) -> Pixels {
+        var px = Pixels(0, 0, 0, 0, 0, 0)
+        unsafe {
+            var sp: ptr<u8> = int_to_ptr(s.h)
+            var info = TSkImageInfo(0, 0, 0, 0, 0, 0)
+            sk_surface_peek_pixels(sp, addr_of(info))
+            px.w = info.width
+            px.h = info.height
+            px.color_type = info.color_type
+            px.alpha_type = info.alpha_type
+            px.row_bytes = info.row_bytes
+            px.pixels = info.pixels
+        }
+        return px
+    }
+    // —— Canvas 绘制（paint 传值 desc）——
+    pub func canvas_clear(c: Canvas, color: u32) {
+        unsafe {
+            var cc: ptr<u8> = int_to_ptr(c.h)
+            sk_canvas_clear(cc, color)
+        }
+    }
+    pub func canvas_draw_rect(c: Canvas, l: f64, t: f64, r: f64, b: f64, paint: Paint) {
+        unsafe {
+            var cc: ptr<u8> = int_to_ptr(c.h)
+            var pp = TSkPaint(paint.color, paint.style, paint.antialias, paint.stroke_width)
+            sk_canvas_draw_rect(cc, l, t, r, b, addr_of(pp))
+        }
+    }
+    pub func canvas_draw_line(c: Canvas, x0: f64, y0: f64, x1: f64, y1: f64, paint: Paint) {
+        unsafe {
+            var cc: ptr<u8> = int_to_ptr(c.h)
+            var pp = TSkPaint(paint.color, paint.style, paint.antialias, paint.stroke_width)
+            sk_canvas_draw_line(cc, x0, y0, x1, y1, addr_of(pp))
+        }
+    }
+    pub func canvas_draw_path(c: Canvas, path: Path, paint: Paint) {
+        unsafe {
+            var cc: ptr<u8> = int_to_ptr(c.h)
+            var pp: ptr<u8> = int_to_ptr(path.h)
+            var pt = TSkPaint(paint.color, paint.style, paint.antialias, paint.stroke_width)
+            sk_canvas_draw_path(cc, pp, addr_of(pt))
+        }
+    }
+    // —— Paint 描述 ——
+    pub func paint_make(color: u32, style: i32, antialias: i32, width: f64) -> Paint {
+        return Paint(color, style, antialias, width)
+    }
+    // —— Path ——
+    pub func path_new() -> Path {
+        unsafe {
+            var p: ptr<u8> = sk_path_new()
+            var s = Path(ptr_to_int(p))
+            arena_track(s.h, 5)
+            return s
+        }
+    }
+    pub func path_move_to(p: Path, x: f64, y: f64) {
+        unsafe {
+            var pp: ptr<u8> = int_to_ptr(p.h)
+            sk_path_move_to(pp, x, y)
+        }
+    }
+    pub func path_line_to(p: Path, x: f64, y: f64) {
+        unsafe {
+            var pp: ptr<u8> = int_to_ptr(p.h)
+            sk_path_line_to(pp, x, y)
+        }
+    }
+    pub func path_close(p: Path) {
+        unsafe {
+            var pp: ptr<u8> = int_to_ptr(p.h)
+            sk_path_close(pp)
+        }
+    }
+    // —— Image → PNG 编码 ——
+    pub func image_encode_png(img: Image) -> Encoded {
+        var e = Encoded(0, 0, 0)
+        unsafe {
+            var im: ptr<u8> = int_to_ptr(img.h)
+            var len: i64 = 0
+            var d: ptr<u8> = sk_image_encode_png(im, addr_of(len))
+            var b: ptr<u8> = sk_data_bytes(d)
+            e.data = ptr_to_int(d)
+            e.bytes = ptr_to_int(b)
+            e.len = len
+        }
+        return e
+    }
+    pub func data_write_file(e: Encoded, path: string) -> i32 {
+        unsafe {
+            var d: ptr<u8> = int_to_ptr(e.data)
+            return sk_data_write_file(d, path)
+        }
+    }
+    // —— 显式 release（逐个释放；自动去 arena 记账，防双重释放）——
+    pub func release_surface(s: Surface) {
+        var h = s.h
+        arena_untrack(h)
+        unsafe {
+            var sp: ptr<u8> = int_to_ptr(h)
+            sk_obj_release(sp, 0)
+        }
+    }
+    pub func release_path(p: Path) {
+        var h = p.h
+        arena_untrack(h)
+        unsafe {
+            var pp: ptr<u8> = int_to_ptr(h)
+            sk_path_free(pp)
+        }
+    }
+    pub func release_image(img: Image) {
+        var h = img.h
+        arena_untrack(h)
+        unsafe {
+            var im: ptr<u8> = int_to_ptr(h)
+            sk_obj_release(im, 2)
+        }
+    }
+    pub func release_data(e: Encoded) {
+        unsafe {
+            var d: ptr<u8> = int_to_ptr(e.data)
+            sk_obj_release(d, 3)
+        }
+    }
+    // —— arena（本模块记账；Canvas/Paint 为其拥有者/surface 的一部分，不单独记账）——
+    // arena_count：当前仍未单独释放的活跃句柄数（kind>=0 且 h!=0）。已单独 release 的
+    // 句柄标记为 -1/0 不计入；arena 条目数组长度恒不满减（防移位），仅把释放项标废。
+    pub func arena_count() -> i64 {
+        var cnt: i64 = 0
+        var n = len(g_arena_ptr)
+        var i: i64 = 0
+        while i < n {
+            if g_arena_kind[i] >= 0 && g_arena_ptr[i] != 0 {
+                cnt = cnt + 1
+            }
+            i = i + 1
+        }
+        return cnt
+    }
+    // arena_release：一次释放全部仍未单独释放的句柄，返回本批释放数。
+    pub func arena_release() -> i64 {
+        var cnt: i64 = 0
+        var n = len(g_arena_ptr)
+        var i: i64 = n - 1
+        while i >= 0 {
+            var kind = g_arena_kind[i]
+            var h = g_arena_ptr[i]
+            if kind >= 0 && h != 0 {
+                unsafe {
+                    var p: ptr<u8> = int_to_ptr(h)
+                    if kind == 5 {
+                        sk_path_free(p)
+                    } else {
+                        sk_obj_release(p, as_i32(kind))
+                    }
+                }
+                g_arena_ptr[i] = 0
+                g_arena_kind[i] = -1
+                cnt = cnt + 1
+            }
+            i = i - 1
+        }
+        return cnt
+    }
+}
