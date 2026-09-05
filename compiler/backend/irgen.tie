@@ -121,6 +121,11 @@ var g_param_nids: table<i64>;
 // 在非 entry 块，排除以避免 LLVM「instruction does not dominate」）。
 var g_entry_block: i64 = 0;
 var g_tblcand_allocas: table<i64>;
+// p.6.10.4：非 entry 块（循环/分支）表变量声明的「首次进入」哨兵计数——每个此类
+// 声明唯一分配一个零值全局标志，用于区分首次写槽（槽未初始化，禁止负载）与
+// 回边重写（槽持上一轮表，store 前须 release）。零值全局天然首版为 0，无需入口
+// 初始化（循环内栈槽无法安全置空：alloca 在非 entry 块）。
+var g_tf_ctr: i64 = 0;
 // 顶层全局变量登记：name 池 id → 类型 id / 表元素类型 id（对齐 sstate gb_*，
 // 直接查 gb_keys/gb_vals/gb_telem；此处仅缓存 llvm 初始化需要的标记）。
 // （llvmgen 侧维护 g_global_* 登记表，irgen 仅转发登记。）

@@ -2002,6 +2002,14 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         if x < 0 {
             return -1
         }
+        // p.6.10.4：嵌套表元素 retain——push 表值（如容器表 push 另一张表）→ 容器
+        // 元素持有引用。容器 release 只释放 data 缓冲、不释放元素表，元素表由各自
+        // 引用方负责释放——此处在 push 前 retain 保证元素表引用计数正确不悬垂。
+        // 在桥选/装箱之前对原始表句柄 retain（x 可能是后续装箱产物，非表句柄）。
+        var pv_t = node_types[call_arg(id, 1)]
+        if pv_t >= 0 && types.is_table(pv_t) {
+            tig_tbl_retain_call(x)
+        }
         // 桥选择：按**值**的实际类型判定（嵌套表/字符串值 → push_string 存 ptr；
         // 浮点值 → push_f64；曾按声明元素类型选桥——parse_series 把 parse_float
         // 结果 push 进 i64 表会 push_i64(double) 类型错，Rust 按值类型选桥）

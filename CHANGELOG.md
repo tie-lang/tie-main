@@ -22,7 +22,31 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
-## [feat] 表内存回收闭环：作用域出口析构 + 返回表接管（p.6.10.3）（2026-09-05）
+## [feat] 表内存回收收尾：嵌套表 retain + 循环内 var 遮蔽回收（p.6.10.4）（2026-09-05）
+
+- 在 p.6.10.2/3 覆盖 release / 出口析构之上补齐最后回收路径：
+  - **嵌套表元素 retain**：`table_push(c, t)`（push 表值）与 `c[i] = t`（下标写表值，
+    v 为表）在写入前 `retain`——容器元素持有引用、容器 release 只释放 data 缓冲不释元素，
+    元素表由各自引用方释放，保证元素表引用计数正确防悬垂；仅在值 node 类型为表时触发，
+    map 分支（值非 tl_tbl 表）与复合赋值（op>=0，v 为运算 i64）排除；
+  - **循环/分支内 var 遮蔽回收**：非 entry 块声明的表变量，槽在回边重执行被新表覆盖旧值而
+    泄漏。为每声明配**零值全局哨兵**（global_scalar_reg + global_scalar_init 归零，规避非
+    entry alloca 入口初始化不满足支配的坑），用 select 把首轮 release 实参归零（tbl_release(0)
+    运行时守卫跳过）、**不分裂控制流块**（分裂块实测在大型自举代码触发 LLVM
+    「instruction does not dominate」，改 select 后收敛），回边重写释放上一轮表。
+- 验收：`probe_tbl_nested`（容器表 push 另一表 / 下标写表值 / 循环内 var）PASS
+  （输出 2 3 3 7 2 2000000 ok）；`probe_tbl_memloop` **2000 万次临时表循环峰值仅
+  4.2MB**（内存有界，修复前按泄漏趋势 4.8GB 级无界）；tsha1f KAT 全 PASS、config_smoke
+  48/48 零回归；自举新不动点收敛（rc2==rc3）。
+
+EN: Table memory reclaim finalized (p.6.10.4) — nested/table-element retain (`table_push(c,t)`
+and `c[i]=t` when v is a table) retains before inserting so element refcounts stay correct
+(map branch and compound-assign excluded), and loop/branch-inner `var` shadow reclaim pays a
+zero-initialized global sentinel per declaration, using `select` to null out the first-iteration
+release operand (avoiding block-splitting, which tripped LLVM "does not dominate" on large
+self-hosted code) and releasing the previous iteration's table on back-edge rewrite.
+probe_tbl_memloop: 20M-iteration temp-table loop peaks at 4.2MB (memory-bounded). tsha1f KAT
+all PASS, config_smoke 48/48 zero regression; bootstrap converged rc2==rc3.
 
 - 在 p.6.10.2 引用计数 API 与赋值配对插桩之上补关键回收路径：
   - **entry 级出口析构**：函数出口（显式/隐式 return 前）对 entry 块创建的局部表变量

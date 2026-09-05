@@ -1,0 +1,55 @@
+type tie<logic>
+// probe_tbl_nested.tie（p.6.10.4 验收）：表元素/嵌套表 retain + 循环内 var 遮蔽回收。
+//   1. 容器表 push 表值（auto any 装箱）→ retain 防悬垂；拆箱还原值正确。
+//   2. 表下标写表值 t[i] = v（v 为表）→ retain；拆箱还原值正确。
+//   3. 循环内 `var t = table_new_i64()` 每迭代重声明 → 遮蔽 release 旧表防泄漏，
+//      大循环（100 万次）不崩溃、累加结果正确。
+// 期望输出：2 3 3 7 2 2000000 ok
+
+func sum_table(t: table<i64>) -> i64 {
+    var acc: i64 = 0
+    var j: i64 = 0
+    while j < len(t) {
+        acc = acc + t[j]
+        j = j + 1
+    }
+    return acc
+}
+
+func main() {
+    // 1. 容器表 push 表值（table<any> 自动装箱）→ 元素 retain
+    var t_any: table<any> = []
+    var inner: table<i64> = table_new_i64()
+    table_push(inner, 1)
+    table_push(inner, 2)
+    var inner2: table<i64> = table_new_i64()
+    table_push(inner2, 3)
+    table_push(t_any, inner)      // p.6.10.4：push 表值 → retain
+    table_push(t_any, inner2)     // p.6.10.4：push 表值 → retain
+    println(len(t_any))           // 2
+    var back0 = as_table_i64(t_any[0])
+    println(sum_table(back0))     // 3（1+2，拆箱未悬垂）
+    var back1 = as_table_i64(t_any[1])
+    println(sum_table(back1))     // 3（3）
+
+    // 2. 表下标写表值 t[i] = v（v 为表）→ retain
+    var inner3: table<i64> = table_new_i64()
+    table_push(inner3, 7)
+    t_any[1] = inner3             // p.6.10.4：下标写表值 → retain
+    var back2 = as_table_i64(t_any[1])
+    println(sum_table(back2))     // 7
+    println(len(t_any))           // 2
+
+    // 3. 循环内 var 遮蔽回收 + 大循环不崩溃
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < 1000000 {
+        var t = table_new_i64()
+        table_push(t, i)
+        table_push(t, i + 1)
+        acc = acc + len(t)
+        i = i + 1
+    }
+    println(acc)                  // 2000000
+    println("ok")
+}

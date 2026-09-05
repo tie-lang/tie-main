@@ -198,6 +198,34 @@ func tig_tbl_exit_release() {
     }
 }
 
+// p.6.10.4：循环/分支内表变量自遮蔽——非 entry 块声明的表变量，槽在回边重执行时被
+// `store 新表` 覆盖上一迭代表 → 旧引用丢失泄漏。解法：每个此类声明配一个**零值全局**
+// 哨兵（天然首值 0 / 由 global_scalar_init 归零），首次进入跳 release（槽未初始化，
+// 直接 load 即崩）；回边重写时哨兵已置 1 → release 槽内上一轮表。**用 select 把 release
+// 实参归零、不分裂控制流块**（tbl_release(0) 运行时守卫跳过）——避免块分裂破坏
+// 支配关系（实测分裂块在大型自举代码中触发 LLVM「instruction does not dominate」）。
+func tig_loopvar_release(av: i64) {
+    g_tf_ctr = g_tf_ctr + 1
+    var fname = "tl_loopf_" + to_string(g_tf_ctr)
+    llvmgen.global_scalar_reg(fname, types.named(TK_I64))
+    // 显式置零初值（llvmgen 标量默认 -1 哨兵，须归 0 让「首次」判定成立）
+    llvmgen.global_scalar_init(fname, 0)
+    var flag_addr = interner.intern("@" + fname)
+    var fl = ir.new_inst(g_cur_block, 21, types.named(TK_I64))  // load 哨兵
+    ir.add_operand(fl, flag_addr, 3)  // OK_GLOBAL 全局地址
+    var condv = tig_cond_to_bool(ir.get_value(fl), types.named(TK_I64))  // i1 哨兵!=0
+    var slot = ir.new_inst(g_cur_block, 21, types.named(TK_STR))  // load 槽当前 ptr
+    ir.add_operand(slot, av, 0)
+    var doomed = tig_select_i(condv, ir.get_value(slot), tig_null_ptr(), types.named(TK_STR))
+    tig_tbl_release_call(doomed)
+    // 哨兵置 1：下次回边重写时 release 槽内当前表
+    var one = tig_int_lit(1)
+    var fls = ir.new_inst(g_cur_block, 22, -1)  // store
+    ir.add_operand(fls, types.named(TK_I64), 2)
+    ir.add_operand(fls, one, 0)
+    ir.add_operand(fls, flag_addr, 3)
+}
+
 // 表下标赋值 t[i] = v → tie_table_set_<suffix> 桥（void）。
 // AST：IndexAssign[val=op, children=[目标(Index), 值]]。
 func tig_index_assign(id: i64) -> i64 {
@@ -389,6 +417,15 @@ func tig_index_assign(id: i64) -> i64 {
         if v < 0 {
             return -1
         }
+    }
+    // p.6.10.4：表下标写表值 t[i] = v（v 为表）→ retain——元素持有引用。
+    // 仅表路径（base_is_map 分支已提前 return，map 值非 tl_tbl 表）。op < 0 为
+    // 普通赋值，v 即表句柄（ptr）；复合赋值 op>=0 的 v 是运算结果（i64），且表
+    // 元素复合赋值不合法，故仅普通写。须在 any 装箱之前 retain（装箱后 v 是
+    // any 聚合盒，非表句柄——code 30，与 table_push 的 p.6.10.4 同构）。
+    var ivt = node_types[val]
+    if op < 0 && ivt >= 0 && types.is_table(ivt) {
+        tig_tbl_retain_call(v)
     }
     // P2b 异构元素装箱：表<any> 下标写，值须 box 为 any
     if pty == types.named(TK_ANY) {
@@ -1144,6 +1181,15 @@ func tig_stmt(id: i64) -> i64 {
             // var 的 alloca 在非 entry 块，出口析构 load 会触发「not dominate」）。
             if g_cur_block == g_entry_block && types.is_table(ty) {
                 table_push(g_tblcand_allocas, av)
+            }
+            // p.6.10.4：循环/分支内表变量自遮蔽——非 entry 块声明的表变量，槽在回边
+            // 重执行时被 `store 新表` 覆盖旧值 → 旧表引用丢失泄漏。store 前须 release
+            // 槽内当前持有，但**首次**进入该声明时槽未初始化（load 即崩）。用零值全局
+            // 哨兵 + select 归零实参区分首次（跳过 release）与回边重写（release 上一轮
+            // 表），内存有界且安全。entry 级表变量由 p.6.10.3 出口析构覆盖，不在此列。
+            var ivla = node_types[init]
+            if g_cur_block != g_entry_block && ivla >= 0 && types.is_table(ivla) {
+                tig_loopvar_release(av)
             }
             var store = ir.new_inst(g_cur_block, 22, -1)  // store
             ir.add_operand(store, ty, 2)
