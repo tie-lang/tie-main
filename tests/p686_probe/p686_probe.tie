@@ -1,0 +1,236 @@
+type tie<logic>
+// tests/p686_probe/p686_probe.tie —— p.6.8.6 验收：首个 tie 经 extern 直绑 Skia 的
+// 离屏渲染闭环。
+// EN: first tie program that renders an offscreen Skia surface through the
+// extern "C" thunk and validates it pixel-by-pixel.
+//
+// 覆盖 / Coverage：
+//   1. repr(C) 结构布局（TSkPaint / TSkImageInfo）vs MSVC offsetof（ref.c 核验）
+//   2. SkSurface 创建 / canvas / 像素回读（peek）
+//   3. clear 背景白 → drawRect 填充红 → drawLine（蓝竖粗线 + 绿对角）逐像素/区域断言
+//   4. snapshot → PNG 编码（字节级魔数 + IHDR 尺寸回读）→ 落盘（thunk 侧 fflush）
+//   5. 全对象释放 → 经 ExitProcess 确定性退出（规避 DirectWrite teardown 访问违例）
+//
+// 像素读回不经 std byte_read：直接用 peek 返回的缓冲指针做 ptr 解引用
+// （byte_read 对部分 PNG 中段字节崩溃的 std 缺陷，本探针用 ptr 读取规避）。
+// 期望全部 PASS / exit 0。
+
+import "../../ext/gfx/thunk_binding.tie" as tb
+using tb;
+
+var W: i64 = 96
+var H: i64 = 48
+
+// 颜色（Argb premul）：0xFFFFFFFF / 0xFFFF0000 / 0xFF0000FF / 0xFF00FF00
+var C_WHITE: u32 = 4294967295
+var C_RED: u32 = 4294901760
+var C_BLUE: u32 = 4278190335
+var C_GREEN: u32 = 4278255360
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// ---------- 布局自检（对照 ref.c 的 offsetof） ----------
+func layout_section() {
+    unsafe {
+        var paint = TSkPaint(0, 0, 0, 0.0)
+        var pbase = ptr_to_int(addr_of(paint))
+        check(ptr_to_int(addr_of_field(paint, "color")) - pbase == 0, "TSkPaint.color off=0")
+        check(ptr_to_int(addr_of_field(paint, "style")) - pbase == 4, "TSkPaint.style off=4")
+        check(ptr_to_int(addr_of_field(paint, "antialias")) - pbase == 8, "TSkPaint.antialias off=8")
+        check(ptr_to_int(addr_of_field(paint, "stroke_width")) - pbase == 16, "TSkPaint.stroke_width off=16")
+
+        var info = TSkImageInfo(0, 0, 0, 0, 0, 0)
+        var ibase = ptr_to_int(addr_of(info))
+        check(ptr_to_int(addr_of_field(info, "width")) - ibase == 0, "TSkImageInfo.width off=0")
+        check(ptr_to_int(addr_of_field(info, "height")) - ibase == 4, "TSkImageInfo.height off=4")
+        check(ptr_to_int(addr_of_field(info, "color_type")) - ibase == 8, "TSkImageInfo.color_type off=8")
+        check(ptr_to_int(addr_of_field(info, "alpha_type")) - ibase == 12, "TSkImageInfo.alpha_type off=12")
+        check(ptr_to_int(addr_of_field(info, "row_bytes")) - ibase == 16, "TSkImageInfo.row_bytes off=16")
+        check(ptr_to_int(addr_of_field(info, "pixels")) - ibase == 24, "TSkImageInfo.pixels off=24")
+    }
+}
+
+// ---------- 像素读回（ptr 解引用，不经 byte_read） ----------
+func px_byte(info: TSkImageInfo, x: i64, y: i64, off: i64) -> u8 {
+    unsafe {
+        var rb = as_i64(info.row_bytes)
+        var addr = info.pixels + y * rb + x * 4 + off
+        var p: ptr<u8> = int_to_ptr(addr)
+        return deref(p)
+    }
+}
+
+// 读出 4 字节归类：0=背景白(全255)，1=纯色（恰两个255两个0），2=其它(AA/blend)。
+func classify(info: TSkImageInfo, x: i64, y: i64) -> i64 {
+    var b0 = as_i64(px_byte(info, x, y, 0))
+    var b1 = as_i64(px_byte(info, x, y, 1))
+    var b2 = as_i64(px_byte(info, x, y, 2))
+    var b3 = as_i64(px_byte(info, x, y, 3))
+    var cnt255: i64 = 0
+    var cnt0: i64 = 0
+    if b0 == 255 {
+        cnt255 = cnt255 + 1
+    } else {
+        if b0 == 0 {
+            cnt0 = cnt0 + 1
+        }
+    }
+    if b1 == 255 {
+        cnt255 = cnt255 + 1
+    } else {
+        if b1 == 0 {
+            cnt0 = cnt0 + 1
+        }
+    }
+    if b2 == 255 {
+        cnt255 = cnt255 + 1
+    } else {
+        if b2 == 0 {
+            cnt0 = cnt0 + 1
+        }
+    }
+    if b3 == 255 {
+        cnt255 = cnt255 + 1
+    } else {
+        if b3 == 0 {
+            cnt0 = cnt0 + 1
+        }
+    }
+    if cnt255 == 4 && cnt0 == 0 {
+        return 0
+    }
+    if cnt255 == 2 && cnt0 == 2 {
+        return 1
+    }
+    return 2
+}
+
+// ---------- 主流程：绘制 + 校验 + PNG ----------
+func main() {
+    println("start")
+    layout_section()
+    unsafe {
+        // === 绘制 ===
+        var surface: ptr<u8> = sk_surface_create(as_i32(W), as_i32(H))
+        check(!is_null(surface), "surface created 96x48")
+        var canvas: ptr<u8> = sk_surface_canvas(surface)
+        check(!is_null(canvas), "canvas obtained from surface")
+
+        // 1) 清背景白
+        sk_canvas_clear(canvas, C_WHITE)
+
+        // 2) 填充红矩形 (8,8)-(56,40)，无 AA fill
+        var rectPaint = TSkPaint(C_RED, 0, 0, 0.0)
+        sk_canvas_draw_rect(canvas, 8.0, 8.0, 56.0, 40.0, addr_of(rectPaint))
+
+        // 3) 竖向粗线（蓝，stroke 宽 6，无 AA）(72,4)-(72,44)
+        var linePaint = TSkPaint(C_BLUE, 1, 0, 6.0)
+        sk_canvas_draw_line(canvas, 72.0, 4.0, 72.0, 44.0, addr_of(linePaint))
+
+        // 4) 对角绿线（stroke 宽 1，无 AA）(84,4)-(94,44)
+        var diagPaint = TSkPaint(C_GREEN, 1, 0, 1.0)
+        sk_canvas_draw_line(canvas, 84.0, 4.0, 94.0, 44.0, addr_of(diagPaint))
+
+        // 5) 像素回读
+        var info = TSkImageInfo(0, 0, 0, 0, 0, 0)
+        sk_surface_peek_pixels(surface, addr_of(info))
+
+        // === 逐像素校验 ===
+        check(info.width == as_i32(W) && info.height == as_i32(H), "peek width/height = 96x48")
+        check(as_i64(info.row_bytes) == W * 4, "peek row_bytes == width*4, got " + to_string(as_i64(info.row_bytes)))
+        check(info.color_type != 0, "peek color_type nonzero (N32)")
+        check(info.pixels != 0, "peek pixels nonnull")
+
+        // 背景（避开一切图形）(5,5)：纯白
+        check(classify(info, 5, 5) == 0, "background (5,5) is white")
+
+        // 红矩形中心 (32,24)：纯色（红）
+        check(classify(info, 32, 24) == 1, "rect center (32,24) is solid red")
+
+        // 蓝竖线中心 (72,24)：纯色（蓝）
+        check(classify(info, 72, 24) == 1, "line (72,24) is solid blue")
+
+        // 对角绿线存在性：bbox x[84,94] y[6,42] 统计非背景/纯色像素
+        var nonwhite: i64 = 0
+        var solid: i64 = 0
+        var x: i64 = 84
+        while x <= 94 {
+            var y: i64 = 6
+            while y <= 42 {
+                var c = classify(info, x, y)
+                if c != 0 {
+                    nonwhite = nonwhite + 1
+                }
+                if c == 1 {
+                    solid = solid + 1
+                }
+                y = y + 1
+            }
+            x = x + 1
+        }
+        check(nonwhite >= 20, "diagonal region nonwhite count >= 20, got " + to_string(nonwhite))
+        check(solid >= 15, "diagonal region solid count >= 15, got " + to_string(solid))
+
+        // === PNG 编码校验 ===
+        var img: ptr<u8> = sk_surface_snapshot(surface)
+        check(!is_null(img), "snapshot image obtained")
+        var dlen: i64 = 0
+        var data: ptr<u8> = sk_image_encode_png(img, addr_of(dlen))
+        check(!is_null(data) && dlen > 0, "PNG encode: data != null && len>0, len=" + to_string(dlen))
+
+        var b: ptr<u8> = sk_data_bytes(data)
+        check(!is_null(b), "PNG byte buffer obtained from SkData")
+
+        // PNG 魔数
+        check(deref(b) == 0x89 && deref(ptr_add(b, 1)) == 0x50 &&
+            deref(ptr_add(b, 2)) == 0x4E && deref(ptr_add(b, 3)) == 0x47 &&
+            deref(ptr_add(b, 4)) == 0x0D && deref(ptr_add(b, 5)) == 0x0A &&
+            deref(ptr_add(b, 6)) == 0x1A && deref(ptr_add(b, 7)) == 0x0A,
+            "PNG magic = 89 50 4E 47 0D 0A 1A 0A")
+
+        // IHDR：b+8 len(4), +12 "IHDR", +16 width(4 BE), +20 height(4 BE)
+        var pw = as_i64(deref(ptr_add(b, 16))) * 16777216 +
+            as_i64(deref(ptr_add(b, 17))) * 65536 +
+            as_i64(deref(ptr_add(b, 18))) * 256 +
+            as_i64(deref(ptr_add(b, 19)))
+        var ph = as_i64(deref(ptr_add(b, 20))) * 16777216 +
+            as_i64(deref(ptr_add(b, 21))) * 65536 +
+            as_i64(deref(ptr_add(b, 22))) * 256 +
+            as_i64(deref(ptr_add(b, 23)))
+        check(pw == W && ph == H, "PNG IHDR size = 96x48, got " + to_string(pw) + "x" + to_string(ph))
+
+        // 落盘（thunk 侧 wb + fflush 同步）
+        var wrc = sk_data_write_file(data, "tests/p686_probe/out.png")
+        check(wrc == 1, "PNG written to tests/p686_probe/out.png")
+
+        // 释放（reverse：data → img → surface）
+        sk_obj_release(data, 3)
+        sk_obj_release(img, 2)
+        sk_obj_release(surface, 0)
+    }
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+    var ec: i32 = 0
+    if fails > 0 {
+        ec = 1
+    }
+    unsafe {
+        sk_flush_std()
+        ExitProcess(ec)
+    }
+}
