@@ -1,0 +1,106 @@
+type tie<class>
+// ext/gfx/layout.tie —— p.6.8.12 组合式布局雏形（namespace lay）
+// EN: p.6.8.12 minimal composable layout primitives (row / column / offset) — a layout
+// kernel for nesting box regions. Pure tie, single-pass, deterministic.
+//
+// 这是设计文档 ff非目标区（tieui 完整组件框架属 S4.3）之下的**布局雏形**：只做「在一条
+// 主轴上一次排布一组子盒」的位置计算，返回平面区域表；不做 hit-test / 尺寸协商 / 递归
+// measure。子项票据见 docs/plans/tucore-arch.md（ut 域组合式布局雏形参考）。
+//
+// 区域表示 / Region encoding（输入输出同构，平面 `table<i64>`，每格 4 槽 {x,y,w,h}）：
+//   * 输入子盒：{w, h} 为用户给出的「盒的尺寸」，{x, y} 为**锚定原点**，被布局函数覆盖成
+//     计算出的实际位置（本雏形里 x/y 入参与输出语义对齐，便于复用/校验）。
+//   * 输出：拼接每个子盒最终的绝对区域 {x,y,w,h}；顺序与输入一致。
+//   * 单遍游标游标推进，无 O(n²)、无嵌套表、无逐条重建全表。
+//
+// 签名 / Signatures（各 `size` 为**交叉轴**（与主轴垂直的维度）跨度，供 align 定位）：
+//   lay.row(children, start_x, size, gap, align) -> table<i64>
+//     主轴=水平；child.y 按 align 在 [0, size] 交叉轴上对齐；child.x 沿主轴逐格推进。
+//     cross(align,size,h)：align 0=start/顶  1=middle/居中  2=end/底 → y。
+//   lay.column(children, start_y, size, gap, align) -> table<i64>
+//     主轴=垂直；child.x 按 align 在 [0, size] 交叉轴上对齐；child.y 沿主轴逐格推进。
+//     cross(align,size,w)：align 0=start/左  1=middle/居中  2=end/右 → x。
+//   lay.offset(regions, dx, dy) -> table<i64>
+//     对每格 {x,y,w,h} 平移 (dx,dy)，只改 x/y。用于把**内层**嵌套布局位移到父盒绝对位置，
+//     实现「row 内的 cell 再 column / column 内的 cell 再 row」的嵌套组合。
+//   lay.cross(align, size, extent) -> i64（公开，供调用方复用交叉轴定位）
+//
+// 嵌套组合范式 / Nesting idiom：
+//   inner = lay.row(inner_specs, 0, cell_h, gap, align)      // 内层相对 xy=0
+//   outer = lay.column(outer_specs, 0, ...); cell = 取中盒区域
+//   result = lay.offset(inner, cell_x, cell_y)               // 位移到父盒绝对位置
+//
+// 复杂度 / Complexity：row/column 单遍 O(k)（k=子盒数），offset 单遍 O(k)；交叉轴定位 O(1)/盒。
+
+namespace lay {
+
+// 交叉轴定位：把"盒的交叉轴尺寸 extent"在 [0, size] 上按 align 对齐。
+//   align 0 → 0 ；align 1 → (size - extent)/2（整数除向下取整） ；align 2 → size - extent
+pub func cross(align: i64, size: i64, extent: i64) -> i64 {
+    if align == 1 {
+        return (size - extent) / 2
+    }
+    if align == 2 {
+        return size - extent
+    }
+    return 0
+}
+
+// 横向排布：主轴=水平。每个子盒取 {x,y,w,h} 的 w（主轴跨度）h（交叉轴跨度）；
+// y 由 cross(align,size,h) 决定；x=cursor 逐格推进（每格后追加 gap）。
+// 返回平面区域表 {x,y,w,h}×k（顺序与输入一致）。
+pub func row(children: table<i64>, start_x: i64, size: i64, gap: i64, align: i64) -> table<i64> {
+    var out = table_new_i64()
+    var n = len(children) / 4
+    var cursor: i64 = start_x
+    var i: i64 = 0
+    while i < n {
+        var cw = children[i * 4 + 2]
+        var ch = children[i * 4 + 3]
+        var cy = cross(align, size, ch)
+        table_push(out, cursor)     // x
+        table_push(out, cy)         // y
+        table_push(out, cw)         // w
+        table_push(out, ch)         // h
+        cursor = cursor + cw + gap
+        i = i + 1
+    }
+    return out
+}
+
+// 纵向排布：主轴=垂直。x 由 cross(align,size,w) 决定；y=cursor 逐格推进（每格后追加 gap）。
+pub func column(children: table<i64>, start_y: i64, size: i64, gap: i64, align: i64) -> table<i64> {
+    var out = table_new_i64()
+    var n = len(children) / 4
+    var cursor: i64 = start_y
+    var i: i64 = 0
+    while i < n {
+        var cw = children[i * 4 + 2]
+        var ch = children[i * 4 + 3]
+        var cx = cross(align, size, cw)
+        table_push(out, cx)         // x
+        table_push(out, cursor)     // y
+        table_push(out, cw)         // w
+        table_push(out, ch)         // h
+        cursor = cursor + ch + gap
+        i = i + 1
+    }
+    return out
+}
+
+// 平移一组平面区域：对每格 x+=dx、y+=dy（w/h 不变）。供内层嵌套布局位移到父盒绝对位置。
+pub func offset(regions: table<i64>, dx: i64, dy: i64) -> table<i64> {
+    var out = table_new_i64()
+    var n = len(regions) / 4
+    var i: i64 = 0
+    while i < n {
+        table_push(out, regions[i * 4 + 0] + dx)
+        table_push(out, regions[i * 4 + 1] + dy)
+        table_push(out, regions[i * 4 + 2])
+        table_push(out, regions[i * 4 + 3])
+        i = i + 1
+    }
+    return out
+}
+
+}   // namespace lay
