@@ -121,9 +121,16 @@ hello_b2.exe
 !/ext/gfx/skia/thunk/thunk.cpp
 !/ext/gfx/skia/thunk/gen_thunk.tie
 !/ext/gfx/skia/thunk/build_thunk.tie
+!/ext/gfx/skia/thunk/build_p687.tie
 
 # p.6.8.6 探针编译/运行产物（.tie/.c 源入库，.exe/.ll/.obj/.png 不入库）
 /tests/p686_probe/*.exe
 /tests/p686_probe/*.obj
 /tests/p686_probe/*.ll
 /tests/p686_probe/out.png
+
+# p.6.8.7 gfx 句柄层探针编译/运行产物（.tie 源入库，.exe/.ll/.obj/.png 不入库）
+/tests/p687_probe/*.exe
+/tests/p687_probe/*.obj
+/tests/p687_probe/*.ll
+/tests/p687_probe/out.png

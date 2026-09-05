@@ -1,0 +1,169 @@
+type tie<logic>
+// tests/p687_probe/p687_probe.tie —— p.6.8.7 验收：trm.ui.gfx 句柄层（repr(C) 句柄 +
+// 函数转发 + 显式 release / arena 生命周期）。
+// EN: acceptance probe for the trm.ui.gfx handle layer. Renders offscreen via gfx handle
+// functions, validates pixels + PNG bytes, and verifies explicit-release & arena-count bookkeeping.
+//
+// 覆盖 / Coverage：
+//   1. repr(C) 句柄 struct（Surface/Canvas/Path/Image 包裹 i64 地址）+ gfx.<fn> 方法转发
+//   2. 绘制（clear 白 → 红矩形 fill → 蓝竖线 stroke → 绿色 path 折线 + 黄色 path 闭合填充）
+//   3. peek 逐像素断言（背景白 / 矩形 / 线 / 两条 path 区域内眼角）
+//   4. snapshot → PNG 编码（魔数 + IHDR 尺寸逐字节）+ 落盘（thunk 侧 fflush）
+//   5. 生命周期：显式 release（image/data/path 逐个）+ arena_release 批量回收，计数断言
+//   6. ExitProcess + sk_flush_std 确定性退出（规避 DirectWrite teardown 访问违例）
+//
+// 像素读回不经 std byte_read（std 缺陷，p.6.8.6 记录），改对 peek 返回的缓冲 ptr 直接
+// 解引用。字节序 = Skia N32 premul（x86 little-endian）：内存 [B,G,R,A]。
+// 期望全部 PASS / exit 0。
+
+import "../../ext/gfx/gfx.tie" as gfx
+import "../../ext/gfx/thunk_binding.tie" as tb
+using tb;
+
+var W: i64 = 96
+var H: i64 = 48
+
+// 颜色（ARGB premul）：白 / 红 / 蓝 / 绿 / 黄
+var C_WHITE: u32 = 4294967295
+var C_RED: u32 = 4294901760
+var C_BLUE: u32 = 4278190335
+var C_GREEN: u32 = 4278255360
+var C_YELLOW: u32 = 4294967040
+
+var fails: i64 = 0
+var total: i64 = 0
+
+func check(cond: bool, msg: string) {
+    total = total + 1
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg)
+        fails = fails + 1
+    }
+}
+
+// 读 peek 缓冲某像素某通道（off: 0=B 1=G 2=R 3=A）
+func px(info: Pixels, x: i64, y: i64, off: i64) -> i64 {
+    unsafe {
+        var rb = as_i64(info.row_bytes)
+        var addr = info.pixels + y * rb + x * 4 + off
+        var p: ptr<u8> = int_to_ptr(addr)
+        return as_i64(deref(p))
+    }
+}
+
+func main() {
+    println("start")
+    // === 创建句柄（surface + image + 2 条 path）===
+    var s = gfx.surface_create(W, H)
+    check(s.h != 0, "surface handle created h=" + to_string(s.h) + " (non-null)")
+    var c = gfx.surface_canvas(s)
+    check(c.h != 0, "canvas handle obtained (non-null)")
+    var img = gfx.surface_snapshot(s)
+    check(img.h != 0, "image(snapshot) handle obtained (non-null)")
+    var pathA = gfx.path_new()
+    check(pathA.h != 0, "pathA handle created (non-null)")
+    var pathB = gfx.path_new()
+    check(pathB.h != 0, "pathB handle created (non-null)")
+    // arena 记账：surface + image + pathA + pathB = 4 活跃
+    check(gfx.arena_count() == 4, "arena active=4 after creates, got " + to_string(gfx.arena_count()))
+
+    // === 绘制 ===
+    gfx.canvas_clear(c, C_WHITE)
+    gfx.canvas_draw_rect(c, 8.0, 8.0, 40.0, 28.0, gfx.paint_make(C_RED, 0, 0, 0.0))
+    gfx.canvas_draw_line(c, 64.0, 4.0, 64.0, 28.0, gfx.paint_make(C_BLUE, 1, 0, 4.0))
+    // pathA：绿色折线 stroke（move/line，不闭合）
+    gfx.path_move_to(pathA, 56.0, 40.0)
+    gfx.path_line_to(pathA, 92.0, 40.0)
+    gfx.canvas_draw_path(c, pathA, gfx.paint_make(C_GREEN, 1, 0, 4.0))
+    // pathB：黄色闭合折线 fill（move/line/close → 填满矩形区域）
+    gfx.path_move_to(pathB, 46.0, 4.0)
+    gfx.path_line_to(pathB, 57.0, 4.0)
+    gfx.path_line_to(pathB, 57.0, 20.0)
+    gfx.path_line_to(pathB, 46.0, 20.0)
+    gfx.path_close(pathB)
+    gfx.canvas_draw_path(c, pathB, gfx.paint_make(C_YELLOW, 0, 0, 0.0))
+
+    // === peek 逐像素断言（BGRA）===
+    var info = gfx.surface_peek(s)
+    check(info.w == as_i32(W) && info.h == as_i32(H), "peek width/height = 96x48, got " +
+        to_string(as_i64(info.w)) + "x" + to_string(as_i64(info.h)))
+    check(info.row_bytes != 0 && info.pixels != 0, "peek row_bytes/pixels nonnull")
+
+    // 背景白 (5,30)：远离一切图形
+    check(px(info, 5, 30, 0) == 255 && px(info, 5, 30, 1) == 255 &&
+        px(info, 5, 30, 2) == 255, "bg (5,30) white")
+    // 红矩形中心 (24,18)：fill 无 AA → 纯红
+    check(px(info, 24, 18, 2) == 255 && px(info, 24, 18, 0) == 0 &&
+        px(info, 24, 18, 1) == 0, "rect center (24,18) red")
+    // 蓝竖线中心 (64,16)：stroke 无 AA → 纯蓝
+    check(px(info, 64, 16, 0) == 255 && px(info, 64, 16, 2) == 0 &&
+        px(info, 64, 16, 1) == 0, "line (64,16) blue")
+    // pathA 绿色折线 (80,40)（Stroke，宽 4 无 AA）
+    check(px(info, 80, 40, 1) == 255 && px(info, 80, 40, 0) == 0 &&
+        px(info, 80, 40, 2) == 0, "pathA polyline (80,40) green")
+    // pathB 黄色闭合填充内部 (50,12)
+    check(px(info, 50, 12, 1) == 255 && px(info, 50, 12, 2) == 255 &&
+        px(info, 50, 12, 0) == 0, "pathB closed fill (50,12) yellow")
+
+    // === PNG 编码 + 字节校验 + 落盘 ===
+    var enc = gfx.image_encode_png(img)
+    check(enc.len > 0 && enc.bytes != 0, "PNG encode len>0, len=" + to_string(enc.len))
+    unsafe {
+        var b: ptr<u8> = int_to_ptr(enc.bytes)
+        // 魔数 89 50 4E 47 0D 0A 1A 0A
+        check(deref(b) == 0x89 && deref(ptr_add(b, 1)) == 0x50 &&
+            deref(ptr_add(b, 2)) == 0x4E && deref(ptr_add(b, 3)) == 0x47 &&
+            deref(ptr_add(b, 4)) == 0x0D && deref(ptr_add(b, 5)) == 0x0A &&
+            deref(ptr_add(b, 6)) == 0x1A && deref(ptr_add(b, 7)) == 0x0A,
+            "PNG magic = 89 50 4E 47 0D 0A 1A 0A")
+        // IHDR 尺寸（b+16/20 宽高 4 字节 BE）
+        var pw: i64 = as_i64(deref(ptr_add(b, 16))) * 16777216 +
+            as_i64(deref(ptr_add(b, 17))) * 65536 +
+            as_i64(deref(ptr_add(b, 18))) * 256 +
+            as_i64(deref(ptr_add(b, 19)))
+        var ph: i64 = as_i64(deref(ptr_add(b, 20))) * 16777216 +
+            as_i64(deref(ptr_add(b, 21))) * 65536 +
+            as_i64(deref(ptr_add(b, 22))) * 256 +
+            as_i64(deref(ptr_add(b, 23)))
+        check(pw == W && ph == H, "PNG IHDR size = 96x48, got " + to_string(pw) + "x" + to_string(ph))
+    }
+    var wrc = gfx.data_write_file(enc, "tests/p687_probe/out.png")
+    check(wrc == 1, "PNG written to tests/p687_probe/out.png")
+
+    // === 生命周期：显式 release + arena 批量回收，计数一致 ===
+    // 4 活跃（surface+image+pathA+pathB）→ 显式逐个释放 image（arena 去记账）+ data
+    check(gfx.arena_count() == 4, "arena active=4 before explicit release, got " +
+        to_string(gfx.arena_count()))
+    gfx.release_image(img)
+    check(gfx.arena_count() == 3, "arena active=3 after release_image, got " +
+        to_string(gfx.arena_count()))
+    gfx.release_data(enc)
+    check(gfx.arena_count() == 3, "release_data does not affect arena count, got " +
+        to_string(gfx.arena_count()))
+    // 显式释放一条 path
+    gfx.release_path(pathB)
+    check(gfx.arena_count() == 2, "arena active=2 after release_pathB, got " +
+        to_string(gfx.arena_count()))
+    // arena_release：一次回收剩余 2（surface+pathA）→ 返回 2，活跃归 0（无泄漏计数）
+    var rel = gfx.arena_release()
+    check(rel == 2, "arena_release freed 2 remaining handles, got " + to_string(rel))
+    check(gfx.arena_count() == 0, "arena active=0 after arena_release (no leak), got " +
+        to_string(gfx.arena_count()))
+
+    if fails == 0 {
+        println("PASS all " + to_string(total))
+    } else {
+        println("FAIL count=" + to_string(fails) + " / total=" + to_string(total))
+    }
+    println("done")
+    var ec: i32 = 0
+    if fails > 0 {
+        ec = 1
+    }
+    unsafe {
+        sk_flush_std()
+        ExitProcess(ec)
+    }
+}
