@@ -101,11 +101,13 @@ hello_b2.exe
 
 # ---- p.6.8.4 Skia 裁剪 / trimmed Skia gfx ----
 # 第三方源码与二进制产物不入库（源码树 + 静态库）；仅保留自写的
-# 构建脚本/清单/冒烟源码入库（白名单否定规则）。
-/ext/gfx/lib/
+# 构建脚本/清单/冒烟源码/模块清单入库（白名单否定规则）。
+/ext/gfx/lib/*
+!/ext/gfx/lib/modules.txt
 /ext/gfx/skia/*
 !/ext/gfx/skia/build.tie
 !/ext/gfx/skia/manifest.txt
+!/ext/gfx/skia/modlist.tie
 !/ext/gfx/skia/smoke/
 /ext/gfx/skia/smoke/*
 !/ext/gfx/skia/smoke/smoke.cpp

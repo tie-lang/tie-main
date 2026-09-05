@@ -1,0 +1,298 @@
+type tie<logic>
+// modlist.tie —— Skia 裁剪模块清单扫描器（p.6.8.5）
+// EN: trimmed-Skia module-list scanner, written in tie (no PowerShell).
+//
+// 职责 / Duties：
+//   1) 读取 manifest.txt 的 out.config 定位构建 out/obj 目录
+//   2) 用 `dir /s /b`（process.exec_output）枚举该目录下全部 *.obj（绝对路径）
+//   3) 按「源目录」（去掉 out/obj 前缀后的相对目录）聚合，输出分组模块清单
+//      → ext/gfx/lib/modules.txt（源目录级分组，含单元名 + 计数 + 汇总）
+//
+// 实现说明 / Notes：
+//   - 不用 fs.walk/fs.read_dir 的元素访问（`t[i]`）：tiec 当前运行时期，对
+//     fs 桥返回的 table<string> 做 `[]` 读取会触发启动期访问违例/非法句柄崩溃
+//     （p.6.8.5 探针阶段 RCA 发现，见 README 已知限制）。改用经
+//     process.exec_output 拉取的纯文本输出 + str.split 生成自建 table，迭代
+//     正常。str.split 返回自建表（table_push 构建），逐元素访问安全。
+//   - 本脚本与 build.tie 同纪律：纯 tie 逻辑；唯一外部命令为 dir 枚举。
+//   - 产物 modules.txt 随仓库提交（模块清单单一事实记录）。
+
+import "../../../std/process.tie" as process
+import "../../../std/string.tie" as str
+import "../../config.tie" as cfg
+
+// ---------- 字符串工具 ----------
+func to_bs(s: string) -> string {
+    var n: i64 = str_len(s)
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(s, i)
+        if c == "/" {
+            out = out + "\\"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+func normalize(p: string) -> string {
+    var n: i64 = str_len(p)
+    var out: string = ""
+    var i: i64 = 0
+    while i < n {
+        var c = str_char(p, i)
+        if c == "\\" {
+            out = out + "/"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+// 查找子串位置；未找到返回 -1。
+func find_sub(s: string, sub: string) -> i64 {
+    var un: i64 = str_len(s)
+    var us: i64 = str_len(sub)
+    if us == 0 || us > un {
+        return -1
+    }
+    var i: i64 = 0
+    while i <= un - us {
+        var m: bool = true
+        var j: i64 = 0
+        while j < us {
+            if str_char(s, i + j) != str_char(sub, j) {
+                m = false
+                j = 999999
+                break
+            }
+            j = j + 1
+        }
+        if m {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+func slic(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+func has_end(s: string, suf: string) -> bool {
+    var un: i64 = str_len(s)
+    var uf: i64 = str_len(suf)
+    if uf > un {
+        return false
+    }
+    var i: i64 = un - uf
+    var j: i64 = 0
+    while j < uf {
+        if str_char(s, i + j) != str_char(suf, j) {
+            return false
+        }
+        j = j + 1
+    }
+    return true
+}
+// 去末尾扩展名（最后一个 '.' 及之后）
+func strip_ext(s: string) -> string {
+    var n: i64 = str_len(s)
+    var i: i64 = n - 1
+    while i >= 0 {
+        if str_char(s, i) == "." {
+            return slic(s, 0, i)
+        }
+        i = i - 1
+    }
+    return s
+}
+// 目录名：最后一个 '/' 之前的子串；无 '/' 返回 ""。
+func dirname(p: string) -> string {
+    var n: i64 = str_len(p)
+    var i: i64 = n - 1
+    while i >= 0 {
+        if str_char(p, i) == "/" {
+            return slic(p, 0, i)
+        }
+        i = i - 1
+    }
+    return ""
+}
+// 路径末段（最后一个 '/' 后）
+func last_seg(p: string) -> string {
+    var n: i64 = str_len(p)
+    var i: i64 = n - 1
+    while i >= 0 {
+        if str_char(p, i) == "/" {
+            return slic(p, i + 1, n)
+        }
+        i = i - 1
+    }
+    return p
+}
+// obj 基础名的「单元名」：去掉 "<target>." 前缀（若有）。
+// 例：skia.SkBitmap -> SkBitmap；libpng.pngread -> pngread；
+//     zlib.adler32 -> adler32；png_decode.SkPngCodec -> SkPngCodec。
+func unit_name(base: string) -> string {
+    var n: i64 = str_len(base)
+    var i: i64 = 0
+    while i < n {
+        if str_char(base, i) == "." {
+            return slic(base, i + 1, n)
+        }
+        i = i + 1
+    }
+    return base
+}
+// 对 string 表冒泡排序（升序，strcmp 码点序）。局部副本排序后 ref 重绑定写回。
+func mysort(t: ref table<string>) {
+    var ns = table_new_string()
+    var n: i64 = len(t)
+    var i: i64 = 0
+    while i < n {
+        table_push(ns, t[i])
+        i = i + 1
+    }
+    var a: i64 = 0
+    while a < n {
+        var j: i64 = 0
+        while j < n - 1 - a {
+            if ns[j] > ns[j + 1] {
+                var tmp: string = ns[j]
+                ns[j] = ns[j + 1]
+                ns[j + 1] = tmp
+            }
+            j = j + 1
+        }
+        a = a + 1
+    }
+    t = ns
+}
+func fail(msg: string) {
+    println("[modlist.tie] ERROR: " + msg)
+    exit(1)
+}
+
+// ---------- 主流程 ----------
+func main() {
+    var mp = "ext/gfx/skia/manifest.txt"
+    if !file_exists(mp) {
+        fail("manifest not found: " + mp)
+    }
+    var m = cfg.parse_kv(file_read(mp))
+    var conf = cfg.get(m, "out.config", "tie_raster_release")
+    var objdir = "ext/gfx/skia/out/" + conf + "/obj"
+    // 枚举 *.obj（绝对路径，反斜杠）。dir /s /b 输出每行一个完整路径。
+    var raw = process.exec_output("dir /s /b \"" + to_bs(objdir) + "\\*.obj\"")
+    var lines = str.split(raw, "\n")
+    var rows = table_new_string()   // "group\tunit"
+    var n: i64 = len(lines)
+    var marker = "/" + conf + "/obj/"
+    var i: i64 = 0
+    while i < n {
+        var line = lines[i]
+        if str_len(line) == 0 {
+            i = i + 1
+            continue
+        }
+        var rel = normalize(line)
+        var pos = find_sub(rel, marker)
+        if pos < 0 {
+            i = i + 1
+            continue
+        }
+        rel = slic(rel, pos + str_len(marker), str_len(rel))
+        var base = strip_ext(rel)               // "src/core/skia.SkBitmap"
+        var dir = dirname(base)                 // "src/core"
+        var unit = unit_name(last_seg(base))    // 去 target 前缀
+        table_push(rows, dir + "\t" + unit)
+        i = i + 1
+    }
+
+    mysort(rows)
+    var total = len(rows)
+    if total == 0 {
+        fail("no obj files found under " + objdir)
+    }
+
+    var o: string = "# tie gfx · Skia 裁剪 模块清单 / trimmed-Skia module list (p.6.8.5)\n"
+    o = o + "# 由 ext/gfx/skia/modlist.tie 扫描构建输出 obj 目录自动生成\n"
+    o = o + "# Generated by ext/gfx/skia/modlist.tie from the build obj dir.\n"
+    o = o + "# 分组 = obj 下相对源目录；条目 = 编译单元名；GPU 后端未编入（skia_enable_gpu=false）。\n"
+    o = o + "# Group = source dir under obj; entry = compile unit. No src/gpu (GPU disabled).\n"
+    o = o + "# objdir=" + objdir + "\n"
+    o = o + "\n"
+
+    var cur: string = ""
+    var count: i64 = 0
+    i = 0
+    while i < total {
+        var line = rows[i]
+        var tab = find_tab(line)
+        var g = slic(line, 0, tab)
+        var u = slic(line, tab + 1, str_len(line))
+        if g != cur {
+            if str_len(cur) > 0 {
+                o = o + "\n} [" + to_string(count) + "]\n"
+                o = o + "\n"
+            }
+            o = o + g + " {"
+            cur = g
+            count = 0
+        }
+        o = o + "\n  " + u
+        count = count + 1
+        i = i + 1
+    }
+    if str_len(cur) > 0 {
+        o = o + "\n} [" + to_string(count) + "]\n"
+        o = o + "\n"
+    }
+    o = o + "TOTAL_OBJ=" + to_string(total) + "\n"
+    o = o + "TOTAL_MODULE_GROUPS=" + to_string(group_count(rows)) + "\n"
+    o = o + "GPU_src/gpu_present=no\n"
+
+    if !file_write("ext/gfx/lib/modules.txt", o) {
+        fail("write modules.txt failed")
+    }
+    println("[modlist.tie] wrote modules.txt: total_obj=" + to_string(total))
+    exit(0)
+}
+
+func find_tab(s: string) -> i64 {
+    var i: i64 = 0
+    var n: i64 = str_len(s)
+    while i < n {
+        if str_char(s, i) == "\t" {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func group_count(rows: table<string>) -> i64 {
+    var cnt: i64 = 0
+    var prev: string = ""
+    var n: i64 = len(rows)
+    var i: i64 = 0
+    while i < n {
+        var tab = find_tab(rows[i])
+        var g = slic(rows[i], 0, tab)
+        if g != prev {
+            cnt = cnt + 1
+            prev = g
+        }
+        i = i + 1
+    }
+    return cnt
+}
