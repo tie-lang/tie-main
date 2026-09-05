@@ -22,6 +22,24 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [fix] 表变量赋值引用计数缺 1——p.6.1.7 家族总根因定案（2026-09-05）
+
+* **根因**：irgen_stmt 表变量赋值插桩在 `store 新表` 之后才 load 槽值 → release 释放的是
+  **新表**而非旧表：retain(新)+1 与 release(新)-1 相抵 → 新表计数缺 1（别名 `cur = nxt`
+  仍持有）；循环重入时 tig_loopvar_release 释放到 0 → 下一轮 tbl_at use-after-free
+  （0xC0000005，分配器/形态决定崩与不崩——p.6.1.7 的「编译形态决定产物生死」本质），
+  旧值同时泄漏。EN: the table-var assignment instrumentation released the NEW table
+  (loaded the slot after the store), leaving the new table undercounted while aliases
+  still referenced it — the loop re-entry release then freed it to 0 → use-after-free;
+  this is the total root cause of the shape-dependent p.6.1.7 crash family.
+* **修复（1 处）**：`load旧 → retain新 → store新 → release旧`（旧值 store 前捕获）。
+* **验证**：新增最小探针 m4/m7/m8 + §四 hammer 骨架（10 万次逐轮建表）全过；ed25519/
+  html/repro1/repro3/xml/jwt/sqlite/win32/hello 全绿；新自举不动点 fp2==fp3
+  （tiec2f==tiec3f，SHA 8CD55A11）。EN: min probes + hammer skeleton pass; full probe
+  battery green; new self-host fixed point tiec2f==tiec3f.
+* **遗留**：repro2_sort（sort 3000 字符串冒泡）0xC00000FD 为独立的 RCA-2（循环体
+  alloca 未提升）——待源码层未初始化读清理后落地全量提升路线闭环。
+
 ## [RCA] p.6.1.7 深水区：五变体边界化修复全数证伪——未初始化读是隐性契约（2026-09-05）
 
 * **五变体实证**（每个变体均 tiec→tiec2 自举重建 + 探针 + 自举链验证，详见
