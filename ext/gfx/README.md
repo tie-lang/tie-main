@@ -270,3 +270,99 @@ manifest.txt, smoke/smoke.cpp, modlist.tie, lib/modules.txt.
   obj mtime，`/Brepro` 不能改写 → 整库跨时刻 clean-rebuild 字节不一致；以幂等下界验收。
   EN: whole-lib byte-identity across clean rebuilds not achievable (lib.exe archive mtime);
   reproducible-build acceptance uses the idempotency lower bound.
+
+---
+
+## p.6.8.6 extern "C" thunk 绑定 / extern "C" thunk binding layer
+
+本子项把 Skia 类方法经最小手写 extern "C" 面暴露为 C 入口，使 tie 程序可 **经
+`unsafe extern fn` 直绑 Skia** 离屏画线（p.6.8.1-6.8.3 语言能力 + p.6.8.4 库的汇聚点）。
+全部 thunk/构建/生成器逻辑用 tie 编写。EN: This sub-item exposes Skia class methods
+as C entry points via a minimal handwritten extern "C" thunk so a tie program can
+**direct-bind Skia through `unsafe extern fn`** for offscreen drawing — the convergence
+of the p.6.8.1-6.8.3 language abilities with the p.6.8.4 library.
+
+### thunk 面（C 入口清单）/ C entry-point surface
+
+源码：`ext/gfx/skia/thunk/thunk.h` + `thunk.cpp`。对象一律不透明 `ptr<u8>`；canvas
+由 surface 拥有、不单独释放；`sk_obj_release(obj, kind)` 统一回收。
+
+| C 入口 | 作用 / Purpose |
+| --- | --- |
+| `sk_surface_create(w,h)` | `SkSurfaces::Raster` N32 premul 8888 → Surface |
+| `sk_surface_canvas(s)` | Surface → Canvas（借出） |
+| `sk_surface_snapshot(s)` | Surface → Snapshot Image |
+| `sk_surface_peek_pixels(s, info*)` | 回读底层像素/信息（TSkImageInfo） |
+| `sk_image_encode_png(img, len*)` | `SkPngEncoder::Encode` → SkData |
+| `sk_data_bytes(data)` | SkData → 原始字节缓冲指针 |
+| `sk_data_write_file(data, path)` | 写 PNG（wb + fflush 同步） |
+| `sk_canvas_clear(c, color)` | 清屏 |
+| `sk_canvas_draw_line/rect(...)` | 取扁平 TSkPaint → SkPaint 绘制 |
+| `sk_obj_release(obj, kind)` | 释放 Surface/Image/Data |
+| `sk_flush_std()` | `fflush(stdout/stderr)`：`ExitProcess` 前落盘，保住探针报告 |
+
+EN: All objects are opaque `ptr<u8>`; canvas is owned by the surface; `sk_obj_release`
+frees Surface/Image/Data; `sk_flush_std` flushes stdio before `ExitProcess`.
+
+### 扁平 repr(C) 结构 / flat repr(C) structs
+
+`TSkPaint`（color u32 / style i32 / antialias i32 / stroke_width f64，
+offset 0/4/8/16，size 24，align 8）——**不镜像 SkPaint C++ 位域布局**，改传扁平描述，
+thunk 内部转 SkPaint，规避 C++ 布局脆弱面。`TSkImageInfo`（width/height/color_type/
+alpha_type/row_bytes int + pixels i64 地址，offset 0..24/32）。布局经
+`tests/p686_probe/ref.c` 对照 clang/MSVC `offsetof` 核验（探针写死期望）。
+EN: `TSkPaint` and `TSkImageInfo` are flat repr(C) structs mirrored in tie, verified
+against C `offsetof` by `tests/p686_probe/ref.c`.
+
+### 生成器机制 / generator（签名集中登记）
+
+`ext/gfx/skia/thunk/gen_thunk.tie` 持有**静态签名登记表**（C 名 → 参数/返回类型表），
+运行后生成 tie 侧绑定模块 `ext/gfx/thunk_binding.tie`（repr(C) 结构 + `unsafe extern fn`
+声明）；探针 `import "../../ext/gfx/thunk_binding.tie" as tb` + `using tb;` 使用。
+`--emit-c` 额外打印 C 头片段供人工对照 `thunk.h`；机器级一致性由探针 thunk 调用 +
+布局 ref.c 兜底。**改 thunk.h 必同步登记表/生成器，再生成绑定**。
+EN: `gen_thunk.tie` holds the central signature registry and generates
+`ext/gfx/thunk_binding.tie` (structs + extern declarations) for probes to `using`.
+`--emit-c` prints a C-header fragment for manual cross-check against `thunk.h`.
+
+### 构建与运行（tie 驱动）/ build & run (tie-driven)
+
+```
+compiler\tiec.exe ext\gfx\skia\thunk\build_thunk.tie -o ext\gfx\skia\thunk\build_thunk.exe
+ext\gfx\skia\thunk\build_thunk.exe     # 仓库根运行：生成绑定→thunk.obj→探针obj→链接→运行
+```
+build_thunk.tie 链路：生成绑定 → `clang-cl /MT` 编译 thunk.cpp → tiec `--emit-ir` +
+`clang -c` 编探针 → `clang -fuse-ld=link` 链接（探针.obj + thunk.obj + skia.lib）→ 运行。
+EN: build_thunk.tie: gen binding → clang-cl /MT thunk.obj → probe.obj → clang link with
+skia.lib → run probe.
+
+**链接所需系统库 / required system libs**（随 linker 报错补齐后固化，见 build_thunk.tie）：
+`user32 gdi32 shell32 dwrite ole32 oleaut32 advapi32 windowscodecs`
+`+ compiler-rt`（i128 除法辅助）；CRT 用静态 `/MT` 与 skia.lib 一致，避免混链。
+EN: `user32 gdi32 shell32 dwrite ole32 oleaut32 advapi32 windowscodecs` + compiler-rt;
+static /MT CRT matches skia.lib.
+
+### 验收探针 / acceptance probe
+
+`tests/p686_probe/p686_probe.tie`：96x48 离屏 Surface → clear 白 → 红矩形 fill →
+蓝竖粗线 + 绿对角（drawLine）→ peek 逐像素断言（背景/矩形中心/线中心纯色、对角区域
+计数）→ snapshot → PNG 编码（魔数 `89504e470d0a1a0a` + IHDR 尺寸 96x48 逐字节回读）→
+落盘 `tests/p686_probe/out.png` → 全释放 → `ExitProcess` 确定性退出。**asserts=27，PASS /
+exit 0**，探针 exe≈2.77 MB、运行≈50 ms。像素读回与 PNG 字节校验走 **ptr 解引用**
+（不经 std `byte_read`）。
+EN: tests/p686_probe renders offscreen, validates pixels/PNG byte-level, exit 0 on full
+PASS (27 asserts); pixel + PNG validation use direct ptr deref, not std byte_read.
+
+### 已知链路风险与规避 / known pipeline risks & mitigations
+
+- **DirectWrite teardown 访问违例**：静态 exe 退出期静态析构崩溃（p.6.8.4 冒烟发现）——
+  探针打印后用 `sk_flush_std()` + `ExitProcess(code)` 确定性退出；PNG 先 `fflush` 落盘。
+  EN: probe exits via ExitProcess after sk_flush_std to avoid the DWrite teardown crash.
+- **tie `byte_read` + 表元素 `t[i]` 访问违例**：复现确认——本探针 281 字节 PNG 上
+  `byte_read` 成功返回但 `b[0]` 元素读取触发 0xC0000005（table `<i64>` 运行时桥边界，
+  与 p.6.8.4 记录一致；同族于 p.6.8.5 记录的 fs 表元素读取崩溃）。**已上报，待独立修复**
+  （建议新增 bug 子项：编译器 `tig_byte_read` 手工组表头式与新表运行时布局不对齐，需
+  编译器改动 + 自举核验）。探针 **故意不经 byte_read**，改对返回的 SkData 缓冲 ptr 直接
+  解引用逐字节校验（校验的是编码器实际产出字节，更鲁棒）。EN: reproduced byte_read
+  element-read access violation; probe deliberately validates the SkData buffer via ptr
+  deref instead and reports the defect upstream.

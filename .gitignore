@@ -111,3 +111,19 @@ hello_b2.exe
 !/ext/gfx/skia/smoke/
 /ext/gfx/skia/smoke/*
 !/ext/gfx/skia/smoke/smoke.cpp
+
+# ---- p.6.8.6 thunk 绑定 / extern "C" thunk bindings ----
+# 仅 thunk 源码（.h/.cpp）+ 生成器 + 构建驱动入库；.obj/.exe/.png/.ll 产物
+# 不入库（thunk.obj build_thunk.exe gen_thunk.exe 均在此档）。
+!/ext/gfx/skia/thunk/
+/ext/gfx/skia/thunk/*
+!/ext/gfx/skia/thunk/thunk.h
+!/ext/gfx/skia/thunk/thunk.cpp
+!/ext/gfx/skia/thunk/gen_thunk.tie
+!/ext/gfx/skia/thunk/build_thunk.tie
+
+# p.6.8.6 探针编译/运行产物（.tie/.c 源入库，.exe/.ll/.obj/.png 不入库）
+/tests/p686_probe/*.exe
+/tests/p686_probe/*.obj
+/tests/p686_probe/*.ll
+/tests/p686_probe/out.png

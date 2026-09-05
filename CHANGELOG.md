@@ -21,6 +21,40 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] extern "C" thunk：Skia 类方法 C 入口 + tie 离屏画线闭环（p.6.8.6）（2026-09-05）
+
+* 最小手写 extern "C" thunk（ext/gfx/skia/thunk/thunk.h + thunk.cpp）暴露 Skia 类方法为 C
+  入口：Surface(create/canvas/snapshot/peek) + Canvas(clear/drawLine/drawRect) +
+  PNG(`SkPngEncoder`/字节缓冲/落盘 fflush) + 统一释放。对象一律不透明 `ptr<u8>`。
+  EN: minimal handwritten extern "C" thunk exposes Skia class methods as C entries —
+  Surface(create/canvas/snapshot/peek), Canvas(clear/drawLine/drawRect), PNG encode +
+  disk write (fflush), unified release; all objects are opaque `ptr<u8>`.
+* tie 写生成器（gen_thunk.tie）：静态签名登记表（C 名→参数/返回类型）→ 生成 tie 侧绑定模块
+  `ext/gfx/thunk_binding.tie`（repr(C) 结构 + `unsafe extern fn`），探针 `import + using` 使用；
+  `--emit-c` 输出 C 头片段供人工核对 thunk.h。EN: tie-written generator (gen_thunk.tie) holds
+  the central signature registry and emits the binding module the probe imports.
+* 扁平 repr(C) paint/image 描述：`TSkPaint`(color/style/aa/stroke_width) 与 `TSkImageInfo`
+  （含 pixels 地址 i64），对照 C `offsetof`（tests/p686_probe/ref.c）核验后探针写死期望——
+  规避 SkPaint C++ 位域布局脆弱面。EN: flat repr(C) TSkPaint / TSkImageInfo mirrored in tie,
+  offsets verified vs C offsetof.
+* 首个 tie 经 extern 直绑 Skia 离屏渲染闭环探针（tests/p686_probe）：96x48 表面清背景→红矩形
+  →蓝竖粗线+绿对角→peek 逐像素断言→snapshot→PNG 字节级校验（魔数+IHDR 96x48）→落盘→全释放
+  →`ExitProcess` 确定性退出。**asserts=27，PASS / exit 0**（探针 exe≈2.77MB / ≈50ms）。
+  EN: first tie→Skia offscreen render loop probe — pixel-by-pixel + PNG byte-level checks,
+  27 asserts PASS / exit 0.
+* 构建/链接步骤逻辑用 tie（build_thunk.tie，无 PowerShell）：生成绑定→clang-cl /MT 编译
+  thunk→tiec `--emit-ir`+clang 编探针→clang `-fuse-ld=link` 链接 skia.lib→运行。系统库清单：
+  `user32 gdi32 shell32 dwrite ole32 oleaut32 advapi32 windowscodecs` + compiler-rt。
+  EN: tie-driven build (build_thunk.tie); required system libs listed above; static /MT CRT.
+* 复现确认既有缺陷（供主代理）：`byte_read` 对小 PNG 成功返回但表元素 `b[i]` 读取触发
+  0xC0000005 访问违例（编译器 `tig_byte_read` 手工组表头与新表运行时布局不对齐；与 p.6.8.4
+  记录同源，同族于 p.6.8.5 的 fs 表元素读取崩溃）。**待独立修复**（建议新增 bug 子项：编译器
+  改动 + 自举核验）。探针故意不经 byte_read，改对返回缓冲 ptr 直接解引用逐字节校验。
+  EN: reproduced an existing defect — `byte_read` succeeds but table element read `b[i]`
+  hits 0xC0000005 (compiler `tig_byte_read` hand-built table header vs new table runtime
+  layout mismatch; same family as the p.6.8.5 fs table-read crash). Pending independent fix;
+  the probe validates via ptr deref instead.
+
 ## [feat] extern 扩展：强制 unsafe + ptr 参数/返回值 + 结构体按引用 + string↔char*（p.6.8.3）（2026-09-05）
 
 * extern 强制 unsafe 已是现状（p.6.8.1 负例 err_071「安全代码调 unsafe extern GetTickCount」）；
