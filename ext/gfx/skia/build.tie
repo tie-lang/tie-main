@@ -285,7 +285,7 @@ func do_smoke() -> bool {
     }
     logmsg("compiling smoke ...")
     var linklibs = "gdi32.lib user32.lib dwrite.lib ole32.lib oleaut32.lib shell32.lib advapi32.lib windowscodecs.lib"
-    var cmd = "call \"" + g_vcv + "\" " + g_arch + " && cl /nologo /std:c++17 /EHsc /O2 /MT /W3 /I \"" + g_skia_rel + "\" \"" + src + "\" \"" + g_product + "\" /Fe:\"" + exe + "\" /link " + linklibs
+    var cmd = "call \"" + g_vcv + "\" " + g_arch + " && cl /nologo /std:c++17 /EHsc /O2 /MT /W3 /I \"" + g_skia_rel + "\" \"" + src + "\" \"" + g_product + "\" /Fo\"" + smoke_dir + "/\" /Fe:\"" + exe + "\" /link " + linklibs
     if !process_exec(cmd) {
         fail("smoke compile/link failed")
     }
