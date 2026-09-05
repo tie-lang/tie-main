@@ -297,11 +297,11 @@ neither continues the other**.
 | ------------ | ------------------------------------------------------------------------------------- | -------------------------------------------- |
 | \[x] p.6.8.1 | `ptr` 指针类型：T2 类型化指针 + addr\_of/deref/指针算术 + U3 语法（unsafe 块/函数，文件级逃生舱）；安全代码触碰指针 = 编译错误 | 指针探针（取址/解引用/算术/比较）PASS；unsafe 边界外使用 ptr 编译拒绝 |
 | \[x] p.6.8.2 | `repr(C)` 结构体：R1 显式 ABI 布局（字段偏移精确对齐，对照 C 编译输出）；可整体按引用传 extern；与窄整数模型咬合                | repr(C) 布局探针对照 C 的 offsetof 全等；按引用传结构体 PASS  |
-| \[ ] p.6.8.3 | extern 扩展：E3 extern 强制 unsafe + ptr 参数/返回值 + 结构体按引用 + string↔char\*                   | 双向 ptr 探针；extern\_move\_check 零回归            |
+| \[x] p.6.8.3 | extern 扩展：E3 extern 强制 unsafe + ptr 参数/返回值 + 结构体按引用 + string↔char\*                   | 双向 ptr 探针；extern\_move\_check 零回归            |
 
 | 子项           | 内容                                                                                                                                                                               | 验收                                   |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| \[ ] p.6.8.4 | 源码裁剪与构建：收窄到 SkSurface/SkCanvas/SkPaint/SkPath/SkTextBlob/SkFont/SkImage/SkCodec(PNG/BMP) + Raster 软件光栅 + 离屏位图 Surface；构建脚本 tie 写（GN/ninja 或最小 CMake 裁剪，脚本逻辑全 tie）；产物静态库（.a/.lib） | 最小 C++ 冒烟：画矩形/文本/图像到离屏位图 → 导出 PNG 成功 |
+| \[x] p.6.8.4 | 源码裁剪与构建：收窄到 SkSurface/SkCanvas/SkPaint/SkPath/SkTextBlob/SkFont/SkImage/SkCodec(PNG/BMP) + Raster 软件光栅 + 离屏位图 Surface；构建脚本 tie 写（GN/ninja 或最小 CMake 裁剪，脚本逻辑全 tie）；产物静态库（.a/.lib） | 最小 C++ 冒烟：画矩形/文本/图像到离屏位图 → 导出 PNG 成功 |
 | \[ ] p.6.8.5 | 模块清单与依赖收窄：源文件/编译宏/第三方依赖清单（zlib 等收窄或系统库）；裁剪后体积基线记录                                                                                                                                | 清单文档化；构建可复现（同一 commit 同一产物字节）        |
 
 | 子项           | 内容                                                                                                             | 验收                                   |

@@ -21,6 +21,51 @@
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Harbor-2026.1-preview.6（2026-09-03）
+## [feat] extern 扩展：强制 unsafe + ptr 参数/返回值 + 结构体按引用 + string↔char*（p.6.8.3）（2026-09-05）
+
+* extern 强制 unsafe 已是现状（p.6.8.1 负例 err_071「安全代码调 unsafe extern GetTickCount」）；
+  本子项补齐外部符号绑定扩展最小集。EN: extern-forced-unsafe was already in place (p.6.8.1
+  negative err_071); this sub-item fills the extern-binding minimum set.
+* 双向 ptr：extern 形参/返回支持 `ptr<T>`（LLVM opaque ptr 直通），C→tie（C 返回 ptr，tie
+  deref 读）与 tie→C（tie 把 typed ptr 传外部函数写入，deref 回读）均打通。EN: Bidirectional
+  ptr — `ptr<T>` extern params/returns flow straight through (C→tie and tie→C verified).
+* string↔char* 双向：string 实参→char*（既有）+ char* 返回值→string（auto-scan，NULL→空串）衔接。
+  EN: string↔char* both directions (arg→char*, return char*→string auto-scan, NULL→empty).
+* 结构体按引用：extern 形参**直接写 repr(C) struct 类型**（C ABI 按引用传指针，callee 就地改
+  /读写 tie 回读）；`ptr<Struct>`+`addr_of` 形式沿用既有路径。EN: struct-by-reference — extern
+  params may take repr(C) struct directly (C ABI pointer); ptr<Struct>+addr_of unchanged.
+* 语义校验：extern 形参只允许标量/string/ptr/slice **或 repr(C) struct**；非 repr(C) struct 拒绝。
+  返回类型仍限标量/string/ptr/slice/void（结构体按值返回 C ABI sret 不在最小编）。
+  EN: extern params allow scalar/string/ptr/slice or repr(C) struct only (non-repr(C) rejected);
+  return type unchanged (scalar/string/ptr/slice/void).
+* p683 探针：`tests/p683_probe/p683_probe.tie` 19 项断言全 PASS/exit 0（双向 ptr、string↔char*
+  往返、直接 repr(C) struct 按引用 SystemTimeToFileTime 读写、ptr<Struct>+addr_of、
+  repr(C) 布局偏移 vs C offsetof）。EN: p683 probe — 19 assertions all PASS / exit 0.
+* 回归零破坏：extern_move_check、html/xml/jwt/win32/ed25519/sqlite/tink、probe_global_init、
+  probe_tdzd、p681/p682 全 PASS。EN: regression probes (extern_move_check + library suite) all PASS.
+* 新自举不动点：tiec.exe SHA256 `7A6100FC65C6FCEEB193B9CEEEDC1391A12B640045391D5BD9092AFEAA39BC44`
+  / **3937792 字节**（tiec2==tiec3 字节一致收敛）；旧 p.6.8.2 版备份为 compiler/tiec_759C04.exe
+  （759C047D…/3934208）。EN: new bootstrap fixpoint tiec.exe SHA256 … / 3937792 bytes
+  (tiec2==tiec3); prior p.6.8.2 kept as compiler/tiec_759C04.exe.
+
+## [feat] Skia 裁剪构建（p.6.8.4）（2026-09-05）
+
+* 精简自建 Skia 子集完成源码裁剪与构建：软件光栅 + 文本 + 图像 + 离屏表面，静态库
+  Release x64（MSVC 14.51，VS18/Community）。EN: Trimmed Skia subset built — software
+  raster + text + image + offscreen surface, static lib Release x64 (MSVC 14.51).
+* 版本固定：chrome/m120 @ `77fe8841d9ec287eeb3d3f70fc0a674162664064`；第三方依赖收窄到
+  zlib（chromium `c876c8f…`）+ libpng（pnggroup `386707c…`）两项。EN: Pinned
+  chrome/m120 @ that commit; third-party deps narrowed to zlib + libpng only.
+* 构建脚本全程 tie 写（`ext/gfx/skia/build.tie`，经 `process.exec_code`→system 驱动
+  vcvarsall+gn+ninja，幂等 manifest 指纹；`--force/--check/--clean/--gen/--smoke` 子命令）；
+  清单 `ext/gfx/skia/manifest.txt` 记录版本/GN args/依赖固定提交/工具链/体积基线。
+* 裁剪 GN 全关 GPU/PDF/SkParagraph/ICU/Harfbuzz/Expat/JPEG/WebP/Wuffs/SCMS-decode 等，
+  仅留软件光栅+DirectWrite 文本+PNG=zlib+libpng；最终 GA 参数零警告生效。
+* 冒烟验收通过：离屏 Raster Surface 画矩形/文本(DirectWrite)/图像 → SkPngEncoder 导
+  PNG（320x200，2768B，魔数 `89504e470d0a1a0a` 校验）。EN: Smoke acceptance passed —
+  offscreen surface rect/text/image → PNG (320x200, 2768B, magic verified).
+* 体积基线：`ext/gfx/lib/skia.lib` = **169,329,356 字节**（Release x64，MSVC /MT）。
+  EN: Size baseline: skia.lib = 169,329,356 bytes (Release x64, MSVC /MT).
 ## [feat] repr(C) 结构体显式 ABI 布局（p.6.8.2）（2026-09-05）
 
 * `repr(C) struct` 显式 C ABI 布局落地：repr(C) 标记自 AST 传播进类型注册表（`st_reprc`，
