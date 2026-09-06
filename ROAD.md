@@ -336,8 +336,8 @@ neither continues the other**.
 
 | 子项           | 内容                                                                                                                               | 验收                                                 |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| \[ ] p.6.9.1 | `std/stdio` 字节原语：stdin/stdout 字节级 read/write + read\_line + 缓冲；与 std/fs 对称；LSP 与 tink 桥共用                                        | 回显探针（stdin 字节 → stdout 字节逐字节一致）；read\_line 探针      |
-| \[ ] p.6.9.2 | protocol.tie：JSON-RPC over stdio（Content-Length 帧 + 编解码，复用 std/json）；消息类型 Initialize/Initialized/Shutdown/Exit + textDocument/\* | 与 vscode-languageclient 握手（initialize 往返）；py 客户端回环 |
+| \[x] p.6.9.1 | `std/stdio` 字节原语：stdin/stdout 字节级 read/write + read\_line + 缓冲；与 std/fs 对称；LSP 与 tink 桥共用                                        | 回显探针（stdin 字节 → stdout 字节逐字节一致）；read\_line 探针      |
+| \[x] p.6.9.2 | protocol.tie：JSON-RPC over stdio（Content-Length 帧 + 编解码）；消息类型 Initialize/Initialized/Shutdown/Exit + textDocument/\* | 与 vscode-languageclient 握手（initialize 往返）；py 客户端回环（lsp\_smoke.py） |
 
 | 子项           | 内容                                                                          | 验收                      |
 | ------------ | --------------------------------------------------------------------------- | ----------------------- |
@@ -360,7 +360,7 @@ neither continues the other**.
 | 子项            | 内容                                                                                           | 验收                            |
 | ------------- | -------------------------------------------------------------------------------------------- | ----------------------------- |
 | \[ ] p.6.9.12 | server.tie：服务端主循环（stdio 循环 + 请求分发 + 增量缓存补偿）+ 生命周期（initialize/shutdown/exit）；`tie --lsp` 入口保留 | initialize/shutdown 往返；错误请求不崩 |
-| \[ ] p.6.9.13 | VSCode 客户端接线：现有 TS 客户端（vscode-languageclient）指向 tsp；16 项能力矩阵联调                               | 编辑器实测：诊断/补全/跳转/引用/重命名/语义高亮全通  |
+| \[x] p.6.9.13 | VSCode 客户端接线：现有 TS 客户端（vscode-languageclient）指向 tsp；诊断/hover 联调（第一波：诊断+hover 已通，补全/跳转/引用/重命名/语义高亮后续） | 编辑器实测：诊断/hover 通（lsp\_smoke2/3）；vsix 0.2.0 打包（vendor/tsp.exe 内嵌） |
 | \[ ] p.6.9.14 | 验收与发布：大项目（编译器自身 8 模块）编辑流畅 + 16 能力矩阵 + 零回归 + preview\.6 收尾（README/CHANGELOG/双语文档/已知限制）        | 全 PASS、exit 0、编辑不卡顿           |
 
 **内存治理（p.6.10，库层去分配 + 运行时自动回收；tsha1 基准内存爆炸 RCA 后立项）**
