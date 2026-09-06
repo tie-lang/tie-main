@@ -91,14 +91,6 @@
             "1": { "name": "variable.parameter.tie" },
             "2": { "name": "storage.type.tie" }
           }
-        },
-        {
-          "name": "meta.definition.struct-field.tie",
-          "match": "^\\s*(var)\\s+([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*:.*=)",
-          "captures": {
-            "1": { "name": "keyword.control.tie" },
-            "2": { "name": "variable.other.property.tie" }
-          }
         }
       ]
     },
@@ -127,7 +119,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.tie",
-          "match": "\\b(println|print|len|read_line|eval|exit|panic|str_len|str_char|char_code|to_string|table_push|table_new_i64|time_now|map_keys|map_values)\\b\\s*(?=\\()"
+          "match": "\\b(println|print|len|read_line|eval|exit|panic|str_len|str_char|char_code|to_string|table_push|table_new_i64|table_new_string|table_new_f64|table_at|time_now|time_now_ms|map_keys|map_values|map_contains|exec_code|exec_output|str_from_code|parse_int|parse_float|file_exists|bitcast_f64_i64|bitcast_i64_f64)\\b\\s*(?=\\()"
         },
         {
           "name": "entity.name.function.tie",
