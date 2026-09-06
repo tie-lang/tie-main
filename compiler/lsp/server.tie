@@ -598,6 +598,152 @@ func publish_diagnostics(uri: string, diagnostics: string) {
     proto.write_frame(notif)
 }
 
+// ---- 符号签名索引（hover 用）----
+// 每个打开的文档维护：符号名表 + 签名表（平行）。didOpen/didChange 时重建。
+var g_sym_uris: table<string>   // 并行 uri
+var g_sym_names: table<string>  // 每文档：名称表（分号分隔，首版简化）
+var g_sym_sigs: table<string>   // 每文档：签名表（平行分号分隔）
+
+func rebuild_syms(uri: string, txt: string) {
+    var idx = -1
+    var i: i64 = 0
+    while i < len(g_sym_uris) {
+        if g_sym_uris[i] == uri {
+            idx = i
+            break
+        }
+        i = i + 1
+    }
+    var names: string = ""
+    var sigs: string = ""
+    // 逐行收集 func/pub func 签名
+    var pos: i64 = 0
+    while pos < len(txt) {
+        var le = pos
+        while le < len(txt) && str_char(txt, le) != "\n" {
+            le = le + 1
+        }
+        var line_t = proto.substr_at(txt, pos, le)
+        var lt = trim_str(line_t)
+        var check = lt
+        if str_find(check, "pub func ") == 0 {
+            check = proto.substr_at(check, len("pub func "), len(check))
+            var nm = id_after(check, 0)
+            if len(nm) > 0 {
+                // 签名行（到行尾）
+                if len(names) > 0 {
+                    names = names + ";"
+                    sigs = sigs + ";"
+                }
+                names = names + nm
+                sigs = sigs + line_t
+            }
+        } else if str_find(check, "func ") == 0 {
+            check = proto.substr_at(check, len("func "), len(check))
+            var nm2 = id_after(check, 0)
+            if len(nm2) > 0 && str_find(nm2, "main") != 0 {
+                if len(names) > 0 {
+                    names = names + ";"
+                    sigs = sigs + ";"
+                }
+                names = names + nm2
+                sigs = sigs + line_t
+            }
+        }
+        pos = le + 1
+    }
+    if idx >= 0 {
+        g_sym_names[idx] = names
+        g_sym_sigs[idx] = sigs
+    } else {
+        table_push(g_sym_uris, uri)
+        table_push(g_sym_names, names)
+        table_push(g_sym_sigs, sigs)
+    }
+}
+
+// 查询某文档中 name 的签名（未找到返回空串）。
+func find_sig(uri: string, name: string) -> string {
+    var idx = -1
+    var i: i64 = 0
+    while i < len(g_sym_uris) {
+        if g_sym_uris[i] == uri {
+            idx = i
+            break
+        }
+        i = i + 1
+    }
+    if idx < 0 {
+        return ""
+    }
+    var names = g_sym_names[idx]
+    var sigs = g_sym_sigs[idx]
+    // 解析分号分隔
+    var nparts = split_semi(names)
+    var sparts = split_semi(sigs)
+    var k: i64 = 0
+    while k < len(nparts) {
+        if nparts[k] == name && k < len(sparts) {
+            return sparts[k]
+        }
+        k = k + 1
+    }
+    return ""
+}
+
+// 按分号切分（空串 → 空表）。
+func split_semi(s: string) -> table<string> {
+    var out = table_new_string()
+    var cur: string = ""
+    var i: i64 = 0
+    while i < len(s) {
+        var c = str_char(s, i)
+        if c == ";" {
+            table_push(out, cur)
+            cur = ""
+        } else {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    table_push(out, cur)
+    return out
+}
+
+// 某位置处的标识符（向前/向后扩展字母数字_）。
+func ident_at(txt: string, off: i64) -> string {
+    if off < 0 || off > len(txt) {
+        return ""
+    }
+    var a = off
+    while a > 0 && is_idchar2(str_char(txt, a - 1)) {
+        a = a - 1
+    }
+    var b = off
+    while b < len(txt) && is_idchar2(str_char(txt, b)) {
+        b = b + 1
+    }
+    if a >= b {
+        return ""
+    }
+    return proto.substr_at(txt, a, b)
+}
+
+// Hover 响应：查符号签名（简单文本，keptHover 第一版）+ 未定义函数诊断 hint。
+func hover_result(uri: string, txt: string, line: i64, character: i64) -> string {
+    var off = pos_to_offset(txt, line, character)
+    var nm = ident_at(txt, off)
+    if len(nm) == 0 {
+        return "null"
+    }
+    var sig = find_sig(uri, nm)
+    if len(sig) > 0 {
+        var contents = "[{\"language\":\"tie\",\"value\":" + proto.json_str(sig) + "}]"
+        return "{\"contents\":" + contents + "}"
+    }
+    return "null"
+}
+
 // ---- 主循环 ----
 
 func main() -> i64 {
@@ -643,6 +789,7 @@ func main() -> i64 {
             var txt = json_field(body, "text")
             if len(uri) > 0 {
                 set_doc(uri, txt)
+                rebuild_syms(uri, txt)
                 var diags = diagnose(txt)
                 publish_diagnostics(uri, diags)
             }
@@ -651,6 +798,7 @@ func main() -> i64 {
             var txt = json_field(body, "text")
             if len(uri) > 0 {
                 set_doc(uri, txt)
+                rebuild_syms(uri, txt)
                 var diags = diagnose(txt)
                 publish_diagnostics(uri, diags)
             }
@@ -660,6 +808,16 @@ func main() -> i64 {
                 remove_doc(uri)
                 publish_diagnostics(uri, "[]")
             }
+        }
+
+        // hover：查文档签名索引
+        else if method == "textDocument/hover" {
+            var uri = json_field(body, "uri")
+            var line = json_field_int(body, "line")
+            var character = json_field_int(body, "character")
+            var txt = get_doc(uri)
+            var hr = hover_result(uri, txt, line, character)
+            proto.write_frame(make_response(resp_id, hr))
         }
 
         // 通用空响应（hover 等首版返回空/null，客户端无副作用）
