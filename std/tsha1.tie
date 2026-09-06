@@ -1040,6 +1040,56 @@ func compress48(model: i64, n: i64, h: ref table<i64>, msg: string, pos: i64, nb
         compress_w8h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
         return
     }
+    if (Wd == 16 || Wd == 17 || Wd == 23 || Wd == 26) && model != 1 {
+        // W>=16 多轨特化（n=88/92/96/128/144）：f 双轨、b 三轨、x 四轨；R 各档
+        if model == 0 {
+            if Wd == 16 {
+                compress_w16(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+            } else if Wd == 17 {
+                compress_w17(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+            } else if Wd == 23 {
+                compress_w23(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+            } else {
+                compress_w26(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+            }
+        } else if model == 2 {
+            if Wd == 16 {
+                compress_w16b(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, 14)
+            } else if Wd == 17 {
+                compress_w17b(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, 14)
+            } else if Wd == 23 {
+                compress_w23b(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, 14)
+            } else {
+                compress_w26b(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, 14)
+            }
+        } else {
+            if Wd == 16 {
+                compress_w16x(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, 16)
+            } else if Wd == 17 {
+                compress_w17x(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, 16)
+            } else if Wd == 23 {
+                compress_w23x(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, 16)
+            } else {
+                compress_w26x(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, 16)
+            }
+        }
+        return
+    }
+    if (Wd == 20 || Wd == 21 || Wd == 22 || Wd == 29 || Wd == 32) && model == 1 {
+        // r 半宽双轨特化（n=88/92/96/128/144 r，rrp16 语义，R=8）
+        if Wd == 20 {
+            compress_w20h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        } else if Wd == 21 {
+            compress_w21h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        } else if Wd == 22 {
+            compress_w22h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        } else if Wd == 29 {
+            compress_w29h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        } else {
+            compress_w32h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        }
+        return
+    }
     if n == 48 {
         if model == 0 {
             compress_w9(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
