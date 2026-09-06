@@ -65,11 +65,11 @@ class TieErrorHandler implements ErrorHandler {
             startupErrorShown = true;
             const detail = this.lastError ? `：${this.lastError}` : '';
             void vscode.window.showErrorMessage(
-                `tie 语言服务器启动失败${detail}。请确认：` +
-                '① 已安装 tie 工具链，且终端中可运行 `tie --lsp`；' +
-                '② 或在工作区设置中把 tie.lsp.command 配置为服务器绝对路径' +
-                '（如 ["F:/Projects/tie/target/debug/tie.exe", "--lsp"]）。' +
-                '详见扩展 README 的「配置」一节。'
+                `tie 语言服务器启动失败${detail}。建议：` +
+                '① 把 tie.lsp.command 设为 ["auto"]（自动探测 vendor/tsp.exe，' +
+                '推荐；旧版 Rust tie 路径已失效）；' +
+                '② 或设为 tsp.exe 绝对路径，如 ["F:/Projects/tie-main/compiler/lsp/tsp.exe"]。' +
+                '修改后请执行「重新加载窗口」。详见扩展 README 的「配置」一节。'
             );
         }
         // 不自动重启（避免崩溃-重启死循环），用户可执行「重新加载窗口」恢复
@@ -93,9 +93,29 @@ function readServerCommand(): string[] {
     const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
     const cmd = cfg.get<string[]>(CONFIG_COMMAND, DEFAULT_COMMAND);
     if (Array.isArray(cmd) && cmd.length > 0 && typeof cmd[0] === 'string' && cmd[0] !== 'auto') {
+        // 显式配置：若首命令是文件路径但不存在（如旧版 Rust tie 路径已失效），
+        // 警告并回退自动探测，避免 spawn ENOENT 启动失败。
+        const fs = require('fs') as typeof import('fs');
+        const looksLikePath = cmd[0].includes('/') || cmd[0].includes('\\') || /^[a-zA-Z]:/.test(cmd[0]);
+        if (looksLikePath) {
+            try {
+                if (!fs.existsSync(cmd[0])) {
+                    outputChannel.appendLine(
+                        `警告：tie.lsp.command 配置的命令不存在（${cmd[0]}），回退自动探测 tsp`
+                    );
+                    return autoDetectServer();
+                }
+            } catch {
+                // 校验异常时继续用显式配置
+            }
+        }
         return cmd.map((c) => String(c));
     }
-    // 自动探测 tsp.exe
+    return autoDetectServer();
+}
+
+/** 自动探测 tsp.exe（扩展 vendor/ → 仓库 compiler/lsp/ → PATH）。 */
+function autoDetectServer(): string[] {
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
     const candidates = [
