@@ -362,6 +362,7 @@ neither continues the other**.
 | \[ ] p.6.9.12 | server.tie：服务端主循环（stdio 循环 + 请求分发 + 增量缓存补偿）+ 生命周期（initialize/shutdown/exit）；`tie --lsp` 入口保留 | initialize/shutdown 往返；错误请求不崩 |
 | \[x] p.6.9.13 | VSCode 客户端接线：现有 TS 客户端（vscode-languageclient）指向 tsp；诊断/hover 联调（第一波：诊断+hover 已通，补全/跳转/引用/重命名/语义高亮后续） | 编辑器实测：诊断/hover 通（lsp\_smoke2/3）；vsix 0.2.0 打包（vendor/tsp.exe 内嵌） |
 | \[ ] p.6.9.14 | 验收与发布：大项目（编译器自身 8 模块）编辑流畅 + 16 能力矩阵 + 零回归 + preview\.6 收尾（README/CHANGELOG/双语文档/已知限制）        | 全 PASS、exit 0、编辑不卡顿           |
+| \[ ] p.6.9.15 | 诊断标号体系：tiec 全部错误/警告挂 C# 式标号（TE#### 错误 / TW#### 警告，按阶段分族，归一化目录 + code\_of 中央注入）+ 新建 `tie-diag` 仓库按标号阐明成因与常见解决方案（警告附「这样写的坏处」）；LSP 诊断后续复用标号（衔接 p.6.9.5） | 编译输出全部带标号（golden 语料 0 回退）；探针 PASS；tie-diag 双语文档仓库推送 |
 
 **内存治理（p.6.10，库层去分配 + 运行时自动回收；tsha1 基准内存爆炸 RCA 后立项）**
 
