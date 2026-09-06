@@ -21,6 +21,34 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "configurationDefaults": {
+      "[tie]": {
+        "editor.tokenColorCustomizations": {
+          "textMateRules": [
+            { "scope": "keyword.control.tie", "settings": { "foreground": "#C586C0" } },
+            { "scope": "keyword.operator.tie", "settings": { "foreground": "#D4D4D4" } },
+            { "scope": "constant.language.tie", "settings": { "foreground": "#569CD6" } },
+            { "scope": "storage.type.tie", "settings": { "foreground": "#4EC9B0" } },
+            { "scope": "entity.name.function.tie", "settings": { "foreground": "#DCDCAA" } },
+            { "scope": "support.function.builtin.tie", "settings": { "foreground": "#4FC1FF" } },
+            { "scope": "support.function.tie", "settings": { "foreground": "#4FC1FF" } },
+            { "scope": "entity.name.namespace.tie", "settings": { "foreground": "#FFD700" } },
+            { "scope": "support.namespace.tie", "settings": { "foreground": "#FFD700" } },
+            { "scope": "entity.name.type.tie", "settings": { "foreground": "#4EC9B0" } },
+            { "scope": "variable.declaration.tie", "settings": { "foreground": "#9CDCFE" } },
+            { "scope": "variable.parameter.tie", "settings": { "foreground": "#9CDCFE" } },
+            { "scope": "variable.other.tie", "settings": { "foreground": "#9CDCFE" } },
+            { "scope": "variable.other.member.tie", "settings": { "foreground": "#C8C8C8" } },
+            { "scope": "variable.other.property.tie", "settings": { "foreground": "#9CDCFE" } },
+            { "scope": "string.quoted.double.tie", "settings": { "foreground": "#CE9178" } },
+            { "scope": "string.quoted.single.tie", "settings": { "foreground": "#CE9178" } },
+            { "scope": "constant.numeric.tie", "settings": { "foreground": "#B5CEA8" } },
+            { "scope": "comment.line.double-slash.tie", "settings": { "foreground": "#6A9955" } },
+            { "scope": "comment.block.tie", "settings": { "foreground": "#6A9955" } }
+          ]
+        }
+      }
+    },
     "grammars": [
       {
         "language": "tie",
