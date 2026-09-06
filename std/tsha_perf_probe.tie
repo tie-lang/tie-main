@@ -1,0 +1,91 @@
+type tie<logic>
+// std/tsha_perf_probe.tie —— tsha1 vs sha256 性能对比探针
+// 测量 1MB 数据的哈希耗时，目标：tsha1f 耗时 ≤ 2× sha256。
+
+import "./tsha1.tie" as tsha
+import "./sha256.tie" as sha
+import "./time.tie" as time
+
+func build_msg(n: i64) -> string {
+    // 生成 n 字节消息（重复模式，避免生成耗时占主导）
+    var chunk = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz!@#$"  // 64 字节
+    var out: string = ""
+    var i: i64 = 0
+    var blocks = n / 64
+    while i < blocks {
+        out = out + chunk
+        i = i + 1
+    }
+    return out
+}
+
+func main() -> i64 {
+    var nbytes: i64 = 1048576  // 1 MiB
+    println("building msg...")
+    var msg = build_msg(nbytes)
+    println("msg len = " + to_string(len(msg)))
+
+    var iters: i64 = 20
+
+    // 预热
+    var _ = tsha.tsha1f("warmup", 48)
+    var _ = sha.sha256("warmup")
+
+    // tsha1f n=48（多次循环放大）
+    var h1: string = ""
+    var t0 = time.now_ms()
+    var i: i64 = 0
+    while i < iters {
+        h1 = tsha.tsha1f(msg, 48)
+        i = i + 1
+    }
+    var t1 = time.now_ms()
+    println("tsha1f n=48 x" + to_string(iters) + ": " + to_string(t1 - t0) + " ms")
+    println("  digest = " + h1)
+
+    // sha256
+    var h2: string = ""
+    var t2 = time.now_ms()
+    i = 0
+    while i < iters {
+        h2 = sha.sha256(msg)
+        i = i + 1
+    }
+    var t3 = time.now_ms()
+    println("sha256 x" + to_string(iters) + ": " + to_string(t3 - t2) + " ms")
+    println("  digest = " + h2)
+
+    // tsha1f n=8（tink v2 用的位长）
+    var h3: string = ""
+    var t4 = time.now_ms()
+    i = 0
+    while i < iters {
+        h3 = tsha.tsha1f(msg, 8)
+        i = i + 1
+    }
+    var t5 = time.now_ms()
+    println("tsha1f n=8 x" + to_string(iters) + ": " + to_string(t5 - t4) + " ms")
+    println("  digest = " + h3)
+
+    // tsha1r n=48
+    var h4: string = ""
+    var t6 = time.now_ms()
+    i = 0
+    while i < iters {
+        h4 = tsha.tsha1r(msg, 48)
+        i = i + 1
+    }
+    var t7 = time.now_ms()
+    println("tsha1r n=48 x" + to_string(iters) + ": " + to_string(t7 - t6) + " ms")
+
+    var ratio = (t1 - t0) * 100 / (t3 - t2 + 1)
+    println("ratio tsha1f/sha256 = " + to_string(ratio) + "%")
+
+    if t1 - t0 <= 2 * (t3 - t2) {
+        println("PERF:PASS tsha1f within 2x of sha256")
+        return 0
+    } else {
+        println("PERF:FAIL tsha1f slower than 2x sha256")
+        return 1
+    }
+}
