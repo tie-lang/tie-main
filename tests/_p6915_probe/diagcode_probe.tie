@@ -1,0 +1,71 @@
+type tie<logic>
+// tests/_p6915_probe/diagcode_probe.tie —— 诊断标号探针（p.6.9.15）
+// ============================================================
+// 校验 compiler/frontend/diagcode.tie + diagcode_cat.gen.tie：
+//   1) normalize 归一化折叠与生成器一致（ASCII 运行 → '%'）；
+//   2) code_of：exact / prefix 命中、无 E0000 回退（覆盖 golden 语料代表消息）；
+//   3) name_of / tail_of：短消息名与「；期望 x；实际 y」切分；
+//   4) render_error / render_err_proto：error[E#####] @行:列: 格式；
+//   5) 警告目录：warn_code_of / render_warning（warning[W#####] + 坏处建议）。
+import "../../compiler/frontend/diagcode.tie"
+import "../../std/string.tie"
+
+var g_fails: i64 = 0
+
+func check(cond: bool, label: string) {
+    if cond {
+        return
+    }
+    g_fails = g_fails + 1
+    println("FAIL: " + label)
+}
+
+func main() {
+    // --- normalize 折叠 ---
+    check(diagcode.normalize("字符串未闭合") == "字符串未闭合", "normalize 保留中文")
+    check(diagcode.normalize("类型不匹配: i64 string") == "类型不匹配%", "normalize 整段 ASCII 折叠")
+    check(diagcode.normalize("调用 'sum' 表参数元素类型不匹配：期望 table<i64>，实际 table<string>") ==
+        "调用%表参数元素类型不匹配：期望%，实际%", "normalize 多插值折叠")
+    check(diagcode.normalize("参数 'b' 缺少默认值：可选参数（带默认值）必须连续排在必选参数之后") ==
+        "参数%缺少默认值：可选参数（带默认值）必须连续排在必选参数之后", "normalize 单插值折叠")
+
+    // --- code_of：exact ---
+    check(diagcode.code_of("字符串未闭合") != "E0000", "code_of 词法消息")
+    check(diagcode.code_of("调用 'sum' 表参数元素类型不匹配：期望 table<i64>，实际 table<string>") != "E0000", "code_of 语义消息")
+    check(diagcode.code_of("参数 'b' 缺少默认值：可选参数（带默认值）必须连续排在必选参数之后") != "E0000", "code_of 默认值消息")
+    check(diagcode.code_of("无法读取导入文件 'no_such.tie'（文件不存在）") != "E0000", "code_of 动态路径（prefix）")
+    check(diagcode.code_of("宏 'm' 展开失败: ERR:1 2 内部错误") != "E0000", "code_of 动态错误尾（prefix）")
+    check(diagcode.code_of("这是一个完全未知的消息 xyz") == "E0000", "code_of 未分类兜底")
+
+    // --- name_of / tail_of ---
+    check(diagcode.name_of("调用 'sum' 表参数元素类型不匹配：期望 table<i64>，实际 table<string>") ==
+        "调用 'sum' 表参数元素类型不匹配", "name_of 语义切分")
+    check(diagcode.name_of("字符串未闭合") == "字符串未闭合", "name_of 整条")
+    check(diagcode.tail_of("调用 'sum' 表参数元素类型不匹配：期望 table<i64>，实际 table<string>") ==
+        "期望 table<i64>；实际 table<string>", "tail_of 期望实际切分")
+
+    // --- render_error / render_err_proto ---
+    var r1 = diagcode.render_error(5, 9, "调用 'sum' 表参数元素类型不匹配：期望 table<i64>，实际 table<string>")
+    println(r1)
+    check(str.contains(r1, "error[E3"), "render_error 含 E3 标号")
+    check(str.contains(r1, "@5:9:"), "render_error 含位置")
+    check(str.contains(r1, "；期望 table<i64>；实际 table<string>。"), "render_error 尾段格式")
+    var r2 = diagcode.render_err_proto("ERR:5 9 调用 'sum' 表参数元素类型不匹配：期望 table<i64>，实际 table<string>")
+    check(str.contains(r2, "error[") && str.contains(r2, "@5:9:"), "render_err_proto 解析位置")
+    println(r2)
+
+    // --- 警告 ---
+    check(diagcode.warn_code_of("循环内字符串拼接累积（x = x + y 逐次整体复制，O(n²)）") == "W0003", "warn_code_of 拼接")
+    check(diagcode.warn_code_of("浮点相等比较（==/!= 对 f64/f32 结果不可靠）") == "W0001", "warn_code_of 浮点")
+    var rw = diagcode.render_warning(12, 5, "循环内字符串拼接累积（x = x + y 逐次整体复制，O(n²)）")
+    println(rw)
+    check(str.contains(rw, "warning[W0003]") && str.contains(rw, "string_builder"), "render_warning 标号+建议")
+    var ru = diagcode.render_warning(3, 1, "未知警告消息")
+    check(str.contains(ru, "W0000"), "render_warning 未知兜底")
+
+    if g_fails == 0 {
+        println("ALL PASS")
+    } else {
+        println("FAILS=" + to_string(g_fails))
+    }
+}

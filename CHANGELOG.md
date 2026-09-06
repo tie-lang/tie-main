@@ -22,6 +22,39 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] p.6.9.15 诊断标号体系：tiec 全部错误/警告挂 C# 式标号 + tie-diag 文档仓库（2026-09-07）
+
+* **标号格式**：`error[E#####] @行:列: 消息名；期望 x；实际 y；提示。` /
+  `warning[W#####] @行:列: 消息名；这样写的坏处与修复建议。`（无标签段直连「；」；
+  消息名 = 首个「期望/实际/提示」之前的短名；无位置时省略 @行:列）。家族：E1 词法 /
+  E2 语法 / E3 语义 / E4 运行时 / E5 CLI配置 / E6 后端IR / E7 REPL / E8 LSP /
+  E9 内部错误与未分类（E0000 兜底）。
+* **中央模块** `compiler/frontend/diagcode.tie`：归一化折叠（ASCII 0x20..0x7E 运行 →
+  '%'，与生成器逐字一致）+ exact/最长前缀双查表；`diagcode_cat.gen.tie`（542 条错误
+  目录）由 `scripts/gen-diagcodes.ps1` 自动扫描生成（含插值消息前缀规则、errors.tie
+  消息表、panic、多行拼接）。
+* **警告（按经验与常见问题新增，每条附坏处说明）**：W0001 浮点相等比较（== 不可靠 →
+  用误差范围）、W0002 整数除法截断（7/2==3）、W0003 循环内字符串拼接累积（O(n²) →
+  string_builder）、W0004 表变量拷贝共享（→ clone）、W0020/21 角色配置/依赖解析失败、
+  W0022/23 角色重复注册/非法 output。
+* **接线**：driver 前端（语法/语义）与角色/配置/后端/参数/文件名等全部错误带标号；
+  语义 OK 协议附带警告段（`;W:l c core|...`）；sinfer 发射 W0001/2、scheck 发射
+  W0003/4（仅循环体内拼接/动态表拷贝，避免误报）。
+* **回归**：`scripts/test-diagcodes.ps1`（golden 74 语料 0 E0000 回退 + 四类警告命中 +
+  diagcode 单元探针 ALL PASS）；tiec 自举二阶不动点（连续两次自编译 sha 一致）；
+  probe_bitcast 等既有探针零回归（NaN 位模式项为平台性既有失败，新旧 tiec 一致）。
+* **新仓库 tie-diag**：双语文档，按标号阐明「如何发生 / 常见解决方案」，警告附
+  「这样写的坏处」；含经验与常见问题总结。
+  EN: p.6.9.15 diagnostic-code scheme — every tiec error/warning now carries a
+  C#-style code (error[E#####] / warning[W#####], family-numbered E1..E9) via a
+  central normalize+lookup module (diagcode.tie + generated 542-entry catalog);
+  messages restructured short (name; expected x; actual y; tip); four
+  experience-based warnings (float ==, int division truncation, O(n²) loop string
+  concat, table var copy sharing) plus role warnings, each with a "why this is
+  bad" tip; driver/interp-frontend wiring; test-diagcodes.ps1 regression gate
+  (golden 0 E0000 fallback, warnings hit, unit probe ALL PASS); stable two-step
+  bootstrap; new bilingual tie-diag docs repo explaining every code.
+
 ## [feat] p.6.11.1 std/tink_v2.tie——帧 v2 协议库（tsha1f 校验 + 分块流 + v1 兼容读）（2026-09-06）
 
 * **std/tink_v2.tie**（namespace tink2，纯函数字节进出）：帧 = magic 0x74 0x6B +

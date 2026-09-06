@@ -28,6 +28,8 @@ import "./config.tie"
 import "./middle/tieir_ser.tie"
 // td→zd 压缩数据子命令（--compress-data）：表字面量 → DFS 平铺 → zd record
 import "./tdzd.tie"
+// p.6.9.15 诊断标号：error[E#####]/warning[W#####] 渲染（driver 打印入口）
+import "./frontend/diagcode.tie"
 
 // 阶段计时探针（性能诊断）：CRT clock()，毫秒精度。
 // 环境变量 TIEC_TIME=1 时输出各阶段耗时（不设则零开销静默）。
@@ -243,10 +245,10 @@ func scan_header(src: string) -> i64 {
                     g_role = g_role_base
                     return 0
                 }
-                println("文件类型声明错误: " + g_role_err + "（第 " + to_string(i + 1) + " 行）")
+                println(diagcode.render_error(-1, -1, "文件类型声明错误: " + g_role_err + "（第 " + to_string(i + 1) + " 行）"))
                 return -1
             }
-            println("文件类型声明错误: 非法声明 '" + ln + "'（第 " + to_string(i + 1) + " 行），应为 `type tie` 或 `type tie<类型>`")
+            println(diagcode.render_error(-1, -1, "文件类型声明错误: 非法声明 '" + ln + "'（第 " + to_string(i + 1) + " 行），应为 `type tie` 或 `type tie<类型>`"))
             return -1
         }
         // 第一个非空非声明行：头部区结束
@@ -334,7 +336,7 @@ func register_role_map(roles: i64) {
         var def = config.map_val(roles, r)
         if config.type_of(def) == 6 {
             if role_registered(str.clone(nm)) {
-                println("[warn] roles: 角色 '" + nm + "' 已注册（内建或前置来源），忽略注册")
+                println(diagcode.render_warning(-1, -1, "角色重复注册，忽略后注册者") + "（角色 '" + nm + "'）")
             } else {
                 // 加载器安全模块：角色定义仅接受 kind/params/output 三个字段，
                 // 其余任何字段（hook/exec/script 等）一律拦截并不生效——包可
@@ -361,7 +363,7 @@ func register_role_map(roles: i64) {
                         out = "lib"
                     }
                     if out != "lib" && out != "check" && out != "exe" && out != "pass" {
-                        println("[warn] roles: 角色 '" + nm + "' 的 output 非法值 '" + out + "'，回退 lib")
+                        println(diagcode.render_warning(-1, -1, "角色 output 非法值，回退 lib") + "（角色 '" + nm + "'，值 '" + out + "'）")
                         out = "lib"
                     }
                     table_push(t_cr_out, out)
@@ -504,7 +506,7 @@ func role_registry_scan_project(src_dir: string) {
         if r1 >= 0 {
             register_role_map(r1)
         } else {
-            println("[warn] roles.data.tie 解析失败: " + config.err_msg())
+            println(diagcode.render_warning(-1, -1, "roles.data.tie 解析失败，使用内置默认角色") + "（" + config.err_msg() + "）")
         }
     }
     // 包级角色（插件化入口）：由 tie.pkg 依赖清单驱动（不列目录——
@@ -537,7 +539,7 @@ func role_registry_scan_project(src_dir: string) {
                         if r2 >= 0 {
                             register_role_map(r2)
                         } else {
-                            println("[warn] 依赖包角色定义解析失败: " + config.err_msg() + "（" + dp + "）")
+                            println(diagcode.render_warning(-1, -1, "依赖包角色定义解析失败，使用内置默认角色") + "（" + config.err_msg() + "）")
                         }
                     }
                 }
@@ -768,7 +770,7 @@ func frontend(src: string, base_dir: string) -> i64 {
     }
     g_t_parse = t0e - t0
     if prc < 0 {
-        println("语法错误 " + err_span(parser.ast_err_protocol()))
+        println(diagcode.render_err_proto(parser.ast_err_protocol()))
         return -1
     }
     unsafe {
@@ -780,10 +782,91 @@ func frontend(src: string, base_dir: string) -> i64 {
     }
     g_t_sem = t1e - t1
     if has_prefix(str.clone(sem), "ERR:") {
-        println("语义错误 " + err_span(sem))
+        println(diagcode.render_err_proto(sem))
         return -1
     }
+    // p.6.9.15：OK 结果中附带语义警告（;W:l c core|...）→ 逐条打印 warning[W#####]
+    print_warns(sem)
     return 0
+}
+
+// 解析语义 OK 协议中的警告段并打印（warning[W#####] @l:c: 名字；建议。）。
+func print_warns(sem: string) -> string {
+    var rest = sem
+    var p = find_str_in(rest, ";W:")
+    while p >= 0 {
+        var head = slice(str.clone(rest), p + 3, str_len(rest))
+        var sp1 = find_char(head, " ")
+        var sp2: i64 = -1
+        var i: i64 = 0
+        if sp1 >= 0 {
+            i = sp1 + 1
+            var hn: i64 = str_len(head)
+            while i < hn {
+                if str_char(head, i) == " " {
+                    sp2 = i
+                    break
+                }
+                i = i + 1
+            }
+        }
+        if sp1 >= 0 && sp2 >= 0 {
+            var line = parse_int_str(slice(str.clone(head), 0, sp1))
+            var col = parse_int_str(slice(str.clone(head), sp1 + 1, sp2))
+            var core = slice(str.clone(head), sp2 + 1, str_len(head))
+            // 消息到下一个 ";W:" 前截断
+            var nx = find_str_in(core, ";W:")
+            if nx >= 0 {
+                core = slice(str.clone(core), 0, nx)
+            }
+            println(diagcode.render_warning(line, col, core))
+        }
+        rest = head
+        p = find_str_in(rest, ";W:")
+    }
+    return ""
+}
+
+// 找字符串中 sub 首次出现位置（字符级）；未找到 -1。
+func find_str_in(s: string, sub: string) -> i64 {
+    var n: i64 = str_len(s)
+    var m: i64 = str_len(sub)
+    if m == 0 {
+        return 0
+    }
+    if m > n {
+        return -1
+    }
+    var i: i64 = 0
+    while i <= n - m {
+        var j: i64 = 0
+        var matched: bool = true
+        while j < m && matched {
+            if str_char(s, i + j) != str_char(sub, j) {
+                matched = false
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 字符串 → i64（警告行/列解析；失败返回 0）。
+func parse_int_str(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < str_len(s) {
+        var b = str_char(s, i)
+        if b >= "0" && b <= "9" {
+            v = v * 10 + (char_code(b) - 48)
+        }
+        i = i + 1
+    }
+    return v
 }
 
 // ERR 协议文本 → "行:列: 消息"（协议 ERR:<line> <col> <msg>）。
@@ -818,7 +901,7 @@ func main() -> i64 {
         return usage()
     }
     if pr < 0 {
-        println("参数错误。输入 tiec --help 查看用法。")
+        println(diagcode.render_error(-1, -1, "参数错误。输入 tiec --help 查看用法。"))
         return 2
     }
     // --lsp：启动 tie 语言服务器（compiler/lsp/tsp.exe，LSP over stdio）。
@@ -841,7 +924,7 @@ func main() -> i64 {
     if str_len(g_dump_irt) > 0 {
         var drc = tieir.read(g_dump_irt)
         if drc != 0 {
-            println("tieir 读取失败: " + tieir.err_msg())
+            println(diagcode.render_error(-1, -1, "tieir 读取失败: " + tieir.err_msg()))
             return 1
         }
         print(tieir.dump_text())
@@ -863,7 +946,7 @@ func main() -> i64 {
             println("[compress-data] " + g_input + " -> " + outp)
             return 0
         }
-        println("[compress-data] 失败: " + tdzd.err_msg())
+        println(diagcode.render_error(-1, -1, "compress-data 失败: " + tdzd.err_msg()))
         return 1
     }
     // zd 二进制预判：xxx.zd.tie 是二进制文件（压缩的 tie:data），人类不可读，
@@ -930,7 +1013,7 @@ func main() -> i64 {
             }
         }
         if str_len(mismatch) > 0 {
-            println("错误: 文件 " + g_input + " 名称声明与头部声明不一致——" + mismatch)
+            println(diagcode.render_error(-1, -1, "文件名与头部角色声明不一致: " + mismatch))
             println("（R3 单一真相原则：文件名与头部都是角色声明源，不一致 = 编译错误）")
             return 1
         }
@@ -977,7 +1060,7 @@ func main() -> i64 {
     // 并做边界检查（表/struct 不跨库）。
     if detect_shared_mode() {
         if g_role != "class" && g_role != "type" {
-            println("错误: 动态库模式（--shared 或输出扩展名 .dll/.so）要求 library 角色（type tie<class> / type tie<type>）")
+            println(diagcode.render_error(-1, -1, "动态库模式错误: 要求 library 角色（type tie<class> / type tie<type>）"))
             return 1
         }
         // 置位 g_shared（.dll/.so 扩展名触发的动态库模式也要让后续分派识别）
@@ -989,7 +1072,7 @@ func main() -> i64 {
     if !g_cfg_loaded {
         g_cfg_root = config.load_merge(g_config_path, g_cli_profile)
         if g_cfg_root < 0 {
-            println("构建配置加载失败: " + config.err_msg())
+            println(diagcode.render_error(-1, -1, "构建配置加载失败: " + config.err_msg()))
             return 1
         }
     }
@@ -1006,7 +1089,7 @@ func main() -> i64 {
         backend = config.get_str(g_cfg_root, "tiec.backend")
     }
     if str_len(backend) > 0 && backend != "win32" {
-        println("[后端] tiec.backend=" + backend + "：该 port 实现尚未接入（win32/LLVM 工具链为当前唯一后端）")
+        println(diagcode.render_error(-1, -1, "后端实现未接入: tiec.backend=" + backend + "（win32/LLVM 工具链为当前唯一后端）"))
         return 1
     }
     return compile_program(clean)
@@ -1115,7 +1198,7 @@ func compile_program(src: string) -> i64 {
     }
     var orc = tc.opt(ir_path, opt_path, level)
     if orc != 0 {
-        println("[中间优化] " + tc_err_msg)
+        println(diagcode.render_error(-1, -1, "中间优化失败: " + tc_err_msg))
         return 1
     }
     // S3.1：target 优先级 CLI --target > 配置 target > 空（本机）
@@ -1147,7 +1230,7 @@ func compile_logic(ir_path: string, opt_path: string, target: string) -> i64 {
     // need_interp = g_used_interp：有 Rust 桥才链 tie_interp.lib
     var bres = tc.link_exe(opt_path, exe_path, target, g_used_interp, g_used_trmlite, g_used_wsock)
     if bres != 0 {
-        println("[后端] " + tc_err_msg)
+        println(diagcode.render_error(-1, -1, "后端失败: " + tc_err_msg))
         return 1
     }
     cleanup(ir_path, opt_path)
@@ -1164,12 +1247,12 @@ func compile_library(ir_path: string, opt_path: string, target: string) -> i64 {
     var obj_path = replace_ext(g_input, "o")
     var crc = tc.compile_object(opt_path, obj_path, target)
     if crc != 0 {
-        println("[后端] " + tc_err_msg)
+        println(diagcode.render_error(-1, -1, "后端失败: " + tc_err_msg))
         return 1
     }
     var arc = tc.archive(obj_path, lib_path)
     if arc != 0 {
-        println("[后端] " + tc_err_msg)
+        println(diagcode.render_error(-1, -1, "后端失败: " + tc_err_msg))
         return 1
     }
     cleanup(ir_path, opt_path)
@@ -1192,7 +1275,7 @@ func compile_shared(ir_path: string, opt_path: string, target: string) -> i64 {
     }
     var src = tc.link_shared(opt_path, dll_path, target, g_used_interp, g_used_wsock)
     if src != 0 {
-        println("[后端] " + tc_err_msg)
+        println(diagcode.render_error(-1, -1, "后端失败: " + tc_err_msg))
         return 1
     }
     cleanup(ir_path, opt_path)

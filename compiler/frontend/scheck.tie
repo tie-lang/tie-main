@@ -712,8 +712,33 @@ pub func check_stmt(s: i64) -> i64 {
                 return -1
             }
         }
-        // 复合赋值校验（对齐 Rust check_compound_assign，M4）：op >= 0 为复合
+        // p.6.9.15 警告 W0003：循环内字符串拼接累积（+= 或 x = x + y）。
+        // 仅限循环体内（len(lp_stack) > 0）——单次拼接无 O(n²) 风险。
         var op = s_vals[s]
+        if op >= 0 {
+            if op == 0 && target_ty == TK_STR && len(lp_stack) > 0 {
+                sm_warn_add(s_lines[s], s_cols[s], "循环内字符串拼接累积（x = x + y 逐次整体复制，O(n²)）")
+            }
+        } else {
+            if target_ty == TK_STR && len(lp_stack) > 0 {
+                var rn = sstate.child(s, 0)
+                if s_tags[rn] == S_N_BINARY && s_vals[rn] == 0 {
+                    var c0 = sstate.child(rn, 0)
+                    var c1 = sstate.child(rn, 1)
+                    var self_ref: bool = false
+                    if s_tags[c0] == S_N_VAR && sstate.name_str(c0) == nm {
+                        self_ref = true
+                    }
+                    if s_tags[c1] == S_N_VAR && sstate.name_str(c1) == nm {
+                        self_ref = true
+                    }
+                    if self_ref {
+                        sm_warn_add(s_lines[s], s_cols[s], "循环内字符串拼接累积（x = x + y 逐次整体复制，O(n²)）")
+                    }
+                }
+            }
+        }
+        // 复合赋值校验（对齐 Rust check_compound_assign，M4）：op >= 0 为复合
         if op >= 0 {
             // `+=` 对 string：value 必须 string（拼接）
             if op == 0 && target_ty == TK_STR {
@@ -1282,6 +1307,10 @@ pub func check_var_decl(s: i64) -> i64 {
                     if sinfer.var_dyn(inid) == 1 {
                         dyn = 1
                     }
+                    // p.6.9.15 警告 W0004：`var b = a` 拷贝动态表变量 → 引用共享
+                    if iname != nm && sinfer.var_dyn(inid) == 1 {
+                        sm_warn_add(s_lines[s], s_cols[s], "表变量拷贝共享底层数组（var b = a 后 b 的修改会反映到 a）")
+                    }
                 }
             } else {
                 var te3 = types.table_elem(ty)
@@ -1367,6 +1396,14 @@ pub func check_var_decl(s: i64) -> i64 {
         }
         if s_tags[init] != S_N_TABLE_LIT {
             dyn2 = 1
+        }
+        // p.6.9.15 警告 W0004（无标注路径）：`var b = a` 拷贝动态表变量 → 引用共享
+        if s_tags[init] == S_N_VAR && types.is_table(it2) {
+            var iname2 = sstate.name_str(init)
+            var inid2 = intern.intern(iname2)
+            if iname2 != nm && sinfer.var_dyn(inid2) == 1 {
+                sm_warn_add(s_lines[s], s_cols[s], "表变量拷贝共享底层数组（var b = a 后 b 的修改会反映到 a）")
+            }
         }
     }
     sinfer.lv_insert(nid, it2, is_const, telem2, dyn2)

@@ -47,6 +47,41 @@ var sm_t_gen: i64 = 0
 var sm_t_flds: i64 = 0
 var sm_t_fns: i64 = 0
 
+// ---------- 警告通道（p.6.9.15 诊断标号体系） ----------
+// 语义检查期间的警告平行收集（错误仍走 sm_err_* 单条；警告可多条）：
+// 检查结束并入 OK 协议返回（sm_ok_protocol），driver 打印 warning[W#####]。
+// 每函数检查前不重置（一个文件编译内跨函数累积），check_impl/check_ast
+// 入口统一清零（sm_warn_reset）。
+var sm_warn_lines: table<i64>;   // 警告行（平行表）
+var sm_warn_cols: table<i64>;
+var sm_warn_msgs: table<string>; // 警告核心消息（与 diagcode 警告目录逐字一致）
+
+// 清空警告通道（每次语义检查入口调用）。
+pub func sm_warn_reset() {
+    sm_warn_lines = table_new_i64()
+    sm_warn_cols = table_new_i64()
+    sm_warn_msgs = table_new_string()
+}
+
+// 登记一条警告（line/col + 核心消息；核心消息由 diagcode 目录精确匹配）。
+pub func sm_warn_add(line: i64, col: i64, msg: string) {
+    table_push(sm_warn_lines, line)
+    table_push(sm_warn_cols, col)
+    table_push(sm_warn_msgs, msg)
+}
+
+// OK 协议组装："OK:<typed>" + （有警告时）";W:<l> <c> <msg>|W:<l> <c> <msg>"。
+pub func sm_ok_protocol() -> string {
+    var out = "OK:" + to_string(g_typed)
+    var i: i64 = 0
+    while i < len(sm_warn_msgs) {
+        out = out + ";W:" + to_string(sm_warn_lines[i]) + " " +
+            to_string(sm_warn_cols[i]) + " " + sm_warn_msgs[i]
+        i = i + 1
+    }
+    return out
+}
+
 namespace semantic {
 
 // 路径目录：返回最后一个 '/' 之前的子串（含 '/'）；无 '/' 返回 ""。
@@ -447,6 +482,7 @@ pub func check_impl(ast_text: string, base_dir: string) -> string {
     g_curfn = -1
     g_typed = 0
     sm_err_msg = ""
+    sm_warn_reset()
     // 泛型模板登记表重置（gt_*，T3b 单态化展开器预置；每次编译清零）
     gty_keys = table_new_i64()
     gty_vals = table_new_i64()
@@ -617,7 +653,7 @@ pub func check_impl(ast_text: string, base_dir: string) -> string {
     if rc < 0 {
         return "ERR:" + to_string(sm_err_line) + " " + to_string(sm_err_col) + " " + sm_err_msg
     }
-    return "OK:" + to_string(g_typed)
+    return sm_ok_protocol()
 }
 
 // 内存版 check 核心（T5.3 消除 AST 文本协议往返；前置条件：
@@ -697,6 +733,7 @@ pub func check_ast(base_dir: string) -> string {
     g_curfn = -1
     g_typed = 0
     sm_err_msg = ""
+    sm_warn_reset()
     // 泛型模板登记表重置（gt_*，T3b 单态化展开器预置；每次编译清零）
     gty_keys = table_new_i64()
     gty_vals = table_new_i64()
@@ -909,7 +946,7 @@ pub func check_ast(base_dir: string) -> string {
             "ms impl=" + to_string(sm_t_impl) + "ms generics=" + to_string(sm_t_gen) +
             "ms fields=" + to_string(sm_t_flds) + "ms fns=" + to_string(sm_t_fns) + "ms")
     }
-    return "OK:" + to_string(g_typed)
+    return sm_ok_protocol()
 }
 
 // ==================== 内存版 AST 表复制（T5.3 消除协议往返）====================
