@@ -1,0 +1,112 @@
+type tie<logic>
+// std/tink_enc_probe.tie —— p.6.11.4 加密位接线探针
+// 覆盖：x25519 握手共享密钥一致、加密→解密往返、篡改密文拒绝、错误密钥拒绝、
+//       非加密帧拒绝、ENC_ALGO 编解码。
+// 每项 PASS 打 `enc:<name>:OK`；失败 `enc:<name>:FAIL` 并置返回码 1。
+// 全部 PASS 打印 `enc:ALL:PASS` 且 exit 0。
+
+import "./tink_v2.tie" as t2
+
+var g_rc: i64 = 0
+
+func expect(cond: bool, name: string) {
+    if !cond {
+        println("enc:" + name + ":FAIL")
+        g_rc = 1
+    } else {
+        println("enc:" + name + ":OK")
+    }
+}
+
+func ascii(s: string) -> table<i64> {
+    var o = table_new_i64()
+    var i: i64 = 0
+    while i < str_len(s) {
+        table_push(o, char_code(str_char(s, i)))
+        i = i + 1
+    }
+    return o
+}
+
+func eqbytes(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) { return false }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+func main() -> i64 {
+    // 两个 32 字节 seed（64 hex 字符）
+    var seedA = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    var seedB = "09182736455463728190a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6"
+
+    // ---- 1) x25519 握手：A/B 共享密钥一致 ----
+    var (pkA, pkB, sharedA) = t2.handshake(seedA, seedB)
+    // B 侧独立计算共享密钥（交换 seed 参数，第三返回值即 B 侧共享）
+    var (pkB2, pkA2, sharedB) = t2.handshake(seedB, seedA)
+    expect(sharedA == sharedB, "handshake_shared_equal")
+    expect(str_len(sharedA) == 64, "shared_32bytes")
+
+    // ---- 2) 加密→解密往返（任意字节含 0x00/0xFF） ----
+    var pt = table_new_i64()
+    table_push(pt, 0x00)
+    table_push(pt, 0xFF)
+    table_push(pt, 0x41)
+    table_push(pt, 0x42)
+    table_push(pt, 0x43)
+    table_push(pt, 0x00)
+    table_push(pt, 0xFF)
+    var encFrame = t2.encrypt_frame(pt, sharedA, 1)
+    var (ok, fl, el, pl, ex, iok, np) = t2.frame_next(encFrame, 0)
+    expect(ok == 1 && iok == 1 && (fl & 4) != 0, "encrypted_flag")
+    var (dok, dpt) = t2.decrypt_frame(encFrame, sharedA)
+    expect(dok == 1 && eqbytes(dpt, pt), "roundtrip")
+
+    // ---- 3) 篡改密文 → tag 校验失败 ----
+    var tampered = table_new_i64()
+    var ti: i64 = 0
+    while ti < len(encFrame) { table_push(tampered, encFrame[ti]); ti = ti + 1 }
+    tampered[20] = (tampered[20] + 1) & 0xFF  // 篡改密文区
+    var (tok, tpt) = t2.decrypt_frame(tampered, sharedA)
+    expect(tok == 0, "tamper_rejected")
+
+    // ---- 4) 错误密钥 → 解密失败 ----
+    var seedC = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    var (pkC1, pkC2, sharedC) = t2.handshake(seedC, seedA)
+    var (cok, cpt) = t2.decrypt_frame(encFrame, sharedC)
+    expect(cok == 0, "wrong_key_rejected")
+
+    // ---- 5) 非加密帧 → decrypt_frame 返回 ok=0 ----
+    var plainFrame = t2.frame_encode(pt, 0, table_new_i64())
+    var (pok, ppt) = t2.decrypt_frame(plainFrame, sharedA)
+    expect(pok == 0, "plain_frame_rejected")
+
+    // ---- 6) ENC_ALGO 编解码 ----
+    var np = table_new_i64()
+    table_push(np, 0x11)
+    table_push(np, 0x22)
+    table_push(np, 0x33)
+    var encAlgoTlv = t2.enc_algo_tlv(0, np)
+    var extForAlgo = encAlgoTlv
+    var (aok, aid, nprefix) = t2.enc_algo_decode(extForAlgo)
+    expect(aok == 1 && aid == 0 && len(nprefix) == 3 && nprefix[0] == 0x11 && nprefix[1] == 0x22 && nprefix[2] == 0x33, "enc_algo_codec")
+
+    // ---- 7) 大载荷加密往返（>16 字节，验证 keystream 循环） ----
+    var bigPt = table_new_i64()
+    var bi: i64 = 0
+    while bi < 100 { table_push(bigPt, (bi * 3) & 0xFF); bi = bi + 1 }
+    var bigEnc = t2.encrypt_frame(bigPt, sharedA, 2)
+    var (bok, bpt) = t2.decrypt_frame(bigEnc, sharedA)
+    expect(bok == 1 && eqbytes(bpt, bigPt), "big_roundtrip")
+
+    // ---- 收尾 ----
+    if g_rc == 0 {
+        println("enc:ALL:PASS")
+    } else {
+        println("enc:ALL:FAIL")
+    }
+    return g_rc
+}

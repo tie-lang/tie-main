@@ -1,0 +1,160 @@
+type tie<logic>
+// std/tink_zrpc_probe.tie —— p.6.11.3 zrpc 信封 + 可靠传输探针
+// 覆盖：CALL/REPLY 往返、错误回传、ACK 序号、PING/PONG、EXT_META 编解码、
+//       未知 ext key 前置于 EXT_META 仍能解析、可靠传输（丢帧→超时重传→重组）。
+// 每项 PASS 打 `zrpc:<name>:OK`；失败 `zrpc:<name>:FAIL` 并置返回码 1。
+// 全部 PASS 打印 `zrpc:ALL:PASS` 且 exit 0。
+
+import "./tink_v2.tie" as t2
+
+var g_rc: i64 = 0
+
+func expect(cond: bool, name: string) {
+    if !cond {
+        println("zrpc:" + name + ":FAIL")
+        g_rc = 1
+    } else {
+        println("zrpc:" + name + ":OK")
+    }
+}
+
+func ascii(s: string) -> table<i64> {
+    var o = table_new_i64()
+    var i: i64 = 0
+    while i < str_len(s) {
+        table_push(o, char_code(str_char(s, i)))
+        i = i + 1
+    }
+    return o
+}
+
+func eqbytes(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) { return false }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+func main() -> i64 {
+    // ---- 1) CALL→REPLY 往返：req_id 配对、payload 一致、error_code=0 ----
+    var callPayload = ascii("call-args")
+    var callFrame = t2.zrpc_call_frame(callPayload, 42, 0)
+    var (ok1, fl1, el1, pl1, ex1, iok1, np1) = t2.frame_next(callFrame, 0)
+    var (mok1, op1, rid1, sid1, ec1) = t2.zrpc_meta_decode(ex1)
+    expect(ok1 == 1 && iok1 == 1 && mok1 == 1 && op1 == 0 && rid1 == 42 && sid1 == 0 && ec1 == 0, "call_meta")
+    expect(eqbytes(pl1, callPayload), "call_payload")
+
+    var replyPayload = ascii("reply-result")
+    var replyFrame = t2.zrpc_reply_frame(replyPayload, 42, 0, 0)
+    var (ok2, fl2, el2, pl2, ex2, iok2, np2) = t2.frame_next(replyFrame, 0)
+    var (mok2, op2, rid2, sid2, ec2) = t2.zrpc_meta_decode(ex2)
+    expect(ok2 == 1 && iok2 == 1 && mok2 == 1 && op2 == 1 && rid2 == 42 && sid2 == 0 && ec2 == 0, "reply_meta")
+    expect(eqbytes(pl2, replyPayload), "reply_payload")
+    expect(rid1 == rid2, "req_id_match")
+
+    // ---- 2) 错误回传：REPLY error_code != 0 ----
+    var errFrame = t2.zrpc_reply_frame(table_new_i64(), 42, 0, 1001)
+    var (ok3, fl3, el3, pl3, ex3, iok3, np3) = t2.frame_next(errFrame, 0)
+    var (mok3, op3, rid3, sid3, ec3) = t2.zrpc_meta_decode(ex3)
+    expect(mok3 == 1 && op3 == 1 && rid3 == 42 && ec3 == 1001, "reply_error")
+
+    // ---- 3) ACK 帧：ack_seq 解析 ----
+    var ackFrame = t2.zrpc_ack_frame(42, 7)
+    var (ok4, fl4, el4, pl4, ex4, iok4, np4) = t2.frame_next(ackFrame, 0)
+    var (mok4, op4, rid4, sid4, ec4) = t2.zrpc_meta_decode(ex4)
+    expect(ok4 == 1 && mok4 == 1 && op4 == 2 && rid4 == 42, "ack_meta")
+    expect(t2.zrpc_ack_seq(pl4) == 7, "ack_seq")
+
+    // ---- 4) PING/PONG ----
+    var pingFrame = t2.zrpc_ping_frame(99)
+    var (ok5, fl5, el5, pl5, ex5, iok5, np5) = t2.frame_next(pingFrame, 0)
+    var (mok5, op5, rid5, sid5, ec5) = t2.zrpc_meta_decode(ex5)
+    expect(mok5 == 1 && op5 == 3 && rid5 == 99, "ping_meta")
+    var pongFrame = t2.zrpc_pong_frame(99)
+    var (ok6, fl6, el6, pl6, ex6, iok6, np6) = t2.frame_next(pongFrame, 0)
+    var (mok6, op6, rid6, sid6, ec6) = t2.zrpc_meta_decode(ex6)
+    expect(mok6 == 1 && op6 == 4 && rid6 == 99, "pong_meta")
+
+    // ---- 5) 未知 ext key 前置于 EXT_META 仍能解析 ----
+    // key=1234(8字节值) + key=9(EXT_META 15字节)
+    var v1234 = table_new_i64()
+    var vk: i64 = 1
+    while vk <= 8 { table_push(v1234, vk); vk = vk + 1 }
+    var extMixed = t2.ext_tlv(1234, v1234)
+    var metaTlv = t2.zrpc_meta_tlv(0, 777, 3, 0)
+    // 拼接两个 TLV
+    var extCombined = table_new_i64()
+    var ci: i64 = 0
+    while ci < len(extMixed) { table_push(extCombined, extMixed[ci]); ci = ci + 1 }
+    ci = 0
+    while ci < len(metaTlv) { table_push(extCombined, metaTlv[ci]); ci = ci + 1 }
+    var mixedFrame = t2.frame_encode(ascii("x"), 1, extCombined)  // 强档触发 ext 解析
+    var (ok7, fl7, el7, pl7, ex7, iok7, np7) = t2.frame_next(mixedFrame, 0)
+    var (mok7, op7, rid7, sid7, ec7) = t2.zrpc_meta_decode(ex7)
+    expect(ok7 == 1 && iok7 == 1 && mok7 == 1 && rid7 == 777 && sid7 == 3, "ext_skip_before_meta")
+
+    // ---- 6) 可靠传输：丢帧→超时重传→ACK 确认→重组 ----
+    // 发送 4 块（seq 0..3），模拟丢 seq=1，重传后 ACK 确认，重组与原始一致
+    var original = ascii("reliable-stream-data-0123456789")
+    var framesBytes = t2.stream_split(original, 8, 1)  // 4 块（8字节一块）
+    // 逐帧解析取出每帧，丢弃 seq=1
+    var kept = table_new_i64()  // 保留的帧字节拼接
+    var pos: i64 = 0
+    var frameIdx: i64 = 0
+    var droppedSeq: i64 = -1
+    while pos < len(framesBytes) {
+        var (fok, ffl, fel, fpl, fext, fiok, fnpos) = t2.frame_next(framesBytes, pos)
+        if fok == 0 { break }
+        var sq = t2.ext_u64(fext, 6)  // STREAM_SEQ
+        if sq == 1 {
+            droppedSeq = 1  // 丢弃 seq=1
+        } else {
+            var j: i64 = pos
+            while j < fnpos { table_push(kept, framesBytes[j]); j = j + 1 }
+        }
+        pos = fnpos
+        frameIdx = frameIdx + 1
+    }
+    expect(droppedSeq == 1, "drop_frame")
+    // 接收端先收到 0,2,3（乱序缺 1），stream_join 应返回空（丢帧报告）
+    var partial = t2.stream_join(kept)
+    expect(len(partial) == 0, "join_reports_loss")
+    // 重传 seq=1 帧，拼回 kept，再 join 应还原
+    // 从原始 framesBytes 取出 seq=1 帧
+    var pos2: i64 = 0
+    var retransFrame = table_new_i64()
+    while pos2 < len(framesBytes) {
+        var (fok2, ffl2, fel2, fpl2, fext2, fiok2, fnpos2) = t2.frame_next(framesBytes, pos2)
+        if fok2 == 0 { break }
+        var sq2 = t2.ext_u64(fext2, 6)
+        if sq2 == 1 {
+            var j: i64 = pos2
+            while j < fnpos2 { table_push(retransFrame, framesBytes[j]); j = j + 1 }
+            break
+        }
+        pos2 = fnpos2
+    }
+    // 把重传帧追加到 kept 末尾（模拟到达）
+    var full = table_new_i64()
+    var fi: i64 = 0
+    while fi < len(kept) { table_push(full, kept[fi]); fi = fi + 1 }
+    fi = 0
+    while fi < len(retransFrame) { table_push(full, retransFrame[fi]); fi = fi + 1 }
+    var rejoined = t2.stream_join(full)
+    expect(eqbytes(rejoined, original), "retrans_rejoin")
+    // ACK 确认 ack_seq=3（全部确认）
+    var ackAll = t2.zrpc_ack_frame(1, 3)
+    var (okA, flA, elA, plA, exA, iokA, npA) = t2.frame_next(ackAll, 0)
+    expect(t2.zrpc_ack_seq(plA) == 3, "ack_all_confirmed")
+
+    // ---- 收尾 ----
+    if g_rc == 0 {
+        println("zrpc:ALL:PASS")
+    } else {
+        println("zrpc:ALL:FAIL")
+    }
+    return g_rc
+}

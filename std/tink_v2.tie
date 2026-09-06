@@ -29,6 +29,9 @@ type tie<class>
 import "./bytes.tie" as bytes
 import "./tsha1.tie" as tsha
 import "./tink.tie" as tink
+import "./x25519.tie" as x25519
+import "./hkdf.tie" as hkdf
+import "./ascon_mac.tie" as ascon
 
 namespace tink2 {
 
@@ -204,7 +207,7 @@ func ext_u32(ext: table<i64>, key: i64) -> i64 {
     return -1
 }
 
-func ext_u64(ext: table<i64>, key: i64) -> i64 {
+pub func ext_u64(ext: table<i64>, key: i64) -> i64 {
     var p: i64 = 0
     var n = len(ext)
     while p + 4 <= n {
@@ -526,6 +529,262 @@ pub func stream_join(frames: table<i64>) -> table<i64> {
         return empty  // 总长不符
     }
     return out
+}
+
+// ---------- zrpc 信封（EXT_META key=9）----------
+// 设计见 tink-v2-design.md §7：以 EXT_META 携带调用契约，支撑请求/响应匹配、
+// 错误回传、流式与双向调用，为形态 B（hub）铺路。
+// EXT_META value 固定 15 字节：[op u8][req_id u64 BE][stream_id u32 BE][error_code u16 BE]
+//   op：0=CALL 1=REPLY 2=ACK 3=PING 4=PONG
+//   req_id：请求-响应对 ID（CALL/REPLY/ACK 配对；PING/PONG 可复用）
+//   stream_id：流式调用的流 ID（0=非流式）
+//   error_code：0=成功，非零为错误码（REPLY 用）
+
+pub func zrpc_op_call() -> i64 { return 0 }
+pub func zrpc_op_reply() -> i64 { return 1 }
+pub func zrpc_op_ack() -> i64 { return 2 }
+pub func zrpc_op_ping() -> i64 { return 3 }
+pub func zrpc_op_pong() -> i64 { return 4 }
+
+// 构建 EXT_META 的 value（15 字节，不含 TLV 头）
+func zrpc_meta_value(op: i64, req_id: i64, stream_id: i64, error_code: i64) -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, op & 0xFF)
+    var r = u64be(req_id)
+    var i: i64 = 0
+    while i < 8 { table_push(t, r[i]); i = i + 1 }
+    var sid = u32be(stream_id)
+    i = 0
+    while i < 4 { table_push(t, sid[i]); i = i + 1 }
+    var ec = u16be(error_code)
+    table_push(t, ec[0])
+    table_push(t, ec[1])
+    return t
+}
+
+// 构建完整 EXT_META TLV（key=9）
+pub func zrpc_meta_tlv(op: i64, req_id: i64, stream_id: i64, error_code: i64) -> table<i64> {
+    return ext_tlv(9, zrpc_meta_value(op, req_id, stream_id, error_code))
+}
+
+// 从 ext 中解析 EXT_META → (ok, op, req_id, stream_id, error_code)；ok=0 表示缺失/格式坏
+pub func zrpc_meta_decode(ext: table<i64>) -> (i64, i64, i64, i64, i64) {
+    var p: i64 = 0
+    var n = len(ext)
+    while p + 4 <= n {
+        var k = u16rd(ext, p)
+        var vl = u16rd(ext, p + 2)
+        if p + 4 + vl > n {
+            return (0, 0, 0, 0, 0)
+        }
+        if k == 9 {
+            if vl != 15 {
+                return (0, 0, 0, 0, 0)
+            }
+            var op = ext[p + 4] & 0xFF
+            var req_id = u64rd(ext, p + 5)
+            var stream_id = u32rd(ext, p + 13)
+            var error_code = u16rd(ext, p + 17)
+            return (1, op, req_id, stream_id, error_code)
+        }
+        p = p + 4 + vl
+    }
+    return (0, 0, 0, 0, 0)
+}
+
+// 构建 CALL 帧：op=CALL，payload 为调用参数（zd 字节），stream_id=0 非流式
+pub func zrpc_call_frame(payload: table<i64>, req_id: i64, stream_id: i64) -> table<i64> {
+    var ext = zrpc_meta_tlv(0, req_id, stream_id, 0)
+    return frame_encode(payload, 0, ext)
+}
+
+// 构建 REPLY 帧：op=REPLY，payload 为返回值（zd 字节），error_code=0 成功
+pub func zrpc_reply_frame(payload: table<i64>, req_id: i64, stream_id: i64, error_code: i64) -> table<i64> {
+    var ext = zrpc_meta_tlv(1, req_id, stream_id, error_code)
+    return frame_encode(payload, 0, ext)
+}
+
+// 构建 ACK 帧：op=ACK，payload=[ack_seq u64 BE]（已确认的最大连续序号）
+pub func zrpc_ack_frame(req_id: i64, ack_seq: i64) -> table<i64> {
+    var ext = zrpc_meta_tlv(2, req_id, 0, 0)
+    var p = u64be(ack_seq)
+    return frame_encode(p, 0, ext)
+}
+
+// 构建 PING 帧：op=PING，payload 为空或携带时间戳
+pub func zrpc_ping_frame(req_id: i64) -> table<i64> {
+    var ext = zrpc_meta_tlv(3, req_id, 0, 0)
+    return frame_encode(table_new_i64(), 0, ext)
+}
+
+// 构建 PONG 帧：op=PONG，对应 PING 的 req_id
+pub func zrpc_pong_frame(req_id: i64) -> table<i64> {
+    var ext = zrpc_meta_tlv(4, req_id, 0, 0)
+    return frame_encode(table_new_i64(), 0, ext)
+}
+
+// 从 ACK 帧的 payload 解析 ack_seq
+pub func zrpc_ack_seq(payload: table<i64>) -> i64 {
+    if len(payload) < 8 { return -1 }
+    return u64rd(payload, 0)
+}
+
+// ---------- 加密位（flags.ENCRYPTED bit2 + ENC_ALGO key=4）----------
+// 设计见 tink-v2-design.md §3.1/§3.2/§7：flags bit2=ENCRYPTED，
+// ENC_ALGO(key=4) value = [algo_id u8][nonce_prefix 3B]；
+// AEAD 方案 algo_id=0：ascon_mac128 + HKDF（XOR-OTR 流密码 + MAC 认证）。
+// 密钥派生：sym_key(16B) = HKDF(shared_x25519, info="tink-v2-aead", 16)
+// 加密载荷 = [nonce 12B][ciphertext][tag 16B]
+//   keystream = ascon_mac128(sym_key, nonce_str) 重复；ciphertext = pt XOR keystream
+//   tag = ascon_mac128(sym_key, ciphertext)
+// 解密：验 tag → XOR keystream 还原。篡改/密钥错 → ok=0。
+
+pub func enc_algo_ascon() -> i64 { return 0 }
+
+// 构建 ENC_ALGO TLV（key=4）：algo_id u8 + nonce_prefix 3B
+pub func enc_algo_tlv(algo_id: i64, nonce_prefix: table<i64>) -> table<i64> {
+    var v = table_new_i64()
+    table_push(v, algo_id & 0xFF)
+    var i: i64 = 0
+    while i < 3 {
+        if i < len(nonce_prefix) { table_push(v, nonce_prefix[i] & 0xFF) }
+        else { table_push(v, 0) }
+        i = i + 1
+    }
+    return ext_tlv(4, v)
+}
+
+// 从 ext 解析 ENC_ALGO → (ok, algo_id, nonce_prefix[3])
+pub func enc_algo_decode(ext: table<i64>) -> (i64, i64, table<i64>) {
+    var p: i64 = 0
+    var n = len(ext)
+    var empty = table_new_i64()
+    while p + 4 <= n {
+        var k = u16rd(ext, p)
+        var vl = u16rd(ext, p + 2)
+        if p + 4 + vl > n { return (0, 0, empty) }
+        if k == 4 {
+            if vl != 4 { return (0, 0, empty) }
+            var aid = ext[p + 4] & 0xFF
+            var np = table_new_i64()
+            table_push(np, ext[p + 5] & 0xFF)
+            table_push(np, ext[p + 6] & 0xFF)
+            table_push(np, ext[p + 7] & 0xFF)
+            return (1, aid, np)
+        }
+        p = p + 4 + vl
+    }
+    return (0, 0, empty)
+}
+
+// 从 x25519 共享密钥派生 16 字节对称密钥（hex 串，32 字符）
+func derive_sym_key(shared_hex: string) -> string {
+    return hkdf.derive("", shared_hex, "tink-v2-aead", 16)
+}
+
+// 生成 12 字节 nonce（基于帧序号 + 随机扰动；第一版用序号确定性生成便于探针）
+func make_nonce(seq: i64) -> table<i64> {
+    var n = table_new_i64()
+    var b = u64be(seq)
+    var i: i64 = 0
+    while i < 8 { table_push(n, b[i]); i = i + 1 }
+    table_push(n, 0x74)
+    table_push(n, 0x6B)
+    table_push(n, 0x02)
+    table_push(n, 0x00)
+    return n
+}
+
+// 加密载荷：pt 字节表 → [nonce 12B][ciphertext][tag 16B]
+func encrypt_payload(pt: table<i64>, sym_key_hex: string, seq: i64) -> table<i64> {
+    var nonce = make_nonce(seq)
+    var nonce_str = payload_str(nonce)
+    var ks_hex = ascon.ascon_mac128(sym_key_hex, nonce_str)  // 16B keystream
+    var ks = hexstr_bytes(ks_hex)
+    var klen = len(ks)
+    var ct = table_new_i64()
+    var n = len(pt)
+    var i: i64 = 0
+    while i < n {
+        table_push(ct, (pt[i] & 0xFF) ^ (ks[i % klen] & 0xFF))
+        i = i + 1
+    }
+    var ct_str = payload_str(ct)
+    var tag_hex = ascon.ascon_mac128(sym_key_hex, ct_str)
+    var tag = hexstr_bytes(tag_hex)
+    var out = bytes.concat(nonce, ct)
+    return bytes.concat(out, tag)
+}
+
+// 解密载荷：[nonce 12B][ciphertext][tag 16B] → (ok, plaintext)
+func decrypt_payload(enc: table<i64>, sym_key_hex: string) -> (i64, table<i64>) {
+    var empty = table_new_i64()
+    var nb = len(enc)
+    if nb < 28 { return (0, empty) }  // 12 nonce + 0 ct + 16 tag
+    var nonce = slice(enc, 0, 12)
+    var ct = slice(enc, 12, nb - 16)
+    var tag = slice(enc, nb - 16, nb)
+    var ct_str = payload_str(ct)
+    var expect_tag_hex = ascon.ascon_mac128(sym_key_hex, ct_str)
+    var expect_tag = hexstr_bytes(expect_tag_hex)
+    if !eqbytes_internal(expect_tag, tag) {
+        return (0, empty)
+    }
+    var nonce_str = payload_str(nonce)
+    var ks_hex = ascon.ascon_mac128(sym_key_hex, nonce_str)
+    var ks = hexstr_bytes(ks_hex)
+    var klen = len(ks)
+    var pt = table_new_i64()
+    var n = len(ct)
+    var i: i64 = 0
+    while i < n {
+        table_push(pt, (ct[i] & 0xFF) ^ (ks[i % klen] & 0xFF))
+        i = i + 1
+    }
+    return (1, pt)
+}
+
+// 内部字节表相等（不导出，与探针的 eqbytes 独立）
+func eqbytes_internal(a: table<i64>, b: table<i64>) -> bool {
+    if len(a) != len(b) { return false }
+    var i: i64 = 0
+    while i < len(a) {
+        if a[i] != b[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// 构建加密帧：明文 payload → flags.ENCRYPTED=1 的 v2 帧
+// shared_hex = x25519 共享密钥（64 hex）；seq = 帧序号（nonce 派生用）
+pub func encrypt_frame(pt: table<i64>, shared_hex: string, seq: i64) -> table<i64> {
+    var sym_key = derive_sym_key(shared_hex)
+    var enc = encrypt_payload(pt, sym_key, seq)
+    var nonce_prefix = slice(make_nonce(seq), 0, 3)
+    var ext = enc_algo_tlv(0, nonce_prefix)
+    return frame_encode(enc, 4, ext)  // flags bit2 = ENCRYPTED
+}
+
+// 解密帧：v2 帧字节 → (ok, plaintext_payload)；ok=0 表示未加密/校验失败/格式坏
+pub func decrypt_frame(frame: table<i64>, shared_hex: string) -> (i64, table<i64>) {
+    var empty = table_new_i64()
+    var (ok, fl, el, pl, ex, iok, np) = frame_next(frame, 0)
+    if ok == 0 || iok == 0 {
+        return (0, empty)
+    }
+    if (fl & 4) == 0 {
+        return (0, empty)  // 非加密帧
+    }
+    var sym_key = derive_sym_key(shared_hex)
+    return decrypt_payload(pl, sym_key)
+}
+
+// x25519 握手辅助：A 侧用 seedA 生成密钥对，B 侧用 seedB；返回 (pkA_hex, pkB_hex, shared_hex)
+pub func handshake(seedA_hex: string, seedB_hex: string) -> (string, string, string) {
+    var pkA = x25519.keygen(seedA_hex)
+    var pkB = x25519.keygen(seedB_hex)
+    var sharedA = x25519.dh(seedA_hex, pkB)
+    return (pkA, pkB, sharedA)
 }
 
 }   // namespace tink2
