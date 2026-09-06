@@ -985,6 +985,56 @@ func compress48(model: i64, n: i64, h: ref table<i64>, msg: string, pos: i64, nb
         compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half, lanes, Pw, ts, tl, tk, tr)
         return
     }
+    if (Wd == 3 || Wd == 4 || Wd == 6) && model == 1 {
+        // W=3/4/6 r 半宽特化（n=12/16/24 r，rrp16 单环，R=8）
+        if Wd == 3 {
+            compress_w3h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        } else if Wd == 4 {
+            compress_w4h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        } else {
+            compress_w6h(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 8)
+        }
+        return
+    }
+    if Wd == 3 && model != 1 {
+        // W=3 全宽单环特化（n=12/16 f/b/x，R 各档）
+        if model == 0 {
+            compress_w3(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+        } else if model == 2 {
+            compress_w3(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 14)
+        } else if model == 3 {
+            compress_w3(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 16)
+        } else {
+            compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half, lanes, Pw, ts, tl, tk, tr)
+        }
+        return
+    }
+    if Wd == 5 && model != 1 {
+        // W=5 全宽单环特化（n=24 f/b/x，R 各档）
+        if model == 0 {
+            compress_w5(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+        } else if model == 2 {
+            compress_w5(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 14)
+        } else if model == 3 {
+            compress_w5(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 16)
+        } else {
+            compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half, lanes, Pw, ts, tl, tk, tr)
+        }
+        return
+    }
+    if Wd == 6 && model != 1 {
+        // W=6 全宽单环特化（n=32 f/b/x，R 各档）
+        if model == 0 {
+            compress_w6(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
+        } else if model == 2 {
+            compress_w6(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 14)
+        } else if model == 3 {
+            compress_w6(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 16)
+        } else {
+            compress(model, h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, bcon, xdcon, half, lanes, Pw, ts, tl, tk, tr)
+        }
+        return
+    }
     if n == 48 {
         if model == 0 {
             compress_w9(h, msg, pos, nbytes, t_lo, t_hi, last, iv, rcon, 12)
