@@ -317,6 +317,23 @@ func ensure_builtins() {
         }
         i2 = i2 + 1
     }
+    // ---------- 追加内置子表 3（p.6.9.1 stdio 字节原语）----------
+    // stdin_read(n) → i64 字节表（EOF 空表）；stdout_write_bytes/str → i64。
+    // 名字以 s 开头，自然排于 net_* 子表之后（子表保持有序，builtin_lookup
+    // 二分前提不变；该函数硬编码的子表长度须同步 +3）。
+    var stdio_names: table<string> = ["stdin_read", "stdout_write_bytes", "stdout_write_str"]
+    var stdio_nargs: table<i64> = [1, 1, 1]
+    var j2: i64 = 0
+    while j2 < len(stdio_names) {
+        table_push(bi_keys, stdio_names[j2])
+        table_push(bi_nargs, stdio_nargs[j2])
+        if stdio_names[j2] == "stdin_read" {
+            table_push(bi_ret, ret_of(1, 3))  // table<i64>
+        } else {
+            table_push(bi_ret, ret_of(0, 3))  // i64
+        }
+        j2 = j2 + 1
+    }
 }
 
 // 内置函数条目总数（权威 75）。
@@ -329,8 +346,8 @@ pub func builtin_count() -> i64 {
 // （调用方按"用户函数"处理，对齐 builtin_call 返回 -3 语义）。
 pub func builtin_lookup(name: string) -> i64 {
     ensure_builtins()
-    // 主表（72 项，有序）二分范围 [0, base)；追加子表 18 项有序其后
-    var base = len(bi_keys) - 18
+    // 主表（72 项，有序）二分范围 [0, base)；追加子表 21 项有序其后
+    var base = len(bi_keys) - 21
     var lo: i64 = 0
     var hi = base - 1
     while lo <= hi {

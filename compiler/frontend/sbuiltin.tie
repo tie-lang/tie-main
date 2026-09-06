@@ -644,6 +644,20 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.table_of(types.named(TK_STR))
     }
+    // p.6.9.1 stdio 字节原语：stdin_read(n) → i64 字节表（读到 n 字节或 EOF，EOF
+    // 空表）；stdout_write_bytes(字节表) / stdout_write_str(串) → 实际写入字节数
+    if fn_name == "stdin_read" || fn_name == "stdout_write_bytes" || fn_name == "stdout_write_str" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = fn_name + "() 期望 1 个参数，实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        if fn_name == "stdin_read" {
+            return types.table_of(types.named(TK_I64))
+        }
+        return types.named(TK_I64)
+    }
     if fn_name == "sqrt" || fn_name == "sin" || fn_name == "cos" || fn_name == "tan" ||
         fn_name == "exp" || fn_name == "log" || fn_name == "floor" || fn_name == "ceil" || fn_name == "round" {
         if nargs != 1 {

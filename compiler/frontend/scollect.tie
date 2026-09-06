@@ -34,6 +34,8 @@ pub func tre_bi_init() {
     sstate.sorted_insert(tre_bi_keys, tre_bi_vals, intern.intern("byte_read"), types.named(TK_I64))
     sstate.sorted_insert(tre_bi_keys, tre_bi_vals, intern.intern("byte_concat"), types.named(TK_I64))
     sstate.sorted_insert(tre_bi_keys, tre_bi_vals, intern.intern("regex_find_all"), types.named(TK_STR))
+    // p.6.9.1 stdio：stdin_read → i64 字节表（EOF 空表），升序插于 regex_find_all 后
+    sstate.sorted_insert(tre_bi_keys, tre_bi_vals, intern.intern("stdin_read"), types.named(TK_I64))
 }
 
 // extern 返回类型标量判定（对齐 Rust is_scalar_extern_ty：i8..u64/f32/f64/bool/char/string）

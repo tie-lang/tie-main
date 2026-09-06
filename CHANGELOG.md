@@ -22,6 +22,23 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] p.6.9.1 std/stdio 字节原语——stdin/stdout 读写 + 探针（2026-09-06）
+
+* p.6.9-tsp 第一块砖：LSP 服务端（JSON-RPC over stdio）缺 stdin/stdout 字节读写前置，
+  新增编译器内联内置 `stdin_read(n)`（GetStdHandle+ReadFile 循环读至多 n 字节或 EOF，
+  → i64 字节表，EOF 零收到→空表）与 `stdout_write_bytes(字节表)` / `stdout_write_str(串)`
+  （CRT `_write` fd=1，→ 写入字节数）——全 kernel32/CRT 符号，零 Rust 桥、零 g_used_interp；
+  行读复用既有内置 `read_line()`。std/stdio.tie（命名空间 stdio）与 std/fs 对称封装。
+* 编译器补丁面：middle/data.tie（内置签名子表 +3，builtin_lookup 子表长 18→21）、
+  frontend/sbuiltin.tie（签名/参数校验分支）、frontend/scollect.tie（返回表预登记）、
+  backend/irgen_expr.tie（is_builtin_name + 分派 + tig_stdin_read/tig_stdout_write_*）、
+  interp/env.tie（stdio_call 桥）。回显探针（stdin 字节→stdout 字节逐字节一致）与
+  read_line 探针 PASS；自举新不动点 tiec==tiec2（SHA 见 commit）。
+  EN: p.6.9.1 std/stdio byte primitives — compiler-inlined stdin_read/
+  stdout_write_bytes/stdout_write_str (kernel32/CRT, zero-Rust) + std/stdio.tie
+  (namespace stdio, fs-symmetric), echo + read_line probes PASS, new self-host
+  fixed point tiec==tiec2.
+
 ## [fix] ed25519 长期泄漏根治——RCA-5/6/7 三处引用计数缺口（2026-09-06，commit 24aaa07）
 
 * **根因**：三处编译器引用计数缺口在 ed25519 点阶梯放大为失控——(RCA-5) 出口析构只释放

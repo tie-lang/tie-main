@@ -1,0 +1,50 @@
+type tie<class>
+// stdio.tie：标准库——标准输入/输出字节原语（命名空间 stdio）。
+// ============================================================
+// p.6.9.1：stdin/stdout 字节级 IO——LSP 服务端（JSON-RPC over stdio）
+// 与 tink 桥共用。底座原语由编译器内联（零 Rust 桥；Windows kernel32/
+// CRT 符号，is_libc_sym 免 interp 链接）：
+//   - stdin_read(n)             读至多 n 字节 → i64 字节表（元素 0..255；
+//                                EOF 且零收到 → 空表；阻塞至凑满 n 或 EOF）
+//   - stdout_write_bytes(t)     字节表整体写 stdout → 实际写入字节数
+//   - stdout_write_str(s)       字符串（UTF-8 字节）原样写 stdout → 写入字节数
+// 行读复用既有顶层内置 read_line()（stdin 行读，\n 终结 / \r 剥除 /
+// EOF 空串）——stdio 不重导出（同名遮蔽会导致命名空间内递归）。
+//
+// EN: stdio.tie: the standard library — stdin/stdout byte primitives
+// (namespace stdio). p.6.9.1: byte-level stdin/stdout IO shared by the LSP
+// server (JSON-RPC over stdio) and the tink bridge. The primitives are
+// inlined by the compiler (zero-Rust; Windows kernel32/CRT symbols):
+// stdin_read(n) reads up to n bytes → i64 byte table (0..255; empty table at
+// EOF with nothing read; blocks until n bytes or EOF); stdout_write_bytes /
+// stdout_write_str write a byte table / a string to stdout and return the
+// byte count written. Line reading reuses the existing top-level builtin
+// read_line() (stdin line read; \n ends, \r stripped, "" at EOF) — stdio
+// does not re-export it (a same-name namespace member would shadow and
+// recurse).
+//
+// 调用：import 后 stdio.read_bytes(4096) / stdio.write_str(...)；命名空间内
+// 互调为裸调用。与 std/fs 对称：read_bytes / write_bytes 对应 fs 命名。
+
+namespace stdio {
+// 读 stdin 至多 n 字节（阻塞至凑满 n 或 EOF）；EOF 且零收到 → 空表。
+// EN: read up to n bytes from stdin (blocks until n bytes or EOF); returns
+// an empty table at EOF with nothing read.
+pub func read_bytes(n: i64) -> table<i64> {
+    return stdin_read(n)
+}
+
+// 字节表整体写 stdout（元素低字节 & 0xFF 落盘）；返回实际写入字节数。
+// EN: write a byte table to stdout in one block; returns the count written.
+pub func write_bytes(bytes: table<i64>) -> i64 {
+    return stdout_write_bytes(bytes)
+}
+
+// 字符串（UTF-8 字节）原样写 stdout（不经 FILE* 缓冲，顺序精确可控）；
+// 返回实际写入字节数。
+// EN: write a string's UTF-8 bytes verbatim to stdout (low-level fd write,
+// exact ordering); returns the count written.
+pub func write_str(s: string) -> i64 {
+    return stdout_write_str(s)
+}
+}
