@@ -80,21 +80,46 @@ class TieErrorHandler implements ErrorHandler {
 /**
  * 从工作区配置读取语言服务器命令。
  *
- * 支持两种形态：
- * - 默认 ['tie', '--lsp']：tie 工具链在 PATH 中；
- * - 绝对路径 ['F:/.../tie.exe', '--lsp']：工具链不在 PATH 时。
+ * 候选（按优先级）：
+ * 1. 用户配置 tie.lsp.command（显式，最高优先）；
+ * 2. 自动探测 tsp.exe（tsp = tie 语言服务器，0-Rust 自举）：
+ *    - 扩展安装目录下的 vendor/tsp.exe
+ *    - 工作区/仓库常见的 compiler/lsp/tsp.exe 与 lsp/tsp.exe
+ *    - PATH 中的 tsp
+ * 3. 回退默认 ['tie', '--lsp']（tie 工具链在 PATH 时）。
  * 配置非法时回退默认值并输出警告。
  */
 function readServerCommand(): string[] {
     const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
     const cmd = cfg.get<string[]>(CONFIG_COMMAND, DEFAULT_COMMAND);
-    if (!Array.isArray(cmd) || cmd.length === 0 || typeof cmd[0] !== 'string') {
-        outputChannel.appendLine(
-            `警告：tie.lsp.command 配置无效（${JSON.stringify(cmd)}），已回退默认值 ${JSON.stringify(DEFAULT_COMMAND)}`
-        );
-        return [...DEFAULT_COMMAND];
+    if (Array.isArray(cmd) && cmd.length > 0 && typeof cmd[0] === 'string' && cmd[0] !== 'auto') {
+        return cmd.map((c) => String(c));
     }
-    return cmd.map((c) => String(c));
+    // 自动探测 tsp.exe
+    const fs = require('fs') as typeof import('fs');
+    const path = require('path') as typeof import('path');
+    const candidates = [
+        path.join(__dirname, '..', 'vendor', 'tsp.exe'),          // 扩展内 vendor
+        path.join(__dirname, '..', '..', 'compiler', 'lsp', 'tsp.exe'), // 仓库 compiler/lsp
+        'compiler/lsp/tsp.exe',
+        'lsp/tsp.exe',
+        'tsp',
+    ];
+    for (const c of candidates) {
+        try {
+            if (fs.existsSync(c)) {
+                outputChannel.appendLine(`自动探测语言服务器：${c}`);
+                return [c]; // tsp.exe 直接启动（无参即 LSP over stdio）
+            }
+            if (c === 'tsp') {
+                return ['tsp']; // PATH 中由 shell 解析（不 existsSync）
+            }
+        } catch {
+            // 继续探测
+        }
+    }
+    outputChannel.appendLine('未探测到 tsp.exe，回退 tie --lsp');
+    return [...DEFAULT_COMMAND];
 }
 
 /** 激活扩展：由 activationEvents onLanguage:tie 触发，创建并启动语言客户端。 */

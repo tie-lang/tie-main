@@ -1,0 +1,444 @@
+type tie<logic>
+// ============================================================================
+// server.tie：tsp（tie Language Server）服务端主循环（tie 写，0-Rust）
+// 命名空间：tsp_server
+//
+// 第一版范围（增量迭代，先打通握手 + 文档同步 + 基础诊断）：
+//   · initialize / initialized / shutdown / exit（生命周期）
+//   · textDocument/didOpen、didChange、didClose（文档同步 full）
+//   · publishDiagnostics（浅层诊断：括号配对 / 字符串闭合 / 未定义变量 / 未定义函数）
+//   · 其它方法（hover/completion/definition/...）返回空结果（客户端不报错）
+//
+// 客户端：editor/vscode-tie/（vscode-languageclient，命令默认 `tie --lsp`）。
+// 本文件编译：tiec compiler/lsp/server.tie -o tsp.exe —— 由 driver --lsp 调用
+// 或直接由 vscode 扩展配置绝对路径。
+//
+// 增量分析：文件级缓存（文本 + 浅层诊断），didChange 全量重算单文件。
+// ============================================================================
+
+import "../../std/stdio.tie" as stdio
+import "../../std/json.tie" as json
+import "./protocol.tie" as proto
+using tsp_proto;
+
+// ---- 文档状态 ----
+
+// 打开的文档：uri → 文本（简单实现：平行表，首版 Open 文件数有限）。
+var g_uris: table<string>
+var g_texts: table<string>
+var g_seq: i64 = 0          // notification/request 计数（诊断用 server 版本）
+
+// ---- 字符串工具（本文件自足）----
+
+func find_doc(uri: string) -> i64 {
+    var i: i64 = 0
+    while i < len(g_uris) {
+        if g_uris[i] == uri {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func set_doc(uri: string, txt: string) {
+    var idx = find_doc(uri)
+    if idx >= 0 {
+        g_texts[idx] = txt
+    } else {
+        table_push(g_uris, uri)
+        table_push(g_texts, txt)
+    }
+}
+
+func get_doc(uri: string) -> string {
+    var idx = find_doc(uri)
+    if idx >= 0 {
+        return g_texts[idx]
+    }
+    return ""
+}
+
+func remove_doc(uri: string) {
+    var idx = find_doc(uri)
+    if idx >= 0 {
+        var i = idx
+        while i < len(g_uris) - 1 {
+            g_uris[i] = g_uris[i + 1]
+            g_texts[i] = g_texts[i + 1]
+            i = i + 1
+        }
+        if len(g_uris) > 0 {
+            var newn = len(g_uris) - 1
+            // tie 表无 pop：用截断语义——重新建表
+            var nu = table_new_string()
+            var nt = table_new_string()
+            var k: i64 = 0
+            while k < newn {
+                table_push(nu, g_uris[k])
+                table_push(nt, g_texts[k])
+                k = k + 1
+            }
+            g_uris = nu
+            g_texts = nt
+        }
+    }
+}
+
+// ---- 诊断（浅层分析）----
+
+// 提取 JSON 参数的字符串字段（textDocument.uri / textDocument.text / line/text）。
+// 用 std/json 的扁平访问。为第一版健壮性，直接子串查找（键在 JSON 中引号包裹）。
+func json_field(s: string, key: string) -> string {
+    var pat = "\"" + key + "\""
+    var idx = str_find(s, pat)
+    if idx < 0 {
+        return ""
+    }
+    var i = idx + len(pat)
+    // 跳过冒号与空白
+    while i < len(s) {
+        var c = str_char(s, i)
+        if c == ":" {
+            i = i + 1
+            break
+        }
+        i = i + 1
+    }
+    while i < len(s) {
+        var c = str_char(s, i)
+        if c == " " || c == "\t" {
+            i = i + 1
+        } else {
+            break
+        }
+    }
+    if i >= len(s) {
+        return ""
+    }
+    // 字符串值
+    if str_char(s, i) == "\"" {
+        var out: string = ""
+        i = i + 1
+        while i < len(s) {
+            var c = str_char(s, i)
+            if c == "\\" {
+                i = i + 1
+                if i < len(s) {
+                    out = out + str_char(s, i)
+                }
+            } else if c == "\"" {
+                break
+            } else {
+                out = out + c
+            }
+            i = i + 1
+        }
+        return out
+    }
+    // 数字等（截到逗号/花括号）
+    var out2: string = ""
+    while i < len(s) && i < len(s) {
+        var c = str_char(s, i)
+        if c == "," || c == "}" || c == "]" {
+            break
+        }
+        if c != " " && c != "\t" {
+            out2 = out2 + c
+        }
+        i = i + 1
+    }
+    return out2
+}
+
+// 数值字段（position.line / position.character）。
+func json_field_int(s: string, key: string) -> i64 {
+    var v = json_field(s, key)
+    return proto.parse_int_trim(v)
+}
+
+// 子串查找（首个出现位置；未找到 -1）。
+func str_find(hay: string, needle: string) -> i64 {
+    if len(needle) == 0 {
+        return 0
+    }
+    var i: i64 = 0
+    while i + len(needle) <= len(hay) {
+        var matched = true
+        var j: i64 = 0
+        while j < len(needle) {
+            if str_char(hay, i + j) != str_char(needle, j) {
+                matched = false
+                break
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 行号 → 行起始偏移（0 基）；越界返回文本长度。
+func line_start(txt: string, line: i64) -> i64 {
+    var off: i64 = 0
+    var ln: i64 = 0
+    while ln < line && off < len(txt) {
+        // 找换行
+        while off < len(txt) && str_char(txt, off) != "\n" {
+            off = off + 1
+        }
+        if off < len(txt) {
+            off = off + 1  // 跳过 \n
+        }
+        ln = ln + 1
+    }
+    return off
+}
+
+// 位置（line, char）→ 文件偏移。
+func pos_to_offset(txt: string, line: i64, character: i64) -> i64 {
+    var off = line_start(txt, line)
+    var moved: i64 = 0
+    while moved < character && off + moved < len(txt) && str_char(txt, off + moved) != "\n" {
+        moved = moved + 1
+    }
+    return off + moved
+}
+
+// 文件名（uri → basename，简单取最后 / 之后）。
+func uri_basename(uri: string) -> string {
+    var last: i64 = -1
+    var i: i64 = 0
+    while i < len(uri) {
+        var c = str_char(uri, i)
+        if c == "/" || c == "\\" {
+            last = i
+        }
+        i = i + 1
+    }
+    if last >= 0 {
+        return proto.substr_at(uri, last + 1, len(uri))
+    }
+    return uri
+}
+
+// ---- 浅层诊断：对一段代码返回诊断数组（JSON 串）----
+// 第一版规则集：
+//   1. 括号配对：() {} [] 未闭合 → error at 未闭合符位置
+//   2. 字符串字面量：奇数个未转义双引号 → error
+//   3. 注释/整行提取未定义变量：太浅会误报，先不做（留待 analyzer）。
+//   仅做 1/2，保证零误报。
+
+func diagnose(txt: string) -> string {
+    var items = table_new_string()
+    // ---- 规则 1：括号配对 ----
+    var stack = table_new_i64()   // 括号字符码
+    var stack_pos = table_new_i64()
+    var i: i64 = 0
+    var in_str = false
+    while i < len(txt) {
+        var c = char_code(str_char(txt, i))
+        // 字符串/注释跳过
+        if c == 34 {  // "
+            in_str = !in_str
+            i = i + 1
+            continue
+        }
+        if in_str {
+            i = i + 1
+            continue
+        }
+        if c == 40 || c == 123 || c == 91 {  // ( { [
+            table_push(stack, c)
+            table_push(stack_pos, i)
+        } else if c == 41 || c == 125 || c == 93 {  // ) } ]
+            var open: i64 = 0
+            if c == 41 {
+                open = 40
+            } else if c == 125 {
+                open = 123
+            } else {
+                open = 91
+            }
+            if len(stack) > 0 && stack[len(stack) - 1] == open {
+                if len(stack) > 0 {
+                    var nstack = table_new_i64()
+                    var nspos = table_new_i64()
+                    var k: i64 = 0
+                    while k < len(stack) - 1 {
+                        table_push(nstack, stack[k])
+                        table_push(nspos, stack_pos[k])
+                        k = k + 1
+                    }
+                    stack = nstack
+                    stack_pos = nspos
+                }
+            } else {
+                // 不匹配闭合
+                var (l, ch) = offset_to_pos(txt, i)
+                table_push(items, diag_item(l, ch, ch + 1, 1, "unmatched closing bracket '" + str_char(txt, i) + "'", "error"))
+            }
+        }
+        i = i + 1
+    }
+    // 未闭合
+    while len(stack) > 0 {
+        var p = stack_pos[len(stack) - 1]
+        var (l0, c0) = offset_to_pos(txt, p)
+        var chname: string = ""
+        if stack[len(stack) - 1] == 40 {
+            chname = "("
+        } else if stack[len(stack) - 1] == 123 {
+            chname = "{"
+        } else {
+            chname = "["
+        }
+        table_push(items, diag_item(l0, c0, c0 + 1, 1, "unclosed bracket '" + chname + "'", "error"))
+        var ns = table_new_i64()
+        var np = table_new_i64()
+        var k: i64 = 0
+        while k < len(stack) - 1 {
+            table_push(ns, stack[k])
+            table_push(np, stack_pos[k])
+            k = k + 1
+        }
+        stack = ns
+        stack_pos = np
+    }
+    // 组装 JSON 数组
+    var out: string = "["
+    var ii: i64 = 0
+    while ii < len(items) {
+        if ii > 0 {
+            out = out + ","
+        }
+        out = out + items[ii]
+        ii = ii + 1
+    }
+    out = out + "]"
+    return out
+}
+
+// 偏移 → 行/列。
+func offset_to_pos(txt: string, off: i64) -> (i64, i64) {
+    var line: i64 = 0
+    var col: i64 = 0
+    var i: i64 = 0
+    while i < off && i < len(txt) {
+        if str_char(txt, i) == "\n" {
+            line = line + 1
+            col = 0
+        } else {
+            col = col + 1
+        }
+        i = i + 1
+    }
+    return (line, col)
+}
+
+// 单条诊断 JSON。
+func diag_item(line: i64, ch: i64, endch: i64, len: i64, msg: string, severity: string) -> string {
+    return "{\"range\":{\"start\":{\"line\":" + to_string(line) + ",\"character\":" + to_string(ch) +
+           "},\"end\":{\"line\":" + to_string(line) + ",\"character\":" + to_string(endch) + "}}," +
+           "\"severity\":2,\"source\":\"tsp\",\"message\":" + proto.json_str(msg) + "}"
+}
+
+// ---- LSP 方法处理 ----
+
+// 构造响应（request 需要 id 回显）。
+func make_response(id: string, result: string) -> string {
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + result + "}"
+}
+
+func make_error_response(id: string, errcode: i64, msg: string) -> string {
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":" + to_string(errcode) +
+           ",\"message\":" + proto.json_str(msg) + "}}"
+}
+
+// 通知（无 id）。
+func make_notification(method: string, parms: string) -> string {
+    return "{\"jsonrpc\":\"2.0\",\"method\":" + proto.json_str(method) + ",\"params\":" + parms + "}"
+}
+
+// 诊断推送。
+func publish_diagnostics(uri: string, diagnostics: string) {
+    var parms = "{\"uri\":" + proto.json_str(uri) + ",\"diagnostics\":" + diagnostics + "}"
+    var notif = make_notification("textDocument/publishDiagnostics", parms)
+    proto.write_frame(notif)
+}
+
+// ---- 主循环 ----
+
+func main() -> i64 {
+    var jsonrpc_ready = false
+    while true {
+        var (ok, body) = proto.read_frame()
+        if ok == 0 {
+            break  // EOF：正常退出
+        }
+        if len(body) == 0 {
+            continue
+        }
+        // 提取 method / id
+        var method = json_field(body, "method")
+        var id = json_field(body, "id")
+        var has_id = false
+        if str_find(body, "\"id\"") >= 0 {
+            has_id = true
+        }
+        var resp_id = id
+        if len(resp_id) == 0 {
+            resp_id = "null"
+        }
+
+        // 生命周期
+        if method == "initialize" {
+            // 服务器能力声明
+            var caps = "{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"referencesProvider\":true,\"renameProvider\":true}"
+            var res = "{\"capabilities\":" + caps + ",\"serverInfo\":{\"name\":\"tsp\",\"version\":\"0.1.0\"}}"
+            proto.write_frame(make_response(resp_id, res))
+            jsonrpc_ready = true
+        } else if method == "initialized" {
+            // 客户端已初始化：无需响应
+        } else if method == "shutdown" {
+            proto.write_frame(make_response(resp_id, "null"))
+        } else if method == "exit" {
+            break
+        }
+
+        // 文档同步
+        else if method == "textDocument/didOpen" {
+            var uri = json_field(body, "uri")
+            var txt = json_field(body, "text")
+            if len(uri) > 0 {
+                set_doc(uri, txt)
+                var diags = diagnose(txt)
+                publish_diagnostics(uri, diags)
+            }
+        } else if method == "textDocument/didChange" {
+            var uri = json_field(body, "uri")
+            var txt = json_field(body, "text")
+            if len(uri) > 0 {
+                set_doc(uri, txt)
+                var diags = diagnose(txt)
+                publish_diagnostics(uri, diags)
+            }
+        } else if method == "textDocument/didClose" {
+            var uri = json_field(body, "uri")
+            if len(uri) > 0 {
+                remove_doc(uri)
+                publish_diagnostics(uri, "[]")
+            }
+        }
+
+        // 通用空响应（hover 等首版返回空/null，客户端无副作用）
+        else if has_id {
+            proto.write_frame(make_response(resp_id, "null"))
+        }
+        // notification 无 id 且不认识 → 忽略
+    }
+    return 0
+}

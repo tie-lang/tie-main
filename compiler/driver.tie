@@ -43,6 +43,7 @@ var g_emit_ir: bool = false;
 var g_keep_ir: bool = false;
 var g_prep_only: bool = false;
 var g_compress_data: bool = false;  // --compress-data：td → zd 压缩数据
+var g_lsp: bool = false;            // --lsp：启动 tie 语言服务器（tsp.exe）
 // M5 动态库模式（dev33 批次 12）：--shared 或输出扩展名 .dll/.so → 动态库。
 var g_shared: bool = false;
 var g_role: string = "";          // 头部识别的角色
@@ -100,6 +101,8 @@ func parse_args() -> i64 {
             g_keep_ir = true
         } else if a == "--compress-data" {
             g_compress_data = true
+        } else if a == "--lsp" {
+            g_lsp = true
         } else if a == "--shared" {
             g_shared = true
         } else if a == "--prep-only" {
@@ -817,6 +820,22 @@ func main() -> i64 {
     if pr < 0 {
         println("参数错误。输入 tiec --help 查看用法。")
         return 2
+    }
+    // --lsp：启动 tie 语言服务器（compiler/lsp/tsp.exe，LSP over stdio）。
+    // stdio 继承当前进程（vscode-languageclient spawn `tie --lsp` 即与之直连），
+    // exec_code 阻塞直至 tsp 退出（Exit 消息），退出码透传。
+    if g_lsp {
+        var tsp_path = ""
+        if file_exists("compiler/lsp/tsp.exe") {
+            tsp_path = "compiler/lsp/tsp.exe"
+        } else if file_exists("lsp/tsp.exe") {
+            tsp_path = "lsp/tsp.exe"
+        }
+        if str_len(tsp_path) == 0 {
+            println("tsp 未找到：请先构建 compiler/lsp/server.tie → compiler/lsp/tsp.exe")
+            return 1
+        }
+        return exec_code(tsp_path)
     }
     // S3.2：--dump-irt 短路——只读 .tieir 输出可读摘要（不编译）
     if str_len(g_dump_irt) > 0 {
