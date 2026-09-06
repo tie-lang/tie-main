@@ -22,6 +22,26 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] p.6.11.1 std/tink_v2.tie——帧 v2 协议库（tsha1f 校验 + 分块流 + v1 兼容读）（2026-09-06）
+
+* **std/tink_v2.tie**（namespace tink2，纯函数字节进出）：帧 = magic 0x74 0x6B +
+  version=2 + flags + len/ext\_len（BE）+ TLV 扩展头 + payload + integrity。快校验
+  （默认）= `tsha1f(payload, 8, 48)` 8 符号 48 进制 ASCII 存 8 字节；强档 =
+  `tsha1_digest(f/n=48)` 全宽 hex 前 32 字节；校验直接作用于**原始 payload 字节**
+  （string\_builder + sb\_append\_byte 二进制安全构串）。扩展头未知 key 解析时跳过；
+  保留位（bit5..7）置位 → 不可信帧拒绝；v1（CRC32）帧兼容读；分块流
+  （STREAM/STREAM\_END + SESSION/SEQ/TOTAL 扩展头）stream\_split/join 重组。
+* **KAT 向量固化**（跨语言基准）：`tsha1f("",8,48)=5juavlyl`、`tsha1f("123456789",
+  8,48)=3Kz1piuc`、强档（f/n=48）前 32 字节 hex=`260c73…16fd76bf`；帧级 KAT 探针
+  断言校验段字节 == 直接哈希同一 payload（跨语言实现可对齐）。
+* 探针 18 项全 PASS（往返/快校/强档/篡改拒绝/未知 key 跳过/版本拒绝/3 块重组/
+  丢帧报告/v1 兼容/1MiB 无 O(n²) 冒烟）；1MiB encode/next 各 ~1s。
+  EN: std/tink_v2.tie (namespace tink2) implements frame-v2 wire (magic+version2+
+  flags+TLV ext+payload+tsha1f-8 fast / tsha1-strong integrity over raw payload
+  bytes), unknown-ext-key skip, reserved-bit rejection, v1 CRC32 read, chunked
+  stream split/join; KAT vectors frozen (5juavlyl / 3Kz1piuc / strong 32B hex);
+  18 probes PASS incl. cross-language frame-level KAT.
+
 ## [docs] tink v2 帧协议排号 p.6.11（2026-09-06）
 
 * tink v2 设计定稿（`docs/superpowers/specs/2026-09-05-tink-v2-design.md`）排入

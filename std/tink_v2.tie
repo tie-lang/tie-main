@@ -1,0 +1,531 @@
+type tie<class>
+// std/tink_v2.tie —— tink 帧协议 v2（命名空间 tink2）
+// ============================================================
+// 线格式（全大端 BE，设计见 docs/superpowers/specs/2026-09-05-tink-v2-design.md）：
+//   帧 = [magic u8[2]=0x74 0x6B][version u8=2][flags u8][len u32 BE]
+//        [ext_len u16 BE][ext: ext_len 字节][payload: len 字节][integrity: 定长]
+// flags 位：bit0 INTEGRITY_STRONG（0=快校验默认，1=强档）、bit1 COMPRESSED、
+//   bit2 ENCRYPTED、bit3 STREAM、bit4 STREAM_END、bit5..7 保留。
+// 校验段（integrity）：
+//   - 快校验（bit0=0）：tsha1f(payload串, 8, 48)——8 符号 48 进制，ASCII 字节原样存（8 字节）
+//   - 强档（bit0=1，默认模型 f、位长 48，可用 TLV key1/key2 覆盖）：
+//     tsha1_digest(model, payload串, n) 全宽 hex → 转字节 → 取前 32 字节
+// 扩展头 = key u16 BE + value_len u16 BE + value 的 TLV 序列（key：1=TSHA1_MODEL、
+//   2=TSHA1_BITS、3=COMPRESS_ALGO、4=ENC_ALGO、5=STREAM_SESSION、6=STREAM_SEQ、
+//   7=STREAM_TOTAL、9=EXT_META；其余未定义）。**未知 key 解析时必须跳过**。
+// v1 兼容读（§5）：首两字节对不上 magic → 按 v1 帧（[len u32 BE][payload][crc u32 BE]，
+//   CRC32-IEEE）解析（复用 tink 的 CRC32）。
+//
+// == 校验基准说明 ==
+// 校验段 = tsha1 族直接作用于**原始 payload 字节**（设计 §3.3）：payload 字节表经
+// string_builder + sb_append_byte 逐字节精确构串（二进制安全，含 0x00/0xFF），
+// tsha1f/tsha1_digest 内部按字节处理（同 blake/blake3 哈希任意字节串），
+// 任何语言实现按同一规则（直接哈希原始字节）即跨语言一致。
+// 性能纪律：帧组装用 bytes.concat（byte_concat 编译器内联批量拷贝）整块拼；
+// 校验对整 payload 一次计算；payload→串 sb_append_byte 摊销线性（非 O(n²)）。
+// 错误约定：解析失败返回 ok=0 / skip -1 哨兵，不 panic。保留位（bit5..7）必须为 0，
+// 置位视为格式错误 → ok=0（§5.3 未知位不可信策略）。
+
+import "./bytes.tie" as bytes
+import "./tsha1.tie" as tsha
+import "./tink.tie" as tink
+
+namespace tink2 {
+
+// ---------- 常量 ----------
+// 帧：magic = 0x74 0x6B（"tk"）；version = 2
+// flags 位：1=STRONG 2=COMPRESSED 4=ENCRYPTED 8=STREAM 16=STREAM_END
+// ext key：1=TSHA1_MODEL 2=TSHA1_BITS 5=STREAM_SESSION 6=STREAM_SEQ 7=STREAM_TOTAL
+// 校验：快=8 字节；强=32 字节
+
+pub func magic_first() -> i64 { return 0x74 }
+pub func magic_second() -> i64 { return 0x6B }
+pub func frame_version() -> i64 { return 2 }
+
+// ---------- BE 字节读写助手（内部） ----------
+
+func u16be(v: i64) -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, (v >> 8) & 0xFF)
+    table_push(t, v & 0xFF)
+    return t
+}
+
+func u32be(v: i64) -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, (v >> 24) & 0xFF)
+    table_push(t, (v >> 16) & 0xFF)
+    table_push(t, (v >> 8) & 0xFF)
+    table_push(t, v & 0xFF)
+    return t
+}
+
+func u64be(v: i64) -> table<i64> {
+    var t = table_new_i64()
+    var i: i64 = 7
+    while i >= 0 {
+        table_push(t, (v >> (i * 8)) & 0xFF)
+        i = i - 1
+    }
+    return t
+}
+
+func u16rd(t: table<i64>, p: i64) -> i64 {
+    return ((t[p] & 0xFF) << 8) | (t[p + 1] & 0xFF)
+}
+
+func u32rd(t: table<i64>, p: i64) -> i64 {
+    return ((t[p] & 0xFF) << 24) | ((t[p + 1] & 0xFF) << 16) | ((t[p + 2] & 0xFF) << 8) | (t[p + 3] & 0xFF)
+}
+
+func u64rd(t: table<i64>, p: i64) -> i64 {
+    var r: i64 = 0
+    var i: i64 = 0
+    while i < 8 {
+        r = (r << 8) | (t[p + i] & 0xFF)
+        i = i + 1
+    }
+    return r
+}
+
+// 字节表切片 bytes[a..b)（拷贝）
+func slice(t: table<i64>, a: i64, b: i64) -> table<i64> {
+    var o = table_new_i64()
+    var i: i64 = a
+    while i < b {
+        table_push(o, t[i])
+        i = i + 1
+    }
+    return o
+}
+
+// ---------- payload → 二进制安全原始字节串 ----------
+
+// 每字节精确追加进 StringBuilder（string_builder/sb_append_byte 全库原语，二进制
+// 安全——blake/blake3 哈希任意字节串同款；字节 0..255 原样落位，含 0x00/0xFF），
+// 一次 sb_build 产串。校验 = tsha1 族直接作用于**原始 payload 字节**（设计 §3.3），
+// 与任何语言实现（直接哈希原始字节）跨语言一致。
+func payload_str(p: table<i64>) -> string {
+    var sb = string_builder()
+    var n = len(p)
+    var i: i64 = 0
+    while i < n {
+        sb_append_byte(sb, p[i] & 0xFF)
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+func hexval(c: string) -> i64 {
+    var cp = char_code(c)
+    if cp >= 48 && cp <= 57 { return cp - 48 }       // '0'..'9'
+    if cp >= 97 && cp <= 102 { return cp - 97 + 10 }  // 'a'..'f'
+    if cp >= 65 && cp <= 70 { return cp - 65 + 10 }   // 'A'..'F'
+    return 0
+}
+
+// hex 串 → 字节表（两字符一组）
+func hexstr_bytes(h: string) -> table<i64> {
+    var o = table_new_i64()
+    var n = str_len(h)
+    var i: i64 = 0
+    while i < n {
+        var hi = hexval(str_char(h, i))
+        var lo: i64 = 0
+        if i + 1 < n { lo = hexval(str_char(h, i + 1)) }
+        table_push(o, ((hi & 15) << 4) | (lo & 15))
+        i = i + 2
+    }
+    return o
+}
+
+// ---------- 校验段计算 ----------
+
+// 快校验：8 符号 48 进制，ASCII 字节原样存（8 字节）。
+func fast_integrity(p: table<i64>) -> table<i64> {
+    var s = tsha.tsha1f(payload_str(p), 8, 48)
+    return bytes.from_ascii(s)
+}
+
+// 强档校验：digest 全宽 hex → 转字节 → 取前 32 字节；模型/位长按 ext key1/key2 覆盖。
+func strong_integrity(p: table<i64>, ext: table<i64>) -> table<i64> {
+    var m = ext_u8(ext, 1)   // key1 TSHA1_MODEL（0/1/2/3 = f/r/b/x；缺省 f）
+    var model: string = "f"
+    if m == 1 { model = "r" } else if m == 2 { model = "b" } else if m == 3 { model = "x" }
+    var nb = ext_u8(ext, 2)  // key2 TSHA1_BITS（缺省 48）
+    var nbits: i64 = 48
+    if nb >= 2 && nb <= 200 { nbits = nb }
+    var dh = tsha.tsha1_digest(model, payload_str(p), nbits) // 全宽 hex 串
+    var db = hexstr_bytes(dh)
+    var out = table_new_i64()
+    var k: i64 = 0
+    while k < 32 {
+        if k < len(db) {
+            table_push(out, db[k])
+        } else {
+            table_push(out, 0)  // 状态池不足（正常不应发生）补齐
+        }
+        k = k + 1
+    }
+    return out
+}
+
+// ---------- ext TLV 读取（未知 key 跳过；缺 key 返回 -1） ----------
+
+func ext_u8(ext: table<i64>, key: i64) -> i64 {
+    var p: i64 = 0
+    var n = len(ext)
+    while p + 4 <= n {
+        var k = u16rd(ext, p)
+        var vl = u16rd(ext, p + 2)
+        if p + 4 + vl > n { return -1 }  // 尾 TLV 格式坏
+        if k == key {
+            if vl >= 1 { return ext[p + 4] & 0xFF }
+            return 0
+        }
+        p = p + 4 + vl
+    }
+    return -1
+}
+
+func ext_u32(ext: table<i64>, key: i64) -> i64 {
+    var p: i64 = 0
+    var n = len(ext)
+    while p + 4 <= n {
+        var k = u16rd(ext, p)
+        var vl = u16rd(ext, p + 2)
+        if p + 4 + vl > n { return -1 }
+        if k == key {
+            if vl >= 4 { return u32rd(ext, p + 4) }
+            return 0
+        }
+        p = p + 4 + vl
+    }
+    return -1
+}
+
+func ext_u64(ext: table<i64>, key: i64) -> i64 {
+    var p: i64 = 0
+    var n = len(ext)
+    while p + 4 <= n {
+        var k = u16rd(ext, p)
+        var vl = u16rd(ext, p + 2)
+        if p + 4 + vl > n { return -1 }
+        if k == key {
+            if vl >= 8 { return u64rd(ext, p + 4) }
+            return 0
+        }
+        p = p + 4 + vl
+    }
+    return -1
+}
+
+// ---------- TLV 构建 / 流式扩展头 ----------
+
+// 拼一条 TLV：key u16 BE + value_len u16 BE + value
+pub func ext_tlv(key: i64, value: table<i64>) -> table<i64> {
+    var h = u16be(key)
+    var vl = len(value)
+    table_push(h, (vl >> 8) & 0xFF)
+    table_push(h, vl & 0xFF)
+    var i: i64 = 0
+    while i < vl {
+        table_push(h, value[i])
+        i = i + 1
+    }
+    return h
+}
+
+// 首帧扩展头：key5 STREAM_SESSION(4B) + key7 STREAM_TOTAL(8B)
+pub func ext_stream_header(session: i64, total: i64) -> table<i64> {
+    return bytes.concat(ext_tlv(5, u32be(session)), ext_tlv(7, u64be(total)))
+}
+
+// 块帧扩展头：key5 STREAM_SESSION(4B) + key6 STREAM_SEQ(8B)
+pub func ext_stream_chunk(session: i64, seq: i64) -> table<i64> {
+    return bytes.concat(ext_tlv(5, u32be(session)), ext_tlv(6, u64be(seq)))
+}
+
+// ---------- 帧编码 ----------
+
+pub func frame_encode(payload: table<i64>, flags: i64, ext: table<i64>) -> table<i64> {
+    // 头（固定 10 + ext_len 字节）：magic + version + flags + len u32 + ext_len u16 + ext
+    var header = table_new_i64()
+    table_push(header, 0x74)
+    table_push(header, 0x6B)
+    table_push(header, 2)
+    table_push(header, flags & 0xFF)
+    var ln = len(payload)
+    table_push(header, (ln >> 24) & 0xFF)
+    table_push(header, (ln >> 16) & 0xFF)
+    table_push(header, (ln >> 8) & 0xFF)
+    table_push(header, ln & 0xFF)
+    var el = len(ext)
+    table_push(header, (el >> 8) & 0xFF)
+    table_push(header, el & 0xFF)
+    var i: i64 = 0
+    while i < el {
+        table_push(header, ext[i])
+        i = i + 1
+    }
+    var integ = table_new_i64()
+    if (flags & 1) != 0 {
+        integ = strong_integrity(payload, ext)
+    } else {
+        integ = fast_integrity(payload)
+    }
+    var a = bytes.concat(header, payload)
+    var frame = bytes.concat(a, integ)
+    return frame
+}
+
+// ---------- 帧解析 ----------
+
+// 从 bytes[pos..] 解析一帧 → (ok, flags, ext_len, payload, ext, integrity_ok, next_pos)。
+// ok=1 解析成功（含 v1 兼容帧，此时 flags=0、integrity 校验=v1 crc 是否通过）、
+// 0 失败（缓冲不足/魔数不符且非 v1/版本不支持）；integrity_ok 为校验统一出口。
+pub func frame_next(bytes: table<i64>, pos: i64) -> (i64, i64, i64, table<i64>, table<i64>, i64, i64) {
+    var empty = table_new_i64()
+    var nb = len(bytes)
+    if pos < 0 {
+        return (0, 0, 0, empty, empty, 0, -1)
+    }
+    if pos + 1 >= nb {
+        return (0, 0, 0, empty, empty, 0, -1)
+    }
+    var isv2: bool = (bytes[pos] == 0x74) && (bytes[pos + 1] == 0x6B)
+    if isv2 {
+        if pos + 9 >= nb {
+            return (0, 0, 0, empty, empty, 0, -1)
+        }
+        var ver = bytes[pos + 2] & 0xFF
+        if ver != 2 {
+            return (0, 0, 0, empty, empty, 0, -1)  // 版本不支持
+        }
+        var fl = bytes[pos + 3] & 0xFF
+        if (fl & 0xE0) != 0 {
+            return (0, 0, 0, empty, empty, 0, -1)  // 保留位置位 → 不可信帧（§5.3）
+        }
+        var ln = u32rd(bytes, pos + 4)
+        var el = u16rd(bytes, pos + 8)
+        if ln < 0 {
+            return (0, 0, 0, empty, empty, 0, -1)
+        }
+        var integ_len: i64 = 8
+        if (fl & 1) != 0 { integ_len = 32 }
+        if pos + 10 + el + ln + integ_len > nb {
+            return (0, 0, 0, empty, empty, 0, -1)  // 缓冲不足
+        }
+        var pext = slice(bytes, pos + 10, pos + 10 + el)
+        var pstart = pos + 10 + el
+        var ppayload = slice(bytes, pstart, pstart + ln)
+        var pstore = slice(bytes, pstart + ln, pstart + ln + integ_len)
+        var pintegrity = table_new_i64()
+        if (fl & 1) != 0 {
+            pintegrity = strong_integrity(ppayload, pext)
+        } else {
+            pintegrity = fast_integrity(ppayload)
+        }
+        var iok: i64 = 0
+        if len(pintegrity) == len(pstore) {
+            var same: bool = true
+            var i: i64 = 0
+            while i < len(pstore) {
+                if pintegrity[i] != pstore[i] { same = false }
+                i = i + 1
+            }
+            if same { iok = 1 }
+        }
+        return (1, fl, el, ppayload, pext, iok, pstart + ln + integ_len)
+    }
+    // 无 magic → v1 兼容读：[len u32 BE][payload][crc u32 BE]（CRC32-IEEE）
+    if pos + 7 >= nb {
+        return (0, 0, 0, empty, empty, 0, -1)
+    }
+    var n = u32rd(bytes, pos)
+    if n < 0 {
+        return (0, 0, 0, empty, empty, 0, -1)
+    }
+    if pos + 8 + n > nb {
+        return (0, 0, 0, empty, empty, 0, -1)
+    }
+    var vp = slice(bytes, pos + 4, pos + 4 + n)
+    var crc = u32rd(bytes, pos + 4 + n)
+    var vok: i64 = 0
+    if tink.crc32(vp) == crc { vok = 1 }
+    return (1, 0, 0, vp, empty, vok, pos + 8 + n)
+}
+
+// ---------- 帧跳过（零拷贝，不校验） ----------
+
+pub func frame_skip(bytes: table<i64>, pos: i64) -> i64 {
+    var nb = len(bytes)
+    if pos < 0 {
+        return -1
+    }
+    if pos + 1 >= nb {
+        return -1
+    }
+    var isv2: bool = (bytes[pos] == 0x74) && (bytes[pos + 1] == 0x6B)
+    if isv2 {
+        if pos + 9 >= nb {
+            return -1
+        }
+        if (bytes[pos + 2] & 0xFF) != 2 {
+            return -1
+        }
+        var fl = bytes[pos + 3] & 0xFF
+        if (fl & 0xE0) != 0 {
+            return -1  // 保留位置位 → 不可信帧（§5.3）
+        }
+        var ln = u32rd(bytes, pos + 4)
+        var el = u16rd(bytes, pos + 8)
+        var integ_len: i64 = 8
+        if (fl & 1) != 0 { integ_len = 32 }
+        if pos + 10 + el + ln + integ_len > nb {
+            return -1
+        }
+        return pos + 10 + el + ln + integ_len
+    }
+    if pos + 7 >= nb {
+        return -1
+    }
+    var n = u32rd(bytes, pos)
+    if pos + 8 + n > nb {
+        return -1
+    }
+    return pos + 8 + n
+}
+
+// ---------- 分块流 ----------
+
+// 单帧流构造：piece 为一段载荷，打 STREAM 标记与 SESSION/SEQ(+TOTAL) 扩展头。
+pub func stream_chunk_make(piece: table<i64>, session: i64, seq: i64, total: i64, first: bool, last: bool) -> table<i64> {
+    var ext = ext_stream_chunk(session, seq)
+    if first {
+        ext = bytes.concat(ext, ext_tlv(7, u64be(total)))
+    }
+    var fl: i64 = 8  // FLAG_STREAM
+    if last { fl = fl | 16 }  // FLAG_STREAM_END
+    return frame_encode(piece, fl, ext)
+}
+
+// 按 ≤chunk 分块：返回**逐帧字节的拼接**（每帧自定界，帧序即 seq 序 0..n-1）。
+// tie 无动态嵌套表运行时构造（无 push-table 原语），故不返回 table<table<i64>>，
+// 而返回拼接帧字节表，由 stream_join 逐帧重解析重组（见交付报告妥协点）。
+pub func stream_split(payload: table<i64>, chunk: i64, session: i64) -> table<i64> {
+    var out = table_new_i64()
+    var total = len(payload)
+    var c = chunk
+    if c <= 0 { c = 65536 }
+    var nchunks: i64 = total / c
+    if (nchunks * c) < total { nchunks = nchunks + 1 }
+    if nchunks == 0 { nchunks = 1 }
+    var i: i64 = 0
+    while i < nchunks {
+        var cs = i * c
+        var ce = cs + c
+        if ce > total { ce = total }
+        var piece = slice(payload, cs, ce)
+        var first: bool = (i == 0)
+        var last: bool = (i == nchunks - 1)
+        var fr = stream_chunk_make(piece, session, i, total, first, last)
+        var j: i64 = 0
+        while j < len(fr) {
+            table_push(out, fr[j])
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// 重组成整载荷：逐帧解析（SESSION 一致性 + SEQ 顺序重组）；SESSION 不一致/丢帧/总长
+// 不符返回**空表**（探针据此报告）。
+pub func stream_join(frames: table<i64>) -> table<i64> {
+    var empty = table_new_i64()
+    var sess: i64 = -1
+    var total: i64 = -1
+    var seqs = table_new_i64()
+    var starts = table_new_i64()
+    var sizes = table_new_i64()
+    var paybuf = table_new_i64()
+    var count: i64 = 0
+    var pos: i64 = 0
+    while pos < len(frames) {
+        var (ok, fl, el, ppayload, pext, iok, npos) = frame_next(frames, pos)
+        if ok == 0 {
+            return empty
+        }
+        var s = ext_u32(pext, 5)   // STREAM_SESSION
+        if s < 0 {
+            return empty
+        }
+        if sess == -1 {
+            sess = s
+        } else if s != sess {
+            return empty  // SESSION 不一致
+        }
+        var sq = ext_u64(pext, 6)
+        if sq < 0 {
+            return empty
+        }
+        var pl = len(ppayload)
+        var start = len(paybuf)
+        var j: i64 = 0
+        while j < pl {
+            table_push(paybuf, ppayload[j])
+            j = j + 1
+        }
+        table_push(seqs, sq)
+        table_push(starts, start)
+        table_push(sizes, pl)
+        var tl = ext_u64(pext, 7)
+        if tl >= 0 { total = tl }  // STREAM_TOTAL（首帧携带）
+        count = count + 1
+        pos = npos
+    }
+    if count == 0 {
+        return empty
+    }
+    // 按 SEQ 升序选择排序，并校验序号连续（0..count-1，缺帧则失败）
+    var i: i64 = 0
+    while i < count {
+        var mi = i
+        var j: i64 = i + 1
+        while j < count {
+            if seqs[j] < seqs[mi] { mi = j }
+            j = j + 1
+        }
+        if mi != i {
+            var ts = seqs[i]; seqs[i] = seqs[mi]; seqs[mi] = ts
+            var tst = starts[i]; starts[i] = starts[mi]; starts[mi] = tst
+            var tsz = sizes[i]; sizes[i] = sizes[mi]; sizes[mi] = tsz
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < count {
+        if seqs[i] != i { return empty }  // 丢帧/序号不连续
+        i = i + 1
+    }
+    // 按序拼出整载荷
+    var out = table_new_i64()
+    i = 0
+    while i < count {
+        var s0 = starts[i]
+        var e0 = s0 + sizes[i]
+        var j = s0
+        while j < e0 {
+            table_push(out, paybuf[j])
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if total >= 0 && len(out) != total {
+        return empty  // 总长不符
+    }
+    return out
+}
+
+}   // namespace tink2
