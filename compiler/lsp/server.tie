@@ -125,7 +125,20 @@ func json_field(s: string, key: string) -> string {
             if c == "\\" {
                 i = i + 1
                 if i < len(s) {
-                    out = out + str_char(s, i)
+                    var e = str_char(s, i)
+                    if e == "n" {
+                        out = out + "\n"
+                    } else if e == "t" {
+                        out = out + "\t"
+                    } else if e == "r" {
+                        out = out + "\r"
+                    } else if e == "\"" {
+                        out = out + "\""
+                    } else if e == "\\" {
+                        out = out + "\\"
+                    } else {
+                        out = out + e
+                    }
                 }
             } else if c == "\"" {
                 break
@@ -308,6 +321,144 @@ func diagnose(txt: string) -> string {
         stack = ns
         stack_pos = np
     }
+    // ---- 规则 2：未定义函数调用（保守：仅当调用名非任何声明/内置/关键字时）----
+    // 声明收集：func / pub func / namespace / import ... as（别名视为已定义命名空间）。
+    var decls = table_new_string()
+    // 内置零参量关键字跳过（控制流/字面量），其余候选名——保守用「调用形态 name(」判定。
+    var bu = table_new_string()
+    table_push(bu, "if")
+    table_push(bu, "else")
+    table_push(bu, "while")
+    table_push(bu, "for")
+    table_push(bu, "switch")
+    table_push(bu, "case")
+    table_push(bu, "return")
+    table_push(bu, "func")
+    table_push(bu, "import")
+    table_push(bu, "using")
+    table_push(bu, "println")
+    table_push(bu, "print")
+    table_push(bu, "len")
+    table_push(bu, "str_len")
+    table_push(bu, "str_char")
+    table_push(bu, "char_code")
+    table_push(bu, "to_string")
+    table_push(bu, "table_push")
+    table_push(bu, "table_new")
+    table_push(bu, "table_new_i64")
+    table_push(bu, "table_new_string")
+    table_push(bu, "exit")
+    table_push(bu, "panic")
+    table_push(bu, "time_now")
+    table_push(bu, "time_now_ms")
+    table_push(bu, "read_line")
+    // 扫描声明
+    var ti: i64 = 0
+    while ti < len(txt) {
+        // 行扫描：定位 func / pub func / namespace / import 关键字
+        var line_end = ti
+        while line_end < len(txt) && str_char(txt, line_end) != "\n" {
+            line_end = line_end + 1
+        }
+        var line_txt = proto.substr_at(txt, ti, line_end)
+        var lt = trim_str(line_txt)
+        var keywords = table_new_string()
+        table_push(keywords, "pub func")
+        table_push(keywords, "func")
+        table_push(keywords, "namespace")
+        table_push(keywords, "import")
+        var ki: i64 = 0
+        while ki < len(keywords) {
+            var kw = keywords[ki]
+            var at = str_find(lt, kw)
+            if at >= 0 {
+                // 取关键字后第一个标识符
+                var nm = id_after(lt, at + len(kw))
+                if len(nm) > 0 {
+                    table_push(decls, nm)
+                    // 顶层/命名空间内均可。添加常见内置命名空间对象以减误报
+                    if kw == "import" || kw == "namespace" {
+                        table_push(bu, nm)
+                    }
+                }
+            }
+            ki = ki + 1
+        }
+        ti = line_end + 1
+    }
+    // 扫描调用形态：按行遍历（声明行 func/pub func/namespace/import 整行跳过），
+    // 非声明行内的「标识符+(' 调用」检查是否声明/内置。
+    var si2: i64 = 0
+    while si2 < len(txt) {
+        var l_end = si2
+        while l_end < len(txt) && str_char(txt, l_end) != "\n" {
+            l_end = l_end + 1
+        }
+        var line2 = proto.substr_at(txt, si2, l_end)
+        var lt2 = trim_str(line2)
+        // 声明行跳过
+        var is_decl = false
+        if str_find(lt2, "func ") == 0 || str_find(lt2, "pub func ") == 0 ||
+           str_find(lt2, "namespace ") == 0 || str_find(lt2, "import ") == 0 {
+            is_decl = true
+        }
+        if is_decl {
+            si2 = l_end + 1
+            continue
+        }
+        // 行内逐标识符查调用形态
+        var k2: i64 = 0
+        while k2 < len(line2) {
+            var ch2 = str_char(line2, k2)
+            if ch2 == "\"" {
+                k2 = k2 + 1
+                while k2 < len(line2) && str_char(line2, k2) != "\"" {
+                    if str_char(line2, k2) == "\\" {
+                        k2 = k2 + 1
+                    }
+                    k2 = k2 + 1
+                }
+                k2 = k2 + 1
+                continue
+            }
+            if ch2 == "/" && k2 + 1 < len(line2) && str_char(line2, k2 + 1) == "/" {
+                break
+            }
+            var is_id2 = is_idchar(ch2)
+            if !is_id2 {
+                k2 = k2 + 1
+                continue
+            }
+            var id2 = k2
+            while k2 < len(line2) {
+                var chd = str_char(line2, k2)
+                if is_idchar2(chd) {
+                    k2 = k2 + 1
+                } else {
+                    break
+                }
+            }
+            var nm2 = proto.substr_at(line2, id2, k2)
+            var j2 = k2
+            while j2 < len(line2) {
+                var cj2 = str_char(line2, j2)
+                if cj2 == " " || cj2 == "\t" {
+                    j2 = j2 + 1
+                } else {
+                    break
+                }
+            }
+            if j2 < len(line2) && str_char(line2, j2) == "(" {
+                var known = is_in(nm2, decls) || is_in(nm2, bu)
+                if !known {
+                    var (fl, fc) = offset_to_pos(txt, si2 + id2)
+                    table_push(items, diag_item(fl, fc, fc + len(nm2), 1,
+                        "未定义函数 '" + nm2 + "'", "error"))
+                }
+            }
+        }
+        si2 = l_end + 1
+    }
     // 组装 JSON 数组
     var out: string = "["
     var ii: i64 = 0
@@ -337,6 +488,83 @@ func offset_to_pos(txt: string, off: i64) -> (i64, i64) {
         i = i + 1
     }
     return (line, col)
+}
+
+// 名是否在表中（精确匹配）。
+func is_in(name: string, tbl: table<string>) -> bool {
+    var i: i64 = 0
+    while i < len(tbl) {
+        if tbl[i] == name {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// 单字符是否为标识符起始（字母/下划线；char_code 数值比较，避免字符串比较符不可用）。
+func is_idchar(c: string) -> bool {
+    var v = char_code(c)
+    return (v >= 65 && v <= 90) || (v >= 97 && v <= 122) || v == 95
+}
+
+// 单字符是否为标识符延续（起始 + 数字）。
+func is_idchar2(c: string) -> bool {
+    var v = char_code(c)
+    return (v >= 65 && v <= 90) || (v >= 97 && v <= 122) || (v >= 48 && v <= 57) || v == 95
+}
+
+// 去首尾空白。
+func trim_str(s: string) -> string {
+    var a: i64 = 0
+    var b = len(s)
+    while a < b {
+        var c = str_char(s, a)
+        if c == " " || c == "\t" || c == "\r" {
+            a = a + 1
+        } else {
+            break
+        }
+    }
+    while b > a {
+        var c = str_char(s, b - 1)
+        if c == " " || c == "\t" || c == "\r" {
+            b = b - 1
+        } else {
+            break
+        }
+    }
+    return proto.substr_at(s, a, b)
+}
+
+// 从 pos 开始取第一个标识符（字母/下划线开头，含数字/下划线继续）。
+func id_after(s: string, pos: i64) -> string {
+    var i = pos
+    while i < len(s) {
+        var c = str_char(s, i)
+        if c == " " || c == "\t" {
+            i = i + 1
+        } else {
+            break
+        }
+    }
+    if i >= len(s) {
+        return ""
+    }
+    var c0 = str_char(s, i)
+    if !is_idchar(c0) {
+        return ""
+    }
+    var j = i
+    while j < len(s) {
+        var c = str_char(s, j)
+        if is_idchar2(c) {
+            j = j + 1
+        } else {
+            break
+        }
+    }
+    return proto.substr_at(s, i, j)
 }
 
 // 单条诊断 JSON。
