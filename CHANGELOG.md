@@ -22,6 +22,20 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [docs] tink v2 帧协议排号 p.6.11（2026-09-06）
+
+* tink v2 设计定稿（`docs/superpowers/specs/2026-09-05-tink-v2-design.md`）排入
+  开发计划：新模块 **p.6.11「tink v2 互联协议」**（子项 p.6.11.1–4：tie 实现 /
+  多语言同步 / zrpc+可靠传输 / 加密位+AEAD），ROAD.md 模块图例补全 p.6.10 内存治理
+  与 p.6.11。帧 v2 = magic 0x74 0x6B + version=2 + flags + len/ext\_len（BE）+ TLV
+  扩展头 + payload + tsha1f 校验（默认 8 符号 48 进制，强档 f/n=48 截 32 字节）；
+  CRC32 仅保留 v1 兼容读。执行顺序：先 p.6.11（tink v2）后继续 p.6.9（LSP tsp）。
+  EN: tink v2 frame protocol (magic 0x74 0x6B + version 2 + flags + TLV ext header +
+  payload + tsha1f integrity, strong-slot f/n=48, CRC32 only for v1-compat reads)
+  assigned to new module **p.6.11** in the dev plan (p.6.11.1–4: tie impl / multi-
+  language sync / zrpc+reliable transport / encryption+AEAD); ROAD.md legend updated.
+  Execution order: p.6.11 (tink v2) first, then p.6.9 (LSP tsp).
+
 ## [feat] p.6.9.1 std/stdio 字节原语——stdin/stdout 读写 + 探针（2026-09-06）
 
 * p.6.9-tsp 第一块砖：LSP 服务端（JSON-RPC over stdio）缺 stdin/stdout 字节读写前置，

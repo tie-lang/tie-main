@@ -7,7 +7,7 @@
 > - **预发布段（preview\.6）**：全部新功能在 p.6.x 开发模块完成，开发号 **P.x.y.z**
 >   （即 CHANGELOG 中的 p.x.y.z；模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 /
 >   p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全 / p.6.7=trm-lite并行 /
->   p.6.8=Skia图形 / p.6.9=LSP重写）。
+>   p.6.8=Skia图形 / p.6.9=LSP重写 / p.6.10=内存治理 / p.6.11=tink v2 互联协议）。
 >
 > - **正式版段（2026.1）**：preview\.6 发布后启动，**基于 preview\.6** 开发——**不引入
 >   任何新功能**，只做优化与稳定性；开发号 **R.x.y.z**。正式版与预发布是**双轨**
@@ -23,7 +23,7 @@ tracks): the preview track (P.x.y.z) does new features, the stable track (R.x.y.
 does optimization/stability; both share the x.y.z format but **number independently and
 neither continues the other**.
 
-### 开发计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全 / p.6.7=trm-lite并行 / p.6.8=Skia图形 / p.6.9=LSP重写）
+### 开发计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全 / p.6.7=trm-lite并行 / p.6.8=Skia图形 / p.6.9=LSP重写 / p.6.10=内存治理 / p.6.11=tink v2 互联协议）
 
 **正确性（p.6.1，必查）**
 
@@ -371,4 +371,13 @@ neither continues the other**.
 | \[x] p.6.10.2 | trm-lite 表内存自动回收 / 编译器插桩：tl\_tbl 引用计数 API（tbl\_retain/tbl\_release + 空句柄守卫）+ irgen 表赋值 retain/release 配对 + 表变量零初始化兜底；自举新不动点收敛（rc2==rc3） | 表赋值插桩探针 PASS；config\_smoke 48/48；语言探针零回归              |
 | \[x] p.6.10.3 | 作用域出口析构（entry 级局部表 release）+ 返回表 retain 接管 + VarDecl 表引用 retain + RHS 新构造免 retain + 参数目标不 release（循环/分支内 var 与嵌套表留 p.6.10.4）            | 生命周期探针 PASS；2000 万次临时表循环峰值 3MB（内存有界）；自举 rc2==rc3      |
 | \[x] p.6.10.4 | 表元素/嵌套表 retain（push/下标写表值）与循环内/分支内 var 遮蔽回收（零值全局哨兵 + select 归零首轮）                                                                       | 嵌套表长跑探针 PASS + 2000 万次临时表循环峰值 4.2MB（内存有界）；自举 rc2==rc3 |
+
+**tink v2 互联协议（p.6.11，帧协议 v2：magic/version/flags + tsha1f 帧级校验 + 分块流 + 语义层对齐去中心 P2P；设计见 docs/superpowers/specs/2026-09-05-tink-v2-design.md）**
+
+| 子项            | 内容                                                                                                                                        | 验收                                                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| \[ ] p.6.11.1 | std/tink_v2.tie：头构建/解析/整体批量拼接 + tsha1f-8 快校验（默认，8 符号 48 进制）+ 强档校验（f/n=48 取前 32 字节）+ 分块流（STREAM/STREAM\_END + SESSION/SEQ/TOTAL 扩展头）+ 未知 ext key 跳过 + v1（CRC32）兼容读；KAT 向量固化                                 | 帧 v2 编解码往返 / 快校验通过+损坏拒绝 / 强档 KAT / 3 块拆→重组一致 / 未知 key 不崩 / v1 读探针全 PASS |
+| \[ ] p.6.11.2 | 多语言 tink 库 v2 化（c/rust/python/aardio 首批），各保留 v1 读路径                                                                                       | 跨语言 KAT 一致：tsha1f("",8,48) 与 tsha1f("123456789",8,48) 的 8 符号串、强档 32 字节截断一致；crc32("123456789")==0xCBF43926 v1 向量沿用 |
+| \[ ] p.6.11.3 | zrpc 信封 + 可靠传输：EXT\_META（req\_id/error\_code/stream\_id/op）+ ACK 帧（STREAM\_SEQ 序号确认/超时重传）+ STREAM\_TOTAL 进度                                                                  | zrpc 往返/错误回传探针 PASS；乱序/丢帧报告一致；hub 形态准备                              |
+| \[ ] p.6.11.4 | 加密位接线：flags.ENCRYPTED + ENC\_ALGO（x25519 协商 + ascon\_mac/poly1305 组合 AEAD，nonce 前缀入扩展头）                                                           | 加密握手往返探针 PASS（x25519 协商 + AEAD 加解密一致）；P2P 传输层准备                     |
 
