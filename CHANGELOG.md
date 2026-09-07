@@ -22,6 +22,25 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] p.6.9.3/6.9.4/6.9.5 tsp 编译器级分析：复用前端树 + 符号索引 + 增量诊断（2026-09-07）
+
+* **analyze.tie（p.6.9.3）**：文档 → 编译流水线（`parser.parse_ast` + `semantic.check_ast`，
+  复用编译器前端，0-Rust 收官）→ 词法/语法/语义错误与语义警告映射为 LSP 诊断
+  （`ERR:line col msg` / `;W:l c msg` → range 映射，severity 1/2）。单文件错误隔离：
+  坏文档只产生自身诊断，不崩服务。语义成功才重建符号索引（sstate 部分状态不索引）。
+* **符号索引 + import 图（p.6.9.4 基础）**：check 成功后遍历主文件顶层（`g_file_roots[0]`）
+  收集函数/struct/enum/全局/namespace/extern 声明（名/类别/签名/行列），签名由 AST 重建
+  （泛型槽 + 返回类型 + 参数名/类型）；import 图记录 `g_imported` 归一化依赖清单，
+  提供 `doc_imports` 反向查询。查询接口：`sym_count/sym_name/sym_kind/sym_sig/sym_line/sym_col/find_sym_named`。
+* **增量诊断（p.6.9.5）**：文件级 FNV-1a 指纹缓存（诊断 JSON + ok 状态），didChange
+  文本未变不重算；didClose 清除全部分析状态（索引段/依赖/诊断缓存）。
+* **server 接线**：didOpen/didChange/didClose 走 analyze + index；删除浅层诊断
+  （括号配对/未定义函数行扫描，被编译器级取代）；移除未使用的 std/json import
+  （其 `g_pos` 与前端 `pst.g_pos` 冲突）。hover 保持不变。
+* **探针**：新增 `lsp_smoke4.py`（语义错误/警告/import 解析/正常文档零误报）；
+  `lsp_smoke.py`/`lsp_smoke2.py`/`lsp_smoke3.py` 全 PASS（生命周期/诊断/hover）。
+* **验证**：tsp.exe 编译零错误；4 个 smoke 脚本全 PASS；bootstrap sha 一致（见自举回归）。
+
 ## [feat] p.6.9.15 诊断标号体系：tiec 全部错误/警告带 C# 式标号 + tie-diag 文档仓库（2026-09-07）
 
 * **标号格式**：`error[E#####] @行:列: 消息名；期望 x；实际 y；提示。` /

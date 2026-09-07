@@ -3,22 +3,25 @@ type tie<logic>
 // server.tie：tsp（tie Language Server）服务端主循环（tie 写，0-Rust）
 // 命名空间：tsp_server
 //
-// 第一版范围（增量迭代，先打通握手 + 文档同步 + 基础诊断）：
+// 当前范围（p.6.9.3/6.9.4/6.9.5 落地：编译器级分析，复用前端树）：
 //   · initialize / initialized / shutdown / exit（生命周期）
 //   · textDocument/didOpen、didChange、didClose（文档同步 full）
-//   · publishDiagnostics（浅层诊断：括号配对 / 字符串闭合 / 未定义变量 / 未定义函数）
-//   · 其它方法（hover/completion/definition/...）返回空结果（客户端不报错）
+//   · publishDiagnostics（编译器级：词法/语法/语义错误 + 语义警告，见 analyze.tie）
+//   · 符号索引 + import 图（跨文件分析基础，见 analyze.tie）
+//   · hover（per-doc 签名索引）
+//   · 其它方法（completion/definition/references/...）返回空结果（客户端不报错）
 //
 // 客户端：editor/vscode-tie/（vscode-languageclient，命令默认 `tie --lsp`）。
 // 本文件编译：tiec compiler/lsp/server.tie -o tsp.exe —— 由 driver --lsp 调用
 // 或直接由 vscode 扩展配置绝对路径。
 //
-// 增量分析：文件级缓存（文本 + 浅层诊断），didChange 全量重算单文件。
+// 增量分析：文件级指纹缓存（诊断 + ok 状态），didChange 全量重算单文件；
+// 单文件错误隔离：坏文档只产生自身诊断，不崩服务。
 // ============================================================================
 
 import "../../std/stdio.tie" as stdio
-import "../../std/json.tie" as json
 import "./protocol.tie" as proto
+import "./analyze.tie" as an
 using tsp_proto;
 
 // ---- 文档状态 ----
@@ -238,268 +241,45 @@ func uri_basename(uri: string) -> string {
     return uri
 }
 
-// ---- 浅层诊断：对一段代码返回诊断数组（JSON 串）----
-// 第一版规则集：
-//   1. 括号配对：() {} [] 未闭合 → error at 未闭合符位置
-//   2. 字符串字面量：奇数个未转义双引号 → error
-//   3. 注释/整行提取未定义变量：太浅会误报，先不做（留待 analyzer）。
-//   仅做 1/2，保证零误报。
-
-func diagnose(txt: string) -> string {
-    var items = table_new_string()
-    // ---- 规则 1：括号配对 ----
-    var stack = table_new_i64()   // 括号字符码
-    var stack_pos = table_new_i64()
+// uri → 文档所在目录（import 相对路径解析基准，尾随 '/'，正斜杠）。
+// 支持 file:/// 前缀与 Windows 盘符；非文件 uri（untitled: 等）返回 ""。
+func uri_to_dir(uri: string) -> string {
+    var p = uri
+    if has_prefix_str(p, "file://") {
+        p = proto.substr_at(p, len("file://"), len(p))
+    }
+    // 去前导 '/'（file:///F:/... → F:/...）
+    while len(p) > 0 && (str_char(p, 0) == "/" || str_char(p, 0) == "\\") {
+        p = proto.substr_at(p, 1, len(p))
+    }
+    var last: i64 = -1
     var i: i64 = 0
-    var in_str = false
-    while i < len(txt) {
-        var c = char_code(str_char(txt, i))
-        // 字符串/注释跳过
-        if c == 34 {  // "
-            in_str = !in_str
-            i = i + 1
-            continue
-        }
-        if in_str {
-            i = i + 1
-            continue
-        }
-        if c == 40 || c == 123 || c == 91 {  // ( { [
-            table_push(stack, c)
-            table_push(stack_pos, i)
-        } else if c == 41 || c == 125 || c == 93 {  // ) } ]
-            var open: i64 = 0
-            if c == 41 {
-                open = 40
-            } else if c == 125 {
-                open = 123
-            } else {
-                open = 91
-            }
-            if len(stack) > 0 && stack[len(stack) - 1] == open {
-                if len(stack) > 0 {
-                    var nstack = table_new_i64()
-                    var nspos = table_new_i64()
-                    var k: i64 = 0
-                    while k < len(stack) - 1 {
-                        table_push(nstack, stack[k])
-                        table_push(nspos, stack_pos[k])
-                        k = k + 1
-                    }
-                    stack = nstack
-                    stack_pos = nspos
-                }
-            } else {
-                // 不匹配闭合
-                var (l, ch) = offset_to_pos(txt, i)
-                table_push(items, diag_item(l, ch, ch + 1, 1, "unmatched closing bracket '" + str_char(txt, i) + "'", "error"))
-            }
+    while i < len(p) {
+        var c = str_char(p, i)
+        if c == "/" || c == "\\" {
+            last = i
         }
         i = i + 1
     }
-    // 未闭合
-    while len(stack) > 0 {
-        var p = stack_pos[len(stack) - 1]
-        var (l0, c0) = offset_to_pos(txt, p)
-        var chname: string = ""
-        if stack[len(stack) - 1] == 40 {
-            chname = "("
-        } else if stack[len(stack) - 1] == 123 {
-            chname = "{"
-        } else {
-            chname = "["
-        }
-        table_push(items, diag_item(l0, c0, c0 + 1, 1, "unclosed bracket '" + chname + "'", "error"))
-        var ns = table_new_i64()
-        var np = table_new_i64()
-        var k: i64 = 0
-        while k < len(stack) - 1 {
-            table_push(ns, stack[k])
-            table_push(np, stack_pos[k])
-            k = k + 1
-        }
-        stack = ns
-        stack_pos = np
+    if last < 0 {
+        return ""
     }
-    // ---- 规则 2：未定义函数调用（保守：仅当调用名非任何声明/内置/关键字时）----
-    // 声明收集：func / pub func / namespace / import ... as（别名视为已定义命名空间）。
-    var decls = table_new_string()
-    // 内置零参量关键字跳过（控制流/字面量），其余候选名——保守用「调用形态 name(」判定。
-    var bu = table_new_string()
-    table_push(bu, "if")
-    table_push(bu, "else")
-    table_push(bu, "while")
-    table_push(bu, "for")
-    table_push(bu, "switch")
-    table_push(bu, "case")
-    table_push(bu, "return")
-    table_push(bu, "func")
-    table_push(bu, "import")
-    table_push(bu, "using")
-    table_push(bu, "println")
-    table_push(bu, "print")
-    table_push(bu, "len")
-    table_push(bu, "str_len")
-    table_push(bu, "str_char")
-    table_push(bu, "char_code")
-    table_push(bu, "to_string")
-    table_push(bu, "table_push")
-    table_push(bu, "table_new")
-    table_push(bu, "table_new_i64")
-    table_push(bu, "table_new_string")
-    table_push(bu, "exit")
-    table_push(bu, "panic")
-    table_push(bu, "time_now")
-    table_push(bu, "time_now_ms")
-    table_push(bu, "read_line")
-    // 扫描声明
-    var ti: i64 = 0
-    while ti < len(txt) {
-        // 行扫描：定位 func / pub func / namespace / import 关键字
-        var line_end = ti
-        while line_end < len(txt) && str_char(txt, line_end) != "\n" {
-            line_end = line_end + 1
-        }
-        var line_txt = proto.substr_at(txt, ti, line_end)
-        var lt = trim_str(line_txt)
-        var keywords = table_new_string()
-        table_push(keywords, "pub func")
-        table_push(keywords, "func")
-        table_push(keywords, "namespace")
-        table_push(keywords, "import")
-        var ki: i64 = 0
-        while ki < len(keywords) {
-            var kw = keywords[ki]
-            var at = str_find(lt, kw)
-            if at >= 0 {
-                // 取关键字后第一个标识符
-                var nm = id_after(lt, at + len(kw))
-                if len(nm) > 0 {
-                    table_push(decls, nm)
-                    // 顶层/命名空间内均可。添加常见内置命名空间对象以减误报
-                    if kw == "import" || kw == "namespace" {
-                        table_push(bu, nm)
-                    }
-                }
-            }
-            ki = ki + 1
-        }
-        ti = line_end + 1
-    }
-    // 扫描调用形态：按行遍历（声明行 func/pub func/namespace/import 整行跳过），
-    // 非声明行内的「标识符+(' 调用」检查是否声明/内置。
-    var si2: i64 = 0
-    while si2 < len(txt) {
-        var l_end = si2
-        while l_end < len(txt) && str_char(txt, l_end) != "\n" {
-            l_end = l_end + 1
-        }
-        var line2 = proto.substr_at(txt, si2, l_end)
-        var lt2 = trim_str(line2)
-        // 声明行跳过
-        var is_decl = false
-        if str_find(lt2, "func ") == 0 || str_find(lt2, "pub func ") == 0 ||
-           str_find(lt2, "namespace ") == 0 || str_find(lt2, "import ") == 0 {
-            is_decl = true
-        }
-        if is_decl {
-            si2 = l_end + 1
-            continue
-        }
-        // 行内逐标识符查调用形态
-        var k2: i64 = 0
-        while k2 < len(line2) {
-            var ch2 = str_char(line2, k2)
-            if ch2 == "\"" {
-                k2 = k2 + 1
-                while k2 < len(line2) && str_char(line2, k2) != "\"" {
-                    if str_char(line2, k2) == "\\" {
-                        k2 = k2 + 1
-                    }
-                    k2 = k2 + 1
-                }
-                k2 = k2 + 1
-                continue
-            }
-            if ch2 == "/" && k2 + 1 < len(line2) && str_char(line2, k2 + 1) == "/" {
-                break
-            }
-            var is_id2 = is_idchar(ch2)
-            if !is_id2 {
-                k2 = k2 + 1
-                continue
-            }
-            var id2 = k2
-            while k2 < len(line2) {
-                var chd = str_char(line2, k2)
-                if is_idchar2(chd) {
-                    k2 = k2 + 1
-                } else {
-                    break
-                }
-            }
-            var nm2 = proto.substr_at(line2, id2, k2)
-            var j2 = k2
-            while j2 < len(line2) {
-                var cj2 = str_char(line2, j2)
-                if cj2 == " " || cj2 == "\t" {
-                    j2 = j2 + 1
-                } else {
-                    break
-                }
-            }
-            if j2 < len(line2) && str_char(line2, j2) == "(" {
-                var known = is_in(nm2, decls) || is_in(nm2, bu)
-                if !known {
-                    var (fl, fc) = offset_to_pos(txt, si2 + id2)
-                    table_push(items, diag_item(fl, fc, fc + len(nm2), 1,
-                        "未定义函数 '" + nm2 + "'", "error"))
-                }
-            }
-        }
-        si2 = l_end + 1
-    }
-    // 组装 JSON 数组
-    var out: string = "["
-    var ii: i64 = 0
-    while ii < len(items) {
-        if ii > 0 {
-            out = out + ","
-        }
-        out = out + items[ii]
-        ii = ii + 1
-    }
-    out = out + "]"
-    return out
+    return proto.substr_at(p, 0, last + 1)
 }
 
-// 偏移 → 行/列。
-func offset_to_pos(txt: string, off: i64) -> (i64, i64) {
-    var line: i64 = 0
-    var col: i64 = 0
+// 字符串前缀判定（server 自足版）。
+func has_prefix_str(s: string, p: string) -> bool {
+    if len(s) < len(p) {
+        return false
+    }
     var i: i64 = 0
-    while i < off && i < len(txt) {
-        if str_char(txt, i) == "\n" {
-            line = line + 1
-            col = 0
-        } else {
-            col = col + 1
+    while i < len(p) {
+        if str_char(s, i) != str_char(p, i) {
+            return false
         }
         i = i + 1
     }
-    return (line, col)
-}
-
-// 名是否在表中（精确匹配）。
-func is_in(name: string, tbl: table<string>) -> bool {
-    var i: i64 = 0
-    while i < len(tbl) {
-        if tbl[i] == name {
-            return true
-        }
-        i = i + 1
-    }
-    return false
+    return true
 }
 
 // 单字符是否为标识符起始（字母/下划线；char_code 数值比较，避免字符串比较符不可用）。
@@ -565,13 +345,6 @@ func id_after(s: string, pos: i64) -> string {
         }
     }
     return proto.substr_at(s, i, j)
-}
-
-// 单条诊断 JSON。
-func diag_item(line: i64, ch: i64, endch: i64, len: i64, msg: string, severity: string) -> string {
-    return "{\"range\":{\"start\":{\"line\":" + to_string(line) + ",\"character\":" + to_string(ch) +
-           "},\"end\":{\"line\":" + to_string(line) + ",\"character\":" + to_string(endch) + "}}," +
-           "\"severity\":2,\"source\":\"tsp\",\"message\":" + proto.json_str(msg) + "}"
 }
 
 // ---- LSP 方法处理 ----
@@ -783,14 +556,18 @@ func main() -> i64 {
             break
         }
 
-        // 文档同步
+        // 文档同步：p.6.9.3/6.9.5 编译流水线分析（复用编译器前端）
         else if method == "textDocument/didOpen" {
             var uri = json_field(body, "uri")
             var txt = json_field(body, "text")
             if len(uri) > 0 {
                 set_doc(uri, txt)
+                var base = uri_to_dir(uri)
+                var (diags, ok) = an.analyze(uri, txt, base)
+                if ok == 1 {
+                    an.index_doc(uri)
+                }
                 rebuild_syms(uri, txt)
-                var diags = diagnose(txt)
                 publish_diagnostics(uri, diags)
             }
         } else if method == "textDocument/didChange" {
@@ -798,14 +575,19 @@ func main() -> i64 {
             var txt = json_field(body, "text")
             if len(uri) > 0 {
                 set_doc(uri, txt)
+                var base2 = uri_to_dir(uri)
+                var (diags2, ok2) = an.analyze(uri, txt, base2)
+                if ok2 == 1 {
+                    an.index_doc(uri)
+                }
                 rebuild_syms(uri, txt)
-                var diags = diagnose(txt)
-                publish_diagnostics(uri, diags)
+                publish_diagnostics(uri, diags2)
             }
         } else if method == "textDocument/didClose" {
             var uri = json_field(body, "uri")
             if len(uri) > 0 {
                 remove_doc(uri)
+                an.drop_doc(uri)
                 publish_diagnostics(uri, "[]")
             }
         }

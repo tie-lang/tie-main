@@ -17,7 +17,6 @@ type tie<class>
 // ============================================================================
 
 import "../../std/stdio.tie" as stdio
-import "../../std/json.tie" as json
 
 namespace tsp_proto {
 

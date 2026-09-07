@@ -1,0 +1,795 @@
+type tie<logic>
+// ============================================================================
+// analyze.tie：tsp 分析核心（p.6.9.3）
+// 命名空间：tsp_an
+//
+// 文档 → 编译流水线（复用编译器前端，0-Rust 收官）：
+//   parser.parse_ast(src) + semantic.check_ast(base_dir)
+//     → 词法/语法/语义错误（ERR:line col msg）→ LSP 诊断（range 映射）
+//     → 语义警告（OK 协议 ;W:l c msg 段）→ LSP 警告诊断
+//     → 符号索引（函数/struct/enum/全局/namespace + 位置 + 签名）
+//     → import 图（g_imported 归一化路径清单）
+//
+// 单文件错误隔离：坏文档只产生该文件的诊断，不崩服务；错误后 sstate
+// 处于部分状态，符号索引仅在 check 成功时重建。
+// 增量：文件级缓存（文本指纹 → 诊断 JSON），didChange 文本未变不重算。
+//
+// 本文件编译：tiec compiler/lsp/analyze.tie -o tsp.exe（经 server.tie 汇总）
+// 或随 server.tie 一起编译（server 是主入口，本文件被 import）。
+// ============================================================================
+
+import "../frontend/parser.tie"
+import "../frontend/semantic.tie"
+import "./protocol.tie" as proto
+
+// ---- 前端树跨层全局 shim ----
+// sinfer（frontend）引用 g_cur_fn_name，其声明在 backend/irgen.tie；
+// LSP 只 import frontend 树（不 import backend），此处补声明。
+var g_cur_fn_name: string = ""
+
+// ---- AST 节点 tag 常量（对齐 frontend/ast.tie，本地定义防重复 import）----
+const AN_VAR: i64 = 6
+const AN_CALL: i64 = 7
+const AN_PATH: i64 = 16
+const AN_METHOD_CALL: i64 = 18
+const AN_FIELD_ACCESS: i64 = 15
+const AN_VAR_DECL: i64 = 100
+const AN_FN_DEF: i64 = 101
+const AN_EXPR_STMT: i64 = 102
+const AN_IMPORT: i64 = 111
+const AN_NAMESPACE: i64 = 112
+const AN_STRUCT: i64 = 114
+const AN_EXTERN: i64 = 117
+const AN_PARAM: i64 = 118
+const AN_STMTLIST: i64 = 122
+const AN_CLASS_FIELD: i64 = 123
+const AN_ENUM: i64 = 128
+const AN_SEGMENT: i64 = 22
+const AN_NAMED_TYPE: i64 = 200
+
+// ---- 分析状态（文件顶层全局：tie namespace 体内不允许 var/const）----
+
+// 诊断缓存（文件级增量）：uri 表 + 指纹/JSON/ok 平行表
+var g_diag_uris: table<string>
+var g_diag_fps: table<string>
+var g_diag_json: table<string>
+var g_diag_ok: table<i64>
+
+// 符号索引（每文档一段：扁平平行表 + 段偏移/计数）
+var g_iuris: table<string>
+var g_ioff: table<i64>
+var g_icnt: table<i64>
+var g_inames: table<string>
+var g_ikinds: table<string>
+var g_isigs: table<string>
+var g_ilines: table<i64>
+var g_icols: table<i64>
+
+// import 图（正）：文档 → 依赖文件清单（\n 分隔）
+var g_dep_uris: table<string>
+var g_dep_list: table<string>
+
+namespace tsp_an {
+
+// ==================== 诊断缓存（文件级增量） ====================
+
+func diag_find(uri: string) -> i64 {
+    var i: i64 = 0
+    while i < len(g_diag_uris) {
+        if g_diag_uris[i] == uri {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func diag_set(uri: string, fp: string, json: string, ok: i64) {
+    var idx = diag_find(uri)
+    if idx >= 0 {
+        g_diag_fps[idx] = fp
+        g_diag_json[idx] = json
+        g_diag_ok[idx] = ok
+    } else {
+        table_push(g_diag_uris, uri)
+        table_push(g_diag_fps, fp)
+        table_push(g_diag_json, json)
+        table_push(g_diag_ok, ok)
+    }
+}
+
+func diag_get(uri: string, fp: string) -> string {
+    var idx = diag_find(uri)
+    if idx >= 0 && g_diag_fps[idx] == fp {
+        return g_diag_json[idx]
+    }
+    return ""
+}
+
+// 文本指纹：FNV-1a 64 位（字节级）+ 长度，字符串拼接组装。
+pub func fingerprint(txt: string) -> string {
+    var h: i64 = 1469598103934665603   // FNV offset basis（i64 溢出自然环绕）
+    var i: i64 = 0
+    while i < len(txt) {
+        h = (h * 1099511628211) & 0x7FFFFFFFFFFFFFFF
+        h = h ^ (char_code(str_char(txt, i)) & 0xFF)
+        i = i + 1
+    }
+    return to_string(len(txt)) + ":" + to_string(h)
+}
+
+// ==================== 诊断 JSON 构造 ====================
+
+// 单条诊断（severity：1=error 2=warning；range 单字符点）。
+func mk_diag(line: i64, col: i64, msg: string, severity: i64) -> string {
+    var l0 = line - 1
+    var c0 = col - 1
+    if l0 < 0 {
+        l0 = 0
+    }
+    if c0 < 0 {
+        c0 = 0
+    }
+    return "{\"range\":{\"start\":{\"line\":" + to_string(l0) + ",\"character\":" + to_string(c0) +
+           "},\"end\":{\"line\":" + to_string(l0) + ",\"character\":" + to_string(c0 + 1) + "}}," +
+           "\"severity\":" + to_string(severity) + ",\"source\":\"tsp\",\"message\":" +
+           proto.json_str(msg) + "}"
+}
+
+// 错误诊断数组（编译器 ERR 协议 → JSON 数组）。
+// 格式：ERR:<line> <col> <msg>（line/col 1-based）。返回 "[...]"。
+pub func err_to_diag(proto_err: string) -> string {
+    var rest = proto_err
+    var n = str_len(rest)
+    var i: i64 = 4   // 跳过 "ERR:"
+    while i < n && str_char(rest, i) != " " {
+        i = i + 1
+    }
+    var line = parse_num(substr(rest, 4, i))
+    while i < n && str_char(rest, i) == " " {
+        i = i + 1
+    }
+    var j = i
+    while j < n && str_char(rest, j) != " " {
+        j = j + 1
+    }
+    var col = parse_num(substr(rest, i, j))
+    while j < n && str_char(rest, j) == " " {
+        j = j + 1
+    }
+    var msg = substr(rest, j, n)
+    return "[" + mk_diag(line, col, msg, 1) + "]"
+}
+
+// 解析 10 进制正整数（非数字返回 0）。
+func parse_num(s: string) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < len(s) {
+        var d = char_code(str_char(s, i)) - 48
+        if d < 0 || d > 9 {
+            break
+        }
+        v = v * 10 + d
+        i = i + 1
+    }
+    return v
+}
+
+// 子串 [start, end)（钳位）。
+func substr(s: string, start: i64, end: i64) -> string {
+    var a = start
+    var b = end
+    if a < 0 {
+        a = 0
+    }
+    if b > len(s) {
+        b = len(s)
+    }
+    if a >= b {
+        return ""
+    }
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// ==================== 核心分析 ====================
+
+// 分析文档：文本 → (诊断 JSON 数组, ok)。ok=1 表示语义检查成功（符号索引
+// 可重建）；ok=0 表示词法/语法/语义错误（诊断 = 单条编译器错误）。
+// 带文件级指纹缓存：文本未变返回缓存（诊断 + ok 均缓存）。
+// base_dir：文档所在目录（import 相对路径解析基准，尾随 '/'）。
+pub func analyze(uri: string, txt: string, base_dir: string) -> (string, i64) {
+    var fp = fingerprint(txt)
+    var idx = diag_find(uri)
+    if idx >= 0 && g_diag_fps[idx] == fp {
+        return (g_diag_json[idx], g_diag_ok[idx])
+    }
+    // 剥离文件类型声明头部（type tie<X>），与真实管线同规则
+    var src = strip_type_decl(txt)
+    var prc = parser.parse_ast(src)
+    if prc < 0 {
+        var r1 = err_to_diag(parser.ast_err_protocol())
+        diag_set(uri, fp, r1, 0)
+        return (r1, 0)
+    }
+    var sem = semantic.check_ast(base_dir)
+    var out: string = ""
+    var ok: i64 = 1
+    if has_prefix(sem, "ERR:") {
+        out = err_to_diag(sem)
+        ok = 0
+    } else {
+        out = warns_to_diag(sem)
+    }
+    diag_set(uri, fp, out, ok)
+    return (out, ok)
+}
+
+// 便捷入口：仅返回诊断 JSON（忽略 ok）。
+pub func analyze_doc(uri: string, txt: string, base_dir: string) -> string {
+    var (j, ok) = analyze(uri, txt, base_dir)
+    return j
+}
+
+// 语义 OK 协议中的警告段 → 诊断数组（severity 2）。无警告返回 "[]"。
+func warns_to_diag(sem: string) -> string {
+    var items: table<string> = table_new_string()
+    var rest = sem
+    var p = find_str(rest, ";W:")
+    while p >= 0 {
+        var head = substr(rest, p + 3, str_len(rest))
+        var sp1 = find_char(head, " ")
+        var sp2: i64 = -1
+        var i: i64 = 0
+        if sp1 >= 0 {
+            i = sp1 + 1
+            var hn: i64 = str_len(head)
+            while i < hn {
+                if str_char(head, i) == " " {
+                    sp2 = i
+                    break
+                }
+                i = i + 1
+            }
+        }
+        if sp1 >= 0 && sp2 >= 0 {
+            var line = parse_num(substr(head, 0, sp1))
+            var col = parse_num(substr(head, sp1 + 1, sp2))
+            var msg = substr(head, sp2 + 1, str_len(head))
+            table_push(items, mk_diag(line, col, msg, 2))
+        }
+        p = find_str(head, ";W:")
+    }
+    var out: string = "["
+    var k: i64 = 0
+    while k < len(items) {
+        if k > 0 {
+            out = out + ","
+        }
+        out = out + items[k]
+        k = k + 1
+    }
+    out = out + "]"
+    return out
+}
+
+// ==================== 符号索引（p.6.9.4 基础） ====================
+// 每文档一段：扁平平行表 + 段偏移/计数。check 成功后重建。
+// （表声明在文件顶层，见文件头）
+
+func idx_find(uri: string) -> i64 {
+    var i: i64 = 0
+    while i < len(g_iuris) {
+        if g_iuris[i] == uri {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func add_sym(name: string, kind: string, sig: string, line: i64, col: i64) {
+    table_push(g_inames, name)
+    table_push(g_ikinds, kind)
+    table_push(g_isigs, sig)
+    table_push(g_ilines, line)
+    table_push(g_icols, col)
+}
+
+// 重建文档符号段：清旧段（重建扁平表）→ 遍历主文件顶层收集。
+// 前置：semantic.check_ast 成功（sstate 表有效，g_file_roots[0] = 主文件根）。
+pub func index_doc(uri: string) -> i64 {
+    var idx = idx_find(uri)
+    remove_segment(idx)
+    var start = len(g_inames)
+    // 收集主文件顶层声明
+    collect_tops(g_file_roots[0], "")
+    var cnt = len(g_inames) - start
+    if idx >= 0 {
+        g_ioff[idx] = start
+        g_icnt[idx] = cnt
+    } else {
+        table_push(g_iuris, uri)
+        table_push(g_ioff, start)
+        table_push(g_icnt, cnt)
+    }
+    // import 图（正）：依赖文件清单（g_imported 本轮分析结果）
+    set_deps(uri)
+    return cnt
+}
+
+// 移除文档的全部分析状态（索引段 + 依赖 + 诊断缓存）。
+pub func drop_doc(uri: string) {
+    var idx = idx_find(uri)
+    remove_segment(idx)
+    if idx >= 0 {
+        // 移除 uri 表项（重建）
+        var nu = table_new_string()
+        var no = table_new_i64()
+        var nc = table_new_i64()
+        var i: i64 = 0
+        while i < len(g_iuris) {
+            if i != idx {
+                table_push(nu, g_iuris[i])
+                table_push(no, g_ioff[i])
+                table_push(nc, g_icnt[i])
+            }
+            i = i + 1
+        }
+        g_iuris = nu
+        g_ioff = no
+        g_icnt = nc
+    }
+    // 移除依赖项
+    var di = -1
+    var j: i64 = 0
+    while j < len(g_dep_uris) {
+        if g_dep_uris[j] == uri {
+            di = j
+            break
+        }
+        j = j + 1
+    }
+    if di >= 0 {
+        var ndu = table_new_string()
+        var ndl = table_new_string()
+        var k: i64 = 0
+        while k < len(g_dep_uris) {
+            if k != di {
+                table_push(ndu, g_dep_uris[k])
+                table_push(ndl, g_dep_list[k])
+            }
+            k = k + 1
+        }
+        g_dep_uris = ndu
+        g_dep_list = ndl
+    }
+    // 移除诊断缓存
+    var dgi = diag_find(uri)
+    if dgi >= 0 {
+        var n1 = table_new_string()
+        var n2 = table_new_string()
+        var n3 = table_new_string()
+        var n4 = table_new_i64()
+        var m: i64 = 0
+        while m < len(g_diag_uris) {
+            if m != dgi {
+                table_push(n1, g_diag_uris[m])
+                table_push(n2, g_diag_fps[m])
+                table_push(n3, g_diag_json[m])
+                table_push(n4, g_diag_ok[m])
+            }
+            m = m + 1
+        }
+        g_diag_uris = n1
+        g_diag_fps = n2
+        g_diag_json = n3
+        g_diag_ok = n4
+    }
+}
+
+// 移除下标 idx 的符号段（扁平表重建）；idx < 0 不做。
+func remove_segment(idx: i64) {
+    if idx < 0 {
+        return
+    }
+    var removed = g_ioff[idx]
+    var nn: table<string> = table_new_string()
+    var nk: table<string> = table_new_string()
+    var ns: table<string> = table_new_string()
+    var nl: table<i64> = table_new_i64()
+    var nc: table<i64> = table_new_i64()
+    var i: i64 = 0
+    while i < len(g_inames) {
+        if i < removed || i >= removed + g_icnt[idx] {
+            table_push(nn, g_inames[i])
+            table_push(nk, g_ikinds[i])
+            table_push(ns, g_isigs[i])
+            table_push(nl, g_ilines[i])
+            table_push(nc, g_icols[i])
+        }
+        i = i + 1
+    }
+    g_inames = nn
+    g_ikinds = nk
+    g_isigs = ns
+    g_ilines = nl
+    g_icols = nc
+}
+
+// 记录文档的 import 依赖（g_imported 归一化路径）。
+// （g_dep_uris/g_dep_list 声明在文件顶层）
+
+func set_deps(uri: string) {
+    var idx = -1
+    var i: i64 = 0
+    while i < len(g_dep_uris) {
+        if g_dep_uris[i] == uri {
+            idx = i
+            break
+        }
+        i = i + 1
+    }
+    var list: string = ""
+    var k: i64 = 0
+    while k < len(g_imported) {
+        if k > 0 {
+            list = list + "\n"
+        }
+        list = list + g_imported[k]
+        k = k + 1
+    }
+    if idx >= 0 {
+        g_dep_list[idx] = list
+    } else {
+        table_push(g_dep_uris, uri)
+        table_push(g_dep_list, list)
+    }
+}
+
+// 查询：文档是否依赖给定文件（归一化路径精确匹配）。
+pub func doc_imports(uri: string, file: string) -> bool {
+    var idx = -1
+    var i: i64 = 0
+    while i < len(g_dep_uris) {
+        if g_dep_uris[i] == uri {
+            idx = i
+            break
+        }
+        i = i + 1
+    }
+    if idx < 0 {
+        return false
+    }
+    var list = g_dep_list[idx]
+    var j: i64 = 0
+    while j < len(list) {
+        var le = j
+        while le < len(list) && str_char(list, le) != "\n" {
+            le = le + 1
+        }
+        if substr(list, j, le) == file {
+            return true
+        }
+        j = le + 1
+    }
+    return false
+}
+
+// 递归收集顶层声明（含 namespace 递归）。
+func collect_tops(root: i64, prefix: string) {
+    var nc = s_nchild[root]
+    var base = s_coff[root]
+    var k: i64 = 0
+    while k < nc {
+        var c = s_children[base + k]
+        if c >= 0 {
+            var tag = s_tags[c]
+            if tag == AN_FN_DEF {
+                add_sym(prefix + intern.lookup(s_names[c]), "func", fn_sig(c), s_lines[c], s_cols[c])
+            } else if tag == AN_STRUCT {
+                add_sym(prefix + intern.lookup(s_names[c]), "struct", "", s_lines[c], s_cols[c])
+            } else if tag == AN_ENUM {
+                add_sym(prefix + intern.lookup(s_names[c]), "enum", "", s_lines[c], s_cols[c])
+            } else if tag == AN_VAR_DECL {
+                add_sym(prefix + intern.lookup(s_names[c]), "global", "", s_lines[c], s_cols[c])
+            } else if tag == AN_EXTERN {
+                add_sym(prefix + intern.lookup(s_names[c]), "extern", "", s_lines[c], s_cols[c])
+            } else if tag == AN_NAMESPACE {
+                var nsegs = s_aux[c]
+                var segbase = s_coff[c]
+                var full = prefix
+                var si: i64 = 0
+                while si < nsegs {
+                    var seg = s_children[segbase + si]
+                    if seg >= 0 {
+                        full = full + intern.lookup(s_names[seg]) + "."
+                    }
+                    si = si + 1
+                }
+                add_sym(full, "namespace", "", s_lines[c], s_cols[c])
+                // 递归：body = 第 nsegs 个子节点（N_STMTLIST）
+                if nsegs < s_nchild[c] {
+                    var body = s_children[segbase + nsegs]
+                    if body >= 0 && s_tags[body] == AN_STMTLIST {
+                        collect_tops(body, full)
+                    }
+                }
+            }
+        }
+        k = k + 1
+    }
+}
+
+// 函数签名文本（AST 重建：泛型槽 + 返回类型 + 参数 + body 布局）。
+func fn_sig(node: i64) -> string {
+    var name = intern.lookup(s_names[node])
+    var out = "func " + name
+    var nc = s_nchild[node]
+    var base = s_coff[node]
+    var ret: string = ""
+    var i: i64 = 1
+    if nc > 1 {
+        var c1 = s_children[base + 1]
+        if c1 >= 0 && s_tags[c1] != AN_PARAM && s_tags[c1] != AN_STMTLIST {
+            ret = type_text(c1)
+            i = 2
+        }
+    }
+    out = out + "("
+    var first: bool = true
+    while i < nc {
+        var c = s_children[base + i]
+        if c < 0 || s_tags[c] != AN_PARAM {
+            break
+        }
+        if !first {
+            out = out + ", "
+        }
+        first = false
+        var pname = intern.lookup(s_names[c])
+        out = out + pname
+        if s_nchild[c] > 0 {
+            var pt = type_text(s_children[s_coff[c]])
+            if len(pt) > 0 {
+                out = out + ": " + pt
+            }
+        }
+        i = i + 1
+    }
+    out = out + ")"
+    if len(ret) > 0 {
+        out = out + " -> " + ret
+    }
+    return out
+}
+
+// 类型节点 → 文本（N_NAMED_TYPE 取池名；N_PATH 拼接段；其余回退 "?"）。
+func type_text(node: i64) -> string {
+    if node < 0 {
+        return ""
+    }
+    var tag = s_tags[node]
+    if tag == AN_NAMED_TYPE {
+        return intern.lookup(s_names[node])
+    }
+    if tag == AN_PATH {
+        var out: string = ""
+        var nc = s_nchild[node]
+        var base = s_coff[node]
+        var k: i64 = 0
+        while k < nc {
+            var c = s_children[base + k]
+            if c >= 0 {
+                if len(out) > 0 {
+                    out = out + "."
+                }
+                out = out + intern.lookup(s_names[c])
+            }
+            k = k + 1
+        }
+        return out
+    }
+    if tag == AN_VAR {
+        return intern.lookup(s_names[node])
+    }
+    return "?"
+}
+
+// ==================== 查询接口（hover/completion/definition 用） ====================
+
+// 文档符号数（-1 = 未索引）。
+pub func sym_count(uri: string) -> i64 {
+    var idx = idx_find(uri)
+    if idx < 0 {
+        return -1
+    }
+    return g_icnt[idx]
+}
+
+func sym_at(uri: string, i: i64) -> i64 {
+    var idx = idx_find(uri)
+    if idx < 0 || i < 0 || i >= g_icnt[idx] {
+        return -1
+    }
+    return g_ioff[idx] + i
+}
+
+pub func sym_name(uri: string, i: i64) -> string {
+    var s = sym_at(uri, i)
+    if s < 0 {
+        return ""
+    }
+    return g_inames[s]
+}
+
+pub func sym_kind(uri: string, i: i64) -> string {
+    var s = sym_at(uri, i)
+    if s < 0 {
+        return ""
+    }
+    return g_ikinds[s]
+}
+
+pub func sym_sig(uri: string, i: i64) -> string {
+    var s = sym_at(uri, i)
+    if s < 0 {
+        return ""
+    }
+    return g_isigs[s]
+}
+
+pub func sym_line(uri: string, i: i64) -> i64 {
+    var s = sym_at(uri, i)
+    if s < 0 {
+        return 0
+    }
+    return g_ilines[s]
+}
+
+pub func sym_col(uri: string, i: i64) -> i64 {
+    var s = sym_at(uri, i)
+    if s < 0 {
+        return 0
+    }
+    return g_icols[s]
+}
+
+// 按名查符号（首个匹配；-1 = 未找到）。
+pub func find_sym_named(uri: string, name: string) -> i64 {
+    var n = sym_count(uri)
+    var i: i64 = 0
+    while i < n {
+        if sym_name(uri, i) == name {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// ==================== 字符串工具 ====================
+
+func has_prefix(s: string, p: string) -> bool {
+    if len(s) < len(p) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(p) {
+        if str_char(s, i) != str_char(p, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 首个子串出现位置（未找到 -1）。
+func find_str(hay: string, needle: string) -> i64 {
+    if len(needle) == 0 {
+        return 0
+    }
+    var i: i64 = 0
+    while i + len(needle) <= len(hay) {
+        var matched: bool = true
+        var j: i64 = 0
+        while j < len(needle) {
+            if str_char(hay, i + j) != str_char(needle, j) {
+                matched = false
+                break
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 首个字符出现位置（未找到 -1）。
+func find_char(s: string, c: string) -> i64 {
+    var i: i64 = 0
+    while i < len(s) {
+        if str_char(s, i) == c {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 剥离文件类型声明行（type tie / type tie<X>）：头部 = 最前连续行
+//（允许空行），声明行空行占位；其余原样。与 semantic.strip_type_decl
+// 同规则（LSP 侧独立实现，避免跨模块内部函数依赖）。
+func strip_type_decl(src: string) -> string {
+    var n = len(src)
+    var i: i64 = 0
+    var out: string = ""
+    var in_header: bool = true
+    while in_header {
+        var ln_s = i
+        var ln_e = i
+        while ln_e < n && str_byte(src, ln_e) != 10 {
+            ln_e = ln_e + 1
+        }
+        var has_nl = ln_e < n
+        var next_i = ln_e
+        if has_nl {
+            next_i = ln_e + 1
+        }
+        var t = trim(str_sub_bytes(src, ln_s, ln_e))
+        if str_len(t) == 0 {
+            out = out + str_sub_bytes(src, ln_s, next_i)
+        } else if has_prefix(t, "type tie") {
+            var rest = trim(substr(t, 8, str_len(t)))
+            if str_len(rest) == 0 || (str_char(rest, 0) == "<" && str_char(rest, str_len(rest) - 1) == ">") {
+                if has_nl {
+                    out = out + "\n"
+                }
+            } else {
+                out = out + str_sub_bytes(src, ln_s, n)
+                in_header = false
+            }
+        } else {
+            out = out + str_sub_bytes(src, ln_s, n)
+            in_header = false
+        }
+        i = next_i
+        if in_header && i >= n {
+            in_header = false
+        }
+    }
+    return out
+}
+
+func trim(s: string) -> string {
+    var a: i64 = 0
+    var b = len(s)
+    while a < b {
+        var c = str_char(s, a)
+        if c == " " || c == "\t" || c == "\r" {
+            a = a + 1
+        } else {
+            break
+        }
+    }
+    while b > a {
+        var c = str_char(s, b - 1)
+        if c == " " || c == "\t" || c == "\r" {
+            b = b - 1
+        } else {
+            break
+        }
+    }
+    return substr(s, a, b)
+}
+
+}   // namespace tsp_an
