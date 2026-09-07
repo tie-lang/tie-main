@@ -1,7 +1,7 @@
 ---
 name: tie-dev
 description: 用 tie 语言开发软件——tie 语法与类型系统、文件角色与头声明、编译运行（tiec）、数据互联（tink/zd）、表运算、标准库、包管理器、工程化工作流。在 F:\Projects\tie 仓库或任何 tie 项目中编写 .tie 应用代码时加载。
-whenToUse: 编写 tie 源文件（.tie）、编译运行 tie 程序、使用 tink 帧协议/zd 序列化、使用标准库（std/）、组织多文件项目、使用包管理器（pkg/）时使用。
+whenToUse: 编写 tie 源文件（.tie）、编译运行 tie 程序、使用 tink 帧协议（v1/v2）/zd 序列化、使用标准库（std/）、组织多文件项目、使用包管理器（pkg/）、使用 tsp 语言服务器时使用。
 ---
 
 # tie 开发技能（用 tie 写软件）
@@ -10,8 +10,10 @@ tie：静态类型、四段式编译（预处理→前端→中端→后端 LLVM
 目标：全领域通用——写逻辑、写界面、写数据库、当数据交换格式。
 编译器 **tiec 由 tie 100% 自写**（自举闭环，0-Rust）；发布包内置精简 LLVM 工具链，解压即用。
 本文档是**应用开发者向**：用 tie 写程序，不涉及编译器内部开发。
-并发（preview\.5+）：内置 actor 原语 + channel 消息通道（p.6.5.7/6.5.8）；复杂形态
-`import trm-lite`（work-stealing 调度 + 并发三色 GC 分代/整理 + mailbox，p.6.5.x 完整落地）。
+并发（preview\.6）：内置 actor 原语 + channel（Go 语义：close 广播 / select 多路，p.6.7.12）
++ WaitGroup（p.6.7.11）+ 双形态真并行（S-pool/S-deque 简单形态、C-pool/C-deque 复杂形态，
+p.6.7.x 全落地）；复杂形态 `import trm-lite`（work-stealing + 并发三色 GC 分代/整理 +
+协作抢占，p.6.5.x 完整落地）。
 
 ## 1. 快速开始
 
@@ -30,7 +32,7 @@ compiler\tiec.exe repl\repl.tie          # 构建 REPL 外壳
 
 * LLVM 工具发现顺序：`TIE_LLVM_HOME\bin` → tiec.exe 同目录 `llvm\bin` → `PATH` → 固定目录（`D:\LLVM\bin` 等）；
 
-* 发行打包：`compiler\tiec.exe scripts\package.tie -- <版本号>`（tie 语言自写打包器，产出 `dist/tie-<版本>-win-x64.zip`；`skip-repl`/`skip-llvm` 可跳过对应步骤）。
+* 发行打包（tie 语言自写打包器，产出 `dist/tie-<版本>-win-x64.zip`）：先 `compiler\tiec.exe scripts\package.tie -o dist\package.exe` 编译打包器，再 `dist\package.exe <版本号>` 运行（tiec 不支持在源码后直传脚本参数；`skip-repl`/`skip-llvm` 可跳过对应步骤）。
 
 ## 2. 文件角色（头声明）
 
@@ -57,7 +59,7 @@ compiler\tiec.exe repl\repl.tie          # 构建 REPL 外壳
 ## 3. 类型系统
 
 基本类型：`i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 bool trit char string void`。
-复合类型：`table<T>`（动态数组）、`map`（键值表）、元组 `(T1, T2)`、struct、enum、`fn(A)->R`（函数类型）、`code`（编译期代码片段，宏用）、`any`（P2c 动态装箱）。
+复合类型：`table<T>`（动态数组）、`map`（键值表）、元组 `(T1, T2)`、struct、enum、`fn(A)->R`（函数类型）、`code`（编译期代码片段，宏用）、`any`（P2c 动态装箱）、`ptr<T>`（类型化指针，unsafe 门禁，p.6.8.1）。
 
 ```tie
 var x = 5                    // 推导 i64（整数字面量默认 i64）
@@ -171,13 +173,16 @@ fill(t)                    // len=3, t[0]=42
 ### 5.2 extern 函数声明（调用 libc / C 符号）
 
 ```tie
-extern fn system(cmd: string) -> i32;    // 仅文件顶层；参数/返回仅标量
+extern fn system(cmd: string) -> i32;    // 仅文件顶层（p.6.8.3 起 extern 强制 unsafe 门禁）
 extern fn rand() -> i32;
 println(rand())
 println(system("exit 0"))
 ```
 
 REPL / 解释路径不支持调用 extern（仅编译路径）。
+
+* **extern 扩展（p.6.8.3）**：extern 强制 unsafe；支持 `ptr` 参数/返回值、`#[repr(C)]`
+  结构体按引用传递、string↔char\*；调用 extern 须处于 `unsafe` 上下文。
 
 ### 5.3 多值返回（元组）
 
@@ -238,6 +243,9 @@ println(p.dist())              // 方法转发 → Point::dist(&p)
 * 继承：`struct Dog extends Animal`（字段拍平，子在前父在后），方法沿继承链查找（子→父），无虚表/无动态分派；
 
 * 子 struct 字段必须跨继承链唯一；继承环 / 字段重名 → 编译错误。
+
+* **repr(C) 显式 ABI 布局（p.6.8.2）**：`#[repr(C)]` 结构体字段偏移精确对齐 C 编译输出
+  （offsetof 全等），可整体按引用传 extern；与窄整数模型咬合。
 
 ### 6.3 enum（ADT，tag + payload）
 
@@ -359,20 +367,28 @@ using math;                        // 引入命名空间：公有函数可裸调
 ### 标准库（std/，library-v2 三层重构后）
 
 ```
-文本/编码：string / ascii / utf / bytes / format / regex / json / csv / encoding / base48
+文本/编码：string / ascii / utf / bytes / format / regex / json / csv / encoding / base48 / stdio
 数据结构：sort / collection / set / deque / graph / linalg / optsearch / radix
 数学：math（泛型 abs<T>/max<T>/min<T>/clamp<T>）/ exmath / random / bigint
 IO/系统：fs / path / args / process / time / version / intern / assert
-网络：net / http / http_server
+网络/Web：net / httpc（完整 HTTP 客户端，p.6.6.2）/ http（旧版兼容）/ http_server（升级：
+          路由/keep-alive/静态文件/SSE/JWT 会话，p.6.6.21）/ sse（p.6.6.3）/ ws（p.6.6.7）/
+          smtp（p.6.6.8）/ dns（p.6.6.9）/ llm（OpenAI 兼容，p.6.6.22）
+结构化数据：yaml（p.6.6.10）/ markdown（p.6.6.12）/ tpl（p.6.6.16）/ diff（p.6.6.17）/
+          cron（p.6.6.18）/ jwt（p.6.6.19）/ sqlite（p.6.6.20）
 哈希/密码：sha1 / sha256 / sha512 / sha3 / blake2 / blake3 / shake / md5（遗留）/
           siphash / xxh3（非加密）/ hmac / poly1305 / ascon_mac / hkdf / pbkdf2 /
           ed25519 / x25519 / tsha1 / tsha1_w48（TIE Secure Hash，state-per-n）
-数据互联：tink（帧协议）/（zd 序列化见下方）
-其他：crypto / db / result / tink_probe
+数据互联：tink（帧 v1 CRC32）/ tink_v2（帧 v2：tsha1f 校验 + zrpc + 加密位，p.6.11.x；zd 序列化见下方）
+其他：crypto / db / result
 ```
 
-扩展库（ext/）：aes / chacha20 / ascon\_aead / ecdsa / scrypt / argon2 / compress /
-jpeg / lz4 / zstd / brotli（codec）/ ml / registry / log / bench / cache / config / pretty / test / tui。
+扩展库（ext/）：网络 **tls（TLS 1.3+1.2 纯 tie + X.509 全链校验，p.6.6.1）** / html（p.6.6.4）/
+xml（p.6.6.5）/ spidey（爬虫治理，p.6.6.6）/ png（p.6.6.13）/ qr（p.6.6.14）/ svg（p.6.6.15）/
+config（+TOML 提升，p.6.6.11）/ aes / chacha20 / ascon\_aead / ecdsa / scrypt / argon2 /
+compress / codec（jpeg/lz4/zstd/brotli）/ ml / vecsearch / registry / log / bench / cache /
+pretty / test / tui / **gfx（Skia 图形，p.6.8：repr(C) 句柄层 + 窗口/事件/主循环）**。
+平台层（sys/，p.6.6.23）：**win32**（注册表/系统信息/剪贴板/环境/用户目录/窗口消息/进程枚举/服务控制/网络接口/硬件信息）。
 嵌入式基础层（rdu/，无栈纪律）：ascii / bits / crc（Crc8/16/32/Fnv1a）/ fixed / math / rdb / rnd / rdu\_ascon\_mac / rdu\_poly1305。
 
 常用：
@@ -413,7 +429,7 @@ intern.intern("abc")                     // 字符串 → 稳定整数 id（std/
 **path**：`join/basename/dirname/abs/normalize/ext/stem/cwd`。
 **process**：`exec_code(cmd)->i32`、`exec_output(cmd)->string`。
 **net**：`tcp_listen/tcp_accept/tcp_connect/tcp_send/tcp_recv`、`udp_bind/udp_send/udp_recv`、`close`。
-**http\_server**：`listen/accept`、`read_request(conn)->Request`、`header(req,name)`、`send(conn,status,ctype,body)`、`close`。
+**http\_server（升级，p.6.6.21）**：`listen/accept`、`read_request(conn)->Request`、`header(req,name)`、`send(conn,status,ctype,body)`、`close`；路由 `route(method,pattern,handler)`、静态文件 `serve_static`、SSE 推送 `sse_send`、JWT 会话 `jwt_session`（keep-alive）。
 **http**：`get(url)->Result<string,string>`、`get_file(url,path)->bool`。
 **json**：`parse(s)->i64`（句柄）、`parse_file->Result<i64,string>`、`to_str`、`type_of/is_null/is_bool/...`、`int_val/float_val/str_val`、`arr_len/arr_at/obj_keys/obj_get`。
 **csv**：`read(path)->table<string>`、`cells(line,sep)`、`write(path,lines)`。
@@ -431,7 +447,48 @@ intern.intern("abc")                     // 字符串 → 稳定整数 id（std/
 
 哈希/密码族（全部 hex 输入输出）：`sha256.sha256`、`sha512.sha512/sha512_bytes`、`sha1.sha1_hex`、`sha3.sha3_256/sha3_512`、`shake.shake128/shake256(msg_hex,outlen)`、`md5.md5_hex`、`blake.blake2s/blake2b`、`blake3.blake3_256`、`hmac.hmac_sha256(key,msg)`、`pbkdf2.pbkdf2_hmac_sha256(p,s,iter,dklen)`、`hkdf.extract/expand/derive`、`poly.poly1305(key,msg)`、`ascon_mac.ascon_mac128(key,msg)`、`siph.sip24(k0,k1,s)`、`xxh3.xxh3_64(xxh3->i64/hex)`、`ed25519.keygen/sign/verify`、`x25519.keygen/dh`、`tsha.tsha1f/b/x/r(msg,n,base=48)`。
 
+**stdio（stdio，p.6.9.1）**：`read_bytes(n)->table<i64>`（stdin 字节）、`write_bytes(表)` /
+`write_str(s)`（stdout 字节/串，返回写入字节数）。
+**httpc（p.6.6.2）**：`get(url)->Result<string,string>`、`get_text/get_bytes/get_file`、
+`post(url,body,ctype)`、`open_stream(url)` / `stream_recv` / `stream_close`（流式/SSE）、
+`body_text(resp)`、`jar_*` cookie 会话（旧 `http.get` 保留兼容）。
+**sse（p.6.6.3）**：`connect(url,hdrs)->sse`、`recv_event(sse)->{event,data,id,retry}`、`close`。
+**ws（p.6.6.7）**：`connect(url)->ws`、`ws_send(ws,payload[,bin])`、`ws_recv(ws)`、`ws_close(ws)`。
+**smtp（p.6.6.8）**：`send(cfg,from,to,subject,body)->bool`（EHLO/AUTH/MAIL/RCPT/DATA，可配 STARTTLS）。
+**dns（p.6.6.9）**：`query(host,type)->table`（A/AAAA/TXT/MX，UDP）。
+**llm（p.6.6.22）**：`chat(model,messages)->Result<string,string>`（OpenAI 兼容 POST + SSE 流式）、`complete(…)`。
+**yaml（p.6.6.10）**：`parse(s)->i64`（块缩进/流式/标量 → 平行表句柄，访问器同 json）。
+**markdown（p.6.6.12）**：`parse(s)->i64`（块级元素/行内标记 → 结构表句柄）、`block_count/kind/table_*/inline_tokens`。
+**tpl（p.6.6.16）**：`render(tpl,vars)->string`（`{{expr}}` 求值 + for/if）。
+**diff（p.6.6.17）**：`line_diff(a,b)->table`（LCS 行级）、`unified(a,b)->string`。
+**cron（p.6.6.18）**：`next(expr,from)->i64`（5 字段 → 下次触发时间戳）。
+**jwt（p.6.6.19）**：`sign(payload,secret,alg)->string`（HS256/RS256）、`verify(token,secret)->bool`、`claims(token)`。
+**sqlite（p.6.6.20）**：`open(path)->db`、`exec(db,sql)->bool`、`query(db,sql)->stmt`、`step/stmt/col_int/col_str`、`close(db)`（winsqlite3.dll 动态加载）。
+**tink_v2（tink2，p.6.11.1）**：`frame_encode(payload)` / `frame_next` / `frame_skip`（帧 v2：
+magic+version+flags+TLV+tsha1f 校验）；`stream_chunk_make/split/join`（分块流）；
+`zrpc_call_frame/reply_frame/ack_frame/ping_frame/pong_frame` + `zrpc_meta_*`（可靠传输）；
+`derive_sym_key` / `handshake` / `encrypt_frame` / `decrypt_frame`（x25519+HKDF+ascon AEAD）。
+
 ### 11.2 ext 扩展库 API（`import "../../ext/xxx.tie"`）
+
+* **tls（p.6.6.1）**：`connect(host,port[,opts])->tls`、`send(tls,bytes)`、`recv(tls)`、`close(tls)`
+  （TLS 1.3+1.2 纯 tie 客户端 + X.509 全链校验）。
+
+* **html（p.6.6.4）**：`parse(s)->i64`（DOM 树句柄）、`query(doc,sel)->table`（CSS 选择器）、
+  `links(doc)`、`plain(doc)->string`、`tag/attr/children/kind/node_count`。
+
+* **xml（p.6.6.5）**：`parse(s)->i64`、`is_ok/err_code/err_line/err_col/err_msg/err_frag`
+  （结构化错误）、`query/query_attr/query_ns`、`kind/tag/local/prefix/ns/attr/children/child_count`。
+
+* **spidey（p.6.6.6）**：`net_run(urls,cfg)`（robots.txt + 限速 + URL 去重 + 编排，依赖 html）。
+
+* **png（p.6.6.13）**：`decode(bytes)->{w,h,pixels}`（chunk 遍历 + 滤波）、`encode(w,h,pixels)->bytes`。
+
+* **qr（p.6.6.14）**：`encode(text,ecl)->qr`、`size(qr)`、`render_ascii(qr)`、`to_png(qr)`
+  （GF(256) RS 纠错 + 8 掩码）。
+
+* **svg（p.6.6.15）**：`parse(s)->i64`（元素树 + path d / transform，依赖 xml 底座）、
+  `elements/is_shape/parse_path_d/parse_transform`。
 
 * **aes**：`encrypt_ecb/decrypt_ecb(key,block)`、`encrypt_cbc/decrypt_cbc(key,iv,msg)`（hex）。
 
@@ -489,7 +546,7 @@ intern.intern("abc")                     // 字符串 → 稳定整数 id（std/
 
 * 用途：CRC32 增量（tink 复用）、无堆位运算、定点数、嵌入式 MAC——零动态内存/零递归/无全局状态。
 
-## 12. 数据互联：tink 帧协议与 zd 序列化（preview\.5 核心）
+## 12. 数据互联：tink 帧协议（v1/v2）与 zd 序列化（preview\.6 核心）
 
 ### 12.1 tink 节点帧协议（std/tink.tie）
 
@@ -512,13 +569,37 @@ var c = tink.crc32(p)                    // 整段 CRC32
 
 多语言库共生（Rust/C/Python/JS/Go/Zig/Lua…，`tink-<语言>` 仓库，API 与校验向量一致）。
 
-### 12.2 zd v2 通用二进制序列化
+### 12.2 tink v2 帧协议（std/tink_v2.tie，p.6.11）
+
+帧 v2：`magic 0x74 0x6B + version=2 + flags + len/ext_len（BE）+ TLV 扩展头 + payload +
+integrity`。校验默认 **tsha1f-8**（8 符号 48 进制 ASCII 存 8 字节，
+`tsha1f("123456789",8,48)=3Kz1piuc`），强档 = tsha1 f/n=48 截 32 字节；未知 ext key 跳过；
+v1（CRC32）兼容读。
+
+```tie
+import "../../std/tink_v2.tie"  using tink2;
+var f = tink2.frame_encode(payload)              // 帧 v2 编码（默认快校验）
+var (ok, rest) = tink2.frame_next(f, 0)          // 解析 + 校验；损坏 → 拒绝
+var part = tink2.stream_chunk_make(...)          // 分块流：STREAM / STREAM_END
+var (seq, tot) = tink2.stream_join(...)          // 重组（丢帧返回空表）
+```
+
+* **zrpc 可靠传输（p.6.11.3）**：`zrpc_call_frame/zrpc_reply_frame/zrpc_ack_frame/
+  zrpc_ping_frame/zrpc_pong_frame` + `zrpc_meta_*`（EXT_META key=9，op/req_id/stream_id/
+  error_code 15 字节）+ ACK 序号确认 + 丢帧重传重组；
+* **加密位（p.6.11.4）**：`derive_sym_key/handshake`（x25519 + HKDF）、`encrypt_frame/
+  decrypt_frame`（ascon_mac128 XOR-OTR AEAD；载荷 [nonce 12B][ct][tag 16B]，flags.ENCRYPTED）；
+* **多语言库 v2 化（p.6.11.2）**：c/rust/python/aardio 首批，各保留 v1 读路径，跨语言 KAT
+  一致（`tsha1f("",8,48)=5juavlyl`、`tsha1f("123456789",8,48)=3Kz1piuc`、
+  `crc32("123456789")==0xCBF43926`）。
+
+### 12.3 zd v2 通用二进制序列化
 
 语言无关二进制规范：10 字节头（`TIEDBZD` 魔数 + base-48 版本 + flags），核心类型
 i64/u64/f64/string/bool/array/map/bytes/blob/null + ext 扩展类型，字符串字典/列式容器优化，
 v1 兼容读取，扩展名统一 `.zd`。规范见 docs/superpowers/specs 的 zd v2 设计文档。
 
-### 12.4 tie 生态链全景（写 tie 时要知道的兄弟仓库）
+### 12.5 tie 生态链全景（写 tie 时要知道的兄弟仓库）
 
 tie 不是孤立的单一仓库——套件按职责拆分为多个仓库（均在 `F:\Projects\tie-repo\` 下），
 各司其职、可独立演进：
@@ -529,7 +610,8 @@ tie 不是孤立的单一仓库——套件按职责拆分为多个仓库（均�
 | 轻量运行时 | `trm-lite/` | Go 式静态内置 runtime（简单形态内置原语 + `import trm-lite` 复杂形态） |
 | 引擎路线 B | `trm/` | 字节码 VM 引擎（interp + ORC JIT + M:N + GC，与 tiec 并行开发互不干扰） |
 | 数据库 | `tiedb/`（组件库） | zd 编解码 / 表运算 / 向量 / CLI，编译器 `tieDB/` 内嵌同源实现 |
-| 数据互联 | `tink/` + `tink-<20+语言>/` | 帧协议多语言实现（rust/go/python/js/c/cpp/csharp/java/kotlin/zig/v/lua/ruby/php/dart/elixir/fsharp/gleam/julia/nim/odin/crystal/powershell/godot/wenyan/aardio…） |
+| 数据互联 | `tink/` + `tink-<20+语言>/` | 帧协议多语言实现（v1 CRC32 + v2 tsha1f；rust/go/python/js/c/cpp/csharp/java/kotlin/zig/v/lua/ruby/php/dart/elixir/fsharp/gleam/julia/nim/odin/crystal/powershell/godot/wenyan/aardio…） |
+| 诊断文档 | `tie-diag/` | tiec 诊断标号（E/W codes）双语文档（成因 / 解决方案 / 警告影响） |
 | Office 文档 | `tofflib/` | docx/xlsx/pptx 生成（ooxml/omml/vml + tiedoc 渲染） |
 | 归档 | `tie-archive/` | 旧设计/规划文档归档；`lib_v1/` = library-v2 重构前的旧版 std/ext/rdu |
 | 论文 | `papers/` | TSHA1 学术论文（docx） |
@@ -540,7 +622,7 @@ tie 不是孤立的单一仓库——套件按职责拆分为多个仓库（均�
 
 * vscode 语法高亮插件在 `tie-main/editor/vscode-tie/`（发布包内置）。
 
-### 12.3 tiec `--compress-data`（td → zd）
+### 12.6 tiec `--compress-data`（td → zd）
 
 ```bash
 tiec --compress-data in.data.tie -o out.zd    # 表字面量 → DFS 平铺 → zd record
@@ -575,6 +657,9 @@ tiec --compress-data <in.data.tie> -o <out.zd>     # td → zd（12.3）
 | `--lsp`           | 语言服务器模式（stdio）                                        |
 
 退出码：`0` 成功 / `1` 编译失败 / `2` 参数错误。
+
+错误/警告输出带 **C# 式标号**（`error[E#####]` / `warning[W#####]`，p.6.9.15），
+成因与常见解决方案见 tie-diag 仓库（§12.5）。
 
 ### 13.2 库编译
 
@@ -625,7 +710,7 @@ tie search <关键字> / tie info <包>  # 查询注册表
 | extern 参数为表或结构体 / 函数体内声明 / REPL 调用              | 「必须标量类型」/「只能出现在文件顶层」/「REPL 不支持调用 extern」 |
 | 静态类型变量上做类型匹配（switch）                            | 语义层报错（类型恒定）                              |
 | 浮点区间 case                                       | 语义层报错                                    |
-| enum payload 为宽类型（string/f64/table）             | 「白名单暂不支持」                                |
+| enum payload 为 string/struct/嵌套 enum（f64/table/map 已放开，p.6.2.1） | 「白名单暂不支持」                                |
 | map 作为全局变量                                      | 语法层拒绝                                    |
 
 ## 15. 并发：actor（消息方法——多参标量 sync/async）
@@ -670,6 +755,10 @@ ch_close(ch)                // 置关闭位（幂等），唤醒等待者
 
 * 环形缓冲 mailbox（互斥 + 条件变量），FIFO 有序；单通道容量 64，满后 `ch_send` 返回 1；
 
+* **Go 语义（p.6.7.12）**：`ch_close` 广播唤醒全部等待者（幂等）；`ch_select(通道表, 动作表,
+  值表)` 多路收发（动作 1=send / 0=recv，recv 值写回值表，返回命中分支）；双向收发；
+  parity_chan 与复杂形态行为逐字节一致；
+
 * 非阻塞语义（Go 阻塞 send/recv 的降级）：空 `ch_recv` 返回 0、满 `ch_send` 返回 1，
   调用方据此轮询/协商，避免语言无挂起能力下的死锁；
 
@@ -706,6 +795,12 @@ func main() {
 * **托管堆**（`trm_lite_tgc`，探针/组织用）：`alloc/set_ref/drop_ref/add_root/drop_root/
   gc_minor_sync/gc_collect_sync` + 观察量；
 * **channel**：`ctx_ch_*`（§15.1）与内置同源 mailbox；
+* **常驻池（p.6.7.8）**：sched_ws 去每轮 drain 重建，池起于首次 drain、止于 shutdown；
+* **per-P 细锁（p.6.7.9）**：每 worker 段独立锁 + 全局溢出队列细锁，窃取窗口缩小
+  （ms4 < ms1 可复现）；
+* **协作抢占（p.6.7.10）**：`gosched()` 显式让出 + 时间片计数器检查插桩，长任务可让出；
+* **WaitGroup（p.6.7.11）**：`wg_new/wg_add/wg_done/wg_wait`（简单形态内置）；复杂形态
+  `ctx_wg_new/ctx_wg_add/ctx_wg_done/ctx_wg_wait`（tl_runtime_ctx 转发 trm_lite_wg）；
 * 局限：任务为 `fn() -> i64` 原子执行体（运行中不可抢占）；时间片硬中断待语言级
   支持；跨任务可见状态用全局/独立槽位。
 
@@ -717,6 +812,9 @@ func main() {
 
 * `unsafe fn` / `unsafe { }`：解锁指针/切片 `ptr<T>` / `slice<T>`、`slice_of(表)`、
   `atomic<T>`、`volatile_load` / `volatile_store`、`asm!("...")`、`repr(C)`、extern 调用。
+
+* **ptr 类型化指针（p.6.8.1）**：`addr_of(x)` 取址、`deref(p)` 解引用、指针算术（`p + n`）；
+  安全代码触碰指针 = 编译错误；与 `#[repr(C)]` 结构体 / extern 咬合。
 
 * 窄整数：`42i32` / `7u8` / `1.5f32` 后缀、`as_*` 转换、`checked_*` 溢出检查。
 
@@ -756,4 +854,6 @@ func main() {
 
 * `../tiedb/README.md` / `../tofflib/README.md`：zd 数据库组件 / Office 文档生成（§12.4）
 
-* `../tink-<语言>/README.md`：tink 帧协议各语言绑定（§12.1）
+* `../tink-<语言>/README.md`：tink 帧协议各语言绑定（§12.1/12.2）
+
+* `../tie-diag/`：tiec 诊断标号（E/W codes）双语文档（§12.5）
