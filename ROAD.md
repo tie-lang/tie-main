@@ -65,14 +65,20 @@ neither continues the other**.
   main\_unsplit 未拆分 extract official-s19 518 文件完整通过（65 棋子/35 羁绊/157 装备/258 符文）；
   自举 tiec\_s1→s2→s3 --emit-ir 逐字节一致（不动点）；tests/language 全量 PASS=96 与基线零差。
 
-- [ ] p.6.1.7 tiec 编译「非平凡程序」产出即崩（0xC0000005 / 0xC00000FD / 挂起）——代码生成产物级不稳定（2026-09-05 报告）：
+- [x] p.6.1.7 tiec 编译「非平凡程序」产出即崩（0xC0000005 / 0xC00000FD / 挂起）——代码生成产物级不稳定（2026-09-05 报告，2026-09-07 收官）：
   触发面=含 dpcodec/zstd/pack 装配、calc 引擎、jcc-pack 全量等大程序；{四编译器 × -O0..-O3 × release/debug} 全数
   复现；小程序与预构建二进制正常 → 编译形态决定产物生死，非数据/逻辑问题，同族 p.6.1.4/6.1.6 已修复形态之外的新覆盖；
-  -O0 亦崩提示涉及 IR 生成层；p.6.10.3/4 后自举新 SHA 未核验。详情与证据矩阵：docs/bugreports/2026-09-05-p6.1.7-tiec-nontrivial-crash.md
+  -O0 亦崩提示涉及 IR 生成层。**收官（RCA 定案 + 生产不动点）**：总根因=表变量赋值引用计数缺 1
+  （release 旧值后才 store，commit cd5b86e）+ RCA-2 循环体 alloca 全量提升 + 入口零初始化
+  （variant C，36c54f6）+ 非入口表局部登记 + 循环变量回边 + 表达式返回 retain（24aaa07）——
+  ed25519 阶梯泄漏消除、新生产不动点 ACECEBA5（自举 tiec2==tiec3 一致），9e13dd2 提升 F87CF039
+  为生产 tiec；残余大数/编码类尾部（9324ed1 记录）。详情与证据矩阵：docs/bugreports/2026-09-05-p6.1.7-tiec-nontrivial-crash.md
 
-- [ ] p.6.1.8 std ext/tls https 公网握手 0xC0000005（2026-09-05 报告）：
+- [x] p.6.1.8 std ext/tls https 公网握手 0xC0000005（2026-09-05 报告，2026-09-07 修复）：
   tls.connect("game.gtimg.cn",443) 即崩（崩溃于 connect 内、无错误返回）；http 明文同 CDN 正常（22816B）；
   本地 openssl s_server（TLS1.3/1.2）历史通过 → 手写 TLS 客户端对公网握手形态兼容缺陷 + 失败路径无哨兵兜底。
+  **修复（fd48884）**：根因=循环内表局部 alloca 未初始化槽 release 垃圾 + 字段 retain + SNI；
+  p256 纯 tie ECDH（2bf0ed2）后 baidu TLS 1.2 握手闭环。
   详情与最小复现：docs/bugreports/2026-09-05-p6.1.8-tls-https-public-av.md
 
 - [x] p.6.2.3 语句级宏 / 方法参数默认值 / ns\_call\_full\_name 的 using 支持（落地 2026-09-01）：
@@ -361,8 +367,8 @@ neither continues the other**.
 | ------------- | -------------------------------------------------------------------------------------------- | ----------------------------- |
 | \[x] p.6.9.12 | server.tie：服务端主循环（stdio 循环 + 请求分发 + 增量缓存补偿）+ 生命周期（initialize/shutdown/exit）；`tie --lsp` 入口保留 | initialize/shutdown 往返；错误请求不崩 |
 | \[x] p.6.9.13 | VSCode 客户端接线：现有 TS 客户端（vscode-languageclient）指向 tsp；诊断/hover 联调（第一波：诊断+hover 已通，补全/跳转/引用/重命名/语义高亮后续） | 编辑器实测：诊断/hover 通（lsp\_smoke2/3）；vsix 0.2.0 打包（vendor/tsp.exe 内嵌） |
-| \[ ] p.6.9.14 | 验收与发布：大项目（编译器自身 8 模块）编辑流畅 + 16 能力矩阵 + 零回归 + preview\.6 收尾（README/CHANGELOG/双语文档/已知限制）        | 全 PASS、exit 0、编辑不卡顿           |
-| \[ ] p.6.9.15 | 诊断标号体系：tiec 全部错误/警告带 C# 式标号（五位纯序号 error[E#####] / warning[W#####]，家族仅作归类，归一化目录 + code\_of 中央注入）+ 新建 `tie-diag` 仓库按标号阐明成因与常见解决方案（警告附「潜在影响与处理建议」）；机器可读清单用 td（性能敏感用 zd） | 编译输出全部带标号（golden 语料 0 E00000 回退）；探针 PASS；tie-diag 双语文档仓库推送 |
+| \[x] p.6.9.14 | 验收与发布：大项目（编译器自身 8 模块）编辑流畅 + 16 能力矩阵 + 零回归 + preview\.6 收尾（README/CHANGELOG/双语文档/已知限制）——**已收官 2026-09-07**：tsp smoke1-7 全 PASS、16 能力矩阵声明、97KB 文档 didOpen 1.7s 流畅；自举 tiec2==tiec3 不动点（SHA 8825BA73）；NEW.md 改写 preview.6 + CHANGELOG 全量条目 + 双语文档 | 全 PASS、exit 0、编辑不卡顿           |
+| \[x] p.6.9.15 | 诊断标号体系：tiec 全部错误/警告带 C# 式标号（五位纯序号 error[E#####] / warning[W#####]，家族仅作归类，归一化目录 + code\_of 中央注入）+ 新建 `tie-diag` 仓库按标号阐明成因与常见解决方案（警告附「潜在影响与处理建议」）；机器可读清单用 td（性能敏感用 zd）——**已落地 2026-09-07**：diagcode.tie（归一化折叠 + exact/最长前缀双查表）+ 生成器 scripts/gen-diagcodes.tie（tie 语言，弃 PS）+ 542 条目录（diagdocs/diagcodes.data.tie + zd 变体），E00000/W00000 兜底；语义 OK 协议附警告段；test-diagcodes.ps1 门禁（golden 74 语料 0 E00000 回退 + 警告命中 + 单元探针 ALL PASS）；tie-diag 双语文档仓库推送 GitHub | 编译输出全部带标号（golden 语料 0 E00000 回退）；探针 PASS；tie-diag 双语文档仓库推送 |
 
 **内存治理（p.6.10，库层去分配 + 运行时自动回收；tsha1 基准内存爆炸 RCA 后立项）**
 

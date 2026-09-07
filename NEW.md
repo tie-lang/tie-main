@@ -5,153 +5,121 @@
 > 工程全貌与用法见 [README.md](README.md)。
 
 **内部代号**：Harbor 港湾（2026.1 正式版代号，首个正式版 = 工具链第一次靠岸停泊）
-**本版**：Harbor-2026.1-preview\.5
-**对比基线**：Harbor-2026.1-preview\.4
+**本版**：Harbor-2026.1-preview.6
+**对比基线**：Harbor-2026.1-preview.5
 
 ***
 
-在本次预览版中，我们聚焦**数据流互联与数据能力，与语言基础能力**：落地语言无关的 tink 帧协议与
-zd v2 序列化规范，tie 编译器可直接把数据文件压成 `.zd`；同时深化表运算（复合元素表、
-异构表、高阶函数、集合与映射）、铺开完整哈希/密码算法谱系，并完成内置库的 library-v2
-统一重构与自定义角色插件化。
+preview.6 是 2026.1 预发布段的**收官版**：编译器大程序崩溃根因收官、TLS 公网握手
+修复与 ed25519 泄漏根治，并完成 **0-Rust 自举收官**的最后一环——LSP 重写（tsp）。
+同时落地 trm-lite 双形态真并行与三色/分代 GC、23 个标准/扩展库补全、Skia 全栈图形
+（ptr/repr(C)/窗口/事件/主循环）、tink v2 互联协议（zrpc + 加密位接线）与 tiec
+诊断标号体系。
 
 ## 亮点速览
 
-| 🧩 **数据互联**   | tink 节点帧协议 + zd v2 二进制序列化 + tiec --compress-data   |
-| ------------- | -------------------------------------------------- |
-| 🗃️ **表运算深化** | any 装箱/异构表、复合元素表（struct/fn/enum）、高阶函数 HOF、set/map  |
-| 🧮 **哈希/密码**  | TSHA1 家族（f/b/x/r）性能内核 + 全谱系 hash/crypto/大数标准库      |
-| ⚙️ **编译器**    | f64↔i64 bitcast、-compress-data、自定义角色插件化、library-v2 |
-| 🧱 **其他**     | const 全局整数初值修复、跨文件 struct 修复、闭包解析修复、trit 原语        |
+| ⚙️ **编译器**    | 大程序崩溃根因收官（表引用计数）+ TLS 公网握手修复 + E/W 诊断标号体系 + 生产不动点  |
+| ------------- | -------------------------------------------------------------------- |
+| 🛰️ **LSP 重写** | tsp 0-Rust 收官：16 能力矩阵（补全/跳转/引用/语义令牌/重命名/格式化…）+ VSCode 接线 |
+| 🧵 **并发运行时** | trm-lite 双形态真并行（常驻池/窃取/细锁）+ 三色/分代 GC + WaitGroup + channel Go 语义 |
+| 📚 **库补全**    | 23 库落地：tls/httpc/sse/html/xml/spidey/ws/smtp/dns/yaml/toml/markdown/png/qr/svg/tpl/diff/cron/jwt/sqlite/http_server/llm/sys-win32 |
+| 🎨 **Skia 图形** | ptr 类型化指针 + repr(C) + extern unsafe + 窗口嵌入/事件/主循环 + 软件光栅基线 |
+| 🔗 **数据互联**   | tink v2 帧协议（tsha1f 校验）+ 多语言库 + zrpc 可靠传输 + x25519 加密位接线 |
 
 ***
 
-## 语言特性
+## 编译器：正确性收官
 
-### 表运算三阶深化（P1–P2）
+### 大程序崩溃根因定案（p.6.1.7）
 
-以社区调研为纲，表数据能力分阶段落地：
+"非平凡程序"（dpcodec/zstd/jcc-pack 全量等）产出即崩的家族根因收官：**表变量赋值
+引用计数缺 1**（release 旧值后才 store）+ 循环体 alloca 全量提升 + 入口零初始化 +
+非入口表局部登记 + 循环变量回边 + 表达式返回 retain——ed25519 阶梯泄漏消除，新生产
+不动点 ACECEBA5（自举 tiec2==tiec3 逐字节一致）。
 
-* **P1 数据流箭头**：`->`/`<-` 传参与赋值；
+### TLS 公网握手修复（p.6.1.8）
 
-* **P2 复合元素表**：`any` 一等待类型（函数参数/返回值/struct 字段/map 键值），
-  struct/enum/fn → any 堆装箱 + `as_*` 拆箱 + `switch` 类型匹配取用，调用表达式
-  `t[0](5)`、`t[i].field` 可寻址读写；
+https 公网握手 0xC0000005 根因修复（循环内表局部 alloca 未初始化槽 release 垃圾 +
+字段 retain + SNI），配纯 tie secp256r1 ECDH（p256.tie），baidu TLS 1.2 握手闭环。
 
-* **P2 高阶表运算**：`coll` 库的 map/filter/reduce/foreach、count\_if/any/all/
-  find\_index、sort\_f64 与均值/中位数/方差/标准差、reverse/to\_string/sum/product、
-  `set` 集合库（有序表 + 二分）、map\_keys/map\_values/map\_contains。
-  参考探针 `tests/_p2b_probe/`、`tests/s22_probe/`。
+### 诊断标号体系（p.6.9.15）
 
-### 整数窄化与 bitcast
+tiec 全部错误/警告带 **C# 式标号**（五位纯序号 `error[E#####]` / `warning[W#####]`，
+E00001 起全局连续，家族仅作归类）：归一化折叠 + 双查表的 `diagcode.tie`、tie 语言
+自写生成器、542 条目录（td 清单 + zd 变体）；警告每条附「这样写的坏处」；配套双语
+**tie-diag** 仓库按标号阐明成因与解决方案。
 
-* **整数窄化**：i64 传 u32 形参/变量初始化自动窄化（extern 边界双重转换修复、调用前转换
-  提前），为 TSHA1 u32 通道与国际化表铺路；
+## 语言地基
 
-* **f64↔i64 bitcast**：`bitcast_f64_i64 / bitcast_i64_f64` 原语入编译器（i64 字节级
-  重解释，zd/序列化层支柱）。
+* **ptr 类型化指针（p.6.8.1）**：`ptr` 类型 + addr_of/deref/指针算术 + unsafe 块/函数
+  （文件级逃生舱）；安全代码触碰指针 = 编译错误；
+* **repr(C) 结构体（p.6.8.2）**：显式 ABI 布局，字段偏移对照 C 编译输出全等；
+* **extern 扩展（p.6.8.3）**：extern 强制 unsafe + ptr 参数/返回值 + 结构体按引用 +
+  string↔char\*；
+* **表内存自动回收（p.6.10.2-4）**：tl_tbl 引用计数 API（retain/release）+ irgen 表
+  赋值插桩 + 作用域出口析构 + 嵌套表/循环内 var 遮蔽回收——2000 万次临时表循环峰值
+  4.2MB（内存有界）。
 
-### 自定义角色插件化（S3.4 v2）
+## 并发运行时：trm-lite 双形态真并行（p.6.5 + p.6.7）
 
-角色体系彻底表驱动：内建默认表 + config roles + 项目 `roles.data.tie` + 依赖包角色定义
-依序合并；安全模型＝**包可扩展编译器（纯数据声明）**、**不可扩展加载器**（字段白名单 +
-\[audit] 审计拦截）；依赖发现由 `tie.pkg` 清单驱动。
+* **复杂形态完整化**：work-stealing 调度器（多 OS 线程池 + 双端队列 + 任务窃取 + 抢占）、
+  并发三色 GC（写屏障 + 后台回收器）、分代 + mark-compact 整理、可迁移栈、精确根
+  （任务闭包 env 即根）、channel 语言原语、actor × trm-lite mailbox 咬合；
+* **简单形态真并行（p.6.7.6/6.7.7）**：S-pool 常驻线程池 + S-deque 窃取队列；
+* **复杂形态常驻池 + per-P 细锁（p.6.7.8/6.7.9）**：去每轮 drain 重建、每 worker 段
+  独立锁，窃取窗口缩小（ms4 < ms1 可复现）；
+* **结构化并发**：协作抢占统一（yield/gosched + 时间片插桩）、WaitGroup（spawn 分组 +
+  等全部完成）、channel Go 语义（close 广播唤醒 + select 多路收发）；
+* **双形态验收矩阵（p.6.7.13）**：两形态各自真并行探针 + 行为一致对比 + m6_actor 零回归。
 
-### trit 三值逻辑
+## 库补全：23 库（p.6.6，一库一子项）
 
-`-1t/0t/1t` 字面量后缀、`to_trit / trit_val` 转换原语、单目 `-t / !t`（TSHA1 trit 位平面
-输出基石）。
+* **网络**：ext/tls（TLS 1.3+1.2 纯 tie + X.509 全链校验）、std/httpc（完整 HTTP：
+  https/POST/headers/cookies/重定向）、std/sse（流式事件解码）、std/ws（WebSocket）、
+  std/smtp（STARTTLS 发信）、std/dns（A/AAAA/TXT/MX）；
+* **Web 服务**：std/http_server 升级（路由表/keep-alive/静态文件/SSE 推送/JWT 会话）、
+  std/jwt（HS256/RS256）、std/llm（OpenAI 兼容客户端 + SSE 流式）；
+* **结构化数据**：ext/html（分词/DOM/选择器/链接）、ext/xml（含命名空间）、std/yaml、
+  ext/config（TOML 提升）、std/markdown、std/tpl 模板引擎；
+* **图形/编码**：ext/png（编解码）、ext/qr（RS 纠错 + 8 掩码）、ext/svg；
+* **工具**：std/diff（LCS 行级 diff）、std/cron（5 字段调度）、std/sqlite（C ABI 桥）、
+  ext/spidey 爬虫治理（robots/限速/去重/编排）；
+* **平台**：sys/win32（注册表/系统信息/剪贴板/进程枚举/服务控制/网络接口/硬件信息）。
 
-***
+## Skia 全栈图形（p.6.8）
 
-## 数据互联：tink 与 zd
+* 源码裁剪（SkSurface/SkCanvas/SkPaint/SkPath/SkTextBlob/SkFont/SkImage/SkCodec +
+  Raster 软件光栅），构建脚本 tie 写，产物静态库；
+* extern "C" thunk + trm.ui.gfx 句柄层（repr(C) 句柄 + 方法转发 + arena 生命周期）；
+* D2 命令列表翻译器（rect/text/path/image + font_measure 文本度量桥）；
+* Win32 窗口嵌入层（CreateWindow + 消息泵 + 后备缓冲 blit）+ 事件系统 E3（鼠标/键盘
+  事件队列 + 信号标志）+ 主循环（脏矩形重绘 + 帧节流/vsync）；
+* 全栈演示（窗口 + 命令列表 + 事件响应 + row/column 组合式布局雏形）+ 验收矩阵 +
+  软件光栅性能基线（vs GDI）。
 
-### tink 节点帧协议（std/tink.tie）
+## LSP 重写：tsp 0-Rust 收官（p.6.9）
 
-tink 是语言无关的通用数据流互联服务：任何组件遵守统一字节级帧协议即可作为独立进程
-接入 tink 管道。帧格式定稿：
+* std/stdio 字节原语 → JSON-RPC over stdio 协议层 → 复用编译器前端（lex/parse/
+  semantic）的分析/符号索引/增量诊断；
+* **16 能力矩阵**：补全/悬停/跳转定义/跨文件引用/签名帮助/文档符号/语义令牌/折叠/
+  跨文件重命名/文档高亮/快速修复/格式化 + 生命周期/错误隔离/import 变更级联；
+* **性能**：全字节扫描改造后 97KB 文档 didOpen 93s → 1.7s（死循环修复 + 消除 O(n²)
+  str_char 拖累）；
+* **VSCode 接线**：vscode-languageclient 自动注册全部特性（能力声明 16 项）。
 
-```
-帧 = [ len: u32 BE ][ payload: len 字节 ][ crc: u32 BE ]
-crc = CRC32-IEEE(payload)（多项式 0xEDB88320）
-校验向量：crc32("123456789") == 0xCBF43926
-```
+## 数据互联：tink v2（p.6.11）
 
-* `tink.crc32 / frame_encode / frame_next / frame_skip` 四函数，纯函数表进出不碰 IO；
-
-* 多语言库共生（Rust/C/Python/JS/Go/Zig/Lua…，`tink-<语言>` 仓库，API 与校验向量一致）；
-
-* 探针 `std/tink_probe.tie` 全通过。
-
-### zd v2 通用二进制序列化
-
-语言无关、任何语言可独立实现的二进制规范：10 字节头（`TIEDBZD` 魔数 + base-48 版本 +
-flags）；核心类型 i64/u64/f64/string/bool/array/map/bytes/blob/null + ext 扩展类型；
-字符串字典/列式容器优化，v1 兼容读取；扩展名统一 `.zd`。
-
-### tiec `--compress-data`
-
-把 `.data.tie`（tie 表字面量，含 type 头与可选表名）经 DFS 平铺 + 平行表
-（kind/key/value/child\_count）转为 zd record 输出 `.zd`（tdzd.tie/zdwrite.tie 驱动），
-探针全通过——编译器内部 config 等数据文件可走同一条统一定义路径。
-
-***
-
-## 哈希 / 密码 / 大数（std 谱系）
-
-* **TSHA1 性能内核**：状态随输出位长（state-per-n）、F1 熵完整注入、W 特化 n=48/64 内核、
-  位平面标量化（标量微基准多档 3–8×）；f/b/x 三轨海绵 + r 嵌入式；
-
-* **安全哈希**：sha256/sha512/sha3/blake2/blake3/shake128-256/merkle 树 mshake；
-
-* **遗留/非加密哈希**：md5/sha1（遗留兼容）、siphash-2-4、xxh3-64；
-
-* **MAC/KDF**：hmac-sha256、poly1305、ascon\_mac（+ rdu 嵌入式版）、hkdf/pbkdf2/scrypt/
-  argon2id；
-
-* **非对称**：ed25519/x25519（Curve25519 标量乘）、ecdsa P-256（extern）；
-
-* **大数 bigint**：变长 limb 加减乘除/模幂/模逆收集库；
-
-* **base-48**：无歧义编码原语（TSHA1 默认 48 进制输出，字符集 0-9a-zA-L）；
-
-* **性能治理**：字符串拼接 O(n²)→StringBuilder O(n)，TSHA1 全家族基准报告就位。
-
-所有算法纯 tie 实现（除注明 extern），均带 KAT/向量探针。
+* **帧 v2 协议**（std/tink_v2.tie）：magic + version + flags + TLV 扩展头 + payload +
+  tsha1f 校验（默认 8 符号 48 进制，强档 f/n=48 截 32 字节）+ 分块流 + v1 兼容读；
+* **多语言库 v2 化**：c/rust/python/aardio 首批（各保留 v1 读路径），跨语言 KAT 一致；
+* **zrpc 信封 + 可靠传输**：CALL/REPLY/ACK/PING/PONG + ACK 序号确认 + 丢帧重传重组；
+* **加密位接线**：x25519 握手 + HKDF 对称密钥 + ascon_mac128（XOR-OTR+MAC）AEAD——
+  P2P 传输层准备。
 
 ***
 
-## 语言地基与内置库
+## 挑战与回退记录
 
-### library-v2 三层内置库重写
-
-按 [library-v2](docs/plans/library-v2.md) 重写 std/rdu/ext：`math` 泛型化
-（`abs<T>/max<T>/min<T>`）、rdu `crc/rnd` struct 状态封装、表数据接口全面换真表参数、
-`fs.read_text/json.parse_file/http.get` 用 `Result<string|i64, string>` 错误表达、
-`expect_eq<T>` 泛型合并；一语义一名清理别名。旧版 v1 归档至 `tie-lang/lib_v1`。
-
-### 健壮性修复
-
-* 顶层 const 整数全局初值（全部整数类型）；
-
-* 跨文件 struct 字段收集错位（按索引反查名字）；
-
-* 闭包字面量解析：`expect_stmt_end` 统一语句结束符；
-
-* 字节原语 byte\_read/write/concat、bit\_read/write 零 Rust 原生重写（修运行崩溃）；
-
-* repr(C) struct 对齐（生成模块补 target datalayout）。
-
-***
-
-## 编译器
-
-### 自定义角色与管线分派
-
-角色体系表驱动（见上），driver 头部扫描前经 config 分层合并加载注册表，管线按
-`output=lib/check/exe/pass` 查表分派。
-
-### 挑战与回退记录
-
-字符串拼接就地追加优化（子代理实测 300×）因别名安全自举不稳已回退，详见
-docs/language.md 性能节记录。
+字符串拼接就地追加优化（preview.5 记录 300× 实测）因别名安全自举不稳回退，详见
+docs/language.md 性能节记录；p.6.1.7 RCA 期间的五变体边界化修复全数证伪，最终以
+引用计数根因定案（见上）。

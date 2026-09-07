@@ -20,7 +20,18 @@
 > 5. Major-version archive: on stable release, copy this file to `<version>.CHANGELOG` at the repo root, then start a fresh one.
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Harbor-2026.1-preview.6（2026-09-03）
+## Harbor-2026.1-preview.6（2026-09-07）
+
+## [fix] package.tie io_cwd 改 cwd 内建——p.6.4.6 exec_output 内联后取目录失效（2026-09-07）
+
+* **根因**：p.6.4.6 把 exec_output 内联为 CreateProcess 直跑命令后，`exec_output("cd")`
+  不再有输出（cmd 内建 cd 走管道捕获失效）→ io_cwd() 回退 "."，zip 步骤
+  `cd /d .\dist && tar ... .\dist\...` 输出路径错乱、打包失败。
+* **修复**：io_cwd() 改用 p.6.4.1 内联的 `cwd()` 内建（绝对路径），zip 步骤正常；
+  发行打包器（scripts/package.tie）恢复可用。
+  EN: package.tie io_cwd switched to the inlined `cwd()` builtin — after p.6.4.6
+  inlined exec_output (CreateProcess direct), `exec_output("cd")` yields no output,
+  so root fell back to "." and the zip step failed; now fixed, the packager works.
 
 ## [feat] tsp 限制完善：跨文件引用/重命名 + import 变更级联 + 残留 str_char 清理（2026-09-07）
 
@@ -148,6 +159,34 @@
   and a remedy; driver/interp-frontend wiring; test-diagcodes.ps1 regression gate
   (golden 0 E00000 fallback, warnings hit, unit probe ALL PASS); stable two-step
   bootstrap; new bilingual tie-diag docs repo explaining every code.
+
+## [feat] p.6.11.3/6.11.4 zrpc 信封 + 可靠传输 + 加密位接线（2026-09-06）
+
+* **zrpc 信封与可靠传输（p.6.11.3）**：EXT_META（key=9，op/req_id/stream_id/error_code
+  固定 15 字节）+ CALL/REPLY/ACK/PING/PONG 帧 + ACK 序号确认（ack_seq u64 BE）+ 丢帧报告
+  与重传重组（stream_join 丢帧返回空表）；ext_u8/u32/u64 提升 pub。
+* **加密位接线（p.6.11.4）**：flags.ENCRYPTED(bit2) + ENC_ALGO（key=4，algo_id+nonce_prefix）
+  + x25519 协商握手 + HKDF 派生对称密钥 + ascon_mac128（XOR-OTR + MAC）AEAD；加密载荷
+  = [nonce 12B][ct][tag 16B]。
+* **探针**：zrpc 往返/错误回传/ACK/PING-PONG PASS；丢帧→stream_join 报告空→重传重组一致；
+  x25519 握手共享密钥一致；加解密往返/篡改拒绝/错钥拒绝/非加密帧拒绝 PASS——P2P 传输层准备。
+  EN: p.6.11.3 zrpc envelope (EXT_META key=9, op/req_id/stream_id/error_code 15B) +
+  CALL/REPLY/ACK/PING/PONG frames + ACK-seq reliable transport (loss → stream_join empty
+  report → retrans rejoin); p.6.11.4 encryption wiring (flags.ENCRYPTED bit2 + ENC_ALGO
+  key=4 + x25519 handshake + HKDF symkey + ascon_mac128 XOR-OTR AEAD, payload
+  [nonce 12B][ct][tag 16B]); all probes PASS — P2P transport layer ready.
+
+## [feat] p.6.11.2 多语言 tink 库 v2 化——c/rust/python/aardio 首批（2026-09-06）
+
+* tink 帧协议 v2 下沉为各语言库/包（与 std/tink_v2.tie 一一对应，其他语言接入一律引用库、
+  不手写协议），首批 c/rust/python/aardio；各保留 v1（CRC32）读路径。
+* **跨语言 KAT 一致**：tsha1f("",8,48)=5juavlyl、tsha1f("123456789",8,48)=3Kz1piuc、
+  强档 32 字节 260c7340…fd76bf、crc32("123456789")==0xCBF43926；tie/rust/c/python 探针
+  全 PASS，aardio KAT 常量一致。
+  EN: tink frame-v2 libraries for c/rust/python/aardio (first batch, mirroring
+  std/tink_v2.tie, each keeping the v1 CRC32 read path); cross-language KAT aligned
+  (5juavlyl / 3Kz1piuc / strong 32B hex / crc32 0xCBF43926); tie/rust/c/python probes
+  PASS, aardio KAT constants match.
 
 ## [feat] p.6.11.1 std/tink_v2.tie——帧 v2 协议库（tsha1f 校验 + 分块流 + v1 兼容读）（2026-09-06）
 

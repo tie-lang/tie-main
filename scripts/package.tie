@@ -4,11 +4,12 @@ type tie<logic>
 // 职责：构建 release 工具链（自举）→ 组装发行目录 → 生成 zip 压缩包。
 // 产物：dist/tie-{发行版号}-win-x64.zip（如 tie-Harbor-2026.1-preview.5-win-x64.zip）
 //
-// 用法（由 tiec 编译并运行）：
-//   compiler/tiec.exe scripts/package.tie -- 2026.1        # 指定版本
-//   compiler/tiec.exe scripts/package.tie -- Harbor-2026.1-preview.5
-//   compiler/tiec.exe scripts/package.tie -- 2026.1 skip-repl   # 跳过 repl 自举
-//   compiler/tiec.exe scripts/package.tie -- 2026.1 skip-llvm   # 跳过 LLVM 捆绑
+// 用法（tiec 不支持在源码后直传脚本参数，须先编译再运行）：
+//   compiler/tiec.exe scripts/package.tie -o dist/package.exe   # 先编译打包器
+//   dist/package.exe 2026.1                                     # 指定版本（默认 2026.1）
+//   dist/package.exe Harbor-2026.1-preview.6
+//   dist/package.exe 2026.1 skip-repl   # 跳过 repl 自举
+//   dist/package.exe 2026.1 skip-llvm   # 跳过 LLVM 捆绑
 //
 // 流程与 scripts/package.ps1 一一对应（0-Rust，参考编译器已归档 tiec_rust）：
 //   1. 自举验证：tiec.exe 编译 driver.tie → tiec2.exe（编译零错误）
@@ -332,12 +333,13 @@ func main() -> i64 {
 }
 
 func io_cwd() -> string {
-    // 用 exec_output 取当前工作目录（pwd），回退仓库根
-    var out = exec_output("cd")
+    // cwd 内建返回当前工作目录绝对路径（p.6.4.1 内联 Win32/CRT）。
+    // 不能用 exec_output("cd")：p.6.4.6 内联 exec_output 以 CreateProcess 直跑
+    // 命令，cmd 内建 cd 无输出 → 空串 → 回退 "." 会让 zip 步骤路径错乱。
+    var out = cwd()
     if out == "" {
         return "."
     }
-    // 去掉首行卷标与尾随换行/空格
     return string_trim(out)
 }
 
