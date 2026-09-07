@@ -94,12 +94,12 @@ namespace tsp_tok {
 
 // ==================== 自足小工具 ====================
 
-// 0 基行 → 行首字节偏移（越界返回 len(txt)）。
+// 0 基行 → 行首字节偏移（越界返回 len(txt)）。字节级（str_char ~360µs/次）。
 func line_start(txt: string, line: i64) -> i64 {
     var off: i64 = 0
     var ln: i64 = 0
     while ln < line && off < len(txt) {
-        while off < len(txt) && str_char(txt, off) != "\n" {
+        while off < len(txt) && str_byte(txt, off) != 10 {
             off = off + 1
         }
         if off < len(txt) {
@@ -115,7 +115,7 @@ func off_line(txt: string, off: i64) -> i64 {
     var ln: i64 = 0
     var i: i64 = 0
     while i < off && i < len(txt) {
-        if str_char(txt, i) == "\n" {
+        if str_byte(txt, i) == 10 {
             ln = ln + 1
         }
         i = i + 1
@@ -126,13 +126,13 @@ func off_line(txt: string, off: i64) -> i64 {
 // 字节偏移 → 0 基列号（本行内）。
 func off_col(txt: string, off: i64) -> i64 {
     var i = off
-    while i > 0 && str_char(txt, i - 1) != "\n" {
+    while i > 0 && str_byte(txt, i - 1) != 10 {
         i = i - 1
     }
     return off - i
 }
 
-// 子串 [start, end)（越界钳位）。
+// 子串 [start, end)（越界钳位；str_sub_bytes 一次拷贝）。
 func substr(s: string, start: i64, end: i64) -> string {
     var a = start
     var b = end
@@ -145,18 +145,11 @@ func substr(s: string, start: i64, end: i64) -> string {
     if a >= b {
         return ""
     }
-    var out: string = ""
-    var i: i64 = a
-    while i < b {
-        out = out + str_char(s, i)
-        i = i + 1
-    }
-    return out
+    return str_sub_bytes(s, a, b)
 }
 
-// 标识符字符判定（字母/数字/下划线）。
-func is_idch(c: string) -> bool {
-    var v = char_code(c)
+// 字节是否标识符字符（字母/数字/下划线）。
+func is_idb(v: i64) -> bool {
     return (v >= 65 && v <= 90) || (v >= 97 && v <= 122) || (v >= 48 && v <= 57) || v == 95
 }
 
@@ -164,8 +157,8 @@ func is_idch(c: string) -> bool {
 func skip_ws(txt: string, off: i64) -> i64 {
     var i = off
     while i < len(txt) {
-        var c = str_char(txt, i)
-        if c == " " || c == "\t" || c == "\r" || c == "\n" {
+        var c = str_byte(txt, i)
+        if c == 32 || c == 9 || c == 13 || c == 10 {
             i = i + 1
         } else {
             return i
@@ -180,11 +173,11 @@ func read_ident(txt: string, off: i64) -> (i64, i64) {
     if s < 0 {
         return (-1, -1)
     }
-    if !is_idch(str_char(txt, s)) {
+    if !is_idb(str_byte(txt, s)) {
         return (-1, -1)
     }
     var e = s
-    while e < len(txt) && is_idch(str_char(txt, e)) {
+    while e < len(txt) && is_idb(str_byte(txt, e)) {
         e = e + 1
     }
     return (s, e)
@@ -216,7 +209,7 @@ func kw_span(txt: string, node: i64) -> (i64, i64) {
         if w == "repr" {
             // repr(C)：跳过括号部分
             i = e
-            while i < lim && str_char(txt, i) != ")" {
+            while i < lim && str_byte(txt, i) != 41 {
                 i = i + 1
             }
             if i < lim {
@@ -372,7 +365,7 @@ func emit_param(node: i64, txt: string, tl: table<i64>, tc: table<i64>,
     var i = off - 1
     var nl: i64 = 0
     while i >= 0 {
-        if str_char(txt, i) == "\n" {
+        if str_byte(txt, i) == 10 {
             nl = nl + 1
             if nl > 6 {
                 break
@@ -380,10 +373,10 @@ func emit_param(node: i64, txt: string, tl: table<i64>, tc: table<i64>,
             i = i - 1
             continue
         }
-        if is_idch(str_char(txt, i)) {
+        if is_idb(str_byte(txt, i)) {
             var e = i + 1
             var s2 = i
-            while s2 > 0 && is_idch(str_char(txt, s2 - 1)) {
+            while s2 > 0 && is_idb(str_byte(txt, s2 - 1)) {
                 s2 = s2 - 1
             }
             if substr(txt, s2, e) == nm {
@@ -425,7 +418,7 @@ func emit_method(node: i64, txt: string, tl: table<i64>, tc: table<i64>,
     }
     var i = off
     while i < lim {
-        if str_char(txt, i) == "." {
+        if str_byte(txt, i) == 46 {
             var (s2, e2) = read_ident(txt, i + 1)
             if s2 >= 0 {
                 if substr(txt, s2, e2) == nm {

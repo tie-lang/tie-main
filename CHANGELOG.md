@@ -22,6 +22,26 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] tsp 限制完善：跨文件引用/重命名 + import 变更级联 + 残留 str_char 清理（2026-09-07）
+
+* **跨文件引用/重命名（p.6.9.7/6.9.10 收官）**：文档文本存储下沉 analyze
+  （`store_text/fetch_text/drop_text`，server 委托）；`nav.references` 与
+  `refactor.rename` 扫**全部打开文档**（run_check + AST 递归 + 索引声明并入，
+  按 uri 分组去重）→ 跨文件 Location[] / WorkspaceEdit。
+* **import 变更级联（p.6.9.5 收官）**：`cascade_imports` 反向依赖图——文档 X
+  变更（didChange）或磁盘文件变更（`workspace/didChangeWatchedFiles`）后，
+  重分析所有 import X 的打开文档（`an.doc_imports` 归一化路径精确匹配）。
+* **残留 str_char 全字节化**：tokens（line_start/off_line/off_col/substr/
+  skip_ws/read_ident/kw 扫描）+ format/nav/sigdoc/completion/refactor 行扫描
+  → `str_byte`/`str_sub_bytes`；语义令牌在超大文件上不再受 ~360µs/次拖累。
+* **std/string 检查慢解决**：此前 didOpen std/string 60s 挂死实为 warns_to_diag
+  死循环（上批修复）——现 0.04s 完成（6 条警告正确）；编译器自身 split O(n²)
+  瓶颈不再阻塞 LSP 打开标准库。
+* **vscode-tie 客户端**：vscode-languageclient 按服务端能力自动注册全部特性，
+  无需改动（capabilities 已含 16 项）。
+* **探针**：新增 `lsp_smoke7.py`（跨文件 references/rename/definition + 级联
+  磁盘变更重分析）；smoke1-7 全 PASS。
+
 ## [perf] tsp 大文件性能与健壮性：str_char 全字节化 + 警告解析死循环修复（2026-09-07）
 
 * **RCA（根因）**：本运行时 `str_char` 单次调用 ~360µs（200K 次 72s 实测）且在 UTF-8

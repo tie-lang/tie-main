@@ -32,66 +32,22 @@ using tsp_proto;
 
 // ---- 文档状态 ----
 
-// 打开的文档：uri → 文本（简单实现：平行表，首版 Open 文件数有限）。
-var g_uris: table<string>
-var g_texts: table<string>
+// 打开的文档：文本存储在 analyze（tsp_an.store_text/fetch_text/drop_text），
+// 跨文件引用/重命名扫描可直接枚举全部打开文档（an.doc_count/doc_uri + fetch_text）。
 var g_seq: i64 = 0          // notification/request 计数（诊断用 server 版本）
 
-// ---- 字符串工具（本文件自足）----
-
-func find_doc(uri: string) -> i64 {
-    var i: i64 = 0
-    while i < len(g_uris) {
-        if g_uris[i] == uri {
-            return i
-        }
-        i = i + 1
-    }
-    return -1
-}
+// ---- 文档文本存取（委托 analyze 文本存储）----
 
 func set_doc(uri: string, txt: string) {
-    var idx = find_doc(uri)
-    if idx >= 0 {
-        g_texts[idx] = txt
-    } else {
-        table_push(g_uris, uri)
-        table_push(g_texts, txt)
-    }
+    an.store_text(uri, txt)
 }
 
 func get_doc(uri: string) -> string {
-    var idx = find_doc(uri)
-    if idx >= 0 {
-        return g_texts[idx]
-    }
-    return ""
+    return an.fetch_text(uri)
 }
 
 func remove_doc(uri: string) {
-    var idx = find_doc(uri)
-    if idx >= 0 {
-        var i = idx
-        while i < len(g_uris) - 1 {
-            g_uris[i] = g_uris[i + 1]
-            g_texts[i] = g_texts[i + 1]
-            i = i + 1
-        }
-        if len(g_uris) > 0 {
-            var newn = len(g_uris) - 1
-            // tie 表无 pop：用截断语义——重新建表
-            var nu = table_new_string()
-            var nt = table_new_string()
-            var k: i64 = 0
-            while k < newn {
-                table_push(nu, g_uris[k])
-                table_push(nt, g_texts[k])
-                k = k + 1
-            }
-            g_uris = nu
-            g_texts = nt
-        }
-    }
+    an.drop_text(uri)
 }
 
 // ---- 诊断（浅层分析）----
@@ -269,7 +225,7 @@ func uri_basename(uri: string) -> string {
     return uri
 }
 
-// uri → 文档所在目录（import 相对路径解析基准，尾随 '/'，正斜杠）。
+// uri → 文档目录（import 相对路径解析基准，尾随 '/'，正斜杠）。
 // 支持 file:/// 前缀与 Windows 盘符；非文件 uri（untitled: 等）返回 ""。
 func uri_to_dir(uri: string) -> string {
     var p = uri
@@ -293,6 +249,41 @@ func uri_to_dir(uri: string) -> string {
         return ""
     }
     return proto.substr_at(p, 0, last + 1)
+}
+
+// uri → 文件路径（归一化，与 import 展开后的 g_imported 条目可比）。
+func uri_to_path(uri: string) -> string {
+    var p = uri
+    if has_prefix_str(p, "file://") {
+        p = proto.substr_at(p, len("file://"), len(p))
+    }
+    while len(p) > 0 && (str_byte(p, 0) == 47 || str_byte(p, 0) == 92) {
+        p = proto.substr_at(p, 1, len(p))
+    }
+    return p
+}
+
+// import 变更级联（p.6.9.5 收官）：文档 X 变更后，重分析所有 import X 的
+// 打开文档（反向依赖图，an.doc_imports 精确匹配归一化路径）。
+func cascade_imports(x_uri: string) {
+    var x_path = uri_to_path(x_uri)
+    var n = an.doc_count()
+    var i: i64 = 0
+    while i < n {
+        var du = an.doc_uri(i)
+        if du != x_uri && an.doc_imports(du, x_path) {
+            var dtext = an.fetch_text(du)
+            if len(dtext) > 0 {
+                var (diags, dok) = an.analyze(du, dtext, uri_to_dir(du))
+                if dok == 1 {
+                    an.index_doc(du)
+                }
+                rebuild_syms(du, dtext)
+                publish_diagnostics(du, diags)
+            }
+        }
+        i = i + 1
+    }
 }
 
 // 字符串前缀判定（server 自足版；字节级）。
@@ -619,6 +610,8 @@ func main() -> i64 {
                 }
                 rebuild_syms(uri, txt)
                 publish_diagnostics(uri, diags2)
+                // import 变更级联：依赖本文件的其它打开文档重分析
+                cascade_imports(uri)
             }
         } else if method == "textDocument/didClose" {
             var uri = json_field(body, "uri")
@@ -626,6 +619,14 @@ func main() -> i64 {
                 remove_doc(uri)
                 an.drop_doc(uri)
                 publish_diagnostics(uri, "[]")
+            }
+        }
+
+        // 磁盘文件变更（watch）：重分析依赖该文件的打开文档（import 级联）
+        else if method == "workspace/didChangeWatchedFiles" {
+            var f_uri = json_field(body, "uri")
+            if len(f_uri) > 0 {
+                cascade_imports(f_uri)
             }
         }
 

@@ -54,7 +54,7 @@ func line_start(txt: string, line: i64) -> i64 {
     var off: i64 = 0
     var ln: i64 = 0
     while ln < line && off < len(txt) {
-        while off < len(txt) && str_char(txt, off) != "\n" {
+        while off < len(txt) && str_byte(txt, off) != 10 {
             off = off + 1
         }
         if off < len(txt) {
@@ -91,7 +91,7 @@ func ident_back(txt: string, off: i64) -> string {
 func cursor_offset(txt: string, line: i64, character: i64) -> i64 {
     var off = line_start(txt, line)
     var moved: i64 = 0
-    while moved < character && off + moved < len(txt) && str_char(txt, off + moved) != "\n" {
+    while moved < character && off + moved < len(txt) && str_byte(txt, off + moved) != 10 {
         moved = moved + 1
     }
     return off + moved

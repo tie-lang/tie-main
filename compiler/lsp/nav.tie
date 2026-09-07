@@ -46,7 +46,7 @@ func line_start(txt: string, line: i64) -> i64 {
     var off: i64 = 0
     var ln: i64 = 0
     while ln < line && off < len(txt) {
-        while off < len(txt) && str_char(txt, off) != "\n" {
+        while off < len(txt) && str_byte(txt, off) != 10 {
             off = off + 1
         }
         if off < len(txt) {
@@ -169,7 +169,7 @@ func loc_json(uri: string, name: string, line: i64, col: i64) -> string {
 func pos_to_offset(txt: string, line: i64, character: i64) -> i64 {
     var off = line_start(txt, line)
     var moved: i64 = 0
-    while moved < character && off + moved < len(txt) && str_char(txt, off + moved) != "\n" {
+    while moved < character && off + moved < len(txt) && str_byte(txt, off + moved) != 10 {
         moved = moved + 1
     }
     return off + moved
@@ -230,9 +230,32 @@ pub func definition(uri: string, txt: string, base_dir: string, line: i64, chara
 
 // ==================== references ====================
 
-// 光标处标识符 → 引用位置 Location[] JSON；未找到 "[]"。
-// an.run_check 成功时遍历主文件 AST（g_file_roots[0] 递归）找名字匹配的
-// 引用节点；include_decl 时把索引里的声明位置并入（与引用位置去重）。
+// uri → 文档所在目录（import 相对路径解析基准；跨文件扫描用）。
+func uri_to_dir(uri: string) -> string {
+    var p = uri
+    if has_prefix(p, "file://") {
+        p = proto.substr_at(p, len("file://"), len(p))
+    }
+    while len(p) > 0 && (str_byte(p, 0) == 47 || str_byte(p, 0) == 92) {
+        p = proto.substr_at(p, 1, len(p))
+    }
+    var last: i64 = -1
+    var i: i64 = 0
+    while i < len(p) {
+        var c = str_byte(p, i)
+        if c == 47 || c == 92 {
+            last = i
+        }
+        i = i + 1
+    }
+    if last < 0 {
+        return ""
+    }
+    return proto.substr_at(p, 0, last + 1)
+}
+
+// 光标处标识符 → 引用位置 Location[] JSON（**跨文件**：扫全部打开文档）；
+// 未找到 "[]"。include_decl 时把索引里的声明位置并入（与引用位置去重）。
 pub func references(uri: string, txt: string, base_dir: string, line: i64, character: i64, include_decl: bool) -> string {
     var off = pos_to_offset(txt, line, character)
     var name = ident_at(txt, off)
@@ -240,11 +263,21 @@ pub func references(uri: string, txt: string, base_dir: string, line: i64, chara
         return "[]"
     }
     var locs: table<string> = table_new_string()
-    var rls: table<i64> = table_new_i64()   // 平行：引用行（0-based，去重用）
-    var rcs: table<i64> = table_new_i64()   // 平行：引用列（0-based，去重用）
-    var ok = an.run_check(txt, base_dir)
-    if ok == 1 {
-        walk_refs(g_file_roots[0], name, uri, locs, rls, rcs)
+    var ruris: table<string> = table_new_string()  // 平行：引用所在 uri（去重用）
+    var rls: table<i64> = table_new_i64()          // 平行：引用行（0-based）
+    var rcs: table<i64> = table_new_i64()          // 平行：引用列（0-based）
+    var n = an.doc_count()
+    var i: i64 = 0
+    while i < n {
+        var du = an.doc_uri(i)
+        var dtext = an.fetch_text(du)
+        if len(dtext) > 0 {
+            var ok = an.run_check(dtext, uri_to_dir(du))
+            if ok == 1 {
+                walk_refs(g_file_roots[0], name, du, locs, ruris, rls, rcs)
+            }
+        }
+        i = i + 1
     }
     if include_decl {
         var (furi, s) = find_anywhere(uri, name)
@@ -259,11 +292,11 @@ pub func references(uri: string, txt: string, base_dir: string, line: i64, chara
             if c0 < 0 {
                 c0 = 0
             }
-            // 去重：与已有引用位置不同才加入
+            // 去重：与同 uri 已有引用位置不同才加入
             var dup: bool = false
             var k: i64 = 0
-            while k < len(rls) {
-                if rls[k] == l0 && rcs[k] == c0 {
+            while k < len(ruris) {
+                if ruris[k] == furi && rls[k] == l0 && rcs[k] == c0 {
                     dup = true
                     break
                 }
@@ -289,7 +322,7 @@ pub func references(uri: string, txt: string, base_dir: string, line: i64, chara
 
 // 递归遍历 AST：tag ∈ {N_VAR, N_CALL, N_METHOD_CALL, N_FIELD_ACCESS} 且
 // 名字匹配的节点记为引用（N_METHOD_CALL/N_FIELD_ACCESS 只比 s_names）。
-func walk_refs(node: i64, name: string, uri: string, locs: table<string>, rls: table<i64>, rcs: table<i64>) {
+func walk_refs(node: i64, name: string, uri: string, locs: table<string>, ruris: table<string>, rls: table<i64>, rcs: table<i64>) {
     if node < 0 {
         return
     }
@@ -298,6 +331,7 @@ func walk_refs(node: i64, name: string, uri: string, locs: table<string>, rls: t
         var nid = s_names[node]
         if nid >= 0 && intern.lookup(nid) == name {
             table_push(locs, loc_json(uri, name, s_lines[node], s_cols[node]))
+            table_push(ruris, uri)
             var l0 = s_lines[node] - 1
             var c0 = s_cols[node] - 1
             if l0 < 0 {
@@ -314,7 +348,7 @@ func walk_refs(node: i64, name: string, uri: string, locs: table<string>, rls: t
     var base = s_coff[node]
     var k: i64 = 0
     while k < nc {
-        walk_refs(s_children[base + k], name, uri, locs, rls, rcs)
+        walk_refs(s_children[base + k], name, uri, locs, ruris, rls, rcs)
         k = k + 1
     }
 }

@@ -69,7 +69,63 @@ var g_icols: table<i64>
 var g_dep_uris: table<string>
 var g_dep_list: table<string>
 
+// 打开文档文本存储（跨文件引用/重命名扫描用；server 的 set_doc/get_doc 委托）
+var g_txt_uris: table<string>
+var g_txts: table<string>
+
 namespace tsp_an {
+
+// ==================== 文档文本存储（跨文件扫描） ====================
+
+func txt_find(uri: string) -> i64 {
+    var i: i64 = 0
+    while i < len(g_txt_uris) {
+        if g_txt_uris[i] == uri {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 存入/更新文档文本（didOpen/didChange 调用）。
+pub func store_text(uri: string, txt: string) {
+    var idx = txt_find(uri)
+    if idx >= 0 {
+        g_txts[idx] = txt
+    } else {
+        table_push(g_txt_uris, uri)
+        table_push(g_txts, txt)
+    }
+}
+
+// 取文档文本（未打开返回 ""）。
+pub func fetch_text(uri: string) -> string {
+    var idx = txt_find(uri)
+    if idx >= 0 {
+        return g_txts[idx]
+    }
+    return ""
+}
+
+// 移除文档文本（didClose 调用）。
+pub func drop_text(uri: string) {
+    var idx = txt_find(uri)
+    if idx >= 0 {
+        var nu = table_new_string()
+        var nt = table_new_string()
+        var i: i64 = 0
+        while i < len(g_txt_uris) {
+            if i != idx {
+                table_push(nu, g_txt_uris[i])
+                table_push(nt, g_txts[i])
+            }
+            i = i + 1
+        }
+        g_txt_uris = nu
+        g_txts = nt
+    }
+}
 
 // ==================== 诊断缓存（文件级增量） ====================
 

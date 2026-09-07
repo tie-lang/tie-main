@@ -35,7 +35,7 @@ func line_start(txt: string, line: i64) -> i64 {
     var off: i64 = 0
     var ln: i64 = 0
     while ln < line && off < len(txt) {
-        while off < len(txt) && str_char(txt, off) != "\n" {
+        while off < len(txt) && str_byte(txt, off) != 10 {
             off = off + 1
         }
         if off < len(txt) {
@@ -75,7 +75,7 @@ func ident_at(txt: string, off: i64) -> string {
 func pos_to_offset(txt: string, line: i64, character: i64) -> i64 {
     var off = line_start(txt, line)
     var moved: i64 = 0
-    while moved < character && off + moved < len(txt) && str_char(txt, off + moved) != "\n" {
+    while moved < character && off + moved < len(txt) && str_byte(txt, off + moved) != 10 {
         moved = moved + 1
     }
     return off + moved
@@ -146,65 +146,131 @@ func collect_refs(node: i64, name: string, uri: string, rs: table<i64>, re: tabl
     }
 }
 
-// ==================== rename ====================
+// ==================== rename（跨文件 WorkspaceEdit） ====================
 
-// 光标处标识符 → LSP WorkspaceEdit JSON；未找到任何位置返回 {"changes":{}}。
-// line/character 0-based。new_name 由 server 从 params 的 "newName" 字段提取。
+// uri → 文档所在目录（跨文件扫描用）。
+func uri_to_dir(uri: string) -> string {
+    var p = uri
+    if has_pfx(p, "file://") {
+        p = proto.substr_at(p, len("file://"), len(p))
+    }
+    while len(p) > 0 && (str_byte(p, 0) == 47 || str_byte(p, 0) == 92) {
+        p = proto.substr_at(p, 1, len(p))
+    }
+    var last: i64 = -1
+    var i: i64 = 0
+    while i < len(p) {
+        var c = str_byte(p, i)
+        if c == 47 || c == 92 {
+            last = i
+        }
+        i = i + 1
+    }
+    if last < 0 {
+        return ""
+    }
+    return proto.substr_at(p, 0, last + 1)
+}
+
+func has_pfx(s: string, p: string) -> bool {
+    if len(s) < len(p) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(p) {
+        if str_byte(s, i) != str_byte(p, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 光标处标识符 → LSP WorkspaceEdit JSON（**跨文件**：扫全部打开文档）；
+// 未找到任何位置返回 {"changes":{}}。line/character 0-based。
+// new_name 由 server 从 params 的 "newName" 字段提取。
 pub func rename(uri: string, txt: string, base_dir: string, line: i64, character: i64, new_name: string) -> string {
     var off = pos_to_offset(txt, line, character)
     var name = ident_at(txt, off)
     if len(name) == 0 {
         return "{\"changes\":{}}"
     }
-    var rs = table_new_i64()
-    var re = table_new_i64()
-    var rlens = table_new_i64()
-    var ok = an.run_check(txt, base_dir)
-    if ok == 1 {
-        collect_refs(g_file_roots[0], name, uri, rs, re, rlens)
-    }
-    // 索引里该符号声明位置并入（与引用位置去重；声明位置单独成一条 edit）
-    var decl_edit: string = ""
-    var s = an.find_sym_named(uri, name)
-    if s >= 0 {
-        var dl = an.sym_line(uri, s)
-        var dc = an.sym_col(uri, s)
-        var l0 = dl - 1
-        var c0 = dc - 1
-        if l0 < 0 {
-            l0 = 0
-        }
-        if c0 < 0 {
-            c0 = 0
-        }
-        if !has_pos(rs, re, l0, c0) {
-            decl_edit = "{" + loc(uri, name, dl, dc) + ",\"newText\":" + proto.json_str(new_name) + "}"
-        }
-    }
-    // 编辑对象表：range 片段 + newText（循环内不入串，先入表最后 join）
-    var edits = table_new_string()
+    // 每文档的编辑对象表（"uri" → 编辑 JSON 数组；平行表）
+    var ch_uris: table<string> = table_new_string()
+    var ch_edits: table<string> = table_new_string()   // 编辑对象已按 json 数组 join
+    var n = an.doc_count()
     var i: i64 = 0
-    while i < len(rs) {
-        table_push(edits, "{" + range_json(name, rs[i], re[i]) + ",\"newText\":" + proto.json_str(new_name) + "}")
+    while i < n {
+        var du = an.doc_uri(i)
+        var dtext = an.fetch_text(du)
+        if len(dtext) == 0 {
+            i = i + 1
+            continue
+        }
+        var rs = table_new_i64()
+        var re = table_new_i64()
+        var rlens = table_new_i64()
+        var ok = an.run_check(dtext, uri_to_dir(du))
+        if ok == 1 {
+            collect_refs(g_file_roots[0], name, du, rs, re, rlens)
+        }
+        // 该文档索引里符号声明位置并入（与引用位置去重）
+        var decl_edit: string = ""
+        var s = an.find_sym_named(du, name)
+        if s >= 0 {
+            var dl = an.sym_line(du, s)
+            var dc = an.sym_col(du, s)
+            var l0 = dl - 1
+            var c0 = dc - 1
+            if l0 < 0 {
+                l0 = 0
+            }
+            if c0 < 0 {
+                c0 = 0
+            }
+            if !has_pos(rs, re, l0, c0) {
+                decl_edit = "{" + loc(du, name, dl, dc) + ",\"newText\":" + proto.json_str(new_name) + "}"
+            }
+        }
+        // 编辑对象表：range 片段 + newText（循环内不入串，先入表最后 join）
+        var edits = table_new_string()
+        var k: i64 = 0
+        while k < len(rs) {
+            table_push(edits, "{" + range_json(name, rs[k], re[k]) + ",\"newText\":" + proto.json_str(new_name) + "}")
+            k = k + 1
+        }
+        if len(decl_edit) > 0 {
+            table_push(edits, decl_edit)
+        }
+        if len(edits) > 0 {
+            var arr: string = "["
+            var j: i64 = 0
+            while j < len(edits) {
+                if j > 0 {
+                    arr = arr + ","
+                }
+                arr = arr + edits[j]
+                j = j + 1
+            }
+            arr = arr + "]"
+            table_push(ch_uris, du)
+            table_push(ch_edits, arr)
+        }
         i = i + 1
     }
-    if len(decl_edit) > 0 {
-        table_push(edits, decl_edit)
-    }
-    if len(edits) == 0 {
+    if len(ch_uris) == 0 {
         return "{\"changes\":{}}"
     }
     var out: string = "{\"changes\":{"
-    out = out + proto.json_str(uri) + ":["
-    var j: i64 = 0
-    while j < len(edits) {
-        if j > 0 {
+    var m: i64 = 0
+    while m < len(ch_uris) {
+        if m > 0 {
             out = out + ","
         }
-        out = out + edits[j]
-        j = j + 1
+        out = out + proto.json_str(ch_uris[m]) + ":" + ch_edits[m]
+        m = m + 1
     }
-    out = out + "]}}"
+    out = out + "}}"
     return out
 }
 
