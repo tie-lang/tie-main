@@ -108,38 +108,19 @@ pub func write_frame(body: string) {
 
 // ---- 字符串小工具（本层自足，避免依赖 std/string 全量）----
 
-// 字节表 → 字符串（**UTF-8 解码**，非逐字节 Latin-1）。
-// LSP 客户端以 UTF-8 发 JSON body（含中文标识符/消息），逐字节 str_from_code
-// 会把多字节字符拆成乱码——这里按 UTF-8 序列长度组装码点。
+// 字节表 → 字符串（string_builder 字节级追加：O(n)，结果串保持 UTF-8 字节，
+// str_char/str_len 按码点解码，与源码字面量一致）。
+// 注意：不能逐码点 `+` 拼接（大 body 100KB 级 O(n²) 卡死），也不能逐字节
+// str_from_code（多字节字符被拆成 Latin-1 乱码）。
 func bytes_to_str(b: table<i64>) -> string {
-    var out: string = ""
+    var sb = string_builder()
     var i: i64 = 0
     var n = len(b)
     while i < n {
-        var b0 = b[i] & 0xFF
-        var cp: i64 = 0
-        var nb: i64 = 1
-        if b0 < 0x80 {
-            cp = b0
-        } else if b0 < 0xE0 {
-            nb = 2
-            cp = (b0 & 0x1F) << 6
-        } else if b0 < 0xF0 {
-            nb = 3
-            cp = (b0 & 0x0F) << 12
-        } else {
-            nb = 4
-            cp = (b0 & 0x07) << 18
-        }
-        var k: i64 = 1
-        while k < nb && i + k < n {
-            cp = cp | ((b[i + k] & 0x3F) << (6 * (nb - 1 - k)))
-            k = k + 1
-        }
-        out = out + str_from_code(cp)
-        i = i + nb
+        sb_append_byte(sb, b[i] & 0xFF)
+        i = i + 1
     }
-    return out
+    return sb_build(sb)
 }
 
 func split_lines(s: string) -> table<string> {
@@ -198,7 +179,9 @@ func substr_after(s: string, p: string) -> string {
     return s
 }
 
-// 取 [start, end) 子串（start/end 可越界钳位）。
+// 取 [start, end) 子串（start/end 可越界钳位；**字节区间**，str_sub_bytes 一次拷贝）。
+// 注意：str_char 本运行时单次 ~360µs（200K 次 72s），逐字符切片不可用；
+// 调用方（LSP 侧）的文本扫描统一按字节下标（str_byte/len），ASCII 与码点一致。
 pub func substr_at(s: string, start: i64, end: i64) -> string {
     var a = start
     var b = end
@@ -211,13 +194,7 @@ pub func substr_at(s: string, start: i64, end: i64) -> string {
     if a >= b {
         return ""
     }
-    var out: string = ""
-    var i: i64 = a
-    while i < b {
-        out = out + str_char(s, i)
-        i = i + 1
-    }
-    return out
+    return str_sub_bytes(s, a, b)
 }
 
 // 解析整数字符串（含前导/尾随空白，纯 ASCII 十进制；非数字返回 0）。
@@ -249,29 +226,32 @@ pub func parse_int_trim(s: string) -> i64 {
 
 // ---- JSON 构造快捷（LSP 响应体大多是简单结构，手写字符串足够）----
 
-// JSON 字符串转义（" 与 \ 与控制字符）。
+// JSON 字符串转义（" 与 \ 与控制字符）。**字节级**（str_char 中文字节位
+// 死循环 + 单次 ~360µs）；非 ASCII 字节原样追加（JSON 字符串为 UTF-8）。
 pub func json_str(s: string) -> string {
-    var out: string = "\""
+    var sb = string_builder()
+    sb_append(sb, "\"")
+    var n = len(s)
     var i: i64 = 0
-    while i < len(s) {
-        var c = str_char(s, i)
-        if c == "\"" {
-            out = out + "\\\""
-        } else if c == "\\" {
-            out = out + "\\\\"
-        } else if c == "\n" {
-            out = out + "\\n"
-        } else if c == "\r" {
-            out = out + "\\r"
-        } else if c == "\t" {
-            out = out + "\\t"
+    while i < n {
+        var c = str_byte(s, i)
+        if c == 34 {
+            sb_append(sb, "\\\"")
+        } else if c == 92 {
+            sb_append(sb, "\\\\")
+        } else if c == 10 {
+            sb_append(sb, "\\n")
+        } else if c == 13 {
+            sb_append(sb, "\\r")
+        } else if c == 9 {
+            sb_append(sb, "\\t")
         } else {
-            out = out + c
+            sb_append_byte(sb, c)
         }
         i = i + 1
     }
-    out = out + "\""
-    return out
+    sb_append(sb, "\"")
+    return sb_build(sb)
 }
 
 // 数字 → JSON 字面量（int 直接）。

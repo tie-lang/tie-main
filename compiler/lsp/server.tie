@@ -97,79 +97,97 @@ func remove_doc(uri: string) {
 // ---- 诊断（浅层分析）----
 
 // 提取 JSON 参数的字符串字段（textDocument.uri / textDocument.text / line/text）。
-// 直接用子串查找（键在 JSON 中引号包裹）。**码点空间**扫描：str_char 按码点
-// 索引，必须配 str_len（len 是字节数，与 str_char 混用会错位——中文值截断）。
+// 字节级扫描（str_byte O(1)）：str_char 逐码点遍历大 body 是 O(n²) 卡死
+//（97KB 文档 40s）；无转义时 str_sub_bytes 一次拷贝，稀有转义才逐字节组装。
 func json_field(s: string, key: string) -> string {
     var pat = "\"" + key + "\""
     var idx = str_find(s, pat)
     if idx < 0 {
         return ""
     }
-    var i = idx + str_len(pat)
-    // 跳过冒号与空白
-    while i < str_len(s) {
-        var c = str_char(s, i)
-        if c == ":" {
+    var sl = len(s)
+    var i = idx + len(pat)
+    // 跳过冒号与空白（字节码：':'=58 空格=32 制表=9）
+    while i < sl {
+        var c = str_byte(s, i)
+        if c == 58 {
             i = i + 1
             break
         }
         i = i + 1
     }
-    while i < str_len(s) {
-        var c = str_char(s, i)
-        if c == " " || c == "\t" {
+    while i < sl {
+        var c = str_byte(s, i)
+        if c == 32 || c == 9 {
             i = i + 1
         } else {
             break
         }
     }
-    if i >= str_len(s) {
+    if i >= sl {
         return ""
     }
-    // 字符串值
-    if str_char(s, i) == "\"" {
-        var out: string = ""
-        i = i + 1
-        while i < str_len(s) {
-            var c = str_char(s, i)
-            if c == "\\" {
-                i = i + 1
-                if i < str_len(s) {
-                    var e = str_char(s, i)
-                    if e == "n" {
-                        out = out + "\n"
-                    } else if e == "t" {
-                        out = out + "\t"
-                    } else if e == "r" {
-                        out = out + "\r"
-                    } else if e == "\"" {
-                        out = out + "\""
-                    } else if e == "\\" {
-                        out = out + "\\"
-                    } else {
-                        out = out + e
-                    }
-                }
-            } else if c == "\"" {
+    // 字符串值（'"'=34 '\\'=92）
+    if str_byte(s, i) == 34 {
+        var start = i + 1
+        var j = start
+        var has_esc = false
+        while j < sl {
+            var b0 = str_byte(s, j)
+            if b0 == 92 {
+                has_esc = true
+                j = j + 2
+            } else if b0 == 34 {
                 break
             } else {
-                out = out + c
+                j = j + 1
             }
-            i = i + 1
         }
-        return out
+        if !has_esc {
+            return str_sub_bytes(s, start, j)
+        }
+        // 转义处理（少见）：逐字节组装（原样字节 + 常见转义解码）
+        var sb = string_builder()
+        var k = start
+        while k < j {
+            var b0 = str_byte(s, k)
+            if b0 == 92 {
+                k = k + 1
+                if k < j {
+                    var e = str_byte(s, k)
+                    if e == 110 {
+                        sb_append(sb, "\n")
+                    } else if e == 116 {
+                        sb_append(sb, "\t")
+                    } else if e == 114 {
+                        sb_append(sb, "\r")
+                    } else if e == 34 {
+                        sb_append(sb, "\"")
+                    } else if e == 92 {
+                        sb_append(sb, "\\")
+                    } else {
+                        sb_append_byte(sb, e)
+                    }
+                }
+            } else {
+                sb_append_byte(sb, b0)
+            }
+            k = k + 1
+        }
+        return sb_build(sb)
     }
     // 数字等（截到逗号/花括号）
     var out2: string = ""
-    while i < str_len(s) {
-        var c = str_char(s, i)
-        if c == "," || c == "}" || c == "]" {
+    var j2 = i
+    while j2 < sl {
+        var c2 = str_byte(s, j2)
+        if c2 == 44 || c2 == 125 || c2 == 93 {
             break
         }
-        if c != " " && c != "\t" {
-            out2 = out2 + c
+        if c2 != 32 && c2 != 9 {
+            out2 = out2 + str_from_code(c2)
         }
-        i = i + 1
+        j2 = j2 + 1
     }
     return out2
 }
@@ -180,17 +198,20 @@ func json_field_int(s: string, key: string) -> i64 {
     return proto.parse_int_trim(v)
 }
 
-// 子串查找（首个出现位置；未找到 -1）。码点空间（str_char 按码点索引）。
+// 子串查找（首个出现位置；未找到 -1）。**字节级**（str_byte O(1)；
+// str_char 本运行时单次 ~360µs，逐码点查找不可用）。
 func str_find(hay: string, needle: string) -> i64 {
-    if str_len(needle) == 0 {
+    var hl = len(hay)
+    var nl = len(needle)
+    if nl == 0 {
         return 0
     }
     var i: i64 = 0
-    while i + str_len(needle) <= str_len(hay) {
+    while i + nl <= hl {
         var matched = true
         var j: i64 = 0
-        while j < str_len(needle) {
-            if str_char(hay, i + j) != str_char(needle, j) {
+        while j < nl {
+            if str_byte(hay, i + j) != str_byte(needle, j) {
                 matched = false
                 break
             }
@@ -209,8 +230,8 @@ func line_start(txt: string, line: i64) -> i64 {
     var off: i64 = 0
     var ln: i64 = 0
     while ln < line && off < len(txt) {
-        // 找换行
-        while off < len(txt) && str_char(txt, off) != "\n" {
+        // 找换行（str_byte O(1)，str_char 逐码点扫描大文本 O(n²)）
+        while off < len(txt) && str_byte(txt, off) != 10 {
             off = off + 1
         }
         if off < len(txt) {
@@ -225,7 +246,7 @@ func line_start(txt: string, line: i64) -> i64 {
 func pos_to_offset(txt: string, line: i64, character: i64) -> i64 {
     var off = line_start(txt, line)
     var moved: i64 = 0
-    while moved < character && off + moved < len(txt) && str_char(txt, off + moved) != "\n" {
+    while moved < character && off + moved < len(txt) && str_byte(txt, off + moved) != 10 {
         moved = moved + 1
     }
     return off + moved
@@ -236,8 +257,8 @@ func uri_basename(uri: string) -> string {
     var last: i64 = -1
     var i: i64 = 0
     while i < len(uri) {
-        var c = str_char(uri, i)
-        if c == "/" || c == "\\" {
+        var c = str_byte(uri, i)
+        if c == 47 || c == 92 {
             last = i
         }
         i = i + 1
@@ -256,14 +277,14 @@ func uri_to_dir(uri: string) -> string {
         p = proto.substr_at(p, len("file://"), len(p))
     }
     // 去前导 '/'（file:///F:/... → F:/...）
-    while len(p) > 0 && (str_char(p, 0) == "/" || str_char(p, 0) == "\\") {
+    while len(p) > 0 && (str_byte(p, 0) == 47 || str_byte(p, 0) == 92) {
         p = proto.substr_at(p, 1, len(p))
     }
     var last: i64 = -1
     var i: i64 = 0
     while i < len(p) {
-        var c = str_char(p, i)
-        if c == "/" || c == "\\" {
+        var c = str_byte(p, i)
+        if c == 47 || c == 92 {
             last = i
         }
         i = i + 1
@@ -274,14 +295,14 @@ func uri_to_dir(uri: string) -> string {
     return proto.substr_at(p, 0, last + 1)
 }
 
-// 字符串前缀判定（server 自足版）。
+// 字符串前缀判定（server 自足版；字节级）。
 func has_prefix_str(s: string, p: string) -> bool {
     if len(s) < len(p) {
         return false
     }
     var i: i64 = 0
     while i < len(p) {
-        if str_char(s, i) != str_char(p, i) {
+        if str_byte(s, i) != str_byte(p, i) {
             return false
         }
         i = i + 1
@@ -289,33 +310,31 @@ func has_prefix_str(s: string, p: string) -> bool {
     return true
 }
 
-// 单字符是否为标识符起始（字母/下划线；char_code 数值比较，避免字符串比较符不可用）。
-func is_idchar(c: string) -> bool {
-    var v = char_code(c)
+// 字节是否标识符起始（字母/下划线）。
+func is_idbyte(v: i64) -> bool {
     return (v >= 65 && v <= 90) || (v >= 97 && v <= 122) || v == 95
 }
 
-// 单字符是否为标识符延续（起始 + 数字）。
-func is_idchar2(c: string) -> bool {
-    var v = char_code(c)
+// 字节是否标识符延续（起始 + 数字）。
+func is_idbyte2(v: i64) -> bool {
     return (v >= 65 && v <= 90) || (v >= 97 && v <= 122) || (v >= 48 && v <= 57) || v == 95
 }
 
-// 去首尾空白。
+// 去首尾空白（字节级）。
 func trim_str(s: string) -> string {
     var a: i64 = 0
     var b = len(s)
     while a < b {
-        var c = str_char(s, a)
-        if c == " " || c == "\t" || c == "\r" {
+        var c = str_byte(s, a)
+        if c == 32 || c == 9 || c == 13 {
             a = a + 1
         } else {
             break
         }
     }
     while b > a {
-        var c = str_char(s, b - 1)
-        if c == " " || c == "\t" || c == "\r" {
+        var c = str_byte(s, b - 1)
+        if c == 32 || c == 9 || c == 13 {
             b = b - 1
         } else {
             break
@@ -324,12 +343,12 @@ func trim_str(s: string) -> string {
     return proto.substr_at(s, a, b)
 }
 
-// 从 pos 开始取第一个标识符（字母/下划线开头，含数字/下划线继续）。
+// 从 pos 开始取第一个标识符（字母/下划线开头，含数字/下划线继续；字节级）。
 func id_after(s: string, pos: i64) -> string {
     var i = pos
     while i < len(s) {
-        var c = str_char(s, i)
-        if c == " " || c == "\t" {
+        var c = str_byte(s, i)
+        if c == 32 || c == 9 {
             i = i + 1
         } else {
             break
@@ -338,14 +357,12 @@ func id_after(s: string, pos: i64) -> string {
     if i >= len(s) {
         return ""
     }
-    var c0 = str_char(s, i)
-    if !is_idchar(c0) {
+    if !is_idbyte(str_byte(s, i)) {
         return ""
     }
     var j = i
     while j < len(s) {
-        var c = str_char(s, j)
-        if is_idchar2(c) {
+        if is_idbyte2(str_byte(s, j)) {
             j = j + 1
         } else {
             break
@@ -394,13 +411,15 @@ func rebuild_syms(uri: string, txt: string) {
         }
         i = i + 1
     }
-    var names: string = ""
-    var sigs: string = ""
+    // string_builder 线性组装（`+` 累积对千级函数行是 O(n²)）
+    var sb_names = string_builder()
+    var sb_sigs = string_builder()
+    var first: bool = true
     // 逐行收集 func/pub func 签名
     var pos: i64 = 0
     while pos < len(txt) {
         var le = pos
-        while le < len(txt) && str_char(txt, le) != "\n" {
+        while le < len(txt) && str_byte(txt, le) != 10 {
             le = le + 1
         }
         var line_t = proto.substr_at(txt, pos, le)
@@ -410,28 +429,31 @@ func rebuild_syms(uri: string, txt: string) {
             check = proto.substr_at(check, len("pub func "), len(check))
             var nm = id_after(check, 0)
             if len(nm) > 0 {
-                // 签名行（到行尾）
-                if len(names) > 0 {
-                    names = names + ";"
-                    sigs = sigs + ";"
+                if !first {
+                    sb_append(sb_names, ";")
+                    sb_append(sb_sigs, ";")
                 }
-                names = names + nm
-                sigs = sigs + line_t
+                first = false
+                sb_append(sb_names, nm)
+                sb_append(sb_sigs, line_t)
             }
         } else if str_find(check, "func ") == 0 {
             check = proto.substr_at(check, len("func "), len(check))
             var nm2 = id_after(check, 0)
             if len(nm2) > 0 && str_find(nm2, "main") != 0 {
-                if len(names) > 0 {
-                    names = names + ";"
-                    sigs = sigs + ";"
+                if !first {
+                    sb_append(sb_names, ";")
+                    sb_append(sb_sigs, ";")
                 }
-                names = names + nm2
-                sigs = sigs + line_t
+                first = false
+                sb_append(sb_names, nm2)
+                sb_append(sb_sigs, line_t)
             }
         }
         pos = le + 1
     }
+    var names = sb_build(sb_names)
+    var sigs = sb_build(sb_sigs)
     if idx >= 0 {
         g_sym_names[idx] = names
         g_sym_sigs[idx] = sigs
@@ -490,17 +512,17 @@ func split_semi(s: string) -> table<string> {
     return out
 }
 
-// 某位置处的标识符（向前/向后扩展字母数字_）。
+// 某位置处的标识符（向前/向后扩展字母数字_；字节级）。
 func ident_at(txt: string, off: i64) -> string {
     if off < 0 || off > len(txt) {
         return ""
     }
     var a = off
-    while a > 0 && is_idchar2(str_char(txt, a - 1)) {
+    while a > 0 && is_idbyte2(str_byte(txt, a - 1)) {
         a = a - 1
     }
     var b = off
-    while b < len(txt) && is_idchar2(str_char(txt, b)) {
+    while b < len(txt) && is_idbyte2(str_byte(txt, b)) {
         b = b + 1
     }
     if a >= b {

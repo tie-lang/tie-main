@@ -22,6 +22,22 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [perf] tsp 大文件性能与健壮性：str_char 全字节化 + 警告解析死循环修复（2026-09-07）
+
+* **RCA（根因）**：本运行时 `str_char` 单次调用 ~360µs（200K 次 72s 实测）且在 UTF-8
+  中文字节位上解码可能死循环；`len`（字节）与 `str_char`（码点）混用导致中文错位。
+  didOpen 97KB 文档曾达 93s/挂死。
+* **全字节化扫描**：`protocol.tie`（`bytes_to_str` 改 string_builder 线性组装、`substr_at`
+  改 `str_sub_bytes` 一次拷贝、`json_str` 改字节转义保留 UTF-8）、`server.tie`
+  （`json_field`/`str_find`/`line_start`/`pos_to_offset`/`trim_str`/`id_after`/`ident_at`/
+  uri 工具全改 `str_byte`；`rebuild_syms` 改 string_builder 线性拼接）、`analyze.tie`
+  （`fingerprint`/`strip_type_decl`/`err_to_diag`/`warns_to_diag`/helper 全改 `str_byte`；
+  helper 加 `an_` 前缀防跨模块同名遮蔽）。
+* **死循环修复**：`warns_to_diag` 每轮未推进 `rest = head`，把 head 内的下一条 `;W:`
+  位置套回原串导致无限循环（对齐 driver.print_warns 推进方式 + 消息到下一 `;W:` 截断）。
+* **验证**：didOpen 97KB sinfer 93s → 1.7s；带警告中文文档（protocol.tie）0.02s 完成且
+  诊断正确；大文件 documentSymbol/semanticTokens/foldingRange 全部响应；smoke1-6 全 PASS。
+
 ## [feat] p.6.9.9/6.9.10/6.9.11 tsp 波次三：语义令牌/折叠/重命名/高亮/修复/格式化（2026-09-07）
 
 * **tokens.tie（p.6.9.9）**：`tsp_tok.semantic_tokens`——run_check 后遍历主文件 AST，按
