@@ -1,0 +1,268 @@
+type tie<logic>
+// ============================================================================
+// completion.tie：tsp（tie Language Server）——completion 模块（p.6.9.6）
+// 命名空间：tsp_comp
+//
+// 候选来源：
+//   · 关键字列表（g_kw_s，可扩展）
+//   · 当前文档符号（tsp_an 索引：函数/struct/enum/全局/namespace/extern）
+//   · 常用内置函数名（g_builtin_s）
+// 模式：
+//   · 普通模式：全部候选按词缀前缀过滤（空词缀 = 全部）
+//   · 点触发模式：光标前是 '.'，收集 '.' 前标识符作为命名空间前缀，
+//     只取符号名以 prefix. 开头的成员（label = 点后部分，filterText = 全名）
+// kind 映射（LSP CompletionItemKind）：keyword=14 func=3 struct=22 enum=13
+// global=6 namespace=9（extern 回退 func=3）
+// 每项 JSON：{"label":...,"kind":N,"detail":...,"filterText":...}
+// （detail 仅函数填签名，其余省略；普通模式 label=filterText）
+// 无候选返回 "[]"。
+//
+// 本文件编译：随 server.tie 一起编译（server 是主入口，本文件被 import）。
+// ============================================================================
+
+import "./analyze.tie" as an
+import "./protocol.tie" as proto
+
+// ---- 顶层常量（namespace 体内禁止 var/const，放文件顶层）----
+
+// 关键字列表（可扩展）：普通模式候选 kind=14。
+var g_kw_s: string = "if else while for return import using namespace func struct enum var const pub unsafe type switch case break continue table map true false in as extern impl port actor async try panic println print len str_char char_code str_len to_string table_push table_new table_new_i64 table_new_string exit time_now time_now_ms read_line str_find str_contains string_builder sb_append sb_build"
+
+// 常用内置函数名（无前缀过滤时作为补全内容）：候选 kind=3。
+var g_builtin_s: string = "println print len str_char char_code str_len to_string str_find str_contains str_sub_bytes str_byte str_from_code table_push table_new table_new_i64 table_new_string exit panic read_line time_now time_now_ms file_read file_exists file_write get_env exec_code string_builder sb_append sb_build"
+
+namespace tsp_comp {
+
+// ==================== 字符串小工具 ====================
+
+func has_prefix(s: string, p: string) -> bool {
+    if len(s) < len(p) {
+        return false
+    }
+    var i: i64 = 0
+    while i < len(p) {
+        if str_char(s, i) != str_char(p, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// 0-based 行 → 字节偏移（越界返回 len(txt)）。
+func line_start(txt: string, line: i64) -> i64 {
+    var off: i64 = 0
+    var ln: i64 = 0
+    while ln < line && off < len(txt) {
+        while off < len(txt) && str_char(txt, off) != "\n" {
+            off = off + 1
+        }
+        if off < len(txt) {
+            off = off + 1  // 跳过 \n
+        }
+        ln = ln + 1
+    }
+    return off
+}
+
+// 单字符是否为标识符字符（字母/数字/下划线）。
+func is_idchar(c: string) -> bool {
+    var v = char_code(c)
+    return (v >= 65 && v <= 90) || (v >= 97 && v <= 122) || (v >= 48 && v <= 57) || v == 95
+}
+
+// 从 off 向前（左）收集标识符到字符串；无则空串。
+// 停在非标识符字符（含换行——不跨越行首；含引号——不跨越字符串字面量）。
+func ident_back(txt: string, off: i64) -> string {
+    if off <= 0 {
+        return ""
+    }
+    var i = off - 1
+    while i >= 0 && is_idchar(str_char(txt, i)) {
+        i = i - 1
+    }
+    if i + 1 >= off {
+        return ""
+    }
+    return proto.substr_at(txt, i + 1, off)
+}
+
+// 光标位置（line, character 0-based）→ 字节偏移（钳位到行尾）。
+func cursor_offset(txt: string, line: i64, character: i64) -> i64 {
+    var off = line_start(txt, line)
+    var moved: i64 = 0
+    while moved < character && off + moved < len(txt) && str_char(txt, off + moved) != "\n" {
+        moved = moved + 1
+    }
+    return off + moved
+}
+
+// 按空格切词（空串 → 空表）。
+func split_words(s: string) -> table<string> {
+    var out = table_new_string()
+    var cur: string = ""
+    var i: i64 = 0
+    while i < len(s) {
+        var c = str_char(s, i)
+        if c == " " {
+            if len(cur) > 0 {
+                table_push(out, cur)
+                cur = ""
+            }
+        } else {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    if len(cur) > 0 {
+        table_push(out, cur)
+    }
+    return out
+}
+
+// 符号 kind 字符串 → LSP CompletionItemKind 数字。
+func kind_num(k: string) -> i64 {
+    if k == "func" {
+        return 3
+    }
+    if k == "struct" {
+        return 22
+    }
+    if k == "enum" {
+        return 13
+    }
+    if k == "global" {
+        return 6
+    }
+    if k == "namespace" {
+        return 9
+    }
+    return 3   // extern 等回退函数
+}
+
+// 单条 CompletionItem JSON（detail 空则省略）。
+func mk_item(label: string, kind: i64, filter: string, detail: string) -> string {
+    var out = "{\"label\":" + proto.json_str(label) + ",\"kind\":" + to_string(kind)
+    if len(detail) > 0 {
+        out = out + ",\"detail\":" + proto.json_str(detail)
+    }
+    out = out + ",\"filterText\":" + proto.json_str(filter) + "}"
+    return out
+}
+
+// 项目表 → JSON 数组串（join，循环外一次性拼接）。
+func join_items(items: table<string>) -> string {
+    var out: string = "["
+    var i: i64 = 0
+    while i < len(items) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + items[i]
+        i = i + 1
+    }
+    out = out + "]"
+    return out
+}
+
+// ==================== 候选构建 ====================
+
+// 点触发：取符号名以 prefix. 开头的成员。
+// label = 点后部分；filterText = 全名；detail = 签名（仅函数）。
+func dot_complete(uri: string, prefix: string) -> string {
+    var items = table_new_string()
+    var n = an.sym_count(uri)
+    if n < 0 {
+        n = 0
+    }
+    var pf = prefix + "."
+    var i: i64 = 0
+    while i < n {
+        var name = an.sym_name(uri, i)
+        if has_prefix(name, pf) {
+            var lbl = proto.substr_at(name, len(pf), len(name))
+            if len(lbl) > 0 {   // 跳过空 label（namespace 符号自身 "util." 等）
+                var kind = an.sym_kind(uri, i)
+                var detail: string = ""
+                if kind == "func" {
+                    detail = an.sym_sig(uri, i)
+                }
+                table_push(items, mk_item(lbl, kind_num(kind), name, detail))
+            }
+        }
+        i = i + 1
+    }
+    return join_items(items)
+}
+
+// 普通模式：关键字 + 文档符号 + 内置函数，按词缀前缀过滤（空词缀 = 全部）。
+func normal_complete(uri: string, affix: string) -> string {
+    var items = table_new_string()
+    // 关键字
+    var kws = split_words(g_kw_s)
+    var ki: i64 = 0
+    while ki < len(kws) {
+        if has_prefix(kws[ki], affix) {
+            table_push(items, mk_item(kws[ki], 14, kws[ki], ""))
+        }
+        ki = ki + 1
+    }
+    // 当前文档符号
+    var n = an.sym_count(uri)
+    if n < 0 {
+        n = 0
+    }
+    var i: i64 = 0
+    while i < n {
+        var name = an.sym_name(uri, i)
+        if has_prefix(name, affix) {
+            var kind = an.sym_kind(uri, i)
+            var detail: string = ""
+            if kind == "func" {
+                detail = an.sym_sig(uri, i)
+            }
+            table_push(items, mk_item(name, kind_num(kind), name, detail))
+        }
+        i = i + 1
+    }
+    // 常用内置函数
+    var bs = split_words(g_builtin_s)
+    var bi: i64 = 0
+    while bi < len(bs) {
+        if has_prefix(bs[bi], affix) {
+            table_push(items, mk_item(bs[bi], 3, bs[bi], ""))
+        }
+        bi = bi + 1
+    }
+    return join_items(items)
+}
+
+// ==================== 主入口 ====================
+
+// complete(uri, txt, line, character) -> CompletionItem[] JSON 数组串。
+// line/character 为 0-based 光标位置；uri 查 tsp_an 索引，txt 向前找词缀。
+pub func complete(uri: string, txt: string, line: i64, character: i64) -> string {
+    var pos = cursor_offset(txt, line, character)
+    // 点触发：光标前一个字符是 '.'
+    if pos > 0 && str_char(txt, pos - 1) == "." {
+        var prefix = ident_back(txt, pos - 1)   // '.' 前的标识符
+        var pl = len(prefix)
+        // 字符串字面量保护：点前一个字符是引号则前缀作废（光标在字符串内）
+        if pl > 0 && pos - pl - 2 >= 0 && str_char(txt, pos - pl - 2) == "\"" {
+            prefix = ""
+        }
+        if len(prefix) > 0 {
+            return dot_complete(uri, prefix)
+        }
+    }
+    // 普通模式：当前词缀（标识符字符向后收集）
+    var affix = ident_back(txt, pos)
+    var al = len(affix)
+    // 字符串字面量保护：词缀前一个字符是引号则词缀作废（光标在字符串内）
+    if al > 0 && pos - al - 1 >= 0 && str_char(txt, pos - al - 1) == "\"" {
+        affix = ""
+    }
+    return normal_complete(uri, affix)
+}
+
+}   // namespace tsp_comp

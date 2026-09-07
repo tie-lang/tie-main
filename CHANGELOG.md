@@ -22,6 +22,26 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] p.6.9.6/6.9.7/6.9.8 tsp 特征波：补全/跳转/引用/签名/大纲（2026-09-07）
+
+* **completion.tie（p.6.9.6）**：`tsp_comp.complete`——符号表 + 关键字 + 内置函数补全，
+  词缀前缀过滤；点触发（`.` 后按命名空间前缀过滤成员，label=点后段、filterText=全名）；
+  kind 映射（func=3/struct=22/enum=13/global=6/namespace=9/keyword=14）；函数带 detail=签名。
+* **hover 增强**：优先索引签名（AST 重建，多行签名可靠），回退行扫描。
+* **nav.tie（p.6.9.7）**：`tsp_nav.definition`（当前文档优先，未中跨文档枚举索引；
+  带命名空间前缀的限定名精确匹配）→ LSP Location；`tsp_nav.references`（`run_check`
+  重跑流水线后递归遍历主文件 AST 找 N_VAR/N_CALL/N_METHOD_CALL/N_FIELD_ACCESS 名字匹配
+  节点；include_decl 时并入声明位置并去重）→ Location[]。
+* **sigdoc.tie（p.6.9.8）**：`tsp_sig.signature_help`（最近 '(' 回溯（跳过字符串、限 3 行窗口）
+  → 函数名查符号 → 签名括号内按 ',' 切参数段 + activeParameter=逗号数）；`tsp_sig.doc_symbols`
+  （索引 → DocumentSymbol[]，kind 映射 func=12/struct=23/enum=10/global=13/namespace=3，detail=签名）。
+* **server 接线**：completion/definition/references/signatureHelp/documentSymbol 分发 +
+  能力声明（completionProvider[`.`]/signatureHelpProvider[`(` `,`]/documentSymbolProvider；
+  版本 0.2.0）。
+* **探针**：新增 `lsp_smoke5.py`（13 项：补全/前缀过滤/定义/引用计数与位置/签名参数/
+  大纲）；`probe_comp/nav/sigdoc.tie` 单元探针 PASS；smoke1-5 全 PASS。
+* **验证**：tsp.exe 编译零错误；bootstrap sha 一致（见自举回归）。
+
 ## [feat] p.6.9.3/6.9.4/6.9.5 tsp 编译器级分析：复用前端树 + 符号索引 + 增量诊断（2026-09-07）
 
 * **analyze.tie（p.6.9.3）**：文档 → 编译流水线（`parser.parse_ast` + `semantic.check_ast`，

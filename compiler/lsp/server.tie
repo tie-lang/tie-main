@@ -22,6 +22,9 @@ type tie<logic>
 import "../../std/stdio.tie" as stdio
 import "./protocol.tie" as proto
 import "./analyze.tie" as an
+import "./completion.tie" as tsp_comp
+import "./nav.tie" as tsp_nav
+import "./sigdoc.tie" as tsp_sig
 using tsp_proto;
 
 // ---- 文档状态 ----
@@ -502,14 +505,21 @@ func ident_at(txt: string, off: i64) -> string {
     return proto.substr_at(txt, a, b)
 }
 
-// Hover 响应：查符号签名（简单文本，keptHover 第一版）+ 未定义函数诊断 hint。
+// Hover 响应：优先索引签名（AST 重建，多行签名可靠），回退行扫描签名。
 func hover_result(uri: string, txt: string, line: i64, character: i64) -> string {
     var off = pos_to_offset(txt, line, character)
     var nm = ident_at(txt, off)
     if len(nm) == 0 {
         return "null"
     }
-    var sig = find_sig(uri, nm)
+    var sig = ""
+    var si = an.find_sym_named(uri, nm)
+    if si >= 0 {
+        sig = an.sym_sig(uri, si)
+    }
+    if len(sig) == 0 {
+        sig = find_sig(uri, nm)
+    }
     if len(sig) > 0 {
         var contents = "[{\"language\":\"tie\",\"value\":" + proto.json_str(sig) + "}]"
         return "{\"contents\":" + contents + "}"
@@ -543,9 +553,9 @@ func main() -> i64 {
 
         // 生命周期
         if method == "initialize" {
-            // 服务器能力声明
-            var caps = "{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"referencesProvider\":true,\"renameProvider\":true}"
-            var res = "{\"capabilities\":" + caps + ",\"serverInfo\":{\"name\":\"tsp\",\"version\":\"0.1.0\"}}"
+            // 服务器能力声明（p.6.9.6-6.9.8：补全/定义/引用/签名/大纲/重命名）
+            var caps = "{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"referencesProvider\":true,\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]},\"documentSymbolProvider\":true,\"renameProvider\":true}"
+            var res = "{\"capabilities\":" + caps + ",\"serverInfo\":{\"name\":\"tsp\",\"version\":\"0.2.0\"}}"
             proto.write_frame(make_response(resp_id, res))
             jsonrpc_ready = true
         } else if method == "initialized" {
@@ -592,7 +602,7 @@ func main() -> i64 {
             }
         }
 
-        // hover：查文档签名索引
+        // hover：查文档签名索引（优先索引签名，回退行扫描）
         else if method == "textDocument/hover" {
             var uri = json_field(body, "uri")
             var line = json_field_int(body, "line")
@@ -602,7 +612,59 @@ func main() -> i64 {
             proto.write_frame(make_response(resp_id, hr))
         }
 
-        // 通用空响应（hover 等首版返回空/null，客户端无副作用）
+        // 补全：符号表 + 关键字 + 内置（p.6.9.6）
+        else if method == "textDocument/completion" {
+            var uri = json_field(body, "uri")
+            var line = json_field_int(body, "line")
+            var character = json_field_int(body, "character")
+            var txt = get_doc(uri)
+            var cr = tsp_comp.complete(uri, txt, line, character)
+            proto.write_frame(make_response(resp_id, cr))
+        }
+
+        // 跳转定义（p.6.9.7）
+        else if method == "textDocument/definition" {
+            var uri = json_field(body, "uri")
+            var line = json_field_int(body, "line")
+            var character = json_field_int(body, "character")
+            var txt = get_doc(uri)
+            var dr = tsp_nav.definition(uri, txt, uri_to_dir(uri), line, character)
+            proto.write_frame(make_response(resp_id, dr))
+        }
+
+        // 引用查找（p.6.9.7）
+        else if method == "textDocument/references" {
+            var uri = json_field(body, "uri")
+            var line = json_field_int(body, "line")
+            var character = json_field_int(body, "character")
+            var txt = get_doc(uri)
+            var inc = false
+            var incs = json_field(body, "includeDeclaration")
+            if incs == "true" {
+                inc = true
+            }
+            var rr = tsp_nav.references(uri, txt, uri_to_dir(uri), line, character, inc)
+            proto.write_frame(make_response(resp_id, rr))
+        }
+
+        // 签名帮助（p.6.9.8）
+        else if method == "textDocument/signatureHelp" {
+            var uri = json_field(body, "uri")
+            var line = json_field_int(body, "line")
+            var character = json_field_int(body, "character")
+            var txt = get_doc(uri)
+            var sr = tsp_sig.signature_help(uri, txt, line, character)
+            proto.write_frame(make_response(resp_id, sr))
+        }
+
+        // 文档符号大纲（p.6.9.8）
+        else if method == "textDocument/documentSymbol" {
+            var uri = json_field(body, "uri")
+            var dsr = tsp_sig.doc_symbols(uri)
+            proto.write_frame(make_response(resp_id, dsr))
+        }
+
+        // 通用空响应（未实现方法返回 null，客户端无副作用）
         else if has_id {
             proto.write_frame(make_response(resp_id, "null"))
         }

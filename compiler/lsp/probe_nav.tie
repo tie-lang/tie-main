@@ -1,0 +1,116 @@
+type tie<logic>
+// ============================================================================
+// probe_nav.tie：tsp_nav（definition + references）探针（临时文件）
+// 编译：tiec compiler/lsp/probe_nav.tie -o compiler/lsp/probe_nav.exe
+// 运行：直接执行 probe_nav.exe；PROBE:PASS → exit 0，PROBE:FAIL → exit 1。
+// ============================================================================
+
+import "../frontend/parser.tie"
+import "../frontend/semantic.tie"
+import "./analyze.tie" as an
+import "./nav.tie" as tsp_nav
+
+// 首个子串出现位置（未找到 -1）。
+func str_find(hay: string, needle: string) -> i64 {
+    if len(needle) == 0 {
+        return 0
+    }
+    var i: i64 = 0
+    while i + len(needle) <= len(hay) {
+        var matched: bool = true
+        var j: i64 = 0
+        while j < len(needle) {
+            if str_char(hay, i + j) != str_char(needle, j) {
+                matched = false
+                break
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 统计子串出现次数。
+func count_sub(s: string, p: string) -> i64 {
+    var n: i64 = 0
+    var i: i64 = 0
+    var sl = len(s)
+    var pl = len(p)
+    while i + pl <= sl {
+        var matched: bool = true
+        var j: i64 = 0
+        while j < pl {
+            if str_char(s, i + j) != str_char(p, j) {
+                matched = false
+                break
+            }
+            j = j + 1
+        }
+        if matched {
+            n = n + 1
+            i = i + pl
+        } else {
+            i = i + 1
+        }
+    }
+    return n
+}
+
+func main() -> i64 {
+    // 样例文档：add 声明在第 0 行；main 体内两处 add 调用（第 1 行）
+    var src = "func add(a: i64, b: i64) -> i64 { return a + b }\nfunc main() { var x = add(1, 2); println(add(3, 4)) }"
+    var ok: bool = true
+
+    // 编译流水线：parse + semantic + 符号索引
+    var prc = parser.parse_ast(src)
+    if prc != 0 {
+        println("PROBE:FAIL parse_ast 失败: " + parser.ast_err_protocol())
+        return 1
+    }
+    var sem = semantic.check_ast("")
+    if str_find(sem, "ERR:") == 0 {
+        println("PROBE:FAIL check_ast 失败: " + sem)
+        return 1
+    }
+    an.index_doc("nav://a")
+
+    // ---- definition：光标在 main 体 add(1,2) 的 add（0-based 行 1 字符 22）----
+    var def = tsp_nav.definition("nav://a", src, "", 1, 22)
+    println("definition -> " + def)
+    if str_find(def, "\"line\":0") < 0 {
+        ok = false
+        println("PROBE:FAIL definition 未命中 add 声明（期望含 \"line\":0）")
+    }
+
+    // ---- references：同一光标位置，include_decl=true ----
+    // 期望 3 个 Location：2 处 add 调用 + 1 处声明（声明在 (0,0) 与引用不同，需并入）
+    var refs = tsp_nav.references("nav://a", src, "", 1, 22, true)
+    println("references -> " + refs)
+    var cnt = count_sub(refs, "\"uri\"")
+    println("references 数量 = " + to_string(cnt) + "（期望 3）")
+    if cnt != 3 {
+        ok = false
+        println("PROBE:FAIL references 数量错误")
+    }
+
+    // ---- include_decl=false：仅 2 处调用 ----
+    var refs2 = tsp_nav.references("nav://a", src, "", 1, 22, false)
+    println("references(include_decl=false) -> " + refs2)
+    var cnt2 = count_sub(refs2, "\"uri\"")
+    println("references 数量 = " + to_string(cnt2) + "（期望 2）")
+    if cnt2 != 2 {
+        ok = false
+        println("PROBE:FAIL references(include_decl=false) 数量错误")
+    }
+
+    if ok {
+        println("PROBE:PASS")
+        return 0
+    }
+    println("PROBE:FAIL")
+    return 1
+}

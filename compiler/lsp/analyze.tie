@@ -237,6 +237,22 @@ pub func analyze_doc(uri: string, txt: string, base_dir: string) -> string {
     return j
 }
 
+// 按需重跑编译流水线（引用/语义令牌等需要新鲜 sstate AST 的功能用）。
+// 成功返回 1（sstate 表为本文档最新状态）；词法/语法/语义错误返回 0。
+// 注意：不触碰诊断缓存（tsp_an 诊断表独立于 sstate）。
+pub func run_check(txt: string, base_dir: string) -> i64 {
+    var src = strip_type_decl(txt)
+    var prc = parser.parse_ast(src)
+    if prc < 0 {
+        return 0
+    }
+    var sem = semantic.check_ast(base_dir)
+    if has_prefix(sem, "ERR:") {
+        return 0
+    }
+    return 1
+}
+
 // 语义 OK 协议中的警告段 → 诊断数组（severity 2）。无警告返回 "[]"。
 func warns_to_diag(sem: string) -> string {
     var items: table<string> = table_new_string()
@@ -672,6 +688,18 @@ pub func find_sym_named(uri: string, name: string) -> i64 {
         i = i + 1
     }
     return -1
+}
+
+// 已索引文档枚举（跨文件跳转/引用用）。
+pub func doc_count() -> i64 {
+    return len(g_iuris)
+}
+
+pub func doc_uri(i: i64) -> string {
+    if i < 0 || i >= len(g_iuris) {
+        return ""
+    }
+    return g_iuris[i]
 }
 
 // ==================== 字符串工具 ====================
