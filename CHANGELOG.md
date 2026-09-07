@@ -20,6 +20,31 @@
 > 5. Major-version archive: on stable release, copy this file to `<version>.CHANGELOG` at the repo root, then start a fresh one.
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## 2026.1（正式版，开发中）
+
+## [docs] r.1 轨启动：全面审计报告（漏洞/性能/缺陷/工具链）+ 修复模块规划（2026-09-08）
+
+* 基于 `fa12f94`（Harbor-2026.1-preview.6 版本边界）创建 r.1 分支，启动 2026.1
+  正式版稳定轨（r.x.x.x，只做优化与稳定性）。审计报告入库：
+  `docs/bugreports/2026-09-08-r1-audit.md`。
+* **回归基线核验**：regress-s21 修正 `TIE_INTERP_LIB` 失效硬编码路径后复跑 =
+  99 PASS / 4 FAIL / 2 SKIP，与既定基线完全一致，**零新增代码回归**（初跑多出的
+  5 个失败全为脚本硬编码旧仓库路径导致的假性 COMPILE_FAIL）。
+* **新发现（高危）**：① TLS 证书链校验未接入连接路径——chain.verify 已实现但
+  tls.connect/finish13/finish12 全程不调用（中间人可持任意自签证书完成握手）；
+  ② TLS 密钥材料来自非加密安全 PRNG（rnd.int 逐字节，x25519/P-256 私钥同源）。
+* **新发现（性能，铁律违规）**：std/json parse_string/parse_number 逐字符
+  str_char + 不可变拼接 = O(n²)（httpc/LSP 均已字节化，唯独 json 漏网）。
+* **新发现（工具链）**：regress-s21.ps1 硬编码失效运行库路径致回归门禁假阳性；
+  llvmgen_inst 未支持指令静默降级为 TODO 注释继续链接。
+* **确认长期项**：RCA-2 循环体 alloca 不提升 + 未初始化读隐性契约（r.1.1 攻坚）；
+  table_coll_p2d IR 类型缺陷（`{i64,i64}` 当 ptr，新旧不动点均复现）；
+  shift_neg_free 负例未拒；dbg_fsp 测试过期。
+* **修复模块规划**：r.1.1 正确性（首读前必写清理 + 全量 alloca 提升 + 零初始化，
+  连带根治 ed25519 泄漏）→ r.1.2 安全（CSPRNG 底座原语 + TLS 接入 chain.verify）
+  → r.1.3 性能（json 字节化）→ r.1.4 工具链（regress 路径 / IR 缺陷 / 语义规则 /
+  未支持指令硬错误 / 测试更新 / 残留清理）。
+
 ## Harbor-2026.1-preview.6（2026-09-07）
 
 ## [fix] package.tie io_cwd 改 cwd 内建——p.6.4.6 exec_output 内联后取目录失效（2026-09-07）
