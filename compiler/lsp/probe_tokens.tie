@@ -1,0 +1,181 @@
+type tie<logic>
+// ============================================================================
+// probe_tokens.tie：tsp_tok（semantic tokens + folding，p.6.9.9）探针（临时文件）
+// 验证：
+//   1. semantic_tokens 直接调用（内部自跑 run_check，无需先 index）→
+//      data 数组长度 > 0
+//   2. folding_ranges → 至少 1 个区间（add 函数体跨行 → [1,2]）
+// 编译运行：tiec compiler/lsp/probe_tokens.tie -o compiler/lsp/probe_tokens.exe
+// 打印 PROBE:PASS / PROBE:FAIL 并 exit(0/1)。
+// ============================================================================
+
+import "../frontend/parser.tie"
+import "../frontend/semantic.tie"
+import "./analyze.tie" as an
+import "./tokens.tie" as tsp_tok
+// 注意：g_cur_fn_name shim 已由 analyze.tie 文件顶层提供（前端树跨层全局，
+// 此处不重复声明——重复声明会报 E00242 全局变量重复定义）。
+
+// 首个子串出现位置（未找到 -1）。
+func find_sub(hay: string, needle: string) -> i64 {
+    if len(needle) == 0 {
+        return 0
+    }
+    var i: i64 = 0
+    while i + len(needle) <= len(hay) {
+        var matched: bool = true
+        var j: i64 = 0
+        while j < len(needle) {
+            if str_char(hay, i + j) != str_char(needle, j) {
+                matched = false
+                break
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 子串包含判定。
+func has(s: string, sub: string) -> bool {
+    return find_sub(s, sub) >= 0
+}
+
+// 子串 [start, end)。
+func substr(s: string, start: i64, end: i64) -> string {
+    var a = start
+    var b = end
+    if a < 0 {
+        a = 0
+    }
+    if b > len(s) {
+        b = len(s)
+    }
+    if a >= b {
+        return ""
+    }
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 子串出现次数。
+func count_sub(s: string, p: string) -> i64 {
+    var n: i64 = 0
+    var i: i64 = 0
+    var sl = len(s)
+    var pl = len(p)
+    while i + pl <= sl {
+        var matched: bool = true
+        var j: i64 = 0
+        while j < pl {
+            if str_char(s, i + j) != str_char(p, j) {
+                matched = false
+                break
+            }
+            j = j + 1
+        }
+        if matched {
+            n = n + 1
+            i = i + pl
+        } else {
+            i = i + 1
+        }
+    }
+    return n
+}
+
+// 解析 semantic_tokens JSON 的 data 数组长度（令牌数 = int 个数 / 5）。
+func tok_count(s: string) -> i64 {
+    var p = find_sub(s, "\"data\":[")
+    if p < 0 {
+        return 0
+    }
+    var i = p + 7
+    var commas: i64 = 0
+    var n = len(s)
+    while i < n {
+        var c = str_char(s, i)
+        if c == "," {
+            commas = commas + 1
+        } else if c == "]" {
+            break
+        }
+        i = i + 1
+    }
+    return (commas + 1) / 5
+}
+
+// 统计 folding 数组中的区间数（每个含 "startLine"）。
+func range_count(s: string) -> i64 {
+    return count_sub(s, "\"startLine\"")
+}
+
+func main() -> i64 {
+    // 样例文档（首行 type tie 头；add 函数体跨行；含 struct/enum/namespace/
+    // if/while 块与全局变量）
+    var src = "type tie<logic>\n" +
+              "func add(a: i64, b: i64) -> i64 {\n" +
+              "    return a + b\n" +
+              "}\n" +
+              "struct Point {\n" +
+              "    var x: i64\n" +
+              "    var y: i64\n" +
+              "}\n" +
+              "enum Color {\n" +
+              "    Red\n" +
+              "    Green\n" +
+              "}\n" +
+              "var g_x: i64 = 0\n" +
+              "namespace util {\n" +
+              "    func helper() -> i64 {\n" +
+              "        return 0\n" +
+              "    }\n" +
+              "}\n" +
+              "func use_blocks(v: i64) {\n" +
+              "    var i: i64 = 0\n" +
+              "    if v > 0 {\n" +
+              "        println(v)\n" +
+              "    }\n" +
+              "    var j: i64 = 0\n" +
+              "    while j < 10 {\n" +
+              "        j = j + 1\n" +
+              "    }\n" +
+              "}\n"
+
+    // ---- semantic_tokens：直接调用（内部自跑 run_check，无需先 index）----
+    var st = tsp_tok.semantic_tokens("tok://a", src, "")
+    println("SEMTOK=" + st)
+    var ntok = tok_count(st)
+    println("TOKENS=" + to_string(ntok) + "（期望 > 0）")
+    if ntok <= 0 {
+        println("PROBE:FAIL semantic_tokens 无令牌")
+        return 1
+    }
+
+    // ---- folding_ranges ----
+    var fr = tsp_tok.folding_ranges("tok://a", src, "")
+    println("FOLD=" + fr)
+    var nrg = range_count(fr)
+    println("RANGES=" + to_string(nrg) + "（期望 >= 1）")
+    if nrg < 1 {
+        println("PROBE:FAIL folding_ranges 无区间")
+        return 1
+    }
+    // add 函数体跨行：声明在 0 基行 1，body return 在行 2 → [1,2]
+    if !has(fr, "\"startLine\":1") {
+        println("PROBE:FAIL folding_ranges 缺 add 函数区间 startLine=1")
+        return 1
+    }
+
+    println("PROBE:PASS")
+    return 0
+}

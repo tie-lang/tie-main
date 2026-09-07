@@ -1,0 +1,346 @@
+type tie<logic>
+// ============================================================================
+// refactor.tie：tsp（tie Language Server）——rename + documentHighlight +
+// quickfix 模块（p.6.9.10）· 命名空间：tsp_ref
+//
+// 实现（复用 analyze.tie 的每文档符号索引 + 前端 sstate 列式 AST）：
+//   · rename：定位光标处标识符 → an.run_check 重跑编译流水线（sstate 为本
+//     文档最新状态）→ 递归遍历 g_file_roots[0]（主文件顶层根）收集引用节点
+//     （tag ∈ {N_VAR, N_CALL, N_METHOD_CALL, N_FIELD_ACCESS} 且名字匹配）→
+//     索引里该符号声明位置并入（与引用位置去重）→ LSP WorkspaceEdit JSON。
+//   · highlight：同 rename 收集位置 → DocumentHighlight[]（kind=1 文本）。
+//   · quickfix：按诊断消息启发式生成 CodeAction[]：缺分号（"期望 语句结束
+//     符"）在光标处插 ";"；未声明的变量（消息单引号内名字）在当前行首插入
+//     `var <name> = 0\n`；其余返回 []。
+//
+// 本文件编译：随 server.tie 一起编译（server 是主入口，本文件被 import）。
+// ============================================================================
+
+import "./analyze.tie" as an
+import "./protocol.tie" as proto
+
+// ---- AST 节点 tag 常量（对齐 frontend/ast.tie；本地定义——ast.tie 经
+// parser 树传递 import，同名常量重定义会报错，故用 RF_ 前缀）----
+const RF_VAR: i64 = 6
+const RF_CALL: i64 = 7
+const RF_FIELD_ACCESS: i64 = 15
+const RF_METHOD_CALL: i64 = 18
+
+namespace tsp_ref {
+
+// ==================== 自足小工具 ====================
+
+// 行号（0-based）→ 行首偏移（越界返回文本长度）。
+func line_start(txt: string, line: i64) -> i64 {
+    var off: i64 = 0
+    var ln: i64 = 0
+    while ln < line && off < len(txt) {
+        while off < len(txt) && str_char(txt, off) != "\n" {
+            off = off + 1
+        }
+        if off < len(txt) {
+            off = off + 1   // 跳过 \n
+        }
+        ln = ln + 1
+    }
+    return off
+}
+
+// 单字符是否标识符延续字符（字母/数字/下划线；char_code 数值比较）。
+func is_idchar(c: string) -> bool {
+    var v = char_code(c)
+    return (v >= 65 && v <= 90) || (v >= 97 && v <= 122) || (v >= 48 && v <= 57) || v == 95
+}
+
+// 从 off 向两端扩展标识符；无标识符返回 ""。
+func ident_at(txt: string, off: i64) -> string {
+    if off < 0 || off > len(txt) {
+        return ""
+    }
+    var a = off
+    while a > 0 && is_idchar(str_char(txt, a - 1)) {
+        a = a - 1
+    }
+    var b = off
+    while b < len(txt) && is_idchar(str_char(txt, b)) {
+        b = b + 1
+    }
+    if a >= b {
+        return ""
+    }
+    return proto.substr_at(txt, a, b)
+}
+
+// 位置（line/character 0-based）→ 文件偏移。
+func pos_to_offset(txt: string, line: i64, character: i64) -> i64 {
+    var off = line_start(txt, line)
+    var moved: i64 = 0
+    while moved < character && off + moved < len(txt) && str_char(txt, off + moved) != "\n" {
+        moved = moved + 1
+    }
+    return off + moved
+}
+
+// 0-based 行列 → LSP range 片段："range":{"start":{...},"end":{...}}
+// （作为 edit/highlight 对象内的键值对；end.character = c0 + len(name)）。
+func range_json(name: string, l0: i64, c0: i64) -> string {
+    var l = l0
+    var c = c0
+    if l < 0 {
+        l = 0
+    }
+    if c < 0 {
+        c = 0
+    }
+    return "\"range\":{\"start\":{\"line\":" + to_string(l) + ",\"character\":" + to_string(c) +
+           "},\"end\":{\"line\":" + to_string(l) + ",\"character\":" + to_string(c + len(name)) + "}}"
+}
+
+// LSP range 片段：声明行列（1-based）→ 0-based（索引符号位置并入用）。
+func loc(uri: string, name: string, line: i64, col: i64) -> string {
+    return range_json(name, line - 1, col - 1)
+}
+
+// (l0, c0) 0-based 位置是否已在收集集合（rs/re 平行表）。
+func has_pos(rs: table<i64>, re: table<i64>, l0: i64, c0: i64) -> bool {
+    var i: i64 = 0
+    while i < len(rs) {
+        if rs[i] == l0 && re[i] == c0 {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// 递归收集引用：tag ∈ {VAR, CALL, METHOD_CALL, FIELD_ACCESS} 且
+// intern.lookup(s_names[node]) == name → 记录 (s_lines-1, s_cols-1, len(name))。
+// r* 为平行表：rs=0-based 行，re=0-based 列，rlens=名字长度。
+func collect_refs(node: i64, name: string, uri: string, rs: table<i64>, re: table<i64>, rlens: table<i64>) {
+    if node < 0 {
+        return
+    }
+    var tag = s_tags[node]
+    if tag == RF_VAR || tag == RF_CALL || tag == RF_METHOD_CALL || tag == RF_FIELD_ACCESS {
+        var nid = s_names[node]
+        if nid >= 0 && intern.lookup(nid) == name {
+            var l0 = s_lines[node] - 1
+            var c0 = s_cols[node] - 1
+            if l0 < 0 {
+                l0 = 0
+            }
+            if c0 < 0 {
+                c0 = 0
+            }
+            table_push(rs, l0)
+            table_push(re, c0)
+            table_push(rlens, len(name))
+        }
+    }
+    var nc = s_nchild[node]
+    var base = s_coff[node]
+    var k: i64 = 0
+    while k < nc {
+        collect_refs(s_children[base + k], name, uri, rs, re, rlens)
+        k = k + 1
+    }
+}
+
+// ==================== rename ====================
+
+// 光标处标识符 → LSP WorkspaceEdit JSON；未找到任何位置返回 {"changes":{}}。
+// line/character 0-based。new_name 由 server 从 params 的 "newName" 字段提取。
+pub func rename(uri: string, txt: string, base_dir: string, line: i64, character: i64, new_name: string) -> string {
+    var off = pos_to_offset(txt, line, character)
+    var name = ident_at(txt, off)
+    if len(name) == 0 {
+        return "{\"changes\":{}}"
+    }
+    var rs = table_new_i64()
+    var re = table_new_i64()
+    var rlens = table_new_i64()
+    var ok = an.run_check(txt, base_dir)
+    if ok == 1 {
+        collect_refs(g_file_roots[0], name, uri, rs, re, rlens)
+    }
+    // 索引里该符号声明位置并入（与引用位置去重；声明位置单独成一条 edit）
+    var decl_edit: string = ""
+    var s = an.find_sym_named(uri, name)
+    if s >= 0 {
+        var dl = an.sym_line(uri, s)
+        var dc = an.sym_col(uri, s)
+        var l0 = dl - 1
+        var c0 = dc - 1
+        if l0 < 0 {
+            l0 = 0
+        }
+        if c0 < 0 {
+            c0 = 0
+        }
+        if !has_pos(rs, re, l0, c0) {
+            decl_edit = "{" + loc(uri, name, dl, dc) + ",\"newText\":" + proto.json_str(new_name) + "}"
+        }
+    }
+    // 编辑对象表：range 片段 + newText（循环内不入串，先入表最后 join）
+    var edits = table_new_string()
+    var i: i64 = 0
+    while i < len(rs) {
+        table_push(edits, "{" + range_json(name, rs[i], re[i]) + ",\"newText\":" + proto.json_str(new_name) + "}")
+        i = i + 1
+    }
+    if len(decl_edit) > 0 {
+        table_push(edits, decl_edit)
+    }
+    if len(edits) == 0 {
+        return "{\"changes\":{}}"
+    }
+    var out: string = "{\"changes\":{"
+    out = out + proto.json_str(uri) + ":["
+    var j: i64 = 0
+    while j < len(edits) {
+        if j > 0 {
+            out = out + ","
+        }
+        out = out + edits[j]
+        j = j + 1
+    }
+    out = out + "]}}"
+    return out
+}
+
+// ==================== documentHighlight ====================
+
+// 光标处标识符 → LSP DocumentHighlight[] JSON（kind=1 文本）；未找到 "[]"。
+// 位置收集与 rename 相同（引用 + 声明，去重）。
+pub func highlight(uri: string, txt: string, base_dir: string, line: i64, character: i64) -> string {
+    var off = pos_to_offset(txt, line, character)
+    var name = ident_at(txt, off)
+    if len(name) == 0 {
+        return "[]"
+    }
+    var rs = table_new_i64()
+    var re = table_new_i64()
+    var rlens = table_new_i64()
+    var ok = an.run_check(txt, base_dir)
+    if ok == 1 {
+        collect_refs(g_file_roots[0], name, uri, rs, re, rlens)
+    }
+    // 索引里该符号声明位置并入（与引用位置去重）
+    var decl: string = ""
+    var s = an.find_sym_named(uri, name)
+    if s >= 0 {
+        var dl = an.sym_line(uri, s)
+        var dc = an.sym_col(uri, s)
+        var l0 = dl - 1
+        var c0 = dc - 1
+        if l0 < 0 {
+            l0 = 0
+        }
+        if c0 < 0 {
+            c0 = 0
+        }
+        if !has_pos(rs, re, l0, c0) {
+            decl = "{" + loc(uri, name, dl, dc) + ",\"kind\":1}"
+        }
+    }
+    var out: string = "["
+    var i: i64 = 0
+    while i < len(rs) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + "{" + range_json(name, rs[i], re[i]) + ",\"kind\":1}"
+        i = i + 1
+    }
+    if len(decl) > 0 {
+        if len(rs) > 0 {
+            out = out + ","
+        }
+        out = out + decl
+    }
+    out = out + "]"
+    return out
+}
+
+// ==================== quickfix ====================
+
+// 消息中首个单引号包裹的内容（未找到 ""）。码点级遍历（消息含中文）。
+func extract_quoted(s: string) -> string {
+    var n = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        if str_char(s, i) == "'" {
+            var j = i + 1
+            var out: string = ""
+            while j < n && str_char(s, j) != "'" {
+                out = out + str_char(s, j)
+                j = j + 1
+            }
+            return out
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// 首个子串出现位置（未找到 -1）。码点级遍历（消息含中文）。
+func str_find(hay: string, needle: string) -> i64 {
+    var h = str_len(hay)
+    var n = str_len(needle)
+    if n == 0 {
+        return 0
+    }
+    var i: i64 = 0
+    while i + n <= h {
+        var matched: bool = true
+        var j: i64 = 0
+        while j < n {
+            if str_char(hay, i + j) != str_char(needle, j) {
+                matched = false
+                break
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 单条 CodeAction JSON（range 为单点插入）。
+func mk_quickfix(title: string, uri: string, l0: i64, c0: i64, new_text: string) -> string {
+    return "{\"title\":" + proto.json_str(title) + ",\"kind\":\"quickfix\",\"edit\":{\"changes\":{" +
+           proto.json_str(uri) + ":[{\"range\":{\"start\":{\"line\":" + to_string(l0) +
+           ",\"character\":" + to_string(c0) + "},\"end\":{\"line\":" + to_string(l0) +
+           ",\"character\":" + to_string(c0) + "}},\"newText\":" + proto.json_str(new_text) + "}]}}}"
+}
+
+// 按诊断消息启发式生成 CodeAction[] JSON；line/character 0-based。
+//   · 含"期望 语句结束符"（缺分号）→ 光标处插入 ";"，title "插入分号"
+//   · 含"未声明的变量" → 消息单引号内变量名，当前行首插入 "var xxx = 0\n"
+//   · 其余返回 "[]"
+// diag_msg 由 server 从诊断消息传入（本模块不解析 LSP 诊断数组）。
+pub func quickfix(uri: string, txt: string, base_dir: string, line: i64, character: i64, diag_msg: string) -> string {
+    if str_find(diag_msg, "期望 语句结束符") >= 0 {
+        var c0 = character
+        if c0 < 0 {
+            c0 = 0
+        }
+        return "[" + mk_quickfix("插入分号", uri, line, c0, ";") + "]"
+    }
+    if str_find(diag_msg, "未声明的变量") >= 0 {
+        var nm = extract_quoted(diag_msg)
+        if len(nm) > 0 {
+            var l0 = line
+            if l0 < 0 {
+                l0 = 0
+            }
+            return "[" + mk_quickfix("声明局部变量 " + nm, uri, l0, 0, "var " + nm + " = 0\n") + "]"
+        }
+    }
+    return "[]"
+}
+
+}   // namespace tsp_ref

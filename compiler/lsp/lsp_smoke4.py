@@ -43,7 +43,7 @@ msgs = [
     {"jsonrpc":"2.0","method":"exit","params":None},
 ]
 
-p = subprocess.Popen([r"F:\Projects\tie-repo\tie-main\compiler\lsp\tsp_new.exe"],
+p = subprocess.Popen([r"F:\Projects\tie-repo\tie-main\compiler\lsp\tsp.exe"],
                      stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 for m in msgs:
     p.stdin.write(frame(m))

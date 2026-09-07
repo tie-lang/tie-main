@@ -22,6 +22,27 @@
 
 ## Harbor-2026.1-preview.6（2026-09-03）
 
+## [feat] p.6.9.9/6.9.10/6.9.11 tsp 波次三：语义令牌/折叠/重命名/高亮/修复/格式化（2026-09-07）
+
+* **tokens.tie（p.6.9.9）**：`tsp_tok.semantic_tokens`——run_check 后遍历主文件 AST，按
+  节点 tag 映射 8 类令牌（namespace/type/enum/struct/parameter/variable/function/keyword），
+  LSP delta 编码输出；`tsp_tok.folding_ranges`——块型节点（函数/struct/enum/namespace/
+  if/while/for/switch）跨行折叠区间，startLine 排序 + 同区间去重。
+* **refactor.tie（p.6.9.10）**：`tsp_ref.rename`（AST 收集调用/字段/方法引用 + 索引声明，
+  去重 → WorkspaceEdit）；`tsp_ref.highlight`（同源 → DocumentHighlight[]）；`tsp_ref.quickfix`
+  （缺分号 → 插入 `;`；未声明变量 → 行首插入 `var x = 0\n`）。
+* **format.tie（p.6.9.11）**：`tsp_fmt.format`——2 空格/级缩进、空行折叠、行尾空白去除、
+  末尾补换行、字符串/注释内花括号不影响深度；**幂等**（对结果再格式化无改动）。
+* **server 接线**：semanticTokens/foldingRange/rename/documentHighlight/codeAction/formatting
+  分发 + 能力声明（legend 23 类型；版本 0.3.0）。
+* **修复（UTF-8 协议层）**：`protocol.tie.bytes_to_str` 改按 UTF-8 序列长度组装码点——
+  此前逐字节 `str_from_code` 把入站中文（消息/标识符）拆成乱码，导致 codeAction 诊断
+  消息匹配失败；`server.tie` json_field/str_find 改码点空间扫描（`str_char` 按码点索引，
+  须配 `str_len`，`len` 是字节数——中文值截断修复）。`lsp_smoke4.py` 引用路径改 tsp.exe。
+* **探针**：新增 `lsp_smoke6.py`（9 项：语义令牌/折叠/重命名/高亮/修复/格式化）；
+  `probe_tokens/refactor/format.tie` 单元探针 PASS；smoke1-6 全 PASS。
+* **验证**：tsp.exe 编译零错误；bootstrap sha 一致（见自举回归）。
+
 ## [feat] p.6.9.6/6.9.7/6.9.8 tsp 特征波：补全/跳转/引用/签名/大纲（2026-09-07）
 
 * **completion.tie（p.6.9.6）**：`tsp_comp.complete`——符号表 + 关键字 + 内置函数补全，

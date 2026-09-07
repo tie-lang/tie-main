@@ -353,9 +353,9 @@ neither continues the other**.
 
 | 子项            | 内容                                                                                                        | 验收               |
 | ------------- | --------------------------------------------------------------------------------------------------------- | ---------------- |
-| \[ ] p.6.9.9  | semantic\_tokens.tie + folding.tie：语义令牌（映射 VSCode 标准类型 keyword/type/variable/function/...）+ 折叠范围（AST 块结构） | 语义令牌/折叠探针 PASS   |
-| \[ ] p.6.9.10 | rename.tie + documentHighlight + quickfix：跨文件重命名（import 图）+ 符号出现高亮 + 修复建议（缺分号/未定义变量）                      | 重命名/高亮/修复探针 PASS |
-| \[ ] p.6.9.11 | format.tie：格式化（对齐 prep/indent 转换器思路）                                                                      | 格式化前后一致探针 PASS   |
+| \[x] p.6.9.9  | semantic\_tokens.tie + folding.tie：语义令牌（映射 VSCode 标准类型 keyword/type/variable/function/...）+ 折叠范围（AST 块结构） | 语义令牌/折叠探针 PASS   |
+| \[x] p.6.9.10 | rename.tie + documentHighlight + quickfix：跨文件重命名（import 图）+ 符号出现高亮 + 修复建议（缺分号/未定义变量）                      | 重命名/高亮/修复探针 PASS |
+| \[x] p.6.9.11 | format.tie：格式化（对齐 prep/indent 转换器思路）                                                                      | 格式化前后一致探针 PASS   |
 
 | 子项            | 内容                                                                                           | 验收                            |
 | ------------- | -------------------------------------------------------------------------------------------- | ----------------------------- |

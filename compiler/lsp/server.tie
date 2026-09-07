@@ -25,6 +25,9 @@ import "./analyze.tie" as an
 import "./completion.tie" as tsp_comp
 import "./nav.tie" as tsp_nav
 import "./sigdoc.tie" as tsp_sig
+import "./tokens.tie" as tsp_tok
+import "./refactor.tie" as tsp_ref
+import "./format.tie" as tsp_fmt
 using tsp_proto;
 
 // ---- 文档状态 ----
@@ -94,16 +97,17 @@ func remove_doc(uri: string) {
 // ---- 诊断（浅层分析）----
 
 // 提取 JSON 参数的字符串字段（textDocument.uri / textDocument.text / line/text）。
-// 用 std/json 的扁平访问。为第一版健壮性，直接子串查找（键在 JSON 中引号包裹）。
+// 直接用子串查找（键在 JSON 中引号包裹）。**码点空间**扫描：str_char 按码点
+// 索引，必须配 str_len（len 是字节数，与 str_char 混用会错位——中文值截断）。
 func json_field(s: string, key: string) -> string {
     var pat = "\"" + key + "\""
     var idx = str_find(s, pat)
     if idx < 0 {
         return ""
     }
-    var i = idx + len(pat)
+    var i = idx + str_len(pat)
     // 跳过冒号与空白
-    while i < len(s) {
+    while i < str_len(s) {
         var c = str_char(s, i)
         if c == ":" {
             i = i + 1
@@ -111,7 +115,7 @@ func json_field(s: string, key: string) -> string {
         }
         i = i + 1
     }
-    while i < len(s) {
+    while i < str_len(s) {
         var c = str_char(s, i)
         if c == " " || c == "\t" {
             i = i + 1
@@ -119,18 +123,18 @@ func json_field(s: string, key: string) -> string {
             break
         }
     }
-    if i >= len(s) {
+    if i >= str_len(s) {
         return ""
     }
     // 字符串值
     if str_char(s, i) == "\"" {
         var out: string = ""
         i = i + 1
-        while i < len(s) {
+        while i < str_len(s) {
             var c = str_char(s, i)
             if c == "\\" {
                 i = i + 1
-                if i < len(s) {
+                if i < str_len(s) {
                     var e = str_char(s, i)
                     if e == "n" {
                         out = out + "\n"
@@ -157,7 +161,7 @@ func json_field(s: string, key: string) -> string {
     }
     // 数字等（截到逗号/花括号）
     var out2: string = ""
-    while i < len(s) && i < len(s) {
+    while i < str_len(s) {
         var c = str_char(s, i)
         if c == "," || c == "}" || c == "]" {
             break
@@ -176,16 +180,16 @@ func json_field_int(s: string, key: string) -> i64 {
     return proto.parse_int_trim(v)
 }
 
-// 子串查找（首个出现位置；未找到 -1）。
+// 子串查找（首个出现位置；未找到 -1）。码点空间（str_char 按码点索引）。
 func str_find(hay: string, needle: string) -> i64 {
-    if len(needle) == 0 {
+    if str_len(needle) == 0 {
         return 0
     }
     var i: i64 = 0
-    while i + len(needle) <= len(hay) {
+    while i + str_len(needle) <= str_len(hay) {
         var matched = true
         var j: i64 = 0
-        while j < len(needle) {
+        while j < str_len(needle) {
             if str_char(hay, i + j) != str_char(needle, j) {
                 matched = false
                 break
@@ -553,9 +557,10 @@ func main() -> i64 {
 
         // 生命周期
         if method == "initialize" {
-            // 服务器能力声明（p.6.9.6-6.9.8：补全/定义/引用/签名/大纲/重命名）
-            var caps = "{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"referencesProvider\":true,\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]},\"documentSymbolProvider\":true,\"renameProvider\":true}"
-            var res = "{\"capabilities\":" + caps + ",\"serverInfo\":{\"name\":\"tsp\",\"version\":\"0.2.0\"}}"
+            // 服务器能力声明（p.6.9.6-6.9.11：补全/定义/引用/签名/大纲/语义令牌/折叠/重命名/高亮/修复/格式化）
+            var legend = "[\"namespace\",\"type\",\"class\",\"enum\",\"interface\",\"struct\",\"typeParameter\",\"parameter\",\"variable\",\"property\",\"enumMember\",\"event\",\"function\",\"method\",\"macro\",\"keyword\",\"modifier\",\"comment\",\"string\",\"number\",\"regexp\",\"operator\",\"decorator\"]"
+            var caps = "{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"referencesProvider\":true,\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]},\"documentSymbolProvider\":true,\"renameProvider\":true,\"documentHighlightProvider\":true,\"codeActionProvider\":true,\"documentFormattingProvider\":true,\"foldingRangeProvider\":true,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":" + legend + ",\"tokenModifiers\":[]},\"full\":true}}"
+            var res = "{\"capabilities\":" + caps + ",\"serverInfo\":{\"name\":\"tsp\",\"version\":\"0.3.0\"}}"
             proto.write_frame(make_response(resp_id, res))
             jsonrpc_ready = true
         } else if method == "initialized" {
@@ -662,6 +667,62 @@ func main() -> i64 {
             var uri = json_field(body, "uri")
             var dsr = tsp_sig.doc_symbols(uri)
             proto.write_frame(make_response(resp_id, dsr))
+        }
+
+        // 语义令牌（p.6.9.9）
+        else if method == "textDocument/semanticTokens/full" {
+            var uri = json_field(body, "uri")
+            var txt = get_doc(uri)
+            var tr = tsp_tok.semantic_tokens(uri, txt, uri_to_dir(uri))
+            proto.write_frame(make_response(resp_id, tr))
+        }
+
+        // 折叠范围（p.6.9.9）
+        else if method == "textDocument/foldingRange" {
+            var uri = json_field(body, "uri")
+            var txt = get_doc(uri)
+            var fr = tsp_tok.folding_ranges(uri, txt, uri_to_dir(uri))
+            proto.write_frame(make_response(resp_id, fr))
+        }
+
+        // 重命名（p.6.9.10）
+        else if method == "textDocument/rename" {
+            var uri = json_field(body, "uri")
+            var line = json_field_int(body, "line")
+            var character = json_field_int(body, "character")
+            var new_name = json_field(body, "newName")
+            var txt = get_doc(uri)
+            var rr2 = tsp_ref.rename(uri, txt, uri_to_dir(uri), line, character, new_name)
+            proto.write_frame(make_response(resp_id, rr2))
+        }
+
+        // 符号出现高亮（p.6.9.10）
+        else if method == "textDocument/documentHighlight" {
+            var uri = json_field(body, "uri")
+            var line = json_field_int(body, "line")
+            var character = json_field_int(body, "character")
+            var txt = get_doc(uri)
+            var hr2 = tsp_ref.highlight(uri, txt, uri_to_dir(uri), line, character)
+            proto.write_frame(make_response(resp_id, hr2))
+        }
+
+        // 代码操作/快速修复（p.6.9.10）：取首个诊断的 range.start 与 message
+        else if method == "textDocument/codeAction" {
+            var uri = json_field(body, "uri")
+            var line = json_field_int(body, "line")
+            var character = json_field_int(body, "character")
+            var msg = json_field(body, "message")
+            var txt = get_doc(uri)
+            var qr = tsp_ref.quickfix(uri, txt, uri_to_dir(uri), line, character, msg)
+            proto.write_frame(make_response(resp_id, qr))
+        }
+
+        // 文档格式化（p.6.9.11）
+        else if method == "textDocument/formatting" {
+            var uri = json_field(body, "uri")
+            var txt = get_doc(uri)
+            var fr2 = tsp_fmt.format(uri, txt)
+            proto.write_frame(make_response(resp_id, fr2))
         }
 
         // 通用空响应（未实现方法返回 null，客户端无副作用）

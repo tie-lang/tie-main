@@ -1,0 +1,223 @@
+type tie<logic>
+// ============================================================================
+// format.tie：tsp（tie Language Server）——document formatting（p.6.9.11）
+// 命名空间：tsp_fmt
+//
+// 纯文本格式化（不依赖编译器前端，独立模块）：
+//   · 2 空格缩进：按 {} 深度增减（{ 增、} 减后再缩进该行；} 单独成行时
+//     缩进为其外一层）
+//   · 保留空行（连续空行压到最多 1 行）
+//   · 行尾空白去除；文件末尾补一个换行（已有时不重复）
+//   · 不做运算符空格规范化——只做缩进/空行/行尾
+//   · 字符串字面量与 // 注释内容不处理：缩进判定时跳过位于 " 字符串内
+//     或 // 注释后的 { }（不必做字符串内部改写）
+//
+// 返回 LSP TextEdit[] JSON（整文档替换）：
+//   [{"range":{"start":{"line":0,"character":0},
+//     "end":{"line":<末行>,"character":<末行长度>}},
+//     "newText":<json_str 格式化文本>}]
+// 文本为空或格式化结果与原文一致 → "[]"。
+// 幂等：对输出再格式化输出不变（已定型 → 返回 []）。
+//
+// 逐行处理：每行先算缩进深度（上一行未闭合 { 数 − 本行前导 } 数）产出新行；
+// 用表收集行、最后 join（StringBuilder 原地追加，避免 O(n²) 拼接）。
+//
+// 本文件编译：随 server.tie 一起编译（server 主入口 import 本文件）或经
+// probe_format.tie 单独编译验证（仅依赖 protocol.tie，无前端依赖）。
+// ============================================================================
+
+import "./protocol.tie" as proto
+
+namespace tsp_fmt {
+
+// 行起始偏移（line 0 基；越界返回文本长度；line < 0 返回 0）。
+func line_start(txt: string, line: i64) -> i64 {
+    var off: i64 = 0
+    var ln: i64 = 0
+    while ln < line && off < len(txt) {
+        while off < len(txt) && str_char(txt, off) != "\n" {
+            off = off + 1
+        }
+        if off < len(txt) {
+            off = off + 1  // 跳过 \n
+        }
+        ln = ln + 1
+    }
+    return off
+}
+
+// 按 \n 切行（\r 丢弃；保留末尾 \n 产生的末空段——供末尾空行识别）。
+func split_lines(s: string) -> table<string> {
+    var out = table_new_string()
+    var cur: string = ""
+    var i: i64 = 0
+    while i < len(s) {
+        var c = str_char(s, i)
+        if c == "\n" {
+            table_push(out, cur)
+            cur = ""
+        } else if c != "\r" {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    table_push(out, cur)
+    return out
+}
+
+// 单字符是否空白（空格/制表）。
+func is_ws(c: string) -> bool {
+    return c == " " || c == "\t"
+}
+
+// 前导 } 计数（content 已去首尾空白；首字符非 } 则 0）。
+func leading_close(content: string) -> i64 {
+    var n: i64 = 0
+    var i: i64 = 0
+    while i < len(content) && str_char(content, i) == "}" {
+        n = n + 1
+        i = i + 1
+    }
+    return n
+}
+
+// 统计不在字符串字面量（含 \ 转义跳过）与 // 注释内的 { } 数量。
+func count_braces(s: string) -> (i64, i64) {
+    var opens: i64 = 0
+    var closes: i64 = 0
+    var in_str: bool = false
+    var i: i64 = 0
+    while i < len(s) {
+        var c = str_char(s, i)
+        if in_str {
+            if c == "\\" {
+                i = i + 1  // 跳过转义字符（含 \" 与 \\）
+            } else if c == "\"" {
+                in_str = false
+            }
+        } else if c == "\"" {
+            in_str = true
+        } else if c == "/" && i + 1 < len(s) && str_char(s, i + 1) == "/" {
+            break  // // 注释：本行余下部分不参与
+        } else if c == "{" {
+            opens = opens + 1
+        } else if c == "}" {
+            closes = closes + 1
+        }
+        i = i + 1
+    }
+    return (opens, closes)
+}
+
+// 缩进串：n 层 = 2n 空格。
+func indent_str(n: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        sb_append(sb, "  ")
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 表 join（StringBuilder 原地追加，O(total)，避免 O(n²) 拼接）；
+// 末尾空段跳过（保证结果恰以一个换行收尾，即末尾空行去除）。
+func join_lines(items: table<string>, sep: string) -> string {
+    var n = len(items)
+    while n > 0 && len(items[n - 1]) == 0 {
+        n = n - 1
+    }
+    if n == 0 {
+        return ""
+    }
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < n {
+        if i > 0 {
+            sb_append(sb, sep)
+        }
+        sb_append(sb, items[i])
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 文本中 \n 数量（= 0 基末行号）。
+func count_nl(s: string) -> i64 {
+    var n: i64 = 0
+    var i: i64 = 0
+    while i < len(s) {
+        if str_char(s, i) == "\n" {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+// 末行长度（末行 = 最后一个 \n 之后的部分）。
+func last_line_len(s: string) -> i64 {
+    var ls = line_start(s, count_nl(s))
+    return len(s) - ls
+}
+
+// LSP 文档格式化：返回 TextEdit[] JSON（整文档替换）。
+// 空文本或格式化结果与原文一致 → "[]"（无需改动）。
+pub func format(uri: string, txt: string) -> string {
+    if len(txt) == 0 {
+        return "[]"
+    }
+    var lines = split_lines(txt)
+    var out = table_new_string()
+    var depth: i64 = 0
+    var prev_blank: bool = false
+    var i: i64 = 0
+    while i < len(lines) {
+        var raw = lines[i]
+        // 行尾空白去除
+        var e = len(raw)
+        while e > 0 && is_ws(str_char(raw, e - 1)) {
+            e = e - 1
+        }
+        var s2 = proto.substr_at(raw, 0, e)
+        // 行首空白去除（缩进由本模块重算）
+        var b: i64 = 0
+        while b < len(s2) && is_ws(str_char(s2, b)) {
+            b = b + 1
+        }
+        var content = proto.substr_at(s2, b, len(s2))
+        if len(content) == 0 {
+            // 空行：连续空行压到最多 1 行（保留首空行，后续连续空行跳过）
+            if !prev_blank {
+                table_push(out, "")
+                prev_blank = true
+            }
+        } else {
+            // 缩进深度 = 上一行未闭合 { 数 − 本行前导 } 数（不越 0）
+            var lc = leading_close(content)
+            var lvl = depth - lc
+            if lvl < 0 {
+                lvl = 0
+            }
+            table_push(out, indent_str(lvl) + content)
+            prev_blank = false
+        }
+        // 深度更新：本行未闭合 { 数（字符串/注释内不计）
+        var (opens, closes) = count_braces(content)
+        depth = depth + opens - closes
+        if depth < 0 {
+            depth = 0
+        }
+        i = i + 1
+    }
+    var result = join_lines(out, "\n") + "\n"
+    if result == txt {
+        return "[]"
+    }
+    var body = "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":" +
+        to_string(count_nl(txt)) + ",\"character\":" + to_string(last_line_len(txt)) +
+        "}},\"newText\":" + proto.json_str(result) + "}]"
+    return body
+}
+
+}   // namespace tsp_fmt

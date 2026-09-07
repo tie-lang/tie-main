@@ -108,12 +108,36 @@ pub func write_frame(body: string) {
 
 // ---- 字符串小工具（本层自足，避免依赖 std/string 全量）----
 
+// 字节表 → 字符串（**UTF-8 解码**，非逐字节 Latin-1）。
+// LSP 客户端以 UTF-8 发 JSON body（含中文标识符/消息），逐字节 str_from_code
+// 会把多字节字符拆成乱码——这里按 UTF-8 序列长度组装码点。
 func bytes_to_str(b: table<i64>) -> string {
     var out: string = ""
     var i: i64 = 0
-    while i < len(b) {
-        out = out + str_from_code(b[i] & 0xFF)
-        i = i + 1
+    var n = len(b)
+    while i < n {
+        var b0 = b[i] & 0xFF
+        var cp: i64 = 0
+        var nb: i64 = 1
+        if b0 < 0x80 {
+            cp = b0
+        } else if b0 < 0xE0 {
+            nb = 2
+            cp = (b0 & 0x1F) << 6
+        } else if b0 < 0xF0 {
+            nb = 3
+            cp = (b0 & 0x0F) << 12
+        } else {
+            nb = 4
+            cp = (b0 & 0x07) << 18
+        }
+        var k: i64 = 1
+        while k < nb && i + k < n {
+            cp = cp | ((b[i + k] & 0x3F) << (6 * (nb - 1 - k)))
+            k = k + 1
+        }
+        out = out + str_from_code(cp)
+        i = i + nb
     }
     return out
 }
