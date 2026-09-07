@@ -37,8 +37,8 @@ tie 诊断标号回归测试（p.6.9.15）
   .\scripts\test-diagcodes.ps1 --help
 
 断言:
-  (1) golden 错误语料全部输出 error[E#####]（无 E0000 回退）
-  (2) 警告语料输出 W0001..W0004 经验型警告
+  (1) golden 错误语料全部输出 error[E#####]（无 E00000 回退）
+  (2) 警告语料输出 W00001..W00004 经验型警告
   (3) diagcode 单元探针 ALL PASS
 "@
     exit 0
@@ -97,7 +97,7 @@ foreach ($f in $tieFiles) {
         Write-Host "[test-diagcodes] NO-CODE: $($f.Name)" -ForegroundColor Red
         Write-Host "    $($out.Trim())"
         $fails++
-    } elseif ($out -match "error\[E0000\]") {
+    } elseif ($out -match "error\[E00000\]") {
         Write-Host "[test-diagcodes] FALLBACK(E0000): $($f.Name)" -ForegroundColor Red
         Write-Host "    $($out.Trim())"
         $fails++
@@ -131,7 +131,7 @@ $rc = Invoke-Tiec @($warnSrc) $warnOut 60000
 $out = ""
 if (Test-Path $warnOut) { $out = [System.IO.File]::ReadAllText($warnOut, [System.Text.Encoding]::UTF8) }
 if (Test-Path "$warnOut.err") { $out += [System.IO.File]::ReadAllText("$warnOut.err", [System.Text.Encoding]::UTF8) }
-foreach ($wc in @("W0001", "W0002", "W0003", "W0004")) {
+foreach ($wc in @("W00001", "W00002", "W00003", "W00004")) {
     if ($out -match "warning\[$wc\]") {
         Write-Host "[test-diagcodes] 警告 $wc 命中" -ForegroundColor Green
     } else {

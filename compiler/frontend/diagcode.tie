@@ -152,7 +152,7 @@ func prefix_of(norm: string) -> string {
     return best
 }
 
-// 错误标号：exact → prefix → E0000（未分类兜底）。
+// 错误标号：exact → prefix → E00000（未分类兜底；五位纯序号规范）。
 pub func code_of(msg: string) -> string {
     var norm = normalize(msg)
     var c = diagcat.lookup(norm)
@@ -163,7 +163,7 @@ pub func code_of(msg: string) -> string {
     if len(pc) > 0 {
         return pc
     }
-    return "E0000"
+    return "E00000"
 }
 
 // ---------- 消息名与尾段（用户格式：名字；期望 x；实际 y；提示。） ----------
@@ -330,7 +330,7 @@ func ensure_warns() {
         "角色 output 非法值，回退 lib",
         "角色重复注册，忽略后注册者"
     ]
-    var c: table<string> = ["W0020", "W0021", "W0003", "W0002", "W0001", "W0004", "W0023", "W0022"]
+    var c: table<string> = ["W00020", "W00021", "W00003", "W00002", "W00001", "W00004", "W00023", "W00022"]
     var nm: table<string> = [
         "角色配置解析失败",
         "角色定义解析失败",
@@ -384,11 +384,11 @@ func warn_at(core: string) -> i64 {
     return -1
 }
 
-// 警告标号：未命中 W0000。
+// 警告标号：未命中 W00000。
 pub func warn_code_of(core: string) -> string {
     var idx = warn_at(core)
     if idx < 0 {
-        return "W0000"
+        return "W00000"
     }
     return diag_w_codes[idx]
 }

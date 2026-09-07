@@ -1,7 +1,7 @@
 ﻿# gen-diagcodes.ps1 —— 诊断标号目录生成器（p.6.9.15）
 # ============================================================
 # 扫描 tiec 编译器源码（compiler/**/*.tie + prep/pkg/repl），抽取全部诊断消息
-# 字面量，归一化折叠（ASCII 串 → '%'）为稳定 key，按来源分配家族号段，生成：
+# 字面量，归一化折叠（ASCII 串 → '%'）为稳定 key，按来源登记家族，生成：
 #   1) compiler/frontend/diagcode_cat.gen.tie —— 目录数据（key→code→name）
 #   2) <root>/diagdocs/*.md —— 各家族文档骨架
 #   3) <root>/diagdocs/diagcodes.json —— 机器可读清单
@@ -9,8 +9,9 @@
 # key 归一化（与运行时 compiler/frontend/diagcode.tie 完全一致）：
 #   - 连续可折叠 ASCII（0x21..0x7E）折叠为单个 '%'
 #   - 中文/空白原样保留
-# 家族号段：E1 词法 / E2 语法 / E3 语义 / E4 运行时 / E5 CLI配置 / E6 后端IR /
-#           E7 REPL解析 / E8 LSP / E9 内部错误与未分类
+# 标号规范（用户定稿）：五位纯序号 `E` + 5 位数字（E00001 起全局连续）；
+# 家族（词法/语法/语义/运行时/CLI/后端/REPL/LSP/内部）仅记入 JSON 的 family
+# 字段与文档，不编码进标号。
 #
 # 用法：.\scripts\gen-diagcodes.ps1 [-RepoRoot <根>] [-OutDir <输出目录>]
 
@@ -251,15 +252,15 @@ foreach ($mm in $manual) {
 # ---------- 排序与分配标号 ----------
 # 注意：tie 运行时按 UTF-8 字节序比较（strcmp），目录必须按**字节序**排序，
 # 不能用 Sort-Object 的区域语言排序（中文按拼音会错序 → 二分查表失配）。
+# 标号规范（用户定稿）：**五位纯序号**——`E` + 5 位全局连续数字（E00001 起，
+# 按字节序递增），家族信息不编码进标号（保留在 JSON family 字段与文档）。
 $sorted = @($exeKeys.Keys)
 [System.Array]::Sort($sorted, [System.StringComparer]::Ordinal)
-$codes = @{}; foreach ($fam in 1..9) { $codes[$fam] = 0 }
 $map = @{}
+$seq = 0
 foreach ($key in $sorted) {
-    $fam = [int]$exeKeys[$key].Family
-    if ($fam -lt 1 -or $fam -gt 9) { $fam = 9 }
-    $codes[$fam]++
-    $map[$key] = "E" + [string]$fam + $codes[$fam].ToString("D4")
+    $seq++
+    $map[$key] = "E" + $seq.ToString("D5")
 }
 
 # ---------- 前缀规则（插值消息：运行时值可能含中文/空格，整串无法精确命中）----------
@@ -292,7 +293,7 @@ $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine("type tie<class>")
 [void]$sb.AppendLine("// compiler/frontend/diagcode_cat.gen.tie —— 诊断标号目录（p.6.9.15 生成文件，勿手改）")
 [void]$sb.AppendLine("// 生成：scripts/gen-diagcodes.ps1；exact $($sorted.Count) 条 + prefix $($pfxCode.Count) 条；运行时归一化后二分查表。")
-[void]$sb.AppendLine("// 家族：E1 词法 / E2 语法 / E3 语义 / E4 运行时 / E5 CLI配置 / E6 后端IR / E7 REPL / E8 LSP / E9 内部错误与未分类")
+[void]$sb.AppendLine("// 标号规范：五位纯序号 E+5 位（E00001 起全局连续）；家族仅记 JSON family/文档，不编码进标号。")
 [void]$sb.AppendLine("var cat_keys: table<string>;")
 [void]$sb.AppendLine("var cat_codes: table<string>;")
 [void]$sb.AppendLine("var pfx_keys: table<string>;")
@@ -339,22 +340,28 @@ foreach ($p in $pfxSorted) {
 [void]$sb.AppendLine("}")
 [System.IO.File]::WriteAllText($catFile, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
 
-# ---------- JSON 清单 ----------
+# ---------- 机器可读清单（td 数据文件；用户定稿：不用 JSON 用 td） ----------
+# td = tie 数据表字面量（type tie<data> 头 + 表名 + 对象数组）。清单本身供
+# 文档生成等非性能敏感读取；性能敏感路径用 zd 变体：
+#   tiec --compress-data diagdocs/diagcodes.data.tie -o diagdocs/diagcodes.zd
 $diagDir = Join-Path $OutDir "diagdocs"
 if (-not (Test-Path $diagDir)) { New-Item -ItemType Directory -Path $diagDir -Force | Out-Null }
-$list = [System.Collections.Generic.List[object]]::new()
-foreach ($key in $sorted) {
-    $list.Add([PSCustomObject]@{
-        code     = $map[$key]
-        key      = $key
-        name     = $exeKeys[$key].Name
-        family   = $exeKeys[$key].Family
-        src      = $exeKeys[$key].Src
-        template = $exeKeys[$key].Template
-    })
+
+# td 字符串转义（反斜杠/引号/换行）。
+function Esc-Td([string]$s) {
+    return ($s.Replace("\", "\\").Replace('"', '\"').Replace("`n", '\n').Replace("`r", '\r').Replace("`t", '\t'))
 }
-$json = $list | ConvertTo-Json -Depth 4
-[System.IO.File]::WriteAllText((Join-Path $diagDir "diagcodes.json"), $json, [System.Text.UTF8Encoding]::new($false))
+
+$td = New-Object System.Text.StringBuilder
+[void]$td.AppendLine("type tie<data>")
+[void]$td.AppendLine("// diagdocs/diagcodes.data.tie —— 诊断标号机器可读清单（p.6.9.15，生成文件勿手改）")
+[void]$td.AppendLine("// 列：code/key/name/family/src/template；family 1 词法 2 语法 3 语义 4 运行时 5 CLI 6 后端 7 REPL 8 LSP 9 内部")
+[void]$td.AppendLine("diagcodes = [")
+foreach ($key in $sorted) {
+    [void]$td.AppendLine("    [ `"code`": `"$($map[$key])`", `"key`": `"$(Esc-Td $key)`", `"name`": `"$(Esc-Td $exeKeys[$key].Name)`", `"family`": $($exeKeys[$key].Family), `"src`": `"$(Esc-Td $exeKeys[$key].Src)`", `"template`": `"$(Esc-Td $exeKeys[$key].Template)`" ],")
+}
+[void]$td.AppendLine("]")
+[System.IO.File]::WriteAllText((Join-Path $diagDir "diagcodes.data.tie"), $td.ToString(), [System.Text.UTF8Encoding]::new($false))
 
 # ---------- 文档骨架 ----------
 $famNames = @{ 1 = "词法（Lexer）"; 2 = "语法（Parser）"; 3 = "语义（Semantic）"; 4 = "运行时（Runtime）"; 5 = "CLI 与配置（CLI & Config）"; 6 = "后端与 IR（Backend & IR）"; 7 = "REPL 与解释（REPL）"; 8 = "LSP"; 9 = "内部错误与未分类（Internal）" }
@@ -364,7 +371,7 @@ foreach ($fam in 1..9) {
         if ($exeKeys[$key].Family -ne $fam) { continue }
         $entries += "### $($map[$key])  $($exeKeys[$key].Name)`n- 消息：``$($exeKeys[$key].Template)``；消息名：$($exeKeys[$key].Name)`n- 出处：``$($exeKeys[$key].Src)``"
     }
-    $body = "# tie 诊断标号 E${fam}xxx — $($famNames[$fam]) / tie diagnostic codes E${fam}xxx — $($famNames[$fam])`n`n> 每种标号的成因与常见解决方案说明由 tie-diag 文档维护；本页为自动生成的目录骨架。`n"
+    $body = "# tie 诊断标号（家族 $($famNames[$fam])） / tie diagnostic codes — $($famNames[$fam])`n`n> 每种标号的成因与常见解决方案说明由 tie-diag 文档维护；本页为自动生成的目录骨架（按家族分组，标号为五位全局序号）。`n"
     if ($entries.Count -eq 0) {
         $body += "`n_（暂无条目）_`n"
     } else {
@@ -374,4 +381,10 @@ foreach ($fam in 1..9) {
 }
 
 Write-Host "[gen-diagcodes] 共 $($sorted.Count) 条诊断；生成 $catFile + diagdocs/"
-foreach ($fam in 1..9) { Write-Host "  家族 E${fam}: $($codes[$fam]) 条" }
+$famCounts = @{}
+foreach ($key in $sorted) {
+    $f = [int]$exeKeys[$key].Family
+    if (-not $famCounts.ContainsKey($f)) { $famCounts[$f] = 0 }
+    $famCounts[$f]++
+}
+foreach ($fam in 1..9) { Write-Host "  家族 $($fam): $($famCounts[$fam]) 条" }
