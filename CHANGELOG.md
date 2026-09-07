@@ -1,4 +1,4 @@
-﻿# tie 更改记录
+# tie 更改记录
 
 *EN: Changelog*
 
@@ -25,7 +25,7 @@
 ## [feat] p.6.9.15 诊断标号体系：tiec 全部错误/警告带 C# 式标号 + tie-diag 文档仓库（2026-09-07）
 
 * **标号格式**：`error[E#####] @行:列: 消息名；期望 x；实际 y；提示。` /
-  `warning[W#####] @行:列: 消息名；这样写的坏处与修复建议。`（无标签段直连「；」；
+  `warning[W#####] @行:列: 消息名；潜在影响与处理建议。`（无标签段直连「；」；
   消息名 = 首个「期望/实际/提示」之前的短名；无位置时省略 @行:列）。标号为
   **五位纯序号**（E00001 起全局连续；家族仅作归类维度，不编码进标号：
   词法/语法/语义/运行时/CLI配置/后端IR/REPL/LSP/内部错误）。
@@ -42,14 +42,14 @@
   diagcode 单元探针 ALL PASS）；tiec 自举二阶不动点（连续两次自编译 sha 一致）；
   probe_bitcast 等既有探针零回归（NaN 位模式项为平台性既有失败，新旧 tiec 一致）。
 * **新仓库 tie-diag**：双语文档，按标号阐明「如何发生 / 常见解决方案」，警告附
-  「这样写的坏处」；含经验与常见问题总结。
+  「潜在影响与处理建议」；含经验与常见问题总结。
   EN: p.6.9.15 diagnostic-code scheme — every tiec error/warning now carries a
   C#-style code (error[E#####] / warning[W#####], family-numbered E1..E9) via a
   central normalize+lookup module (diagcode.tie + generated 542-entry catalog);
   messages restructured short (name; expected x; actual y; tip); four
   experience-based warnings (float ==, int division truncation, O(n²) loop string
-  concat, table var copy sharing) plus role warnings, each with a "why this is
-  bad" tip; driver/interp-frontend wiring; test-diagcodes.ps1 regression gate
+  concat, table var copy sharing) plus role warnings, each with impact notes
+  and a remedy; driver/interp-frontend wiring; test-diagcodes.ps1 regression gate
   (golden 0 E00000 fallback, warnings hit, unit probe ALL PASS); stable two-step
   bootstrap; new bilingual tie-diag docs repo explaining every code.
 

@@ -7,7 +7,7 @@ type tie<class>
 //     前缀规则兜底（插值消息动态尾不参与精确匹配）；
 //   - 警告标号：核心消息（编译器发射点逐字一致）精确查表；
 //   - 输出格式（用户定稿）：error[E#####] @行:列: 消息名；期望 x；实际 y；提示。
-//     warning[W#####] @行:列: 消息名；这样写的坏处与修复建议。
+//     warning[W#####] @行:列: 消息名；潜在影响与处理建议。
 //
 // 归一化定义（与 scripts/gen-diagcodes.ps1 Fold-Ascii 完全一致）：
 //   按码点遍历，码点在 0x21..0x7E 的连续运行折叠为单个 '%'；其余码点原样保留。
@@ -402,7 +402,7 @@ pub func warn_name_of(core: string) -> string {
     return diag_w_names[idx]
 }
 
-// 警告建议（这样写的坏处 / 修复方向）。
+// 警告建议（潜在影响 / 处理方向）。
 pub func warn_tip_of(core: string) -> string {
     var idx = warn_at(core)
     if idx < 0 {
@@ -411,7 +411,7 @@ pub func warn_tip_of(core: string) -> string {
     return diag_w_tips[idx]
 }
 
-// warning[W#####] @行:列: 消息名；这样写的坏处与修复建议。 （line < 0 省略位置段）
+// warning[W#####] @行:列: 消息名；潜在影响与处理建议。 （line < 0 省略位置段）
 pub func render_warning(line: i64, col: i64, core: string) -> string {
     var cc = warn_code_of(core)
     var out = "warning[" + cc + "]"
