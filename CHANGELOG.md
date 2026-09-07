@@ -31,7 +31,7 @@
   词法/语法/语义/运行时/CLI配置/后端IR/REPL/LSP/内部错误）。
 * **中央模块** `compiler/frontend/diagcode.tie`：归一化折叠（ASCII 0x20..0x7E 运行 →
   '%'，与生成器逐字一致）+ exact/最长前缀双查表；`diagcode_cat.gen.tie`（542 条错误
-  目录）由 `scripts/gen-diagcodes.ps1` 自动扫描生成（含插值消息前缀规则、errors.tie
+  目录）由 `scripts/gen-diagcodes.tie`（tie 生成器）自动扫描生成（含插值消息前缀规则、errors.tie
   消息表、panic、多行拼接）。机器可读清单为 **td** 数据文件（diagdocs/diagcodes.data.tie，不用 JSON）；性能敏感读取用 **zd** 变体（tiec --compress-data 转换，diagdocs/diagcodes.zd）。
 * **警告（按经验与常见问题新增，每条附坏处说明）**：W0001 浮点相等比较（== 对浮点不稳定 → 改用误差范围比较）、W0002 整数除法截断（7/2==3）、W0003 循环内字符串拼接累积（O(n²) → string_builder）、W0004 表变量拷贝共享（→ clone）、W0020/21 角色配置/依赖解析失败、
   W0022/23 角色重复注册/非法 output。

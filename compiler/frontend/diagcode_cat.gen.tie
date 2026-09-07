@@ -1,7 +1,7 @@
 type tie<class>
 // compiler/frontend/diagcode_cat.gen.tie —— 诊断标号目录（p.6.9.15 生成文件，勿手改）
-// 生成：scripts/gen-diagcodes.ps1；exact 542 条 + prefix 525 条；运行时归一化后二分查表。
-// 标号规范：五位纯序号 E+5 位（E00001 起全局连续）；家族仅记 JSON family/文档，不编码进标号。
+// 生成：scripts/gen-diagcodes.tie（tie 生成器）；exact 542 条 + prefix 525 条。
+// 标号规范：五位纯序号 E+5 位（E00001 起全局连续）；家族仅记 JSON/td family 字段，不编码进标号。
 var cat_keys: table<string>;
 var cat_codes: table<string>;
 var pfx_keys: table<string>;
@@ -17,8 +17,7 @@ pub func ensure() {
     pfx_codes = table_new_string()
     table_push(cat_keys, "%")
     table_push(cat_codes, "E00001")
-    table_push(cat_keys, "%
-")
+    table_push(cat_keys, "%\n")
     table_push(cat_codes, "E00002")
     table_push(cat_keys, "%下标必须是整数，实际是%")
     table_push(cat_codes, "E00003")
@@ -1102,8 +1101,7 @@ pub func ensure() {
     table_push(cat_codes, "E00542")
     table_push(pfx_keys, "%")
     table_push(pfx_codes, "E00001")
-    table_push(pfx_keys, "%
-")
+    table_push(pfx_keys, "%\n")
     table_push(pfx_codes, "E00002")
     table_push(pfx_keys, "%下标必须是整数，实际是%")
     table_push(pfx_codes, "E00003")

@@ -1,0 +1,952 @@
+type tie<logic>
+// scripts/gen-diagcodes.tie —— 诊断标号目录生成器（p.6.9.15，tie 语言实现）
+// ============================================================
+// 扫描 tiec 编译器源码（compiler/**/*.tie + prep/pkg/repl），抽取全部诊断消息
+// 字面量，归一化折叠（ASCII 0x20..0x7E 运行 → '%'）为稳定 key，按字节序分配
+// **五位纯序号**标号（E00001 起全局连续；家族仅登记不编码），生成：
+//   1) compiler/frontend/diagcode_cat.gen.tie —— 运行时查表（exact + 最长前缀）
+//   2) diagdocs/diagcodes.data.tie —— 机器可读清单（td 表字面量，不用 JSON）
+//   3) diagdocs/diagcodes.zd —— zd 变体（调 tiec --compress-data，性能敏感读取）
+//
+// 行为与已弃的 scripts/gen-diagcodes.ps1 完全一致；所需原语全部内联。
+//
+// 用法：
+//   compiler\tiec.exe scripts\gen-diagcodes.tie -o scripts\gen-diagcodes.exe
+//   scripts\gen-diagcodes.exe [RepoRoot]        # 默认当前目录
+
+import "../std/fs.tie"
+import "../std/args.tie"
+
+// ---------- 全局（文件顶层；命名空间体内只允许函数/类） ----------
+var g_root: string = ""
+var g_key: table<string>;    // 唯一键（升序）
+var g_fam: table<i64>;
+var g_name: table<string>;
+var g_src: table<string>;
+var g_tpl: table<string>;
+var g_l0: table<string>;     // 第 0 字面段（前缀规则用）
+var g_l1: table<string>;     // 第 1 字面段（无插值则为 ""）
+var g_code: table<string>;   // 标号（排序后分配）
+var g_pk: table<string>;     // 前缀表（升序）
+var g_pc: table<string>;
+
+// ---------- 字节级工具（leaf，自包含） ----------
+func gn_slice(s: string, a: i64, b: i64) -> string {
+    var sb = string_builder()
+    var i: i64 = a
+    while i < b {
+        sb_append_byte(sb, str_byte(s, i))
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// sub 在 s 中 from 起的字节偏移；未找到 -1。
+func gn_find(s: string, sub: string, from: i64) -> i64 {
+    var n: i64 = len(s)
+    var m: i64 = len(sub)
+    if m == 0 {
+        return from
+    }
+    var i: i64 = from
+    while i <= n - m {
+        var j: i64 = 0
+        var matched: bool = true
+        while j < m && matched {
+            if str_byte(s, i + j) != str_byte(sub, j) {
+                matched = false
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func gn_starts(s: string, pre: string) -> bool {
+    var n: i64 = len(s)
+    var m: i64 = len(pre)
+    if n < m {
+        return false
+    }
+    var i: i64 = 0
+    while i < m {
+        if str_byte(s, i) != str_byte(pre, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+func gn_ends(s: string, suf: string) -> bool {
+    var n: i64 = len(s)
+    var m: i64 = len(suf)
+    if n < m {
+        return false
+    }
+    var i: i64 = 0
+    while i < m {
+        if str_byte(s, n - m + i) != str_byte(suf, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+func gn_contains(s: string, sub: string) -> bool {
+    return gn_find(s, sub, 0) >= 0
+}
+
+// 去首尾空白（空格/制表/换行/回车）。
+func gn_trim(s: string) -> string {
+    var n: i64 = len(s)
+    var a: i64 = 0
+    var b: i64 = n
+    while a < n {
+        var c = str_byte(s, a)
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            a = a + 1
+        } else {
+            break
+        }
+    }
+    while b > a {
+        var c = str_byte(s, b - 1)
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            b = b - 1
+        } else {
+            break
+        }
+    }
+    return gn_slice(s, a, b)
+}
+
+// 空白（含换行）判断。
+func gn_ws(b: i64) -> bool {
+    return b == 32 || b == 9 || b == 10 || b == 13
+}
+
+// ---------- 归一化折叠：ASCII(0x20..0x7E) 运行 → '%' ----------
+func gn_fold(s: string) -> string {
+    var sb = string_builder()
+    var n: i64 = len(s)
+    var i: i64 = 0
+    var folded: bool = false
+    while i < n {
+        var b = str_byte(s, i)
+        if b >= 32 && b <= 126 {
+            if !folded {
+                sb_append(sb, "%")
+                folded = true
+            }
+        } else {
+            folded = false
+            sb_append_byte(sb, b)
+        }
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// 表以 sep 连接，再折叠 + 合并连续 '%'。
+func gn_join_key(lits: table<string>, sep: string) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < len(lits) {
+        if i > 0 {
+            sb_append(sb, sep)
+        }
+        sb_append(sb, lits[i])
+        i = i + 1
+    }
+    var joined = sb_build(sb)
+    var folded = gn_fold(joined)
+    // 合并连续 '%'
+    var sb2 = string_builder()
+    var n: i64 = len(folded)
+    var j: i64 = 0
+    while j < n {
+        if str_byte(folded, j) == 37 {
+            sb_append(sb2, "%")
+            while j < n && str_byte(folded, j) == 37 {
+                j = j + 1
+            }
+        } else {
+            sb_append_byte(sb2, str_byte(folded, j))
+            j = j + 1
+        }
+    }
+    return sb_build(sb2)
+}
+
+// 字符串以 '?' 连接并合并（ShortName 用）。
+func gn_join_q(lits: table<string>) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < len(lits) {
+        if i > 0 {
+            sb_append(sb, "?")
+        }
+        sb_append(sb, lits[i])
+        i = i + 1
+    }
+    var joined = sb_build(sb)
+    var sb2 = string_builder()
+    var n: i64 = len(joined)
+    var j: i64 = 0
+    while j < n {
+        if str_byte(joined, j) == 63 {
+            sb_append(sb2, "?")
+            while j < n && str_byte(joined, j) == 63 {
+                j = j + 1
+            }
+        } else {
+            sb_append_byte(sb2, str_byte(joined, j))
+            j = j + 1
+        }
+    }
+    return sb_build(sb2)
+}
+
+// ---------- 拼接语句解析（字面段数组；失败返回空表） ----------
+func gn_concat(src_txt: string, start: i64) -> table<string> {
+    var lits = table_new_string()
+    var n: i64 = len(src_txt)
+    var i: i64 = start
+    var gd: i64 = 0
+    while gd < 64 {
+        gd = gd + 1
+        while i < n && gn_ws(str_byte(src_txt, i)) {
+            i = i + 1
+        }
+        if i >= n || str_byte(src_txt, i) != 34 {
+            if len(lits) > 0 {
+                break
+            }
+            return lits
+        }
+        // 字面段
+        var sb = string_builder()
+        i = i + 1
+        var closed: bool = false
+        while i < n {
+            var b = str_byte(src_txt, i)
+            if b == 92 {
+                if i + 1 < n {
+                    var nx = str_byte(src_txt, i + 1)
+                    if nx == 110 {
+                        sb_append(sb, "\n")
+                        i = i + 2
+                        continue
+                    }
+                    if nx == 116 {
+                        sb_append(sb, "\t")
+                        i = i + 2
+                        continue
+                    }
+                    if nx == 114 {
+                        sb_append(sb, "\r")
+                        i = i + 2
+                        continue
+                    }
+                    if nx == 34 {
+                        sb_append(sb, "\"")
+                        i = i + 2
+                        continue
+                    }
+                    if nx == 92 {
+                        sb_append_byte(sb, 92)
+                        i = i + 2
+                        continue
+                    }
+                    sb_append_byte(sb, b)
+                    i = i + 1
+                    continue
+                }
+                sb_append_byte(sb, b)
+                i = i + 1
+                continue
+            }
+            if b == 34 {
+                closed = true
+                i = i + 1
+                break
+            }
+            sb_append_byte(sb, b)
+            i = i + 1
+        }
+        if !closed {
+            if len(lits) > 0 {
+                break
+            }
+            return table_new_string()
+        }
+        table_push(lits, sb_build(sb))
+        while i < n && gn_ws(str_byte(src_txt, i)) {
+            i = i + 1
+        }
+        if i >= n {
+            break
+        }
+        var c = str_byte(src_txt, i)
+        if c == 59 || c == 41 || c == 44 {
+            break
+        }
+        if c != 43 {
+            break
+        }
+        // 跳过 EXPR 至下一个顶层 '+'
+        i = i + 1
+        var depth: i64 = 0
+        var in_str: bool = false
+        while i < n {
+            var cc = str_byte(src_txt, i)
+            if in_str {
+                if cc == 92 {
+                    i = i + 2
+                    continue
+                }
+                if cc == 34 {
+                    in_str = false
+                }
+                i = i + 1
+                continue
+            }
+            if cc == 34 {
+                in_str = true
+                i = i + 1
+                continue
+            }
+            if cc == 40 || cc == 91 {
+                depth = depth + 1
+            } else if cc == 41 || cc == 93 {
+                if depth > 0 {
+                    depth = depth - 1
+                }
+            } else if cc == 43 && depth == 0 {
+                i = i + 1
+                break
+            }
+            i = i + 1
+        }
+    }
+    return lits
+}
+
+// ---------- 消息名（文档/目录 name 用；首个「期望 」/「：」前截断） ----------
+func gn_trim_colon(s: string) -> string {
+    var n: i64 = len(s)
+    var e: i64 = n
+    while e > 0 {
+        if e >= 3 {
+            var b0 = str_byte(s, e - 3)
+            var b1 = str_byte(s, e - 2)
+            var b2 = str_byte(s, e - 1)
+            if b0 == 0xEF && b1 == 0xBC && b2 == 0x9A {
+                e = e - 3
+                continue
+            }
+        }
+        var b = str_byte(s, e - 1)
+        if b == 58 || b == 32 || b == 9 {
+            e = e - 1
+        } else {
+            break
+        }
+    }
+    return gn_slice(s, 0, e)
+}
+
+func gn_short_name(lits: table<string>) -> string {
+    var k = gn_trim(gn_join_q(lits))
+    var p = gn_find(k, "期望 ", 0)
+    if p > 0 {
+        return gn_trim_colon(gn_slice(k, 0, p))
+    }
+    p = gn_find(k, "：", 0)
+    if p > 0 {
+        return gn_slice(k, 0, p)
+    }
+    return k
+}
+
+// ---------- 家族（仅登记；不编码进标号） ----------
+func gn_family(rel: string, key: string) -> i64 {
+    if gn_starts(key, "内部错误") || gn_contains(key, "编译器内部错误") {
+        return 9
+    }
+    if gn_starts(key, "运行时错误") || gn_starts(key, "运行时") {
+        return 4
+    }
+    if gn_starts(key, "repl ") || gn_contains(key, "repl v1") {
+        return 7
+    }
+    if gn_contains(rel, "lex") {
+        return 1
+    }
+    if gn_contains(rel, "/parser.tie") || gn_contains(rel, "/pst.tie") ||
+        gn_contains(rel, "/pexpr.tie") || gn_contains(rel, "/pstmt.tie") ||
+        gn_contains(rel, "/pnames.tie") || gn_contains(rel, "/putil.tie") ||
+        gn_contains(rel, "/errors.tie") || gn_contains(rel, "/error_driver.tie") {
+        return 2
+    }
+    if gn_contains(rel, "frontend/") {
+        return 3
+    }
+    if gn_contains(rel, "/interp/") {
+        return 4
+    }
+    if gn_contains(rel, "/driver.tie") || gn_contains(rel, "/config.tie") ||
+        gn_contains(rel, "/mode.tie") || gn_contains(rel, "/tdzd.tie") ||
+        gn_contains(rel, "/zdwrite.tie") {
+        return 5
+    }
+    if gn_contains(rel, "/backend") || gn_contains(rel, "/middle") ||
+        gn_contains(rel, "/proto") {
+        return 6
+    }
+    if gn_contains(rel, "/lsp/") {
+        return 8
+    }
+    if gn_contains(rel, "/repl") || gn_contains(rel, "/prep") ||
+        gn_contains(rel, "/pkg") {
+        return 7
+    }
+    return 5
+}
+
+// ---------- 登记 ----------
+func gn_add(key: string, fam: i64, name: string, src: string, tpl: string, lits: table<string>) {
+    if len(key) == 0 {
+        return
+    }
+    var i: i64 = 0
+    while i < len(g_key) {
+        if g_key[i] == key {
+            return
+        }
+        i = i + 1
+    }
+    table_push(g_key, key)
+    table_push(g_fam, fam)
+    table_push(g_name, name)
+    table_push(g_src, src)
+    table_push(g_tpl, tpl)
+    if len(lits) > 0 {
+        table_push(g_l0, lits[0])
+    } else {
+        table_push(g_l0, "")
+    }
+    if len(lits) > 1 {
+        table_push(g_l1, lits[1])
+    } else {
+        table_push(g_l1, "")
+    }
+}
+
+// 从文件扫描锚点并登记。
+func gn_scan_file(path: string, rel: string) {
+    var src_txt = file_read(path)
+    if len(src_txt) == 0 {
+        return
+    }
+    var n: i64 = len(src_txt)
+    // 1) 赋值语句锚点
+    var names: table<string> = [
+        "sm_err_msg", "g_err", "c_err_msg", "g_role_err", "err_msg", "tc_err_msg",
+        "errtxt", "p_err_msg", "role_err", "e_msg", "msg_err"
+    ]
+    var pos: i64 = 0
+    while pos < n {
+        var best: i64 = -1
+        var bi: i64 = 0
+        var ii: i64 = 0
+        while ii < len(names) {
+            var f = gn_find(src_txt, names[ii], pos)
+            if f >= 0 && (best < 0 || f < best) {
+                best = f
+                bi = ii
+            }
+            ii = ii + 1
+        }
+        if best < 0 {
+            break
+        }
+        var j = best + len(names[bi])
+        while j < n && gn_ws(str_byte(src_txt, j)) {
+            j = j + 1
+        }
+        if j < n && str_byte(src_txt, j) == 61 {
+            j = j + 1
+            while j < n && gn_ws(str_byte(src_txt, j)) {
+                j = j + 1
+            }
+            if j < n && str_byte(src_txt, j) == 34 {
+                var lits = gn_concat(src_txt, j)
+                if len(lits) > 0 {
+                    var key = gn_join_key(lits, "%")
+                    var fam = gn_family(rel, key)
+                    var nm = gn_short_name(lits)
+                    var tpl = gn_join_q(lits)
+                    gn_add(key, fam, nm, rel, tpl, lits)
+                }
+            }
+        }
+        pos = best + 1
+    }
+    // 2) return "..." 消息构建器（errors.tie 等）
+    if gn_ends(path, "errors.tie") || gn_ends(path, "putil.tie") ||
+        gn_ends(path, "parser.tie") || gn_ends(path, "pstmt_top.tie") ||
+        gn_ends(path, "lex_scan.tie") {
+        pos = 0
+        while pos < n {
+            var rp = gn_find(src_txt, "return", pos)
+            if rp < 0 {
+                break
+            }
+            var j2 = rp + 6
+            while j2 < n && gn_ws(str_byte(src_txt, j2)) {
+                j2 = j2 + 1
+            }
+            if j2 < n && str_byte(src_txt, j2) == 34 {
+                var lits2 = gn_concat(src_txt, j2)
+                if len(lits2) > 0 {
+                    var key2 = gn_join_key(lits2, "%")
+                    var fam2 = gn_family(rel, key2)
+                    var nm2 = gn_short_name(lits2)
+                    var tpl2 = gn_join_q(lits2)
+                    gn_add(key2, fam2, nm2, rel, tpl2, lits2)
+                }
+            }
+            pos = rp + 6
+        }
+    }
+    // 3) panic 消息（内部错误）
+    pos = 0
+    while pos < n {
+        var pp = gn_find(src_txt, "panic(", pos)
+        if pp < 0 {
+            break
+        }
+        var j3 = pp + 6
+        while j3 < n && gn_ws(str_byte(src_txt, j3)) {
+            j3 = j3 + 1
+        }
+        if j3 < n && str_byte(src_txt, j3) == 34 {
+            var lits3 = gn_concat(src_txt, j3)
+            if len(lits3) > 0 {
+                var key3 = gn_join_key(lits3, "%")
+                var nm3 = gn_short_name(lits3)
+                var tpl3 = gn_join_q(lits3)
+                gn_add(key3, 9, nm3, rel, tpl3, lits3)
+            }
+        }
+        pos = pp + 6
+    }
+    // 4) errors.tie 消息表字面量 var <g>: table<string> = [ "<中文>", ... ]
+    if gn_ends(path, "errors.tie") {
+        pos = 0
+        while pos < n {
+            var tp = gn_find(src_txt, "table<string> = [", pos)
+            if tp < 0 {
+                break
+            }
+            var j4 = tp + 17
+            while j4 < n {
+                while j4 < n && (gn_ws(str_byte(src_txt, j4)) || str_byte(src_txt, j4) == 44) {
+                    j4 = j4 + 1
+                }
+                if j4 >= n || str_byte(src_txt, j4) == 93 {
+                    break
+                }
+                if str_byte(src_txt, j4) != 34 {
+                    j4 = j4 + 1
+                    continue
+                }
+                var lits4 = gn_concat(src_txt, j4)
+                if len(lits4) > 0 {
+                    var has_non_ascii: bool = false
+                    var kk: i64 = 0
+                    while kk < len(lits4[0]) {
+                        if str_byte(lits4[0], kk) >= 128 {
+                            has_non_ascii = true
+                            kk = len(lits4[0])
+                        }
+                        kk = kk + 1
+                    }
+                    if has_non_ascii {
+                        var key4 = gn_join_key(lits4, "%")
+                        var fam4 = gn_family(rel, key4)
+                        var nm4 = gn_short_name(lits4)
+                        var tpl4 = gn_join_q(lits4)
+                        gn_add(key4, fam4, nm4, rel, tpl4, lits4)
+                    }
+                }
+                // 前进到该字面量结束
+                while j4 < n && str_byte(src_txt, j4) != 44 && str_byte(src_txt, j4) != 93 {
+                    j4 = j4 + 1
+                }
+            }
+            pos = tp + 17
+        }
+    }
+}
+
+// 手工补充（静态 CLI 消息）。
+func gn_manual() {
+    gn_add("参数错误。输入 tiec --help 查看用法。", 5, "参数错误", "(manual)", "参数错误。输入 tiec --help 查看用法。", tb1("参数错误。输入 tiec --help 查看用法。"))
+    gn_add("文件类型声明错误", 5, "文件类型声明错误", "(manual)", "文件类型声明错误", tb1("文件类型声明错误"))
+    gn_add("构建配置加载失败", 5, "构建配置加载失败", "(manual)", "构建配置加载失败", tb1("构建配置加载失败"))
+    gn_add("tieir 读取失败", 6, "tieir 读取失败", "(manual)", "tieir 读取失败", tb1("tieir 读取失败"))
+    gn_add("compress-data 失败", 5, "compress-data 失败", "(manual)", "compress-data 失败", tb1("compress-data 失败"))
+    gn_add("动态库模式错误", 5, "动态库模式错误", "(manual)", "动态库模式错误", tb1("动态库模式错误"))
+}
+
+func tb1(s: string) -> table<string> {
+    var t = table_new_string()
+    table_push(t, s)
+    return t
+}
+
+// 字节序插入排序（同步移动平行表）。
+func gn_sort() {
+    var n: i64 = len(g_key)
+    var i: i64 = 1
+    while i < n {
+        var k = g_key[i]
+        var f = g_fam[i]
+        var nm = g_name[i]
+        var sr = g_src[i]
+        var tp = g_tpl[i]
+        var l0 = g_l0[i]
+        var l1 = g_l1[i]
+        var j: i64 = i
+        while j > 0 && g_key[j - 1] > k {
+            g_key[j] = g_key[j - 1]
+            g_fam[j] = g_fam[j - 1]
+            g_name[j] = g_name[j - 1]
+            g_src[j] = g_src[j - 1]
+            g_tpl[j] = g_tpl[j - 1]
+            g_l0[j] = g_l0[j - 1]
+            g_l1[j] = g_l1[j - 1]
+            j = j - 1
+        }
+        g_key[j] = k
+        g_fam[j] = f
+        g_name[j] = nm
+        g_src[j] = sr
+        g_tpl[j] = tp
+        g_l0[j] = l0
+        g_l1[j] = l1
+        i = i + 1
+    }
+}
+
+// 分配五位标号 + 前缀规则表。
+func gn_assign() {
+    g_code = table_new_string()
+    var i: i64 = 0
+    while i < len(g_key) {
+        var ord = i + 1
+        var s = to_string(ord)
+        while len(s) < 5 {
+            s = "0" + s
+        }
+        table_push(g_code, "E" + s)
+        i = i + 1
+    }
+    // 前缀规则：前 1~2 字面段（折叠后）；最长命中由运行时完成。
+    g_pk = table_new_string()
+    g_pc = table_new_string()
+    i = 0
+    while i < len(g_key) {
+        var p = gn_fold(g_l0[i])
+        if len(p) == 0 {
+            i = i + 1
+            continue
+        }
+        if len(g_l1[i]) > 0 {
+            p = p + "%" + gn_fold(g_l1[i])
+            // 合并连续 %
+            var sb = string_builder()
+            var j: i64 = 0
+            while j < len(p) {
+                if str_byte(p, j) == 37 {
+                    sb_append(sb, "%")
+                    while j < len(p) && str_byte(p, j) == 37 {
+                        j = j + 1
+                    }
+                } else {
+                    sb_append_byte(sb, str_byte(p, j))
+                    j = j + 1
+                }
+            }
+            p = sb_build(sb)
+        }
+        var dup: bool = false
+        var d: i64 = 0
+        while d < len(g_pk) {
+            if g_pk[d] == p {
+                dup = true
+                d = len(g_pk)
+            }
+            d = d + 1
+        }
+        if !dup {
+            table_push(g_pk, p)
+            table_push(g_pc, g_code[i])
+        }
+        i = i + 1
+    }
+    // 前缀表升序（插入排序，同步移动）
+    var m: i64 = len(g_pk)
+    i = 1
+    while i < m {
+        var k = g_pk[i]
+        var c = g_pc[i]
+        var j: i64 = i
+        while j > 0 && g_pk[j - 1] > k {
+            g_pk[j] = g_pk[j - 1]
+            g_pc[j] = g_pc[j - 1]
+            j = j - 1
+        }
+        g_pk[j] = k
+        g_pc[j] = c
+        i = i + 1
+    }
+}
+
+// td 转义（反斜杠/引号/换行/制表/回车）。
+func gn_esc_td(s: string) -> string {
+    var sb = string_builder()
+    var i: i64 = 0
+    while i < len(s) {
+        var b = str_byte(s, i)
+        if b == 92 {
+            sb_append(sb, "\\\\")
+        } else if b == 34 {
+            sb_append(sb, "\\\"")
+        } else if b == 10 {
+            sb_append(sb, "\\n")
+        } else if b == 13 {
+            sb_append(sb, "\\r")
+        } else if b == 9 {
+            sb_append(sb, "\\t")
+        } else {
+            sb_append_byte(sb, b)
+        }
+        i = i + 1
+    }
+    return sb_build(sb)
+}
+
+// ---------- 输出 ----------
+func gn_write_cat() {
+    var sb = string_builder()
+    sb_append(sb, "type tie<class>\n")
+    sb_append(sb, "// compiler/frontend/diagcode_cat.gen.tie —— 诊断标号目录（p.6.9.15 生成文件，勿手改）\n")
+    sb_append(sb, "// 生成：scripts/gen-diagcodes.tie（tie 生成器）；exact " + to_string(len(g_key)) + " 条 + prefix " + to_string(len(g_pk)) + " 条。\n")
+    sb_append(sb, "// 标号规范：五位纯序号 E+5 位（E00001 起全局连续）；家族仅记 JSON/td family 字段，不编码进标号。\n")
+    sb_append(sb, "var cat_keys: table<string>;\n")
+    sb_append(sb, "var cat_codes: table<string>;\n")
+    sb_append(sb, "var pfx_keys: table<string>;\n")
+    sb_append(sb, "var pfx_codes: table<string>;\n")
+    sb_append(sb, "namespace diagcat {\n")
+    sb_append(sb, "pub func ensure() {\n")
+    sb_append(sb, "    if len(cat_keys) > 0 {\n")
+    sb_append(sb, "        return\n")
+    sb_append(sb, "    }\n")
+    sb_append(sb, "    cat_keys = table_new_string()\n")
+    sb_append(sb, "    cat_codes = table_new_string()\n")
+    sb_append(sb, "    pfx_keys = table_new_string()\n")
+    sb_append(sb, "    pfx_codes = table_new_string()\n")
+    var i: i64 = 0
+    while i < len(g_key) {
+        sb_append(sb, "    table_push(cat_keys, \"" + gn_esc_td(g_key[i]) + "\")\n")
+        sb_append(sb, "    table_push(cat_codes, \"" + g_code[i] + "\")\n")
+        i = i + 1
+    }
+    i = 0
+    while i < len(g_pk) {
+        sb_append(sb, "    table_push(pfx_keys, \"" + gn_esc_td(g_pk[i]) + "\")\n")
+        sb_append(sb, "    table_push(pfx_codes, \"" + g_pc[i] + "\")\n")
+        i = i + 1
+    }
+    sb_append(sb, "}\n")
+    sb_append(sb, "// 二分查表：key → code；未命中返回空串。\n")
+    sb_append(sb, "pub func lookup(key: string) -> string {\n")
+    sb_append(sb, "    ensure()\n")
+    sb_append(sb, "    var lo: i64 = 0\n")
+    sb_append(sb, "    var hi: i64 = len(cat_keys) - 1\n")
+    sb_append(sb, "    while lo <= hi {\n")
+    sb_append(sb, "        var mid = (lo + hi) / 2\n")
+    sb_append(sb, "        if cat_keys[mid] == key { return cat_codes[mid] }\n")
+    sb_append(sb, "        if cat_keys[mid] < key { lo = mid + 1 } else { hi = mid - 1 }\n")
+    sb_append(sb, "    }\n")
+    sb_append(sb, "    return \"\"\n")
+    sb_append(sb, "}\n")
+    sb_append(sb, "// 前缀规则：返回归一化前缀表（最长命中由 diagcode 侧完成）。\n")
+    sb_append(sb, "pub func pfx_count() -> i64 { ensure(); return len(pfx_keys) }\n")
+    sb_append(sb, "pub func pfx_key(i: i64) -> string { return pfx_keys[i] }\n")
+    sb_append(sb, "pub func pfx_code(i: i64) -> string { return pfx_codes[i] }\n")
+    sb_append(sb, "}\n")
+    file_write(compiler_dir() + "\\frontend\\diagcode_cat.gen.tie", sb_build(sb))
+}
+
+func gn_write_td() {
+    var sb = string_builder()
+    sb_append(sb, "type tie<data>\n")
+    sb_append(sb, "// diagdocs/diagcodes.data.tie —— 诊断标号机器可读清单（p.6.9.15 生成文件勿手改）\n")
+    sb_append(sb, "// 列：code/key/name/family/src/template；family 1 词法 2 语法 3 语义 4 运行时 5 CLI 6 后端 7 REPL 8 LSP 9 内部\n")
+    sb_append(sb, "diagcodes = [\n")
+    var i: i64 = 0
+    while i < len(g_key) {
+        sb_append(sb, "    [ \"code\": \"" + g_code[i] + "\", \"key\": \"" + gn_esc_td(g_key[i]) +
+            "\", \"name\": \"" + gn_esc_td(g_name[i]) + "\", \"family\": " + to_string(g_fam[i]) +
+            ", \"src\": \"" + gn_esc_td(g_src[i]) + "\", \"template\": \"" + gn_esc_td(g_tpl[i]) + "\" ],\n")
+        i = i + 1
+    }
+    sb_append(sb, "]\n")
+    file_write(g_root + "\\diagdocs\\diagcodes.data.tie", sb_build(sb))
+}
+
+// compiler 目录相对路径。
+func compiler_dir() -> string {
+    return g_root + "\\compiler"
+}
+
+// 文件列表按字节序原地排序（去重「先到先得」依赖确定扫描序：frontend 先于
+// proto/backend，与 PS 生成器的注册顺序一致）。
+func gn_sort_files(t: table<string>) {
+    var n: i64 = len(t)
+    var i: i64 = 1
+    while i < n {
+        var k = t[i]
+        var j: i64 = i
+        while j > 0 && t[j - 1] > k {
+            t[j] = t[j - 1]
+            j = j - 1
+        }
+        t[j] = k
+        i = i + 1
+    }
+}
+
+// 规范化 rel：\ → /，并以 "/" 开头（"./compiler/a" → "/compiler/a"；
+// 与 PS 版 Substring 后的 rel 形态一致，保证 parser/backend 等段匹配）。
+func gn_norm_rel(p: string) -> string {
+    var sb = string_builder()
+    var kk: i64 = 0
+    while kk < len(p) {
+        if str_byte(p, kk) == 92 {
+            sb_append(sb, "/")
+        } else {
+            sb_append_byte(sb, str_byte(p, kk))
+        }
+        kk = kk + 1
+    }
+    var s = sb_build(sb)
+    if gn_starts(s, "./") {
+        s = gn_slice(s, 1, len(s))
+    } else if !gn_starts(s, "/") {
+        s = "/" + s
+    }
+    return s
+}
+
+// ---------- 主流程 ----------
+func main() -> i64 {
+    if args.count() > 0 {
+        g_root = args.get(0)
+    } else {
+        g_root = "."
+    }
+    g_key = table_new_string()
+    g_fam = table_new_i64()
+    g_name = table_new_string()
+    g_src = table_new_string()
+    g_tpl = table_new_string()
+    g_l0 = table_new_string()
+    g_l1 = table_new_string()
+
+    // 收集文件：compiler/**/*.tie + prep/pkg/repl
+    var dirs: table<string> = table_new_string()
+    table_push(dirs, g_root + "\\compiler")
+    if fs.exists(g_root + "\\prep") {
+        table_push(dirs, g_root + "\\prep")
+    }
+    if fs.exists(g_root + "\\pkg") {
+        table_push(dirs, g_root + "\\pkg")
+    }
+    if fs.exists(g_root + "\\repl") {
+        table_push(dirs, g_root + "\\repl")
+    }
+    var di: i64 = 0
+    while di < len(dirs) {
+        var files = fs.walk(dirs[di])
+        gn_sort_files(files)
+        var fi: i64 = 0
+        while fi < len(files) {
+            var p = files[fi]
+            if gn_ends(p, ".tie") && !gn_contains(p, "diagcode_cat.gen.tie") {
+                gn_scan_file(p, gn_norm_rel(p))
+            }
+            fi = fi + 1
+        }
+        di = di + 1
+    }
+
+    gn_manual()
+    gn_sort()
+    gn_assign()
+
+    // 写目录 + td 清单
+    gn_write_cat()
+    gn_write_td()
+    println("[gen-diagcodes.tie] 共 " + to_string(len(g_key)) + " 条诊断；生成 compiler/frontend/diagcode_cat.gen.tie + diagdocs/diagcodes.data.tie")
+    var f1: i64 = 0
+    var f2: i64 = 0
+    var f3: i64 = 0
+    var f4: i64 = 0
+    var f5: i64 = 0
+    var f6: i64 = 0
+    var f7: i64 = 0
+    var f9: i64 = 0
+    var ci: i64 = 0
+    while ci < len(g_key) {
+        if g_fam[ci] == 1 {
+            f1 = f1 + 1
+        } else if g_fam[ci] == 2 {
+            f2 = f2 + 1
+        } else if g_fam[ci] == 3 {
+            f3 = f3 + 1
+        } else if g_fam[ci] == 4 {
+            f4 = f4 + 1
+        } else if g_fam[ci] == 5 {
+            f5 = f5 + 1
+        } else if g_fam[ci] == 6 {
+            f6 = f6 + 1
+        } else if g_fam[ci] == 7 {
+            f7 = f7 + 1
+        } else {
+            f9 = f9 + 1
+        }
+        ci = ci + 1
+    }
+    println("  家族 1: " + to_string(f1) + " | 2: " + to_string(f2) + " | 3: " + to_string(f3) +
+        " | 4: " + to_string(f4) + " | 5: " + to_string(f5) + " | 6: " + to_string(f6) +
+        " | 7: " + to_string(f7) + " | 9: " + to_string(f9))
+    // 性能敏感读取用 zd 变体：调 tiec --compress-data 产出 diagcodes.zd
+    var zc = exec_code("compiler\\tiec.exe --compress-data diagdocs\\diagcodes.data.tie -o diagdocs\\diagcodes.zd")
+    if zc == 0 {
+        println("[gen-diagcodes.tie] zd 变体已生成: diagdocs/diagcodes.zd")
+    } else {
+        println("[gen-diagcodes.tie] zd 生成失败（退出码 " + to_string(zc) + "）；td 清单仍可用")
+    }
+    return 0
+}
