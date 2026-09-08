@@ -1,276 +1,544 @@
-OPEN SOURCE LICENSE
-Version 1.1
+TIE PUBLIC LICENSE
+Version 1.2
 
 Copyright (c) 2026 TIE-LANG organization. All rights reserved.
 
+This License may be referred to by its short name "TPL" (e.g., "TPL 1.2").
+
 PREAMBLE
 
-This Software is developed by the wider community and core members of the TIE-LANG
-organization, and is distributed in source and object form across the TIE-LANG
-organization's official repositories.
+The Tie Public License is a permissive, attribution-based open source license
+designed to govern the use, reproduction, modification, and distribution of
+software and associated materials (including source code, object code,
+documentation, examples, data files, and graphical assets) that are released
+under it by a Licensor.
 
-This license governs the use, modification, and distribution of the source code of
-this Software. The TIE-LANG organization distinguishes between two distinct uses:
+This License is founded on and embodies the following principles:
 
-  * Use of this Software's source code - copying, incorporating, redistributing, or
-    otherwise exercising the rights granted under this license over the Software
-    itself. Such use is subject to the attribution obligations set forth in Section 3.
+  * Permission is granted to use, copy, modify, and redistribute the Licensed
+    Material by anyone, for any purpose, whether commercial or non-commercial,
+    subject to the conditions set forth in this License.
 
-  * Use of this Software to create programs - creating programs Users author for or
-    with this Software. The resulting programs are Users' own works and are not
-    governed by this license. Users are not required to include any copyright notice
-    or a copy of this license in programs They create for or with this Software,
-    except to the extent They incorporate this Software's source code as provided in
-    Section 3.
+  * The rights of authors are respected. Attribution and notice obligations are
+    imposed on those who use, reproduce, or redistribute the Licensed Material,
+    and the goodwill associated with the Licensor's names and marks is protected
+    by the trademark provisions of this License.
 
-By using, copying, modifying, or distributing any portion of this Software, you agree
-to be bound by the terms of this license. If you do not agree to these terms, you are
-not authorized to use the Software.
+  * The fruits of the Licensor's and Contributors' work belong to the community.
+    Accordingly, this License expressly distinguishes between the use of the
+    Licensed Material itself, and the creation of Programs authored by Users for
+    or with the Licensed Material, and it protects the ownership and freedom of
+    such Programs.
+
+This License recognizes and protects the distinction between two categories of
+use:
+
+  * Use of the Licensed Material itself — copying, incorporating, redistributing,
+    or otherwise exercising the rights granted under this License over the
+    Licensed Material. Such use is subject to the attribution and notice
+    requirements set out in Section 4.
+
+  * Use of the Licensed Material to create Programs — creating works that You
+    author for or with the Licensed Material (for example, programs written in a
+    programming language distributed under this License). Such Programs are Your
+    own works, are not Derivative Works within the meaning of this License, and
+    are not subject to the conditions of this License, except to the extent that
+    they incorporate or reproduce Licensed Material source code as provided in
+    Section 4.
+
+This License is expressly permissive: it permits commercial use, private use,
+modification, and redistribution in both source and object form, including
+incorporation into proprietary and closed-source products, without imposing any
+obligation to disclose the source code of Your Derivative Works, subject to the
+conditions set forth in this License.
+
+By using, copying, modifying, contributing to, or distributing any portion of the
+Licensed Material, You agree to be bound by the terms and conditions of this
+License. If You do not agree to these terms and conditions, You are not
+authorized to use, copy, modify, or distribute the Licensed Material.
 
 SECTION 1 - DEFINITIONS
 
-1.1 "The Software" means, collectively, (a) the software libraries and tools created
-by the TIE-LANG organization and distributed under this license, and (b) the original and modified copies, in
-source or object form, of the software libraries, tools, documentation, examples, and
-graphical assets created by the TIE-LANG organization and distributed under this
-license across its official repositories.
+For the purposes of this License, the following terms have the meanings set out
+below. Terms defined in the singular shall be construed to include the plural,
+and vice versa, where the context so requires.
 
-1.2 "Software source code" means the copies described in Section 1.1, whether in
-source or object form. It does not include programs You create for or with this
-Software.
+1.1 "Licensed Material" means, collectively: (a) the software libraries, tools,
+compilers, interpreters, virtual machines, runtimes, applications, plugins,
+extensions, and other computer programs; and (b) the documentation, source code,
+object code, examples, sample data, configuration files, build scripts, and
+graphical assets (including logos and artwork) — that are (i) created by or on
+behalf of the Licensor, and (ii) distributed or made available by the Licensor
+under this License.
 
-1.3 "You" (or "Your") means the individual or legal entity exercising permissions
-granted by this license.
+1.2 "Licensor" means the individual or legal entity, including its heirs,
+successors, and assigns, that owns the copyright in the Licensed Material and
+distributes or makes it available under this License. Where the Licensed Material
+is distributed in the official repositories of the TIE-LANG organization, the
+Licensor is the TIE-LANG organization.
 
-1.4 "Derivative Work" means any work based upon the Software, whether in source or
-object form, that contains or incorporates a portion of the Software, whether verbatim
-or with modifications, translations, or adaptations. A program created for or with this
-Software that does not incorporate or reproduce Software source code is not a
-Derivative Work.
+1.3 "You" (and the corresponding possessive form "Your") means the individual or
+legal entity exercising permissions granted by this License.
 
-1.5 "Contribution" means any original work of authorship, including any modification or
-addition to the Software, intentionally submitted to the TIE-LANG organization for
-inclusion in the Software.
+1.4 "Source Code" means the preferred form of the Licensed Material for making
+modifications to it, including but not limited to programming language source
+files, header files, configuration files, build scripts, markup sources, style
+sheets, and program data that is not Object Code.
 
-1.6 "TIE Brand" means the "tie" name and wordmark, all TIE logos and graphic devices
-(including, but not limited to, the .svg and .png logo assets distributed with the
-Software), and any other trademarks, service marks, or trade names adopted and owned by
-the TIE-LANG organization to identify the Software and its family of products.
+1.5 "Object Code" means any form of the Licensed Material that is not Source
+Code, including but not limited to compiled binaries, bytecode, machine code,
+intermediate or interpreted code, virtual machine images, minified or aggregated
+forms, and any form resulting from a mechanical transformation or translation of
+Source Code.
 
-1.7 "Contributor" means any individual or legal entity that intentionally submits a
-Contribution to the Software.
+1.6 "Derivative Work" means any work — whether in Source Code or Object Code form
+— that is based upon, derives from, or contains or incorporates a portion of the
+Licensed Material, whether verbatim or with modifications, translations,
+adaptations, extensions, insertions, deletions, or other changes. A Program
+created for or with the Licensed Material that does not incorporate or reproduce
+Licensed Material source code is not a Derivative Work.
+
+1.7 "Program" means a computer program, application, script, or other work of
+authorship that You author for or with the Licensed Material, where such work is
+not the Licensed Material itself and does not contain a copy of, or incorporate
+verbatim or with modifications, the Licensed Material's Source Code. For clarity,
+a program written in a programming language that is distributed under this
+License is a Program if it is authored independently of that language's own
+implementation, and the source code of such a program is not Licensed Material
+source code for purposes of this License.
+
+1.8 "Contribution" means any work of authorship, including any modification or
+addition to the Licensed Material, that is intentionally submitted by You or by
+any third party to the Licensor for inclusion in the Licensed Material.
+"Submitted" means any form of electronic, verbal, or written communication sent
+to the Licensor or its representatives, including but not limited to
+communication on electronic mailing lists, source code control systems, issue
+tracking systems, code review systems, or documentation, that is intended by the
+sender to be considered for inclusion in the Licensed Material.
+
+1.9 "Contributor" means any individual or legal entity that makes a Contribution.
+
+1.10 "Brand Mark" means the names, word marks, logos, graphic devices, trade
+dress, service marks, and other identifying designations — including but not
+limited to "tie", "TIE-LANG", "TPL", and any logo, icon, or graphic asset
+distributed with the Licensed Material — that the Licensor owns or controls and
+uses to identify the Licensed Material, the Licensor, or the family of products
+and services offered by the Licensor.
+
+1.11 "Distribution" (and the verb "Distribute") means any act of making the
+Licensed Material or Derivative Works available to any third party by any means,
+including but not limited to sale, offer for sale, license, sublicense, transfer,
+conveyance, publication, uploading to a network, repository, or marketplace,
+inclusion in a compilation or aggregate work, public display, public performance,
+or provision as a hosted or managed service.
+
+1.12 "Applicable Law" means the laws and regulations of the jurisdiction in which
+the relevant rights and obligations under this License are to be enforced, as
+determined in accordance with Section 11, together with any mandatory provisions
+of the laws of other jurisdictions that cannot be excluded or derogated from.
 
 SECTION 2 - GRANT OF COPYRIGHT LICENSE
 
-Subject to the terms and conditions of this license, each Contributor hereby grants to
-You a perpetual, worldwide, non-exclusive, royalty-free, irrevocable copyright license
-to:
+Subject to the terms and conditions of this License, the Licensor and each
+Contributor hereby grant to You a perpetual, worldwide, non-exclusive,
+royalty-free, irrevocable (except as provided in Sections 3.1 and 10) copyright
+license to:
 
-2.1 Use and Copy - reproduce and use the Software, in whole or in part, in any medium
-and for any purpose, commercial or otherwise;
+2.1 Reproduce and Use — reproduce, execute, run, and use the Licensed Material,
+in whole or in part, in any medium, format, or context, for any purpose
+whatsoever, whether commercial or non-commercial;
 
-2.2 Modify - modify, translate, adapt, and otherwise create Derivative Works from the
-Software;
+2.2 Modify — modify, translate, adapt, transform, port, and otherwise prepare
+Derivative Works of the Licensed Material;
 
-2.3 Distribute and Publish - distribute, publicly display, publicly perform, sell,
-offer for sale, sublicense, and otherwise transfer copies of the Software and
-Derivative Works thereof, in source or object form, including through any form of
-compilation or packaging;
+2.3 Distribute — Distribute, sell, offer for sale, sublicense, publicly display,
+publicly perform, and otherwise transfer copies of the Licensed Material and
+Derivative Works thereof, in Source Code or Object Code form, through any channel
+of Distribution; and
 
-2.4 Relicense - grant further licenses to the Software and Derivative Works thereof
-under any terms You choose, unless such choice violates the conditions of Section 3.
+2.4 Relicense — subject to the conditions of Section 4, grant further licenses to
+the Licensed Material and Derivative Works thereof under any terms You choose,
+including the terms of other licenses, provided that no such grant is used to
+evade or circumvent the conditions and obligations that this License imposes upon
+You.
 
-This license is expressly permissive with respect to the Software source code: You are
-not required to disclose the source code of Your Derivative Works, and You are free to
-use the Software source code in proprietary and closed-source products, provided that
-You comply with the attribution obligations set forth in Section 3.
+2.5 Nature of the Grant — This License is expressly permissive with respect to
+Licensed Material Source Code. You are not required to disclose, publish, or
+release the Source Code of Your Derivative Works, and You are free to incorporate
+Licensed Material Source Code into proprietary, commercial, and closed-source
+products, provided that You comply with the attribution requirements of Section
+4. The grants under this Section are made in addition to, and do not limit, any
+exceptions and limitations to copyright that Applicable Law provides, including
+without limitation fair use, fair dealing, and permitted quotation.
 
-SECTION 3 - CONDITIONS OF USE AND DISTRIBUTION OF SOFTWARE SOURCE CODE
+SECTION 3 - GRANT OF PATENT LICENSE
 
-The conditions in this section apply solely to Your use and distribution of the
-Software source code, as defined in Section 1.2, and Derivative Works thereof. They do
-not apply to programs You create for or with this Software. A program created for or
-with this Software may be distributed royalty-free and without any obligation to
-include copyright notices or this license, provided it does not reproduce or
-incorporate Software source code.
+3.1 Grant — Subject to the terms and conditions of this License, the Licensor and
+each Contributor hereby grant to You a perpetual, worldwide, non-exclusive,
+royalty-free, irrevocable (except as provided in this Section 3) patent license
+to make, have made, use, offer to sell, sell, import, and otherwise transfer the
+Licensed Material, where such license applies only to those patent claims
+licensable by such Licensor or Contributor that are necessarily infringed by
+their Contribution(s), alone or in combination with the Licensed Material to
+which such Contribution(s) were submitted. If You institute patent litigation
+against any entity (including a cross-claim or counterclaim in a lawsuit)
+alleging that the Licensed Material or a Contribution incorporated within the
+Licensed Material constitutes direct or contributory patent infringement, then
+any patent licenses granted to You under this License for that Licensed Material
+shall terminate as of the date on which such litigation is filed.
 
-3.1 Attribution on Use and Distribution of Software source code - Mandatory. Every use
-of the Software source code, whether in source or object form, whether verbatim or
-modified, and whether or not distributed to others, must be accompanied by:
+3.2 No Implied Patent License — Subject to and except as expressly provided in
+Section 3.1, this License does not grant, and shall not be deemed to grant, by
+implication, estoppel, or otherwise, any license or ownership right under any
+patent held or controlled by the Licensor or any Contributor. Nothing in this
+License shall be construed as granting You any rights under any patent claim that
+is not infringed by the version of the Licensed Material as made available by the
+Licensor.
 
-  (a) a clear retention of the original copyright notice, displayed in full and
-      unaltered; and
+SECTION 4 - CONDITIONS OF USE AND DISTRIBUTION
 
-  (b) a copy of, or a direct link to, this entire license text, such that the terms
-      may be readily reviewed by anyone who receives or is otherwise granted access to
-      the Software source code or its Derivative Works.
+The conditions in this Section apply solely to Your use and Distribution of
+Licensed Material Source Code and Object Code, and of Derivative Works thereof,
+as those terms are defined in Section 1. They do not apply to Programs You create
+for or with the Licensed Material. A Program may be Distributed royalty-free and
+without any obligation to include copyright notices or a copy of this License,
+provided that it does not incorporate or reproduce Licensed Material Source Code.
 
-3.2 Redistribution in Source Form - When You distribute the Software source code or
-Derivative Works in source form, You must retain, in every copy, the original copyright
-notices and the full text of this license, without alteration.
+4.1 Retention of Notices — Mandatory. Every use, reproduction, or Distribution of
+Licensed Material Source Code, whether in whole or in part, whether verbatim or
+modified, and whether or not conveyed to any third party, must be accompanied by:
 
-3.3 Redistribution in Binary/Compiled Form - If You incorporate Software source code
-into a compiled product, such product must include, in the accompanying documentation
-or other distribution materials, a readable copy of the original copyright notice and a
-pointer to the full text of this license.
+  (a) retention, in full and without alteration, of the original copyright notice
+      and all other attribution or notice lines that accompanied the Licensed
+      Material; and
 
-3.4 Marking Modifications (Best Effort) - Where You modify an original Software source
-file, You are encouraged, as a matter of courtesy rather than strict obligation, to add
-a notice in the header of the modified file indicating the nature and date of the
-modification, and the identity of the modifier. Compliance with this clause is a
-best-effort obligation and is not a condition precedent to exercising the rights in
-this Section.
+  (b) a copy of, or a direct reference (such as a Uniform Resource Locator) to,
+      the complete text of this License, in a form that makes the License readily
+      accessible to any person who receives, or is otherwise granted access to,
+      the Licensed Material Source Code or any Derivative Work thereof.
 
-3.5 No Warranty on Relicensing - Nothing in this license imposes on You any obligation
-to defend or indemnify any relicensee, contributor, or third party. You may apply
-additional terms or conditions only to Your own Derivative Works, and You assume sole
-responsibility for any obligations You undertake toward recipients of such Derivative
-Works.
+4.2 Redistribution in Source Code Form — When You Distribute Licensed Material
+Source Code or Derivative Works thereof in Source Code form, You must retain, in
+every copy that You Distribute, at least the original copyright notices and the
+complete text of this License, without alteration.
 
-SECTION 4 - SUBMISSION OF CONTRIBUTIONS
+4.3 Redistribution in Object Code Form — If You incorporate Licensed Material
+Source Code or Derivative Works thereof into a product that is Distributed in
+Object Code form or otherwise incorporated into or combined with another product
+or a compilation, such product or compilation must include, in the accompanying
+documentation or other materials that are Distributed with it, a readable copy
+of, or a pointer to, the original copyright notice and the complete text of this
+License.
 
-4.1 Unless You explicitly state otherwise, any Contribution intentionally submitted for
-inclusion in the Software shall be under the terms of this license, without any
-additional terms or conditions.
+4.4 Marking of Modifications — Best Effort. Where You modify a file of the
+Licensed Material, You are encouraged, as a matter of courtesy rather than as a
+strict obligation, to add a notice in the header of the modified file that
+indicates the nature and date of Your modification and the identity of the
+modifier. Compliance with this clause is a best-effort courtesy; it is not a
+condition precedent to the exercise of the rights granted under this License.
 
-4.2 By submitting a Contribution, You represent that You have the right to grant the
-licenses described in this license, that the Contribution is Your original creation,
-and that You are legally entitled to grant such licenses. To the extent that a
-Contribution is not Your original creation, You agree to identify the third-party
-source to the TIE-LANG organization.
+4.5 No Additional Restrictions — You may not impose, offer, or attempt to impose,
+on any recipient, any term, condition, or further restriction that alters or
+limits the rights or obligations granted by this License with respect to the
+Licensed Material, except with respect to Your own Derivative Works as permitted
+by Section 2.4. You may impose additional terms only on Your own Derivative Works
+and are solely responsible for any obligations You undertake toward recipients of
+such Derivative Works.
 
-SECTION 5 - DISCLAIMER OF WARRANTY
+4.6 No Endorsement — The use of the Licensed Material does not imply, and shall
+not be represented as implying, any certification, sponsorship, endorsement, or
+affiliation with the Licensor or any Contributor in respect of Your Derivative
+Works, except as expressly permitted by Section 9.
 
-THE SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, WHETHER
-EXPRESS, IMPLIED, OR STATUTORY, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+SECTION 5 - PROGRAMS CREATED WITH THE LICENSED MATERIAL
 
-NO WARRANTY IS MADE THAT THE USE OF THE SOFTWARE WILL BE UNINTERRUPTED, ERROR-FREE, OR
-SECURE, THAT DEFECTS WILL BE CORRECTED, OR THAT THE SOFTWARE WILL OPERATE IN COMBINATION
-WITH YOUR HARDWARE OR SOFTWARE.
+5.1 Ownership — Programs that You create for or with the Licensed Material are
+Your own works. Except to the extent that such Programs incorporate or reproduce
+Licensed Material Source Code as provided in Section 4, this License grants no
+rights in, and imposes no obligations with respect to, Your Programs.
 
-THIS LICENSE IS GRANTED BY CONTRIBUTORS INDIVIDUALLY, AND NO CONTRIBUTOR MAKES ANY
-REPRESENTATION ON BEHALF OF THE TIE-LANG ORGANIZATION WITH RESPECT TO THE OPERATION,
-FITNESS, OR AVAILABILITY OF THE SOFTWARE.
+5.2 No Attribution on Programs — You are not required to include any copyright
+notice, license text, attribution statement, trademark, or link to this License
+in, or in connection with, any Program that You create for or with the Licensed
+Material, provided that such Program does not incorporate or reproduce Licensed
+Material Source Code.
 
-SECTION 6 - LIMITATION OF LIABILITY
+5.3 No Copyleft — Nothing in this License requires You to license, publish,
+disclose, or release the Source Code of Your Programs or Derivative Works under
+this License or under any other license, and no act of receiving or using the
+Licensed Material shall be construed as a consent to any obligation to do so.
 
-TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE TIE-LANG
-ORGANIZATION OR ANY CONTRIBUTOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
-HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
-TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THE
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+SECTION 6 - SUBMISSION OF CONTRIBUTIONS
 
-SECTION 7 - TRADEMARK STATEMENT
+6.1 License Grant to the Licensor — Unless You explicitly state otherwise, any
+Contribution that You intentionally submit for inclusion in the Licensed
+Material shall be under the terms and conditions of this License, without any
+additional terms or conditions. Notwithstanding the foregoing, nothing in this
+License shall supersede or modify the terms of any separate license agreement
+that You may have executed with the Licensor regarding such Contributions.
 
-7.1 Ownership - The TIE Brand is owned exclusively by the TIE-LANG organization. This
-license grants no rights whatsoever to the TIE Brand. Nothing in Sections 2 through 6
-confers, by implication, estoppel, or otherwise, any trademark, service mark, trade
-name, trade dress, or logo rights, or any rights to use the TIE Brand in connection with
-any product, service, domain name, or implementation.
+6.2 Representations and Warranties — By submitting a Contribution, You represent
+and warrant that:
 
-7.2 Permitted Use - You may, without prior written authorization from the TIE-LANG
-organization:
+  (a) You have the full legal right, power, and authority to grant the licenses
+      granted in Section 6.1, free and clear of all encumbrances and third-party
+      claims;
 
-  (a) use this Software to create Your own programs and distribute the resulting works
-      to any recipient, under Your own terms;
+  (b) the Contribution is Your original creation; and
 
-  (b) nominatively and descriptively refer to the TIE Brand in documentation,
-      source-code comments, presentations, and truthful factual statements, including
-      statements of interoperability or compatibility (for example, "built with tie",
-      "targets tie"); and
+  (c) to the extent that the Contribution is not Your original creation, You have
+      identified the third-party source of the Contribution to the Licensor in a
+      written notice, and You have obtained, or ensured that the Licensor may
+      obtain, all rights and permissions necessary to incorporate and license the
+      Contribution in accordance with this License.
 
-  (c) mention the TIE Brand to identify that an implementation is compatible with or
-      targets the Software, provided such use is accurate, non-confusing, and does not
-      suggest endorsement.
+6.3 No Obligation to Accept — Nothing in this License obligates the Licensor to
+accept, incorporate, integrate, or otherwise use any Contribution.
 
-7.3 Prohibited Use - Without the prior express written authorization of the TIE-LANG
-organization, You shall not:
+6.4 Moral Rights — To the fullest extent permitted by Applicable Law, by
+submitting a Contribution You waive any and all moral rights, including rights of
+attribution and integrity, that may be held by You in such Contribution in favor
+of the Licensor, subject always to the attribution and notice obligations imposed
+by this License.
 
-  (a) use the TIE Brand, or any confusingly similar variant, as the name, title, or
-      service mark of Your own products, services, tools, implementations, packages,
-      domains, or companies;
+SECTION 7 - DISCLAIMER OF WARRANTY
 
-  (b) reproduce, modify, distort, or create derivative logos or graphic devices based
-      on the TIE Brand, including the logo assets distributed with the Software;
+THE LICENSED MATERIAL IS PROVIDED BY THE LICENSOR AND CONTRIBUTORS "AS IS" AND ON
+AN "AS AVAILABLE" BASIS, WITHOUT WARRANTIES OF ANY KIND, WHETHER EXPRESS, IMPLIED,
+OR STATUTORY, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, ACCURACY,
+NON-INFRINGEMENT, AND ANY WARRANTIES ARISING FROM COURSE OF DEALING, COURSE OF
+PERFORMANCE, OR USAGE OF TRADE.
 
-  (c) use the TIE Brand in any manner that could reasonably imply that Your products
-      are officially supported, certified, endorsed, or affiliated with the TIE-LANG
-      organization, or that the TIE-LANG organization originated Your work; or
+NO WARRANTY IS MADE THAT THE LICENSED MATERIAL WILL BE UNINTERRUPTED, TIMELY,
+SECURE, OR ERROR-FREE, THAT DEFECTS WILL BE CORRECTED, THAT RESULTS OBTAINED FROM
+THE USE OF THE LICENSED MATERIAL WILL BE ACCURATE OR RELIABLE, OR THAT THE
+LICENSED MATERIAL WILL OPERATE IN COMBINATION WITH YOUR HARDWARE, SOFTWARE,
+SYSTEMS, OR DATA.
 
-  (d) use the TIE Brand in a manner that would diminish or damage the goodwill
-      associated with the TIE Brand or that violates applicable trademark law.
+TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, THE ENTIRE RISK ARISING OUT OF
+THE USE OF THE LICENSED MATERIAL REMAINS WITH YOU. THIS LICENSE IS GRANTED BY THE
+LICENSOR AND EACH CONTRIBUTOR INDIVIDUALLY, AND NO LICENSOR OR CONTRIBUTOR MAKES
+ANY REPRESENTATION OR WARRANTY ON BEHALF OF ANY OTHER LICENSOR OR CONTRIBUTOR, OR
+ON BEHALF OF THE TIE-LANG ORGANIZATION WHERE THE LICENSOR IS THE TIE-LANG
+ORGANIZATION.
 
-7.4 Misuse - The TIE-LANG organization reserves the right to take all legal and
-equitable measures available to protect the TIE Brand, including but not limited to
-requesting corrective action, seeking injunctive relief, and claiming damages for
-misuse.
+SECTION 8 - LIMITATION OF LIABILITY
 
-SECTION 8 - PATENT AND OTHER INTELLECTUAL PROPERTY
+TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE LICENSOR
+OR ANY CONTRIBUTOR BE LIABLE TO YOU OR TO ANY THIRD PARTY FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES
+(INCLUDING BUT NOT LIMITED TO: PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+OF USE, DATA, PROFITS, REVENUE, OR GOODWILL; BUSINESS INTERRUPTION; LOSS OF PRIVACY;
+OR ANY LOSS OR DAMAGE ARISING OUT OF YOUR OR A THIRD PARTY'S USE OF, OR INABILITY
+TO USE, THE LICENSED MATERIAL) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, TORT (INCLUDING NEGLIGENCE OR OTHERWISE), STRICT LIABILITY,
+OR OTHERWISE, ARISING IN ANY WAY OUT OF THE USE OF, OR INABILITY TO USE, THE
+LICENSED MATERIAL, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
-8.1 Except as expressly provided by this license, this license grants no patent rights.
-Nothing in this license shall be deemed to grant, by implication, estoppel, or
-otherwise, any license or right under any patent held or controlled by the TIE-LANG
-organization or any Contributor, except to the extent necessary to exercise the
-explicitly granted copyright rights under Section 2 in the version of the Software in
-which such rights are exercised.
+WHERE APPLICABLE LAW PROHIBITS THE EXCLUSION OR LIMITATION OF CERTAIN LIABILITIES
+OR DAMAGES, THE FOREGOING LIMITATIONS AND EXCLUSIONS SHALL APPLY TO THE MAXIMUM
+EXTENT PERMITTED BY APPLICABLE LAW, AND ANY LIABILITY THAT CANNOT BE EXCLUDED OR
+LIMITED UNDER APPLICABLE LAW SHALL BE GOVERNED BY SUCH APPLICABLE LAW.
 
-8.2 If You institute patent litigation against any entity (including a cross-claim or
-counterclaim in a lawsuit) alleging that the Software or a Contribution incorporated
-within the Software constitutes a direct or contributory patent infringement, then the
-rights granted to You under this license shall terminate automatically as of the date
-such litigation is filed.
+SECTION 9 - TRADEMARK PROVISIONS
 
-SECTION 9 - TERMINATION
+9.1 Ownership — The Brand Mark is owned exclusively by the Licensor. This License
+grants You no rights of any kind in or to the Brand Mark. Nothing in Sections 2
+through 8 confers, by implication, estoppel, or otherwise, any trademark, service
+mark, trade name, trade dress, or logo rights, or any right to use the Brand Mark.
 
-9.1 This license and the rights granted hereunder will terminate automatically, without
-notice, if You fail to comply with any term of this license and fail to cure such breach
-within thirty (30) days of becoming aware of the noncompliance.
+9.2 Permitted Use — Without prior written authorization from the Licensor, You
+may:
 
-9.2 Consequence of Breach of Section 3 - Failure to comply with the mandatory
-attribution obligations in Section 3 (applicable to the use of Software source code) is
-a material breach of this license. Upon such breach, the rights granted in Section 2
-shall terminate immediately, and You shall cease all use of the Software source code
-until the noncompliance is cured.
+  (a) use the Licensed Material to create and Distribute Your own Programs and
+      Derivative Works under Your own terms, subject to the conditions of Section
+      4;
 
-9.3 Notwithstanding the foregoing, no breach of this license shall be deemed to occur
-solely by virtue of Your use or distribution of programs created for or with this
-Software that do not incorporate or reproduce Software source code.
+  (b) refer to the Brand Mark nominatively and descriptively in documentation,
+      source code comments, presentations, marketing materials, and truthful
+      factual statements, including statements of interoperability, compatibility,
+      or provenance (for example, "built with tie", "targets tie", "compatible
+      with tie"); and
 
-9.4 Upon termination of Your rights, Your license to use, modify, and redistribute the
-Software ceases, but Sections 5, 6, 7, and 12 shall survive termination. If You have
-sublicensed any Derivative Work prior to termination, such sublicenses shall survive
-termination only to the extent that they do not violate the terms of this license.
+  (c) use the Brand Mark to identify that a Program or implementation is
+      compatible with, targets, or interoperates with the Licensed Material,
+      provided that such use is accurate, truthful, and not likely to confuse any
+      person as to source, sponsorship, affiliation, or endorsement.
 
-SECTION 10 - GOVERNING LAW AND JURISDICTION
+9.3 Prohibited Use — Without the prior express written authorization of the
+Licensor, You shall not:
 
-This license shall be governed by and construed in accordance with the laws of the
-jurisdiction where the TIE-LANG organization is domiciled, without regard to its
-conflict-of-laws provisions. Any dispute arising out of or in connection with this
-license shall be subject to the exclusive jurisdiction of the competent courts of that
-jurisdiction.
+  (a) use the Brand Mark, or any confusingly similar variant thereof, as, or as
+      part of, the name, title, service mark, or branding of Your own products,
+      services, tools, implementations, packages, software, domain names, or
+      companies, in a manner that is likely to cause confusion with the Licensor
+      or with the Licensed Material;
 
-SECTION 11 - SEVERABILITY AND WAIVER
+  (b) reproduce, modify, transform, distort, or create derivative logos or
+      graphic devices based upon the Brand Mark, including the logo, icon, and
+      graphic assets Distributed with the Licensed Material;
 
-11.1 If any provision of this license is held to be invalid, illegal, or unenforceable
-under applicable law, such provision shall be construed, interpreted, and reformed to
-the maximum extent possible to achieve the original intent of the parties, and the
-remaining provisions shall continue in full force and effect.
+  (c) use the Brand Mark in any manner that could reasonably imply that Your
+      products or services are officially supported, certified, endorsed,
+      sponsored, or affiliated with the Licensor, or that the Licensor originated
+      or endorses Your work; or
 
-11.2 The failure of the TIE-LANG organization to exercise or enforce any right or
-provision of this license shall not constitute a waiver of such right or provision, nor
-shall any single or partial exercise preclude any further exercise.
+  (d) use the Brand Mark in any manner that diminishes, dilutes, tarnishes, or
+      damages the goodwill associated with the Brand Mark, or that otherwise
+      violates Applicable Law relating to trademarks, unfair competition, or
+      misleading advertising.
 
-SECTION 12 - ENTIRE AGREEMENT
+9.4 Enforcement — The Licensor reserves the right to enforce its rights in the
+Brand Mark by all legal and equitable means available under Applicable Law,
+including but not limited to requesting corrective action, seeking injunctive
+relief, and claiming damages for unauthorized use.
 
-This license constitutes the entire agreement between You and the TIE-LANG organization
-with respect to the Software and supersedes all prior or contemporaneous communications,
-whether oral or written, regarding such subject matter. This license may only be amended
-by a written instrument signed by an authorized representative of the TIE-LANG
-organization.
+SECTION 10 - TERMINATION
+
+10.1 Termination for Breach — This License and the rights granted hereunder will
+terminate automatically, without notice, upon Your breach of any term of this
+License if You do not cure such breach within thirty (30) days of Your becoming
+aware of, or being notified of, the noncompliance.
+
+10.2 Material Breach — Failure to comply with the mandatory attribution
+obligations of Section 4 with respect to the use or Distribution of Licensed
+Material Source Code constitutes a material breach of this License. Upon such
+material breach, the rights granted under this License shall terminate
+immediately, and You shall cease all use, reproduction, and Distribution of the
+Licensed Material Source Code until such breach is cured.
+
+10.3 Programs Not Affected — For the avoidance of doubt, no breach of this
+License shall be deemed to occur solely by virtue of Your use or Distribution of
+Programs created for or with the Licensed Material that do not incorporate or
+reproduce Licensed Material Source Code.
+
+10.4 Effect of Termination — Upon termination, all licenses granted to You under
+this License shall terminate, and Your rights to use, modify, and Distribute the
+Licensed Material shall cease forthwith. Sections 7, 8, 9, 10.4, 11, 13, and 14
+shall survive any termination. If You have sublicensed any Derivative Work prior
+to termination, such sublicenses shall survive termination only to the extent
+that they do not violate the terms of this License.
+
+10.5 Reinstatement — Rights terminated under this Section 10 may, at the sole
+discretion of the Licensor, be reinstated upon Your cure of the breach and
+written notification to the Licensor of such cure.
+
+SECTION 11 - GOVERNING LAW AND JURISDICTION
+
+11.1 Governing Law — This License shall be governed by and construed in
+accordance with the laws of the jurisdiction in which the Licensor is domiciled,
+without regard to its conflict-of-laws provisions.
+
+11.2 Jurisdiction — Subject to Section 11.3, any dispute, controversy, or claim
+arising out of or relating to this License, or to the breach, termination, or
+validity thereof, shall be subject to the exclusive jurisdiction of the competent
+courts of the jurisdiction in which the Licensor is domiciled.
+
+11.3 Mandatory Provisions — Where any jurisdiction requires that its mandatory
+laws or public policy be applied notwithstanding the choice of law made in
+Section 11.1, the provisions of such jurisdiction shall prevail to the extent
+that they cannot be excluded by agreement, and the remainder of this License
+shall continue in full force and effect.
+
+SECTION 12 - SEVERABILITY AND WAIVER
+
+12.1 Severability — If any provision, or portion of a provision, of this License
+is held to be invalid, illegal, or unenforceable under Applicable Law, such
+provision shall be construed, interpreted, and reformed to the maximum extent
+possible to achieve the intent of the parties, and the remaining provisions of
+this License shall continue in full force and effect.
+
+12.2 Waiver — No waiver of any term of this License shall be effective unless in
+writing and signed by the party against whom the waiver is asserted. The failure
+of the Licensor to exercise or enforce any right or provision of this License
+shall not constitute a waiver of such right or provision, and no single or
+partial exercise of any right or provision shall preclude any other or further
+exercise thereof.
+
+SECTION 13 - ENTIRE AGREEMENT AND AMENDMENT
+
+13.1 Entire Agreement — This License constitutes the entire agreement between You
+and the Licensor with respect to the Licensed Material and supersedes all prior
+and contemporaneous understandings, agreements, representations, and
+communications, whether oral or written, regarding such subject matter.
+
+13.2 Amendment — This License may only be amended or supplemented by a written
+instrument executed by an authorized representative of the Licensor. Electronic
+signatures and other forms of electronic authentication shall be given the same
+legal effect and validity as original written signatures to the fullest extent
+permitted by Applicable Law.
+
+13.3 Continued Application — Each version of the Licensed Material is governed by
+the version of this License under which it was released. If the Licensor releases
+the Licensed Material under a later version of this License, You may continue to
+exercise Your rights under, and distribute and relicense, prior versions of the
+Licensed Material under the version of this License under which they were
+released.
+
+SECTION 14 - GENERAL PROVISIONS
+
+14.1 Compliance with Laws — You shall comply with all Applicable Law, including
+but not limited to export control laws, import laws, and sanctions laws, in
+exercising the rights granted under this License. You shall not use the Licensed
+Material in any manner that violates Applicable Law.
+
+14.2 Independent Development — Nothing in this License shall be construed to
+restrict You from independently developing, having developed, or Distributing
+works or technology that are functionally similar to, interoperable with, or
+competitive with the Licensed Material, provided that such works do not
+incorporate or reproduce Licensed Material Source Code in violation of this
+License.
+
+14.3 Headings — The section and clause headings in this License are inserted for
+convenience of reference only and shall not be used to construe or interpret the
+provisions of this License.
+
+14.4 Relationship of the Parties — Nothing in this License shall create, or be
+deemed to create, a partnership, joint venture, agency, employment, or fiduciary
+relationship between You and the Licensor or any Contributor.
+
+14.5 Third-Party Beneficiaries — Subject to the terms of this License, each
+Contributor is an intended third-party beneficiary of this License with respect
+to its Contributions, and may directly enforce the terms of this License against
+You to the extent necessary to protect its rights in its Contributions.
 
 ------------------------------------------------------------------------
 
-End of Terms.
+APPENDIX - HOW TO APPLY THE TIE PUBLIC LICENSE TO YOUR WORK
+
+To apply the Tie Public License to your work, attach the following notices to
+the work. It is safest to attach them to the start of each source file to most
+effectively state the terms of this License; each file should have at least the
+"copyright" line and a pointer to where the full notice is found.
+
+    <one line to give the program's name and a brief idea of what it does.>
+    Copyright (C) <year> <name of author>
+
+    This program is released under the Tie Public License v1.2 (TPL 1.2).
+    The full text of the license is available in the LICENSE file at the
+    root of the distribution, or online at
+    <uniform resource locator to the license text>.
+
+If the program does terminal interaction, make it output a short notice like
+this when it starts in an interactive mode:
+
+    <program>  Copyright (C) <year>  <name of author>
+    This program comes with ABSOLUTELY NO WARRANTY; for details see the LICENSE
+    file. This is free software, and you are welcome to redistribute it under
+    certain conditions; see the LICENSE file for details.
+
+You should also get your employer (if you work as a programmer) or school, if
+any, to sign a "copyright disclaimer" for the program, if necessary. For more
+information on this, and how to apply and document license terms, see
+<uniform resource locator to guidance or the Licensor's documentation>.
+
+The Licensor's name and Brand Mark may not be used to endorse or promote works
+derived from the Licensed Material without the Licensor's prior written
+permission, or, where the law provides for such use, in a non-confusing manner
+in compliance with Section 9. For enquiries regarding the use of the Licensor's
+name or Brand Mark, please contact the Licensor.
+
+------------------------------------------------------------------------
+
+END OF TERMS AND CONDITIONS
