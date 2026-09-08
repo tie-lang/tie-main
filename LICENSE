@@ -1,9 +1,15 @@
 TIE PUBLIC LICENSE
-Version 1.2
+Version 2.0
 
 Copyright (c) 2026 TIE-LANG organization. All rights reserved.
 
-This License may be referred to by its short name "TPL" (e.g., "TPL 1.2").
+This License may be referred to by its short name "TPL" (e.g., "TPL 2.0").
+
+This License text is published by the TIE-LANG organization as a generic,
+reusable open source license. It may be adopted by any individual or legal
+entity (a "Licensor") that distributes or makes available work under this
+License, without any affiliation to, or endorsement by, the TIE-LANG
+organization.
 
 PREAMBLE
 
@@ -26,9 +32,9 @@ This License is founded on and embodies the following principles:
 
   * The fruits of the Licensor's and Contributors' work belong to the community.
     Accordingly, this License expressly distinguishes between the use of the
-    Licensed Material itself, and the creation of Programs authored by Users for
-    or with the Licensed Material, and it protects the ownership and freedom of
-    such Programs.
+    Licensed Material itself, and the creation of User Works authored by Users
+    for or with the Licensed Material, and it protects the ownership and freedom
+    of such User Works.
 
 This License recognizes and protects the distinction between two categories of
 use:
@@ -38,13 +44,14 @@ use:
     Licensed Material. Such use is subject to the attribution and notice
     requirements set out in Section 4.
 
-  * Use of the Licensed Material to create Programs — creating works that You
+  * Use of the Licensed Material to create User Works — creating works that You
     author for or with the Licensed Material (for example, programs written in a
-    programming language distributed under this License). Such Programs are Your
-    own works, are not Derivative Works within the meaning of this License, and
-    are not subject to the conditions of this License, except to the extent that
-    they incorporate or reproduce Licensed Material source code as provided in
-    Section 4.
+    programming language distributed under this License, applications built upon
+    a library distributed under this License, or content generated with a tool
+    distributed under this License). Such User Works are Your own works, are not
+    Derivative Works within the meaning of this License, and are not subject to
+    the conditions of this License, except to the extent that they incorporate
+    or reproduce Licensed Material source code as provided in Section 4.
 
 This License is expressly permissive: it permits commercial use, private use,
 modification, and redistribution in both source and object form, including
@@ -73,9 +80,7 @@ under this License.
 
 1.2 "Licensor" means the individual or legal entity, including its heirs,
 successors, and assigns, that owns the copyright in the Licensed Material and
-distributes or makes it available under this License. Where the Licensed Material
-is distributed in the official repositories of the TIE-LANG organization, the
-Licensor is the TIE-LANG organization.
+distributes or makes it available under this License.
 
 1.3 "You" (and the corresponding possessive form "Your") means the individual or
 legal entity exercising permissions granted by this License.
@@ -94,18 +99,31 @@ Source Code.
 1.6 "Derivative Work" means any work — whether in Source Code or Object Code form
 — that is based upon, derives from, or contains or incorporates a portion of the
 Licensed Material, whether verbatim or with modifications, translations,
-adaptations, extensions, insertions, deletions, or other changes. A Program
+adaptations, extensions, insertions, deletions, or other changes. A User Work
 created for or with the Licensed Material that does not incorporate or reproduce
 Licensed Material source code is not a Derivative Work.
 
-1.7 "Program" means a computer program, application, script, or other work of
-authorship that You author for or with the Licensed Material, where such work is
-not the Licensed Material itself and does not contain a copy of, or incorporate
-verbatim or with modifications, the Licensed Material's Source Code. For clarity,
-a program written in a programming language that is distributed under this
-License is a Program if it is authored independently of that language's own
-implementation, and the source code of such a program is not Licensed Material
-source code for purposes of this License.
+1.7 "User Work" means any work of authorship — including but not limited to
+computer programs, applications, scripts, documents, data sets, and other
+creative or functional works — that You author, create, produce, or generate for
+or with the Licensed Material, where such work is not the Licensed Material
+itself and does not contain a copy of, or incorporate verbatim or with
+modifications, the Licensed Material's Source Code. For clarity:
+
+  (a) a work may be a User Work whether or not it is authored by a human being,
+      and includes works authored, generated, or rendered with the aid of the
+      Licensed Material;
+
+  (b) the fact that a User Work is authored, built, compiled, run, hosted, or
+      otherwise materially used together with the Licensed Material — for
+      example, a program written in a programming language distributed under
+      this License, or an application built upon a library distributed under
+      this License — does not, by itself, make that User Work a Derivative Work
+      of the Licensed Material, and the source code of such a User Work is not
+      Licensed Material source code for purposes of this License; and
+
+  (c) a User Work does not include a file of the Licensed Material itself, or a
+      modification of such a file, even if distributed as part of a User Work.
 
 1.8 "Contribution" means any work of authorship, including any modification or
 addition to the Licensed Material, that is intentionally submitted by You or by
@@ -119,11 +137,13 @@ sender to be considered for inclusion in the Licensed Material.
 1.9 "Contributor" means any individual or legal entity that makes a Contribution.
 
 1.10 "Brand Mark" means the names, word marks, logos, graphic devices, trade
-dress, service marks, and other identifying designations — including but not
-limited to "tie", "TIE-LANG", "TPL", and any logo, icon, or graphic asset
-distributed with the Licensed Material — that the Licensor owns or controls and
-uses to identify the Licensed Material, the Licensor, or the family of products
-and services offered by the Licensor.
+dress, service marks, and other identifying designations that the Licensor owns
+or controls and uses to identify the Licensed Material, the Licensor, or the
+family of products and services offered by the Licensor. Where the Licensor
+Distributes a notice file under Section 4.7, the Brand Mark includes the
+identifying designations designated in such notice file, but nothing in this
+License grants any rights in any mark not expressly designated or owned by the
+Licensor.
 
 1.11 "Distribution" (and the verb "Distribute") means any act of making the
 Licensed Material or Derivative Works available to any third party by any means,
@@ -199,10 +219,11 @@ SECTION 4 - CONDITIONS OF USE AND DISTRIBUTION
 
 The conditions in this Section apply solely to Your use and Distribution of
 Licensed Material Source Code and Object Code, and of Derivative Works thereof,
-as those terms are defined in Section 1. They do not apply to Programs You create
-for or with the Licensed Material. A Program may be Distributed royalty-free and
-without any obligation to include copyright notices or a copy of this License,
-provided that it does not incorporate or reproduce Licensed Material Source Code.
+as those terms are defined in Section 1. They do not apply to User Works You
+create for or with the Licensed Material. A User Work may be Distributed
+royalty-free and without any obligation to include copyright notices or a copy
+of this License, provided that it does not incorporate or reproduce Licensed
+Material Source Code.
 
 4.1 Retention of Notices — Mandatory. Every use, reproduction, or Distribution of
 Licensed Material Source Code, whether in whole or in part, whether verbatim or
@@ -250,21 +271,41 @@ not be represented as implying, any certification, sponsorship, endorsement, or
 affiliation with the Licensor or any Contributor in respect of Your Derivative
 Works, except as expressly permitted by Section 9.
 
-SECTION 5 - PROGRAMS CREATED WITH THE LICENSED MATERIAL
+4.7 Notice File — Optional. The Licensor may, at its option, Distribute the
+Licensed Material together with a plainly titled notice file (such as "NOTICE"
+or "NOTICES") that identifies, without limitation: (a) the Licensor's name and
+means of contact; (b) the Brand Mark; (c) additional attribution or credit lines
+required or requested by the Licensor; and (d) third-party notices that the
+Licensor is required to propagate. Where such a notice file is provided:
 
-5.1 Ownership — Programs that You create for or with the Licensed Material are
-Your own works. Except to the extent that such Programs incorporate or reproduce
-Licensed Material Source Code as provided in Section 4, this License grants no
-rights in, and imposes no obligations with respect to, Your Programs.
+  (a) You must retain, in every copy that You Distribute, the substantive content
+      of the notice file, unaltered, and must include such content in any form of
+      redistribution that includes the Licensed Material, whether in Source Code
+      or Object Code form; and
 
-5.2 No Attribution on Programs — You are not required to include any copyright
+  (b) You may add Your own notices to the notice file, but such additions must be
+      clearly identified as Your own and must not misrepresent, obscure, or
+      remove the notices of the Licensor or of any third party.
+
+Nothing in this Section 4.7 obliges a Licensor to provide a notice file, and the
+absence of a notice file shall not diminish or alter any other obligation under
+this License.
+
+SECTION 5 - USER WORKS CREATED WITH THE LICENSED MATERIAL
+
+5.1 Ownership — User Works that You create for or with the Licensed Material are
+Your own works. Except to the extent that such User Works incorporate or
+reproduce Licensed Material Source Code as provided in Section 4, this License
+grants no rights in, and imposes no obligations with respect to, Your User Works.
+
+5.2 No Attribution on User Works — You are not required to include any copyright
 notice, license text, attribution statement, trademark, or link to this License
-in, or in connection with, any Program that You create for or with the Licensed
-Material, provided that such Program does not incorporate or reproduce Licensed
-Material Source Code.
+in, or in connection with, any User Work that You create for or with the Licensed
+Material, provided that such User Work does not incorporate or reproduce
+Licensed Material Source Code.
 
 5.3 No Copyleft — Nothing in this License requires You to license, publish,
-disclose, or release the Source Code of Your Programs or Derivative Works under
+disclose, or release the Source Code of Your User Works or Derivative Works under
 this License or under any other license, and no act of receiving or using the
 Licensed Material shall be construed as a consent to any obligation to do so.
 
@@ -319,9 +360,7 @@ SYSTEMS, OR DATA.
 TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, THE ENTIRE RISK ARISING OUT OF
 THE USE OF THE LICENSED MATERIAL REMAINS WITH YOU. THIS LICENSE IS GRANTED BY THE
 LICENSOR AND EACH CONTRIBUTOR INDIVIDUALLY, AND NO LICENSOR OR CONTRIBUTOR MAKES
-ANY REPRESENTATION OR WARRANTY ON BEHALF OF ANY OTHER LICENSOR OR CONTRIBUTOR, OR
-ON BEHALF OF THE TIE-LANG ORGANIZATION WHERE THE LICENSOR IS THE TIE-LANG
-ORGANIZATION.
+ANY REPRESENTATION OR WARRANTY ON BEHALF OF ANY OTHER LICENSOR OR CONTRIBUTOR.
 
 SECTION 8 - LIMITATION OF LIABILITY
 
@@ -351,17 +390,17 @@ mark, trade name, trade dress, or logo rights, or any right to use the Brand Mar
 9.2 Permitted Use — Without prior written authorization from the Licensor, You
 may:
 
-  (a) use the Licensed Material to create and Distribute Your own Programs and
+  (a) use the Licensed Material to create and Distribute Your own User Works and
       Derivative Works under Your own terms, subject to the conditions of Section
       4;
 
   (b) refer to the Brand Mark nominatively and descriptively in documentation,
       source code comments, presentations, marketing materials, and truthful
       factual statements, including statements of interoperability, compatibility,
-      or provenance (for example, "built with tie", "targets tie", "compatible
-      with tie"); and
+      or provenance (for example, "built with [Licensed Material]", "targets
+      [Licensed Material]", "compatible with [Licensed Material]"); and
 
-  (c) use the Brand Mark to identify that a Program or implementation is
+  (c) use the Brand Mark to identify that a User Work or implementation is
       compatible with, targets, or interoperates with the Licensed Material,
       provided that such use is accurate, truthful, and not likely to confuse any
       person as to source, sponsorship, affiliation, or endorsement.
@@ -408,9 +447,9 @@ material breach, the rights granted under this License shall terminate
 immediately, and You shall cease all use, reproduction, and Distribution of the
 Licensed Material Source Code until such breach is cured.
 
-10.3 Programs Not Affected — For the avoidance of doubt, no breach of this
+10.3 User Works Not Affected — For the avoidance of doubt, no breach of this
 License shall be deemed to occur solely by virtue of Your use or Distribution of
-Programs created for or with the Licensed Material that do not incorporate or
+User Works created for or with the Licensed Material that do not incorporate or
 reproduce Licensed Material Source Code.
 
 10.4 Effect of Termination — Upon termination, all licenses granted to You under
@@ -515,7 +554,8 @@ effectively state the terms of this License; each file should have at least the
     <one line to give the program's name and a brief idea of what it does.>
     Copyright (C) <year> <name of author>
 
-    This program is released under the Tie Public License v1.2 (TPL 1.2).
+    This program is released under the Tie Public License (the current version,
+    e.g., "TPL 2.0").
     The full text of the license is available in the LICENSE file at the
     root of the distribution, or online at
     <uniform resource locator to the license text>.
