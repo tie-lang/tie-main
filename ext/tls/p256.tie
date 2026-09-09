@@ -32,13 +32,13 @@ type tie<class>
 //   - 仿射求逆每步分支（double/add 的 λ 分母零判断），非常数时间——本模块面向
 //     公网握手互通（临时密钥，一次性），不做侧信道隔离（同 x25519.tie 定位）。
 //   - dh 对端点做 on_curve + 边界校验（防无效曲线攻击）。
-//   - 私钥由 std/random 生成（非密码学安全随机源）；当前定位为互通/演示，
-//     生产级随机源与常数时间列为后续（同 x25519.tie 既有注记）。
+//   - 私钥由 std/csprng 的 strong_bytes（BCryptGenRandom，CSPRNG）生成（r.1.2.1）；
+//     常数时间列为后续（同 x25519.tie 既有注记）。
 // ============================================================================
 
 import "./tool.tie" as tbt
 import "../../std/bigint.tie" as bigint
-import "../../std/random.tie" as rnd
+import "../../std/csprng.tie" as csrnd
 
 // 顶层懒构建常量（同 x25519 模式）。
 var g_p: table<i64>;
@@ -212,16 +212,16 @@ func from_be32(b: table<i64>) -> table<i64> {
 // ---- 公共 API ----
 
 // 生成临时私钥 d（1 ≤ d < n），返回 32 字节大端 hex（64 位）。
+// r.1.2.1：私钥材料走 std/csprng strong_bytes（BCryptGenRandom，CSPRNG）；
+// 系统 RNG 失败返回 ""（哨兵，不降级到伪随机）。
 pub func keygen() -> string {
     ensure()
     var d = table_new_i64()
     var guard: i64 = 0
     while guard < 64 {
-        var bytes = table_new_i64()
-        var i: i64 = 0
-        while i < 32 {
-            table_push(bytes, rnd.int(0, 255))
-            i = i + 1
+        var bytes = csrnd.strong_bytes(32)
+        if len(bytes) != 32 {
+            return ""
         }
         d = pmod(from_be32(bytes))     // mod n（域内）
         if bigint.is_zero(d) == false {

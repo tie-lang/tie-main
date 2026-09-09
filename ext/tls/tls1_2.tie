@@ -33,7 +33,7 @@ import "./hash.tie"
 import "./gcm.tie"
 import "./p256.tie"
 import "../../std/x25519.tie"
-import "../../std/random.tie"
+import "../../std/csprng.tie"
 import "../../std/net.tie"
 
 namespace tls12 {
@@ -44,14 +44,11 @@ func empty() -> table<i64> {
 
 // ---- 随机字节 ----
 
+// n 个 [0,255] 随机字节。r.1.2.1：加密安全源（std/csprng strong_bytes，
+// BCryptGenRandom）——x25519 私钥与 ClientHello random 均为密钥材料，
+// 不可用 rnd.int 伪随机底座。失败返回空表，调用方按哨兵拒绝握手。
 func rand_bytes(n: i64) -> table<i64> {
-    var out = table_new_i64()
-    var i: i64 = 0
-    while i < n {
-        table_push(out, rnd.int(0, 255))
-        i = i + 1
-    }
-    return out
+    return csrnd.strong_bytes(n)
 }
 
 // ---- TLS 1.2 PRF（RFC 5246 §5）= P_SHA256 ----
@@ -101,7 +98,13 @@ pub func hs_message(mtype: i64, body: table<i64>) -> table<i64> {
 
 // 构造并返回 (明文记录, 握手结构体, 客户端私钥 hex, 32B 客户端随机数)。
 pub func make_client_hello(host: string) -> (table<i64>, table<i64>, string, table<i64>) {
+    // x25519 私钥 + ClientHello random（r.1.2.1：CSPRNG）。随机源失败 →
+    // 返回空记录哨兵，调用方拒绝握手（不降级到伪随机）。
     var sk_bytes = rand_bytes(32)
+    var c_rand = rand_bytes(32)
+    if len(sk_bytes) != 32 || len(c_rand) != 32 {
+        return (table_new_i64(), table_new_i64(), "", table_new_i64())
+    }
     var sk_hex: string = ""
     var i: i64 = 0
     while i < 32 {
@@ -111,7 +114,6 @@ pub func make_client_hello(host: string) -> (table<i64>, table<i64>, string, tab
         i = i + 1
     }
     var pub_hex = x25519.keygen(sk_hex)
-    var c_rand = rand_bytes(32)
 
     // ClientHello body
     var body = table_new_i64()
@@ -277,6 +279,54 @@ pub func parse_server_flight(srv_hs: table<i64>) -> (i64, i64, table<i64>, i64, 
         off = off + 4 + mlen
     }
     return (ver, cs, sr, grp, spub)
+}
+
+// ---- Certificate 链解析（r.1.2.2）----
+
+// 遍历服务器明文握手帧，提取 Certificate(11) 消息体（无则返回空表）。
+// 服务器必须发 Certificate（0xC02F 需要服务器证书），缺失即协议违规。
+pub func server_cert_body(srv_hs: table<i64>) -> table<i64> {
+    var out = table_new_i64()
+    var off: i64 = 0
+    while off + 4 <= len(srv_hs) {
+        var mtype: i64 = srv_hs[off]
+        var mlen: i64 = tbt.u24_be(srv_hs, off + 1)
+        if off + 4 + mlen > len(srv_hs) {
+            break
+        }
+        if mtype == 11 {
+            return tbt.sub(srv_hs, off + 4, mlen)
+        }
+        off = off + 4 + mlen
+    }
+    return out
+}
+
+// 解析 TLS 1.2 Certificate 消息体（RFC 5246 §7.4.2）→ 证书链 DER 的 table<any>
+// （leaf 在前，与 chn.build/chn.verify 约定一致）。结构：
+//   ASN1Cert certificate_list<0..2^24-1>；每项 = cert_len(3B) + 证书 DER。
+// 全量边界检查；任何越界/畸形 → 返回空链（len==0），调用方按握手失败哨兵处理。
+pub func parse_cert_chain(mbody: table<i64>) -> table<any> {
+    var chain: table<any> = []
+    if len(mbody) < 3 {
+        return chain
+    }
+    var list_len: i64 = tbt.u24_be(mbody, 0)
+    if 3 + list_len > len(mbody) {
+        return chain
+    }
+    var off: i64 = 3
+    var end: i64 = 3 + list_len
+    while off + 3 <= end {
+        var c_len: i64 = tbt.u24_be(mbody, off)
+        off = off + 3
+        if c_len < 1 || off + c_len > end {
+            return table_new_i64()
+        }
+        table_push(chain, tbt.sub(mbody, off, c_len))
+        off = off + c_len
+    }
+    return chain
 }
 
 // ---- ECDHE 密钥协商分发（p.6.1.8：x25519 / secp256r1 双曲线）----

@@ -1,0 +1,7 @@
+type tie<logic>
+// r.1.5.4 探测 2：const 全局表（空表初始化）。
+const g: table<i64> = []
+
+func main() {
+    println(to_string(len(g)))
+}

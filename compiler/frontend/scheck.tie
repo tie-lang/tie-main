@@ -712,6 +712,15 @@ pub func check_stmt(s: i64) -> i64 {
                 return -1
             }
         }
+        // r.1.1.5：空表字面量赋值目标引导（与 check_var_decl 同款）——
+        // `t = []` 若目标是 table<T>/map<V>，node_types[rhs] = 目标类型；
+        // 否则 irgen 空表兜底 i64 元素宽，fn/struct 等复合元素 push 越界写崩溃
+        //（全局 table<fn() -> i64> 惰性 = [] 重赋值缺陷根因）。
+        var rhs_node = sstate.child(s, 0)
+        if vt == types.named(TK_I64) && s_tags[rhs_node] == S_N_TABLE_LIT &&
+            sstate.nchild(rhs_node) == 0 && (types.is_table(target_ty) || types.is_map(target_ty)) {
+            node_types[rhs_node] = target_ty
+        }
         // p.6.9.15 警告 W0003：循环内字符串拼接累积（+= 或 x = x + y）。
         // 仅限循环体内（len(lp_stack) > 0）——单次拼接无 O(n²) 风险。
         var op = s_vals[s]

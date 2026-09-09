@@ -1,0 +1,5 @@
+type tie<logic>
+// 负例：裸 table 全局非空字面量 → 编译期报错。
+var g: table = [1, 2, 3]
+
+func main() {}

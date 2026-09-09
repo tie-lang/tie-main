@@ -65,7 +65,9 @@ var ext_syms: table<i64>;
 var g_global_names: table<i64>;   // 全局名池 id（登记序）
 var g_global_is_table: table<i64>;  // 1 = 表全局（ptr null），0 = 标量
 var g_global_tys: table<i64>;     // 标量类型 id（表全局 -1）
-var g_global_inits: table<i64>;   // const 标量初始值（-1 = 无；i64 字面量）
+var g_global_inits: table<i64>;   // 标量初始值（-1 = 无折叠值；i64 字面量/字符码点/bool 0-1）
+var g_global_inits_ok: table<i64>; // 标量初值是否已折叠登记（0/1；区分"折叠出 -1"与"无初值"，r.1.1.2）
+var g_global_fps: table<i64>;     // 浮点初始值（浮点文本池 id；-1 = 无，r.1.1.2）
 var g_global_strs: table<i64>;    // 顶层字符串 const 初始值（字符串池 id；-1 = 无）
 // 阶段 A：用户函数调用（call 35）的符号名池 id（去重，与 ext_syms 平行收集；
 // 命名空间函数全名经 ns_symbol 转 $，无需 declare）
@@ -172,6 +174,8 @@ pub func global_table_reg(nm: string) {
     table_push(g_global_is_table, 1)
     table_push(g_global_tys, -1)
     table_push(g_global_inits, -1)
+    table_push(g_global_inits_ok, 0)
+    table_push(g_global_fps, -1)
     table_push(g_global_strs, -1)
 }
 
@@ -181,16 +185,34 @@ pub func global_scalar_reg(nm: string, ty: i64) {
     table_push(g_global_is_table, 0)
     table_push(g_global_tys, ty)
     table_push(g_global_inits, -1)
+    table_push(g_global_inits_ok, 0)
+    table_push(g_global_fps, -1)
     table_push(g_global_strs, -1)
 }
 
-// const 标量初始值（i64 字面量）：emit_globals 输出 @g = global i64 <v>
+// 标量初始值（i64 字面量/字符码点/bool 0-1）：emit_globals 输出 @g = global T <v>
 pub func global_scalar_init(nm: string, v: i64) {
     var nid = interner.intern(nm)
     var i: i64 = 0
     while i < len(g_global_names) {
         if g_global_names[i] == nid {
             g_global_inits[i] = v
+            g_global_inits_ok[i] = 1
+            return
+        }
+        i = i + 1
+    }
+}
+
+// 顶层浮点初始值（r.1.1.2）：折叠出的浮点字面量文本（池 id）——
+// emit_globals 输出 @g = global double/float <原文>（LLVM 接受十进制/指数语法）。
+pub func global_fp_init(nm: string, lexeme_id: i64) {
+    var nid = interner.intern(nm)
+    var i: i64 = 0
+    while i < len(g_global_names) {
+        if g_global_names[i] == nid {
+            g_global_fps[i] = lexeme_id
+            g_global_inits_ok[i] = 1
             return
         }
         i = i + 1
@@ -217,6 +239,7 @@ pub func global_str_init(nm: string, lexeme_id: i64) {
                 clean = interner.intern(sub)
             }
             g_global_strs[i] = clean
+            g_global_inits_ok[i] = 1
             return
         }
         i = i + 1
@@ -308,12 +331,14 @@ func emit_globals() {
         } else {
             var ty = llvm_ty(g_global_tys[i])
             var init = "0"
-            // const 整数字面量初始值（全部整数类型直接输出；其余保持零值）。
+            // 整数/字符折叠初值（const/var 均采纳；r.1.1.2 起以 inits_ok 区分
+            // "折叠出 -1"与"无折叠值"——旧实现把无初值的 signed 全局输出成 -1）。
             // 旧实现仅 ty=="i64" 应用 → i8/i16/i32/u* 等 const 全局恒为 0
             //（GetSystemMetrics(1 的 const i32) 传成 0 一类值破坏 bug）。
-            // 负值守卫根治（2026-09-04）：原 `>= 0` 使顶层负字面量初值回退 "0"
+            // 负值守卫（2026-09-04）：原 `>= 0` 使顶层负字面量初值回退 "0"
             //（折叠为 0）；现对**有符号**整型直接输出负字面量，无符号保持零值。
-            if i < len(g_global_inits) && types.is_int(g_global_tys[i]) {
+            if i < len(g_global_inits) && g_global_inits_ok[i] == 1 &&
+                (types.is_int(g_global_tys[i]) || g_global_tys[i] == TK_CHAR) {
                 var iv = g_global_inits[i]
                 if iv >= 0 || is_signed_int(g_global_tys[i]) {
                     init = to_string(iv)
@@ -336,11 +361,18 @@ func emit_globals() {
                 }
                 init = "null"
             } else if ty == "i1" {
-                init = "false"
-            } else if ty == "double" {
+                // r.1.1.2：bool 折叠初值（true → 1 → "true"；false/无折叠 → "false"）
+                if i < len(g_global_inits) && g_global_inits[i] == 1 {
+                    init = "true"
+                } else {
+                    init = "false"
+                }
+            } else if ty == "double" || ty == "float" {
+                // r.1.1.2：浮点折叠初值（字面量原文；无折叠 → 0.0）
                 init = "0.0"
-            } else if ty == "float" {
-                init = "0.0"
+                if i < len(g_global_fps) && g_global_fps[i] >= 0 {
+                    init = intern.lookup(g_global_fps[i])
+                }
             }
             line("@" + nm + " = global " + ty + " " + init)
         }

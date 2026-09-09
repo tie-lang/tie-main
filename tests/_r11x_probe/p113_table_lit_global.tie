@@ -1,0 +1,9 @@
+type tie<logic>
+// r.1.1.3 最小复现：全局表字面量初始化（非空）——期望能编译并输出 1,2,3。
+var g: table<i64> = [1, 2, 3]
+
+func main() {
+    println(to_string(len(g)))
+    println(to_string(g[0]))
+    println(to_string(g[2]))
+}

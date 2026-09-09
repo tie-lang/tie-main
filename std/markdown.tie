@@ -42,6 +42,10 @@ type tie<class>
 // 调用：import 后 md.parse(...) / md.inline_tokens(...) 等；命名空间内互调为裸调用。
 // 命名规范：命名空间内函数不加 md_ 前缀（统一 func 写法，Harbor M2.1.6）。
 // 注意：text / code / char / table 为 tie 类型关键字保留字，标识符避开。
+// 性能（r.1.3.2）：扫描热路径按**字节索引**（str_byte O(1) + string_builder），
+// 杜绝逐码点 str_char（O(i)/次，整串扫描即 O(n²)）。Markdown 语法定界符全为
+// ASCII 单字节（# - * _ > | ` [ ] ( ) . 数字/空白），字节语义 == 码点语义；
+// 多字节内容按字节原样复制，结果逐字节一致。本文件 sub 按**字节**区间切片。
 
 // ==================== 模块级全局（命名空间外，仿 std/json.tie） ====================
 var md_kinds: table<i64>;
@@ -95,7 +99,7 @@ pub func parse(src: string) -> table<i64> {
             } else {
                 cl = 2
             }
-            add_block(hk, trim_line(sub(tline, cl + 1, str_len(tline))), 0)
+            add_block(hk, trim_line(sub(tline, cl + 1, len(tline))), 0)
             i = i + 1
             continue
         }
@@ -113,14 +117,14 @@ pub func parse(src: string) -> table<i64> {
         // 无序列表项
         var ul = ul_marker(tline)
         if ul > 0 {
-            add_block(2, trim_line(sub(tline, ul, str_len(tline))), 0)
+            add_block(2, trim_line(sub(tline, ul, len(tline))), 0)
             i = i + 1
             continue
         }
         // 有序列表项
         var ol = ol_marker(tline)
         if ol > 0 {
-            add_block(3, trim_line(sub(tline, ol, str_len(tline))), g_ol_num)
+            add_block(3, trim_line(sub(tline, ol, len(tline))), g_ol_num)
             i = i + 1
             continue
         }
@@ -266,17 +270,17 @@ func read_code_block(lines: table<string>, i: i64) -> i64 {
 // ---------- 分隔线 ----------
 
 func is_hr(s: string) -> bool {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     if n < 3 {
         return false
     }
-    var c0 = str_char(s, 0)
-    if c0 != "-" && c0 != "*" && c0 != "_" {
+    var b0: i64 = str_byte(s, 0)
+    if b0 != 45 && b0 != 42 && b0 != 95 {
         return false
     }
     var k: i64 = 1
     while k < n {
-        if str_char(s, k) != c0 {
+        if str_byte(s, k) != b0 {
             return false
         }
         k = k + 1
@@ -299,11 +303,12 @@ func read_quote(lines: table<string>, i: i64) -> i64 {
         }
         // 去掉 ">" 与一个可选空格
         var content: string = ""
-        if str_len(tline) > 1 {
-            if str_char(tline, 1) == " " || str_char(tline, 1) == "\t" {
-                content = sub(tline, 2, str_len(tline))
+        if len(tline) > 1 {
+            var b1: i64 = str_byte(tline, 1)
+            if b1 == 32 || b1 == 9 {
+                content = sub(tline, 2, len(tline))
             } else {
-                content = sub(tline, 1, str_len(tline))
+                content = sub(tline, 1, len(tline))
             }
         }
         if !first {
@@ -401,15 +406,16 @@ func is_sep(line: string) -> bool {
 }
 
 // 字符串是否仅由 '-' / ':' / 空格 / 制表组成（空串返回 false）。
+// 字节判定（-=45 :=58 空格=32 制表=9）。
 func only_dash_colon(s: string) -> bool {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     if n == 0 {
         return false
     }
     var k: i64 = 0
     while k < n {
-        var c = str_char(s, k)
-        if c != "-" && c != ":" && c != " " && c != "\t" {
+        var b: i64 = str_byte(s, k)
+        if b != 45 && b != 58 && b != 32 && b != 9 {
             return false
         }
         k = k + 1
@@ -431,15 +437,15 @@ func row_cells(line: string) -> table<string> {
     return out
 }
 
-// 剥去首尾的 "|"（若存在）。
+// 剥去首尾的 "|"（若存在）。字节判定（|=124 单字节）。
 func strip_outer_pipe(s: string) -> string {
     var t = s
-    var n: i64 = str_len(t)
-    if n > 0 && str_char(t, 0) == "|" {
+    var n: i64 = len(t)
+    if n > 0 && str_byte(t, 0) == 124 {
         t = sub(t, 1, n)
-        n = str_len(t)
+        n = len(t)
     }
-    if n > 0 && str_char(t, n - 1) == "|" {
+    if n > 0 && str_byte(t, n - 1) == 124 {
         t = sub(t, 0, n - 1)
     }
     return t
@@ -501,32 +507,34 @@ func is_special_start(s: string) -> bool {
 
 // ---------- 列表标记 ----------
 
-// 无序列表：返回内容起始下标（"x " 后）；不匹配返回 -1。
+// 无序列表：返回内容起始下标（"x " 后）；不匹配返回 -1。字节判定（-=45 *=42 +=43）。
 func ul_marker(s: string) -> i64 {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     if n < 2 {
         return -1
     }
-    var c0 = str_char(s, 0)
-    if c0 != "-" && c0 != "*" && c0 != "+" {
+    var b0: i64 = str_byte(s, 0)
+    if b0 != 45 && b0 != 42 && b0 != 43 {
         return -1
     }
-    if str_char(s, 1) != " " && str_char(s, 1) != "\t" {
+    var b1: i64 = str_byte(s, 1)
+    if b1 != 32 && b1 != 9 {
         return -1
     }
     return 2
 }
 
 // 有序列表：解析起始数字（全局 g_ol_num 回传），返回内容下标；不匹配返回 -1。
+// 字节扫描（0-9=48-57、.=46 )=41 空格=32 制表=9）。
 func ol_marker(s: string) -> i64 {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var nval: i64 = 0
     var k: i64 = 0
     var started: bool = false
     while k < n {
-        var cp: i64 = char_code(str_char(s, k))
-        if cp >= 48 && cp <= 57 {
-            nval = nval * 10 + (cp - 48)
+        var b: i64 = str_byte(s, k)
+        if b >= 48 && b <= 57 {
+            nval = nval * 10 + (b - 48)
             started = true
             k = k + 1
         } else {
@@ -539,14 +547,15 @@ func ol_marker(s: string) -> i64 {
     if k >= n {
         return -1
     }
-    var c = str_char(s, k)
-    if c != "." && c != ")" {
+    var b2: i64 = str_byte(s, k)
+    if b2 != 46 && b2 != 41 {
         return -1
     }
     if k + 1 >= n {
         return -1
     }
-    if str_char(s, k + 1) != " " && str_char(s, k + 1) != "\t" {
+    var b3: i64 = str_byte(s, k + 1)
+    if b3 != 32 && b3 != 9 {
         return -1
     }
     g_ol_num = nval
@@ -569,11 +578,11 @@ func heading_kind(s: string) -> i64 {
 // ---------- 代码围栏 ----------
 
 func is_fence_start(s: string) -> bool {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     if n < 3 {
         return false
     }
-    if str_char(s, 0) == "`" && str_char(s, 1) == "`" && str_char(s, 2) == "`" {
+    if str_byte(s, 0) == 96 && str_byte(s, 1) == 96 && str_byte(s, 2) == 96 {
         return true
     }
     return false
@@ -584,13 +593,14 @@ func is_fence_start(s: string) -> bool {
 func scan_inline(s: string) {
     // 用模块级缓冲承接文本构建（tie 的 string_builder 句柄无法标注函数参数类型，
     // 故文本累积用一个局部重取值策略：累积逻辑内联在各分支里）。
-    var n: i64 = str_len(s)
+    // r.1.3.2：str_byte 字节扫描（*=42 `=96 [=91 ]=93 (=40 )=41，全 ASCII）。
+    var n: i64 = len(s)
     var i: i64 = 0
     var sb = string_builder()
     var has: bool = false
     while i < n {
-        var c = str_char(s, i)
-        if c == "*" && i + 1 < n && str_char(s, i + 1) == "*" {
+        var b: i64 = str_byte(s, i)
+        if b == 42 && i + 1 < n && str_byte(s, i + 1) == 42 {
             // 粗体 **...**
             if has {
                 push_tok(0, sb_build(sb), "")
@@ -599,7 +609,7 @@ func scan_inline(s: string) {
             has = false
             var j = find_sub(s, i + 2, n, "**")
             if j < 0 {
-                sb_append(sb, "*")
+                sb_append_byte(sb, 42)
                 has = true
                 i = i + 1
                 continue
@@ -608,15 +618,15 @@ func scan_inline(s: string) {
             i = j + 2
             continue
         }
-        if c == "*" {
+        if b == 42 {
             if has {
                 push_tok(0, sb_build(sb), "")
                 sb_reset(sb)
             }
             has = false
-            var j = find_char(s, i + 1, n, "*")
+            var j = find_char(s, i + 1, n, 42)
             if j < 0 {
-                sb_append(sb, "*")
+                sb_append_byte(sb, 42)
                 has = true
                 i = i + 1
                 continue
@@ -625,7 +635,7 @@ func scan_inline(s: string) {
             i = j + 1
             continue
         }
-        if c == "`" && i + 1 < n && str_char(s, i + 1) == "`" {
+        if b == 96 && i + 1 < n && str_byte(s, i + 1) == 96 {
             // 双反引号行内代码 ``..``
             if has {
                 push_tok(0, sb_build(sb), "")
@@ -634,7 +644,7 @@ func scan_inline(s: string) {
             has = false
             var j = find_sub(s, i + 2, n, "``")
             if j < 0 {
-                sb_append(sb, "`")
+                sb_append_byte(sb, 96)
                 has = true
                 i = i + 1
                 continue
@@ -643,16 +653,16 @@ func scan_inline(s: string) {
             i = j + 2
             continue
         }
-        if c == "`" {
+        if b == 96 {
             // 单反引号行内代码 `..`
             if has {
                 push_tok(0, sb_build(sb), "")
                 sb_reset(sb)
             }
             has = false
-            var j = find_char(s, i + 1, n, "`")
+            var j = find_char(s, i + 1, n, 96)
             if j < 0 {
-                sb_append(sb, "`")
+                sb_append_byte(sb, 96)
                 has = true
                 i = i + 1
                 continue
@@ -661,11 +671,11 @@ func scan_inline(s: string) {
             i = j + 1
             continue
         }
-        if c == "[" {
+        if b == 91 {
             // 链接 [文本](url)
-            var j = find_char(s, i + 1, n, "]")
-            if j >= 0 && j + 1 < n && str_char(s, j + 1) == "(" {
-                var k = find_char(s, j + 2, n, ")")
+            var j = find_char(s, i + 1, n, 93)
+            if j >= 0 && j + 1 < n && str_byte(s, j + 1) == 40 {
+                var k = find_char(s, j + 2, n, 41)
                 if k >= 0 {
                     if has {
                         push_tok(0, sb_build(sb), "")
@@ -677,12 +687,12 @@ func scan_inline(s: string) {
                     continue
                 }
             }
-            sb_append(sb, "[")
+            sb_append_byte(sb, 91)
             has = true
             i = i + 1
             continue
         }
-        sb_append(sb, c)
+        sb_append_byte(sb, b)
         has = true
         i = i + 1
     }
@@ -702,13 +712,13 @@ func push_tok(ty: i64, t: string, url: string) {
 
 // ---------- 通用字符串工具（零依赖内联） ----------
 
-// 是否空白行（去空白后为空）。
+// 是否空白行（去空白后为空）。字节扫描（空格=32 制表=9）。
 func is_blank(s: string) -> bool {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var k: i64 = 0
     while k < n {
-        var c = str_char(s, k)
-        if c != " " && c != "\t" {
+        var b: i64 = str_byte(s, k)
+        if b != 32 && b != 9 {
             return false
         }
         k = k + 1
@@ -717,9 +727,10 @@ func is_blank(s: string) -> bool {
 }
 
 // 按 \n 拆行（去掉 \r），空文本返回空表；空白行保留为空串元素。
+// r.1.3.2：str_byte 字节扫描（\n=10 \r=13 单字节；多字节内容按字节复制）。
 func split_lines(s: string) -> table<string> {
     var rows = table_new_string()
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     if n == 0 {
         return rows
     }
@@ -727,15 +738,15 @@ func split_lines(s: string) -> table<string> {
     var nonempty: bool = false
     var i: i64 = 0
     while i < n {
-        var c = str_char(s, i)
-        if c == "\n" {
+        var b: i64 = str_byte(s, i)
+        if b == 10 {
             table_push(rows, sb_build(sb))
             sb_reset(sb)
             nonempty = false
-        } else if c == "\r" {
+        } else if b == 13 {
             // 行尾 \r 忽略
         } else {
-            sb_append(sb, c)
+            sb_append_byte(sb, b)
             nonempty = true
         }
         i = i + 1
@@ -746,33 +757,50 @@ func split_lines(s: string) -> table<string> {
     return rows
 }
 
-// 去除字符串首部空格/制表。
+// 去除字符串首部空格/制表。字节扫描（空格/制表单字节，首非空白位置字节==码点）。
 func ltrim(s: string) -> string {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var k: i64 = 0
-    while k < n && (str_char(s, k) == " " || str_char(s, k) == "\t") {
-        k = k + 1
+    while k < n {
+        var b: i64 = str_byte(s, k)
+        if b == 32 || b == 9 {
+            k = k + 1
+        } else {
+            break
+        }
     }
     return sub(s, k, n)
 }
 
-// 去除字符串首尾空格/制表。
+// 去除字符串首尾空格/制表。字节扫描。
 func trim_line(s: string) -> string {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var lo: i64 = 0
     var hi: i64 = n
-    while lo < hi && (str_char(s, lo) == " " || str_char(s, lo) == "\t") {
-        lo = lo + 1
+    while lo < hi {
+        var b: i64 = str_byte(s, lo)
+        if b == 32 || b == 9 {
+            lo = lo + 1
+        } else {
+            break
+        }
     }
-    while hi > lo && (str_char(s, hi - 1) == " " || str_char(s, hi - 1) == "\t") {
-        hi = hi - 1
+    while hi > lo {
+        var b2: i64 = str_byte(s, hi - 1)
+        if b2 == 32 || b2 == 9 {
+            hi = hi - 1
+        } else {
+            break
+        }
     }
     return sub(s, lo, hi)
 }
 
-// 取子串 [a,b)，越界收敛。
+// 取子串 [a,b)（**字节**区间，越界收敛；空区间返回空串）。
+// r.1.3.2：字节切片（str_byte 逐字节拷贝，二进制安全）；调用方下标均出自
+// 字节扫描，位于码点边界（语法定界符全为 ASCII 单字节）。
 func sub(s: string, a: i64, b: i64) -> string {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var lo: i64 = a
     var hi: i64 = b
     if lo < 0 {
@@ -793,22 +821,22 @@ func sub(s: string, a: i64, b: i64) -> string {
     var sb = string_builder()
     var k: i64 = lo
     while k < hi {
-        sb_append(sb, str_char(s, k))
+        sb_append_byte(sb, str_byte(s, k))
         k = k + 1
     }
     return sb_build(sb)
 }
 
-// 是否以 pre 开头。
+// 是否以 pre 开头。字节比较（pre 全为 ASCII 单字节定界符，字节等价码点）。
 func starts_with(s: string, pre: string) -> bool {
-    var m: i64 = str_len(pre)
-    var n: i64 = str_len(s)
+    var m: i64 = len(pre)
+    var n: i64 = len(s)
     if m > n {
         return false
     }
     var k: i64 = 0
     while k < m {
-        if str_char(s, k) != str_char(pre, k) {
+        if str_byte(s, k) != str_byte(pre, k) {
             return false
         }
         k = k + 1
@@ -816,11 +844,11 @@ func starts_with(s: string, pre: string) -> bool {
     return true
 }
 
-// 在 s[from,to) 中找单字符 ch 的首次位置；未找到 -1。
-func find_char(s: string, from: i64, to: i64, ch: string) -> i64 {
+// 在 s[from,to) 中找单字节 ch（ASCII 定界符码值）的首次位置；未找到 -1。
+func find_char(s: string, from: i64, to: i64, ch: i64) -> i64 {
     var k: i64 = from
     while k < to {
-        if str_char(s, k) == ch {
+        if str_byte(s, k) == ch {
             return k
         }
         k = k + 1
@@ -828,15 +856,15 @@ func find_char(s: string, from: i64, to: i64, ch: string) -> i64 {
     return -1
 }
 
-// 在 s[from,to) 中找子串 marker 的首次位置；未找到 -1。
+// 在 s[from,to) 中找子串 marker（全 ASCII 定界符）的首次位置；未找到 -1。
 func find_sub(s: string, from: i64, to: i64, marker: string) -> i64 {
-    var m: i64 = str_len(marker)
+    var m: i64 = len(marker)
     var k: i64 = from
     while k + m <= to {
         var matched: bool = true
         var j: i64 = 0
         while j < m {
-            if str_char(s, k + j) != str_char(marker, j) {
+            if str_byte(s, k + j) != str_byte(marker, j) {
                 matched = false
                 break
             }
@@ -850,19 +878,20 @@ func find_sub(s: string, from: i64, to: i64, marker: string) -> i64 {
     return -1
 }
 
-// 按单字符 sep 切分（保留空段）："a||b" → ["a","","b"]。
+// 按单字符 sep 切分（保留空段）："a||b" → ["a","","b"]。sep 为 ASCII 单字节。
 func split_char(s: string, sep: string) -> table<string> {
     var parts = table_new_string()
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var sb = string_builder()
     var i: i64 = 0
+    var sbv: i64 = str_byte(sep, 0)
     while i < n {
-        var c = str_char(s, i)
-        if c == sep {
+        var b: i64 = str_byte(s, i)
+        if b == sbv {
             table_push(parts, sb_build(sb))
             sb_reset(sb)
         } else {
-            sb_append(sb, c)
+            sb_append_byte(sb, b)
         }
         i = i + 1
     }

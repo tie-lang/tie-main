@@ -1,0 +1,214 @@
+type tie<logic>
+// ============================================================================
+// tls_verify_probe.tie：r.1.2.2 握手接入 chain.verify 的端到端验证探针。
+// 本地 openssl s_server 四场景（目录 _verify_chain 用后即清）：
+//   场景 1（伪造自签，TLS1.3 端口 19845）：s_server -cert c.pem（自签 CN=localhost，
+//     不入 ca 表）→ tls.connect 必须被拒（handle<0，chain.verify 生效）。
+//   场景 2（伪造自签，TLS1.2 端口 19847）：同上但 s_server 仅 TLS1.2 → 拒绝。
+//   场景 3（受信链，TLS1.3 端口 19846）：openssl 生成 root→int→leaf 链，
+//     ca.set_ca 注入根 SPKI，s_server 发送 leaf+int+root 全链 → 握手成功
+//     （handle>0）且应用数据回环 "ping"→"ping"。
+//   场景 4（受信链，TLS1.2 端口 19848）：同上但仅 TLS1.2 → 成功。
+// 探针自起服务器（start /b 后台）、自轮询端口就绪、自清理（taskkill openssl）。
+// 失败路径断言：所有拒绝场景返回 handle<0（哨兵），绝不进程崩溃。
+// 运行方式：在仓库根目录运行（相对路径约定，同 tls_chain_probe）。
+// 前置：openssl 3.x 在 PATH（同 tls_chain_probe）。
+// ============================================================================
+import "../../ext/tls/tls.tie" as tls
+import "../../ext/tls/tool.tie" as tbt
+import "../../ext/tls/x509.tie" as x509
+import "../../ext/tls/ca.tie" as ca
+import "../../std/net.tie" as net
+import "../../std/process.tie" as proc
+import "../../std/fs.tie" as fs
+import "../../std/time.tie" as time
+
+var fails: i64 = 0
+
+func t(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        fails = fails + 1
+        println("FAIL " + msg)
+    }
+}
+
+func run(cmd: string) -> bool {
+    return proc.exec_code(cmd) == 0
+}
+
+// 生成两证书链到 dir：根(CA:TRUE) → leaf(SAN DNS:localhost，根签发)。
+// 服务端 -cert leaf.pem -cert_chain root.pem 即可发送 leaf+根 全链
+// （chain.verify 的锚定要求链顶 SPKI 命中 ca.roots()，故必须把根发给客户端）。
+func gen_chain(dir: string) -> bool {
+    var cnf = "tests/tls_probe/_openssl.cnf"
+    var ok = true
+    ok = ok && run("openssl req -config " + cnf + " -x509 -newkey rsa:2048 -nodes -keyout " + dir +
+        "root.key -out " + dir + "root.pem -days 30 -subj /CN=TestRoot " +
+        "-addext basicConstraints=critical,CA:TRUE 2>nul")
+    ok = ok && run("openssl req -config " + cnf + " -new -newkey rsa:2048 -nodes -keyout " + dir +
+        "leaf.key -out " + dir + "leaf.csr -subj /CN=localhost 2>nul")
+    ok = ok && run("(echo subjectAltName=DNS:localhost)>" + dir + "leaf.cnf")
+    ok = ok && run("openssl x509 -req -in " + dir + "leaf.csr -CA " + dir +
+        "root.pem -CAkey " + dir + "root.key -CAcreateserial -out " + dir +
+        "leaf.pem -days 5 -extfile " + dir + "leaf.cnf 2>nul")
+    return ok
+}
+
+// PEM -> DER（openssl 转换），返回 DER 字节表。
+func pem2der(dir: string, name: string, der_name: string) -> table<i64> {
+    run("openssl x509 -in " + dir + name + " -outform DER -out " + dir + der_name)
+    return fs.read_bytes(dir + der_name)
+}
+
+// 由根 DER 提取 SPKI 字节表。
+func root_spki(root_der: table<i64>) -> table<i64> {
+    var ok = x509.parse(root_der)
+    if ok == false {
+        return table_new_i64()
+    }
+    return x509.spki()
+}
+
+// 后台启动 openssl s_server（start /b 经 cmd；输出重定向到日志文件）。
+// tls12=true 时仅启用 TLS 1.2；全部用 -rev（逐字节反转回显，回环断言更明确）。
+// （pport：port 为 tie 保留字）
+func start_server(pport: i64, cert: string, key: string, chain: string, tls12: bool, logf: string) -> bool {
+    var cmd = "start /b openssl s_server -accept " + to_string(pport) + " -cert " + cert +
+        " -key " + key + " -rev -quiet > " + logf + " 2>&1"
+    if chain != "" {
+        cmd = "start /b openssl s_server -accept " + to_string(pport) + " -cert " + cert +
+            " -key " + key + " -cert_chain " + chain + " -rev -quiet > " + logf + " 2>&1"
+    }
+    if tls12 {
+        cmd = cmd + " -tls1_2"
+    }
+    return run(cmd)
+}
+
+// 轮询端口就绪（≤8s）。s_server 完成监听即可连。
+func wait_port(pport: i64) -> bool {
+    var deadline: i64 = time.now_ms() + 8000
+    while time.now_ms() < deadline {
+        var h = net.tcp_connect("localhost", pport)
+        if h >= 0 {
+            net.close(h)
+            return true
+        }
+    }
+    return false
+}
+
+// 应用数据回环断言：send "ping" → recv "ping"（s_server 默认回显）。
+// （tie 不支持跨命名空间 struct 类型作函数形参，故内联于 main 两处。）
+func stop_openssl() {
+    run("taskkill /F /IM openssl.exe 2>nul")
+}
+
+func main() {
+    var dir = "tests/tls_probe/_verify_chain/"
+    if fs.exists(dir) {
+        fs.remove_all(dir)
+    }
+    fs.create_dir_all(dir)
+
+    if gen_chain(dir) == false {
+        println("FAIL openssl chain generation (root/int/leaf)")
+        exit(1)
+    }
+    var root_der = pem2der(dir, "root.pem", "root.der")
+    var rsp = root_spki(root_der)
+    if len(rsp) == 0 {
+        println("FAIL root SPKI extract")
+        exit(1)
+    }
+    var root_spki_hex = tbt.bytes_to_hex(rsp)
+
+    // ---- 场景 1/2：伪造自签服务器（c.pem 自签 CN=localhost，不入 ca 表）----
+    var cdir = "tests/tls_probe/"
+    if start_server(19845, cdir + "c.pem", cdir + "k.pem", "", false, dir + "s1.log") == false {
+        println("FAIL start forge s_server 19845")
+        exit(1)
+    }
+    if start_server(19847, cdir + "c.pem", cdir + "k.pem", "", true, dir + "s2.log") == false {
+        println("FAIL start forge s_server 19847")
+        exit(1)
+    }
+    if wait_port(19845) == false || wait_port(19847) == false {
+        println("FAIL forge s_server 端口未就绪")
+        exit(1)
+    }
+    var s1 = tls.connect("localhost", 19845)
+    t(s1.handle < 0, "1 伪造自签服务器 TLS1.3 握手被拒 (handle=" + to_string(s1.handle) + ")")
+    if s1.handle > 0 {
+        tls.close(s1)
+    }
+    var s2 = tls.connect("localhost", 19847)
+    t(s2.handle < 0, "2 伪造自签服务器 TLS1.2 握手被拒 (handle=" + to_string(s2.handle) + ")")
+    if s2.handle > 0 {
+        tls.close(s2)
+    }
+    stop_openssl()
+
+    // ---- 场景 3/4：受信链（ca.set_ca 注入根 SPKI；s_server 发 leaf+root 全链）----
+    ca.set_ca(root_spki_hex)
+    if start_server(19846, dir + "leaf.pem", dir + "leaf.key", dir + "root.pem", false, dir + "s3.log") == false {
+        println("FAIL start trust s_server 19846")
+        exit(1)
+    }
+    if start_server(19848, dir + "leaf.pem", dir + "leaf.key", dir + "root.pem", true, dir + "s4.log") == false {
+        println("FAIL start trust s_server 19848")
+        exit(1)
+    }
+    if wait_port(19846) == false || wait_port(19848) == false {
+        println("FAIL trust s_server 端口未就绪")
+        exit(1)
+    }
+    var s3 = tls.connect("localhost", 19846)
+    t(s3.handle > 0, "3 受信链 TLS1.3 握手成功 (handle=" + to_string(s3.handle) + ")")
+    if s3.handle > 0 {
+        var msg3: table<i64> = table_new_i64()
+        table_push(msg3, str_byte("ping", 0))
+        table_push(msg3, str_byte("ping", 1))
+        table_push(msg3, str_byte("ping", 2))
+        table_push(msg3, str_byte("ping", 3))
+        table_push(msg3, 10)         // '\n'：s_server -rev 按行回显
+        t(tls.send(s3, msg3), "3 TLS1.3 send ping")
+        var back3 = tls.recv(s3, 16)
+        // s_server -rev：按行反转回显（行尾 \n 保持），期望 "gnip\n"（5 字节）
+        t(len(back3) == 5 && back3[0] == str_byte("gnip", 0) &&
+          back3[1] == str_byte("gnip", 1) && back3[2] == str_byte("gnip", 2) &&
+          back3[3] == str_byte("gnip", 3) && back3[4] == 10, "3 TLS1.3 应用数据回环 ping→gnip")
+        tls.close(s3)
+    }
+    var s4 = tls.connect("localhost", 19848)
+    t(s4.handle > 0, "4 受信链 TLS1.2 握手成功 (handle=" + to_string(s4.handle) + ")")
+    if s4.handle > 0 {
+        var msg4: table<i64> = table_new_i64()
+        table_push(msg4, str_byte("ping", 0))
+        table_push(msg4, str_byte("ping", 1))
+        table_push(msg4, str_byte("ping", 2))
+        table_push(msg4, str_byte("ping", 3))
+        table_push(msg4, 10)         // '\n'：s_server -rev 按行回显
+        t(tls.send(s4, msg4), "4 TLS1.2 send ping")
+        var back4 = tls.recv(s4, 16)
+        t(len(back4) == 5 && back4[0] == str_byte("gnip", 0) &&
+          back4[1] == str_byte("gnip", 1) && back4[2] == str_byte("gnip", 2) &&
+          back4[3] == str_byte("gnip", 3) && back4[4] == 10, "4 TLS1.2 应用数据回环 ping→gnip")
+        tls.close(s4)
+    }
+    stop_openssl()
+
+    // 清理
+    if fs.exists(dir) {
+        fs.remove_all(dir)
+    }
+
+    if fails == 0 {
+        println("tls_verify_probe 全部断言通过（chain.verify 已接入握手）")
+    } else {
+        println("tls_verify_probe 有 " + to_string(fails) + " 项失败")
+        exit(1)
+    }
+}

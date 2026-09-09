@@ -2,8 +2,13 @@ type tie<class>
 // json.tie：标准库——JSON 解析与序列化（命名空间 json），兑现
 // "tie 当数据交换格式"定位（文件头 tie:data 角色的互操作核心）。
 // 实现：JSON 值 = 节点 id（AST 式平行表，模仿 compiler 前端模式），
-// 只依赖底座原语（str_len/str_char/char_code/parse_int/parse_float/
+// 只依赖底座原语（str_len/str_byte/char_code/parse_int/parse_float/
 // table_new_*/table_push/table_at/len）+ string_builder + std/utf（\u 解码）。
+// 性能（r.1.3.1）：解析/序列化热路径全部按**字节索引**扫描（str_byte O(1) +
+// string_builder 批量构建），杜绝逐码点 str_char（O(i)/次，整串扫描即 O(n²)）
+// 与不可变 `+` 拼接。JSON 语法定界符全为 ASCII，字节语义与码点语义等价；
+// 非 ASCII 内容（UTF-8 多字节）按字节原样复制，结果逐字节一致。错误消息中的
+// 位置为**字节偏移**（旧实现为码点偏移，多字节内容前的错误点会不同，字节更一致）。
 //
 // 节点表示（平行表，节点 id 为下标）：
 //   j_types[i]  节点类型：0=null 1=bool 2=int 3=float 4=str 5=array 6=object
@@ -105,7 +110,7 @@ pub func parse(s: string) -> i64 {
     }
     // 根值后只允许空白
     skip_ws(s)
-    if g_pos < str_len(s) {
+    if g_pos < len(s) {
         j_err_msg = "JSON 根值后有额外内容（位置 " + to_string(g_pos) + "）"
         return -1
     }
@@ -127,12 +132,12 @@ pub func parse_file(path: string) -> Result<i64, string> {
     return Result.Ok(root)
 }
 
-// 跳过空白（空格 32 / 制表 9 / 换行 10 / 回车 13），推进 g_pos。
+// 跳过空白（空格 32 / 制表 9 / 换行 10 / 回车 13），推进 g_pos（字节索引）。
 func skip_ws(s: string) {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     while g_pos < n {
-        var cp: i64 = char_code(str_char(s, g_pos))
-        if cp == 32 || cp == 9 || cp == 10 || cp == 13 {
+        var b: i64 = str_byte(s, g_pos)
+        if b == 32 || b == 9 || b == 10 || b == 13 {
             g_pos = g_pos + 1
         } else {
             return
@@ -141,50 +146,48 @@ func skip_ws(s: string) {
 }
 
 // 按首字符分派解析一个值；失败返回 -1（j_err_msg 已置）。
-// 注意：str_char 返回的单字符立即用于比较/char_code，不跨函数持有
-// （规避 Rust tie-llvm 后端循环内字符串缓冲 bug，见 std/http.tie 头注释）。
+// 注意：字节索引扫描（str_byte O(1)），定界符全为 ASCII 单字节。
 func parse_value(s: string) -> i64 {
     skip_ws(s)
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     if g_pos >= n {
         j_err_msg = "JSON 值意外结束"
         return -1
     }
-    var c = str_char(s, g_pos)
-    var cp: i64 = char_code(c)
-    if cp == 123 {
+    var b: i64 = str_byte(s, g_pos)
+    if b == 123 {
         return parse_object(s)
     }
-    if cp == 91 {
+    if b == 91 {
         return parse_array(s)
     }
-    if cp == 34 {
+    if b == 34 {
         return parse_string(s)
     }
-    if cp == 116 {
+    if b == 116 {
         return parse_literal(s, "true", 1)
     }
-    if cp == 102 {
+    if b == 102 {
         return parse_literal(s, "false", 0)
     }
-    if cp == 110 {
+    if b == 110 {
         return parse_literal(s, "null", -1)
     }
-    if cp == 45 || (cp >= 48 && cp <= 57) {
+    if b == 45 || (b >= 48 && b <= 57) {
         return parse_number(s)
     }
     j_err_msg = "JSON 值意外字符（位置 " + to_string(g_pos) + "）"
     return -1
 }
 
-// 解析关键字字面量（true/false/null）：匹配整个关键字。
+// 解析关键字字面量（true/false/null）：匹配整个关键字（全 ASCII，字节等价）。
 // 匹配成功：true → bool 节点 1；false → bool 节点 0；null → null 节点。
 func parse_literal(s: string, word: string, value: i64) -> i64 {
-    var m: i64 = str_len(word)
-    var n: i64 = str_len(s)
+    var m: i64 = len(word)
+    var n: i64 = len(s)
     var i: i64 = 0
     while i < m {
-        if g_pos + i >= n || str_char(s, g_pos + i) != str_char(word, i) {
+        if g_pos + i >= n || str_byte(s, g_pos + i) != str_byte(word, i) {
             j_err_msg = "JSON 字面量不完整（位置 " + to_string(g_pos) + "）"
             return -1
         }
@@ -199,24 +202,25 @@ func parse_literal(s: string, word: string, value: i64) -> i64 {
     return nd
 }
 
-// 解析数字：-? 整数 (. 小数)? (e|E [+-]? 整数)?。收集数字字符后用
-// parse_int/parse_float 解析。返回 int 或 float 节点。
+// 解析数字：-? 整数 (. 小数)? (e|E [+-]? 整数)?。收集数字字符（全 ASCII，
+// 字节等价）后用 parse_int/parse_float 解析。返回 int 或 float 节点。
+// r.1.3.1：str_byte 索引扫描 + string_builder 批量构建（旧实现逐码点
+// str_char + 不可变 `digits + c` 拼接，长数字 O(n²)）。
 func parse_number(s: string) -> i64 {
-    var n: i64 = str_len(s)
-    var digits: string = ""
+    var n: i64 = len(s)
+    var sb = string_builder()
     // 可选负号
-    if g_pos < n && str_char(s, g_pos) == "-" {
-        digits = digits + "-"
+    if g_pos < n && str_byte(s, g_pos) == 45 {
+        sb_append_byte(sb, 45)
         g_pos = g_pos + 1
     }
     var is_float: bool = false
     var started: bool = false
     // 整数部分
     while g_pos < n {
-        var c = str_char(s, g_pos)
-        var cp: i64 = char_code(c)
-        if cp >= 48 && cp <= 57 {
-            digits = digits + c
+        var b: i64 = str_byte(s, g_pos)
+        if b >= 48 && b <= 57 {
+            sb_append_byte(sb, b)
             started = true
             g_pos = g_pos + 1
         } else {
@@ -228,16 +232,15 @@ func parse_number(s: string) -> i64 {
         return -1
     }
     // 小数部分
-    if g_pos < n && str_char(s, g_pos) == "." {
+    if g_pos < n && str_byte(s, g_pos) == 46 {
         is_float = true
-        digits = digits + "."
+        sb_append_byte(sb, 46)
         g_pos = g_pos + 1
         var fstarted: bool = false
         while g_pos < n {
-            var c2 = str_char(s, g_pos)
-            var cp2: i64 = char_code(c2)
-            if cp2 >= 48 && cp2 <= 57 {
-                digits = digits + c2
+            var b2: i64 = str_byte(s, g_pos)
+            if b2 >= 48 && b2 <= 57 {
+                sb_append_byte(sb, b2)
                 fstarted = true
                 g_pos = g_pos + 1
             } else {
@@ -250,31 +253,38 @@ func parse_number(s: string) -> i64 {
         }
     }
     // 指数部分
-    if g_pos < n && (str_char(s, g_pos) == "e" || str_char(s, g_pos) == "E") {
-        is_float = true
-        digits = digits + "e"
-        g_pos = g_pos + 1
-        if g_pos < n && (str_char(s, g_pos) == "+" || str_char(s, g_pos) == "-") {
-            digits = digits + str_char(s, g_pos)
+    if g_pos < n {
+        var eb: i64 = str_byte(s, g_pos)
+        if eb == 101 || eb == 69 {
+            is_float = true
+            // 与旧行为一致：指数标记统一按小写 'e' 构造（parse_float 两种都认）
+            sb_append_byte(sb, 101)
             g_pos = g_pos + 1
-        }
-        var estarted: bool = false
-        while g_pos < n {
-            var c3 = str_char(s, g_pos)
-            var cp3: i64 = char_code(c3)
-            if cp3 >= 48 && cp3 <= 57 {
-                digits = digits + c3
-                estarted = true
-                g_pos = g_pos + 1
-            } else {
-                break
+            if g_pos < n {
+                var sb2: i64 = str_byte(s, g_pos)
+                if sb2 == 43 || sb2 == 45 {
+                    sb_append_byte(sb, sb2)
+                    g_pos = g_pos + 1
+                }
+            }
+            var estarted: bool = false
+            while g_pos < n {
+                var b3: i64 = str_byte(s, g_pos)
+                if b3 >= 48 && b3 <= 57 {
+                    sb_append_byte(sb, b3)
+                    estarted = true
+                    g_pos = g_pos + 1
+                } else {
+                    break
+                }
+            }
+            if !estarted {
+                j_err_msg = "JSON 数字指数部分缺少数字（位置 " + to_string(g_pos) + "）"
+                return -1
             }
         }
-        if !estarted {
-            j_err_msg = "JSON 数字指数部分缺少数字（位置 " + to_string(g_pos) + "）"
-            return -1
-        }
     }
+    var digits = sb_build(sb)
     if is_float {
         var nd = new_node(3)
         j_fvals[nd] = parse_float(digits)
@@ -287,52 +297,55 @@ func parse_number(s: string) -> i64 {
 
 // 解析 JSON 字符串（含引号）：处理转义 \" \\ \/ \b \f \n \r \t \uXXXX。
 // \uXXXX 支持任意合法 Unicode 码点（含代理对合成）；\b \f 按字节构造。
+// r.1.3.1：str_byte 字节索引扫描（定界符与转义字母全为 ASCII 单字节，字节
+// 语义 == 码点语义）+ string_builder 批量构建；普通字符（含 UTF-8 多字节）
+// 按字节原样复制，输出与旧逐码点实现逐字节一致。
 func parse_string(s: string) -> i64 {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     // 跳过开引号
     g_pos = g_pos + 1
     var sb = string_builder()
     while g_pos < n {
-        var c = str_char(s, g_pos)
-        if c == "\"" {
+        var b: i64 = str_byte(s, g_pos)
+        if b == 34 {
             // 闭引号：返回字符串节点
             g_pos = g_pos + 1
             return new_str_node(sb_build(sb))
         }
-        if c == "\\" {
+        if b == 92 {
             // 转义序列
             if g_pos + 1 >= n {
                 j_err_msg = "JSON 字符串转义不完整（位置 " + to_string(g_pos) + "）"
                 return -1
             }
-            var e = str_char(s, g_pos + 1)
-            if e == "\"" {
+            var eb: i64 = str_byte(s, g_pos + 1)
+            if eb == 34 {
                 sb_append(sb, "\"")
                 g_pos = g_pos + 2
-            } else if e == "\\" {
+            } else if eb == 92 {
                 sb_append(sb, "\\")
                 g_pos = g_pos + 2
-            } else if e == "/" {
+            } else if eb == 47 {
                 sb_append(sb, "/")
                 g_pos = g_pos + 2
-            } else if e == "b" {
+            } else if eb == 98 {
                 // 退格 0x08：tie 词法无 \b 字面量，按字节构造
                 sb_append_byte(sb, 8)
                 g_pos = g_pos + 2
-            } else if e == "f" {
+            } else if eb == 102 {
                 // 换页 0x0C：tie 词法无 \f 字面量，按字节构造
                 sb_append_byte(sb, 12)
                 g_pos = g_pos + 2
-            } else if e == "n" {
+            } else if eb == 110 {
                 sb_append(sb, "\n")
                 g_pos = g_pos + 2
-            } else if e == "r" {
+            } else if eb == 114 {
                 sb_append(sb, "\r")
                 g_pos = g_pos + 2
-            } else if e == "t" {
+            } else if eb == 116 {
                 sb_append(sb, "\t")
                 g_pos = g_pos + 2
-            } else if e == "u" {
+            } else if eb == 117 {
                 // \uXXXX：4 位十六进制 → 码点。任意合法 Unicode 码点经
                 // utf.from_code 构造；高代理（D800-DBFF）后须紧跟 \uXXXX
                 // 低代理（DC00-DFFF）合成补充平面码点；孤立代理报错。
@@ -352,7 +365,7 @@ func parse_string(s: string) -> i64 {
                         j_err_msg = "JSON \\u 高代理缺少低代理（\\u" + hex4(cp) + "，位置 " + to_string(g_pos) + "）"
                         return -1
                     }
-                    if str_char(s, g_pos + 6) != "\\" || str_char(s, g_pos + 7) != "u" {
+                    if str_byte(s, g_pos + 6) != 92 || str_byte(s, g_pos + 7) != 117 {
                         j_err_msg = "JSON \\u 高代理缺少低代理（\\u" + hex4(cp) + "，位置 " + to_string(g_pos) + "）"
                         return -1
                     }
@@ -380,11 +393,13 @@ func parse_string(s: string) -> i64 {
                 sb_append(sb, ch)
                 g_pos = g_pos + adv
             } else {
-                j_err_msg = "JSON 未知转义 \\" + e + "（位置 " + to_string(g_pos) + "）"
+                // 未知转义：按字节定位字符再解码（错误路径，非热路径）
+                j_err_msg = "JSON 未知转义 \\" + utf.from_code(utf8_char_at(s, g_pos + 1)) + "（位置 " + to_string(g_pos) + "）"
                 return -1
             }
         } else {
-            sb_append(sb, c)
+            // 普通字符：按字节原样拷贝（UTF-8 多字节序列逐字节复制，结果逐字节一致）
+            sb_append_byte(sb, b)
             g_pos = g_pos + 1
         }
     }
@@ -399,14 +414,14 @@ func parse_string(s: string) -> i64 {
 // 污染外层元素集（如 [[1,2],[3]] 后外层读到 1,2）。统一登记后子块条目在父
 // 区间之外，元素连续。
 func parse_array(s: string) -> i64 {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var nd = new_node(5)
     var elems = table_new_i64()   // 元素节点 id（局部收集）
     var cnt: i64 = 0
     // 跳过 [
     g_pos = g_pos + 1
     skip_ws(s)
-    if g_pos < n && str_char(s, g_pos) == "]" {
+    if g_pos < n && str_byte(s, g_pos) == 93 {
         // 空数组
         g_pos = g_pos + 1
         j_kids[nd] = len(j_elem_flat)
@@ -425,10 +440,10 @@ func parse_array(s: string) -> i64 {
             j_err_msg = "JSON 数组未闭合"
             return -1
         }
-        var c = str_char(s, g_pos)
-        if c == "," {
+        var b: i64 = str_byte(s, g_pos)
+        if b == 44 {
             g_pos = g_pos + 1
-        } else if c == "]" {
+        } else if b == 93 {
             g_pos = g_pos + 1
             break
         } else {
@@ -456,7 +471,7 @@ func parse_array(s: string) -> i64 {
 // 污染外层键集（如 {"a":{"b":1},"c":2} 后 c 丢失）。统一登记后子块条目在父
 // 区间之外，键值对连续。
 func parse_object(s: string) -> i64 {
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var nd = new_node(6)
     var keys = table_new_i64()   // 键的 j_strs 索引（局部收集）
     var vals = table_new_i64()   // 值节点 id（局部收集）
@@ -464,7 +479,7 @@ func parse_object(s: string) -> i64 {
     // 跳过 {
     g_pos = g_pos + 1
     skip_ws(s)
-    if g_pos < n && str_char(s, g_pos) == "}" {
+    if g_pos < n && str_byte(s, g_pos) == 125 {
         // 空对象
         g_pos = g_pos + 1
         j_kids[nd] = len(j_key_flat)
@@ -478,7 +493,7 @@ func parse_object(s: string) -> i64 {
             return -1
         }
         // 键必须是字符串
-        if str_char(s, g_pos) != "\"" {
+        if str_byte(s, g_pos) != 34 {
             j_err_msg = "JSON 对象键必须是字符串（位置 " + to_string(g_pos) + "）"
             return -1
         }
@@ -486,23 +501,13 @@ func parse_object(s: string) -> i64 {
         if knode < 0 {
             return -1
         }
-        // 键文本 = j_strs[j_ivals[knode]]；登记（去重：已有同文本复用索引）
-        var ktext = j_strs[j_ivals[knode]]
-        var ks: i64 = -1
-        var si: i64 = 0
-        while si < len(j_strs) {
-            if j_strs[si] == ktext {
-                ks = si
-            }
-            si = si + 1
-        }
-        if ks < 0 {
-            table_push(j_strs, ktext)
-            ks = len(j_strs) - 1
-        }
+        // 键文本 = j_strs[j_ivals[knode]]（parse_string 的 new_str_node 已登记，
+        // 直接复用其索引——不再线性扫描 j_strs 查重，避免多键对象 O(n²) 匹配；
+        // 观察行为不变：j_strs 仅内部使用，访问器经索引读取）
+        var ks: i64 = j_ivals[knode]
         table_push(keys, ks)
         skip_ws(s)
-        if g_pos >= n || str_char(s, g_pos) != ":" {
+        if g_pos >= n || str_byte(s, g_pos) != 58 {
             j_err_msg = "JSON 对象期望 :（位置 " + to_string(g_pos) + "）"
             return -1
         }
@@ -518,10 +523,10 @@ func parse_object(s: string) -> i64 {
             j_err_msg = "JSON 对象未闭合"
             return -1
         }
-        var c = str_char(s, g_pos)
-        if c == "," {
+        var b: i64 = str_byte(s, g_pos)
+        if b == 44 {
             g_pos = g_pos + 1
-        } else if c == "}" {
+        } else if b == 125 {
             g_pos = g_pos + 1
             break
         } else {
@@ -578,66 +583,73 @@ pub func to_str(n: i64) -> string {
 }
 
 // 数组序列化：[e1,e2,...]
+// r.1.3.1：string_builder 批量构建（旧实现循环内 `out + ...` 不可变拼接，
+// 大数组 O(n²)）。
 func arr_to_str(n: i64) -> string {
-    var out: string = "["
+    var sb = string_builder()
+    sb_append(sb, "[")
     var start: i64 = j_kids[n]
     var cnt: i64 = j_ovals[n]
     var i: i64 = 0
     while i < cnt {
         if i > 0 {
-            out = out + ","
+            sb_append(sb, ",")
         }
-        out = out + to_str(j_elem_flat[start + i])
+        sb_append(sb, to_str(j_elem_flat[start + i]))
         i = i + 1
     }
-    return out + "]"
+    sb_append(sb, "]")
+    return sb_build(sb)
 }
 
 // 对象序列化：{"k":v,...}
+// r.1.3.1：string_builder 批量构建（旧实现循环内不可变拼接，大对象 O(n²)）。
 func obj_to_str(n: i64) -> string {
-    var out: string = "{"
+    var sb = string_builder()
+    sb_append(sb, "{")
     var start: i64 = j_kids[n]
     var cnt: i64 = j_ovals[n]
     var i: i64 = 0
     while i < cnt {
         if i > 0 {
-            out = out + ","
+            sb_append(sb, ",")
         }
         // 键：JSON 字符串转义
-        out = out + escape_json_str(j_strs[j_key_flat[start + i]])
-        out = out + ":"
-        out = out + to_str(j_val_flat[start + i])
+        sb_append(sb, escape_json_str(j_strs[j_key_flat[start + i]]))
+        sb_append(sb, ":")
+        sb_append(sb, to_str(j_val_flat[start + i]))
         i = i + 1
     }
-    return out + "}"
+    sb_append(sb, "}")
+    return sb_build(sb)
 }
 
 // 字符串 JSON 转义：\" \\ \b \f \n \r \t；其余（含中文）直接输出（UTF-8）。
-// \b \f 无 tie 字面量，按码点 8/12 判定后输出 \b \f（与 parse_string 对称）。
+// \b \f 无 tie 字面量，按字节 8/12 判定后输出 \b \f（与 parse_string 对称）。
+// r.1.3.1：str_byte 字节索引扫描 + string_builder（输出侧与旧逐码点实现逐字节一致）。
 func escape_json_str(s: string) -> string {
     var sb = string_builder()
     sb_append(sb, "\"")
-    var n: i64 = str_len(s)
+    var n: i64 = len(s)
     var i: i64 = 0
     while i < n {
-        var c = str_char(s, i)
-        var cp: i64 = char_code(c)
-        if c == "\"" {
+        var b: i64 = str_byte(s, i)
+        if b == 34 {
             sb_append(sb, "\\\"")
-        } else if c == "\\" {
+        } else if b == 92 {
             sb_append(sb, "\\\\")
-        } else if cp == 8 {
+        } else if b == 8 {
             sb_append(sb, "\\b")
-        } else if cp == 12 {
+        } else if b == 12 {
             sb_append(sb, "\\f")
-        } else if c == "\n" {
+        } else if b == 10 {
             sb_append(sb, "\\n")
-        } else if c == "\r" {
+        } else if b == 13 {
             sb_append(sb, "\\r")
-        } else if c == "\t" {
+        } else if b == 9 {
             sb_append(sb, "\\t")
         } else {
-            sb_append(sb, c)
+            sb_append_byte(sb, b)
         }
         i = i + 1
     }
@@ -770,22 +782,21 @@ pub func err_msg() -> string {
 
 // ---------- 内部工具 ----------
 
-// 单字符十六进制数字 → 数值 0..15；非十六进制返回 -1。
-func hex_val(c: string) -> i64 {
-    var cp: i64 = char_code(c)
-    if cp >= 48 && cp <= 57 {
-        return cp - 48
+// 单字节十六进制数值 → 0..15；非十六进制返回 -1（字节语义，ASCII 等价码点）。
+func hex_val(b: i64) -> i64 {
+    if b >= 48 && b <= 57 {
+        return b - 48
     }
-    if cp >= 65 && cp <= 70 {
-        return cp - 65 + 10
+    if b >= 65 && b <= 70 {
+        return b - 65 + 10
     }
-    if cp >= 97 && cp <= 102 {
-        return cp - 97 + 10
+    if b >= 97 && b <= 102 {
+        return b - 97 + 10
     }
     return -1
 }
 
-// 读取 4 位十六进制 → 码点（不校验 \u 前缀，从 from 处读 4 位）。
+// 读取 4 位十六进制 → 码点（不校验 \u 前缀，从 from 处读 4 字节）。
 // 含非十六进制字符返回 -1；下标越界（from+4 > n）返回 -2。
 // \uXXXX 与代理对第二段共用（见 parse_string）。
 func u4_hex(s: string, from: i64, n: i64) -> i64 {
@@ -795,7 +806,7 @@ func u4_hex(s: string, from: i64, n: i64) -> i64 {
     var cp: i64 = 0
     var k: i64 = 0
     while k < 4 {
-        var hv: i64 = hex_val(str_char(s, from + k))
+        var hv: i64 = hex_val(str_byte(s, from + k))
         if hv < 0 {
             return -1
         }

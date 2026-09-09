@@ -2,6 +2,7 @@ type tie<class>
 // random.tie：标准库——伪随机工具（命名空间 rnd），基于底座原语 rand_range。
 // rand_range(min, max) 返回 [min, max) 半开区间随机整数，种子由语言底座内部管理
 // （非加密安全，勿用于密码学/安全令牌场景）。
+// 加密安全随机见 std/csprng.tie（rnd.strong_bytes → csrnd.strong_bytes，r.1.2.1）。
 // 调用：import 后 rnd.int(min, max) / rnd.pick(t)；命名空间内互调为裸调用。
 // 命名规范：命名空间内函数不加 rnd_ 前缀（统一 func 写法，Harbor M2.1.6）。
 // 命名说明：任务要求的 bool() 因 bool 是 tie 类型关键字（保留字）不能用作函数名，

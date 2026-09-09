@@ -57,8 +57,8 @@ func main() {
     println("m3 lines=" + to_string(len(lines)))
     println("m4 L0=" + lines[0])
     println("m5 L7=" + lines[7])
-    println("m6 L0=" + str_char_slice(lines[0]))
-    println("m7 L7=" + str_char_slice(lines[7]))
+    println("m6 L0=" + str_trunc(lines[0]))
+    println("m7 L7=" + str_trunc(lines[7]))
     var tmp = "C:/Users/Jiro/AppData/Local/Temp/opencode/dbg_fsp.txt"
     println("m8 w=" + to_string(fs.write_text(tmp, "abc")))
     var rt1 = fs.read_text(tmp)
@@ -81,7 +81,9 @@ func main() {
     println("m15 abscwd=" + to_string(str_len(path.abs("examples/hello.tie"))))
     println("m16 cwd=" + to_string(str_len(path.cwd())) + ":" + path.cwd())
 }
-func str_char_slice(s: string) -> string {
+// 本地显示辅助：取前 40 字符。命名避开 std/fs 内部 3 参 str_char_slice，
+// 避免遮蔽导致 fs.read_lines 内部调用解析到本 1 参函数而编译失败。
+func str_trunc(s: string) -> string {
     var n: i64 = str_len(s)
     if n > 40 {
         n = 40

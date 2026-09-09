@@ -1,0 +1,8 @@
+type tie<logic>
+// r.1.5.4 探测：const 全局表当前行为。
+const g: table<i64> = [1, 2, 3]
+
+func main() {
+    println(to_string(len(g)))
+    println(to_string(g[0]))
+}

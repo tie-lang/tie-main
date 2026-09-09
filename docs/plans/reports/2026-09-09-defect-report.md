@@ -28,11 +28,20 @@ EN / P0: 1) --shared link misses trm_lite.a (link_shared neglects g_used_trmlite
 | # | 缺陷 Defect | 定位 Location | 修复方向 Fix direction | Done? |
 |---|---|---|---|---|
 | 8 | wg_count 非内置（仅 wg_new/add/done/wait；ABI 冒烟被迫镜像计数） | tiec 内置表（wg 原语集） | 补 wg_count 观察内置 | ☐ |
-| 9 | tie string 跨 FFM 返回布局未验证（冒烟以 i64 版本码替代 version()） | Java FFM ↔ DLL string 返回 | 设计并验证 string 返回 ABI（指针+长或 SSO 约定）；补跨语言探针 | ☐ |
+| 9 | tie string 跨 FFM 返回布局未验证（冒烟以 i64 版本码替代 version()） | Java FFM ↔ DLL string 返回 | 设计并验证 string 返回 ABI（指针+长或 SSO 约定）；补跨语言探针 | ☑ |
 | 10 | `const 全局表` 暂不支持（需 main 运行时创建，无法静态初始化） | `compiler/proto/semantic.tie:1374` | 决策：支持或报错文案更明确 | ☐ |
 | 11 | json/yaml `\uXXXX` 仅支持 ASCII 码点，`\b \f` 无法构造 | `std/json.tie:32,288`、`std/yaml.tie:33` | 字符串构造原语放宽至任意码点 | ☐ |
+| 12 | 字符串字面量 `\0` 转义丢 NUL（`"A\0B"` 实测变 `"AB"`；字面量管线二进制不安全） | `compiler/backend/irgen_lit.tie:184`（`out + "\0"` 的 `"\0"` 字面量在自举产物中已被吞） | 定位自举串字面量 NUL 保留链路；当前规避：`string_builder`+`sb_append_byte(sb,0)` | ☐ |
 
-EN / P1: wg_count not builtin (mirror count used); tie-string-return ABI across FFM unverified; const global tables unsupported; json/yaml \uXXXX ASCII-only.
+EN / P1: wg_count not builtin (mirror count used); tie-string-return ABI across FFM unverified; const global tables unsupported; json/yaml \uXXXX ASCII-only; \0 literal escape drops NUL (binary-unsafe literal pipeline; use sb_append_byte workaround).
+
+> 已核验（r.1.5.1，2026-09-09）· tie string 跨 FFM 返回 ABI = **单指针 {ptr,len}**：
+> 导出函数 `define dllexport ptr @ns$func()`（`::`→`$`）返回**数据指针**一个 ptr（Win64 RAX）；
+> `data[-8..0)` = 8 字节小端 i64 长度头（UTF-8 字节数）；`[data, data+len)` = UTF-8 字节；
+> `data[len]` = `\0`（边界自动 NUL，strlen 兼容）。存储：字面量 → .rodata；运行时 ≤31B → 静态
+> SSO 池；>31B → malloc 堆。返回串不被 tie 运行时释放（仅链式未使用临时释放）——调用方不得 free、
+> 复制即用；跨进程不安全（指针进程私有）。证据：`tests/_r151_probe/`（tie 探针 6 函数 + Java 25 FFM
+> MethodHandle downcall 30 断言全过：短串/中文 22B/内嵌 NUL 二进制/空串/50B 堆串/version()）。
 
 ## P2 · 设计边界（已文档化，暂按现状可跑）
 

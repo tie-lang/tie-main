@@ -215,3 +215,9 @@ _tmp_*
 # std 探针编译/运行产物（tink/tsha 系列：.tie 源入库，.exe/.log 不入库）
 /std/*_probe.exe
 /std/*_probe.log
+
+# 互操作探针二进制（r.1.5.1：FFM ABI 验证——.tie/.java 源入库，.class/.dll/.exp/.lib 不入库）
+/tests/**/*.class
+/tests/**/*.dll
+/tests/**/*.exp
+/tests/**/*.lib

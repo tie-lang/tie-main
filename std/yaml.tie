@@ -47,8 +47,11 @@ type tie<class>
 // 失败约定：parse 返回 -1 且置 y_err_msg；访问器对非法节点 id 返回安全值
 // （0 / 空串 / -1），不崩溃。
 //
-// 性能：预处理把 text 单遍拆成 g_lines（每行 string_builder 构建）；块解析
-// 行游标单遍推进（每行仅访问一次，子块递归不重复扫描）；流式列游标单遍。
+// 性能（r.1.3.2）：预处理/块式/流式全部热路径扫描按**字节索引**（str_byte
+// O(1) + string_builder 批量构建），杜绝逐码点 str_char（O(i)/次，整串扫描
+// 即 O(n²)）。YAML 语法定界符全为 ASCII 单字节，字节语义与码点语义等价；
+// 非 ASCII 内容（UTF-8 多字节）按字节原样复制，结果逐字节一致。字节区间
+// 子串用本文件 bslice（str.slice 按码点索引，不可直接喂字节下标）。
 // 200KB 输入线性，无 O(n²)。命名规范：命名空间内函数不加 yaml_ 前缀。
 
 import "./string.tie" as str
@@ -73,6 +76,39 @@ var g_lines: table<string>;
 var g_fpos: i64 = 0;
 
 namespace yaml {
+
+// ---------- 字节工具 ----------
+
+// 字节区间 [a, b) 子串（a/b 为**字节**下标，越界收敛；空区间返回空串）。
+// r.1.3.2：字节化扫描的下标均为字节偏移，str.slice 按码点索引不可混用，
+// 故本文件自备字节切片（逐字节拷贝进 StringBuilder，二进制安全）。
+func bslice(s: string, a: i64, b: i64) -> string {
+    var n: i64 = len(s)
+    var lo: i64 = a
+    var hi: i64 = b
+    if lo < 0 {
+        lo = 0
+    }
+    if lo > n {
+        lo = n
+    }
+    if hi < 0 {
+        hi = 0
+    }
+    if hi > n {
+        hi = n
+    }
+    if lo >= hi {
+        return ""
+    }
+    var sb = string_builder()
+    var k: i64 = lo
+    while k < hi {
+        sb_append_byte(sb, str_byte(s, k))
+        k = k + 1
+    }
+    return sb_build(sb)
+}
 
 // ---------- 节点构造（内部） ----------
 
@@ -105,23 +141,24 @@ func push_str(txt: string) -> i64 {
 
 // 文本 → 非空行表 g_lines（删除整行注释与行内注释；保留行首缩进；空行剔除）。
 // 单遍 O(n)。行内注释判定：不在引号串内，且 `#` 前为行首或空白。
+// r.1.3.2：str_byte 字节扫描（\n/\r/#/引号均为 ASCII 单字节；多字节内容按字节复制）。
 func preprocess(pp: string) {
     var n: i64 = len(pp)
     var i: i64 = 0
     var line = string_builder()
     while i < n {
-        var c = str_char(pp, i)
-        if c == "\n" {
+        var b: i64 = str_byte(pp, i)
+        if b == 10 {
             var raw = sb_build(line)
             var l = strip_comment(raw)
             if str_len(str.trim(l)) > 0 {
                 table_push(g_lines, l)
             }
             line = string_builder()
-        } else if c == "\r" {
+        } else if b == 13 {
             // 忽略 \r（行尾）
         } else {
-            sb_append(line, c)
+            sb_append_byte(line, b)
         }
         i = i + 1
     }
@@ -132,34 +169,36 @@ func preprocess(pp: string) {
 }
 
 // 去除一行末尾的行内注释（保留引号串内容）。`#` 前为行首或空白时视作注释起始。
+// r.1.3.2：str_byte 字节扫描（\、"、'、# 均为 ASCII 单字节；引号串内多字节
+// 内容按字节复制，与旧逐码点实现逐字节一致）。
 func strip_comment(line: string) -> string {
     var n: i64 = len(line)
     var sb = string_builder()
     var in_dq: bool = false
     var in_sq: bool = false
-    var prev: string = " "
+    var prev: i64 = 32
     var i: i64 = 0
     while i < n {
-        var c = str_char(line, i)
+        var b: i64 = str_byte(line, i)
         if in_dq {
-            sb_append(sb, c)
-            if c == "\\" {
+            sb_append_byte(sb, b)
+            if b == 92 {
                 if i + 1 < n {
-                    sb_append(sb, str_char(line, i + 1))
+                    sb_append_byte(sb, str_byte(line, i + 1))
                     i = i + 2
                     continue
                 }
-            } else if c == "\"" {
+            } else if b == 34 {
                 in_dq = false
             }
             i = i + 1
             continue
         }
         if in_sq {
-            sb_append(sb, c)
-            if c == "'" {
-                if i + 1 < n && str_char(line, i + 1) == "'" {
-                    sb_append(sb, "'")
+            sb_append_byte(sb, b)
+            if b == 39 {
+                if i + 1 < n && str_byte(line, i + 1) == 39 {
+                    sb_append_byte(sb, 39)
                     i = i + 2
                     continue
                 }
@@ -168,29 +207,29 @@ func strip_comment(line: string) -> string {
             i = i + 1
             continue
         }
-        if c == "#" {
-            if prev == " " || prev == "\t" {
+        if b == 35 {
+            if prev == 32 || prev == 9 {
                 break
             }
         }
-        sb_append(sb, c)
-        if c == "\"" {
+        sb_append_byte(sb, b)
+        if b == 34 {
             in_dq = true
-        } else if c == "'" {
+        } else if b == 39 {
             in_sq = true
         }
-        prev = c
+        prev = b
         i = i + 1
     }
     return sb_build(sb)
 }
 
-// 行首空格数（缩进层级）。tab 不作缩进（视作内容）。
+// 行首空格数（缩进层级）。tab 不作缩进（视作内容）。字节扫描（空格=32 单字节）。
 func line_indent(s: string) -> i64 {
     var n: i64 = len(s)
     var i: i64 = 0
     while i < n {
-        if str_char(s, i) != " " {
+        if str_byte(s, i) != 32 {
             return i
         }
         i = i + 1
@@ -235,67 +274,67 @@ func reset_tables() {
     y_val_flat = table_new_i64()
 }
 
-// 行是否为块序列项：`-` 后跟空白或行尾。
+// 行是否为块序列项：`-` 后跟空白或行尾。字节扫描（- = 45、空格 = 32、tab = 9）。
 func is_seq_line(line: string, indent: i64) -> bool {
     var n: i64 = len(line)
     if indent >= n {
         return false
     }
-    if str_char(line, indent) != "-" {
+    if str_byte(line, indent) != 45 {
         return false
     }
     if indent + 1 >= n {
         return true
     }
-    var c = str_char(line, indent + 1)
-    if c == " " || c == "\t" {
+    var b: i64 = str_byte(line, indent + 1)
+    if b == 32 || b == 9 {
         return true
     }
     return false
 }
 
-// 序列项内容：`-` 及其后空白删除后的剩余串。
+// 序列项内容：`-` 及其后空白删除后的剩余串（字节切片）。
 func item_content(line: string, indent: i64) -> string {
     var n: i64 = len(line)
     var pos: i64 = indent + 1
     while pos < n {
-        var c = str_char(line, pos)
-        if c == " " || c == "\t" {
+        var b: i64 = str_byte(line, pos)
+        if b == 32 || b == 9 {
             pos = pos + 1
         } else {
             break
         }
     }
-    return str.slice(line, pos, n)
+    return bslice(line, pos, n)
 }
 
 // 块式键分隔冒号：行内首个「不在引号/流内、其后为空白或行尾」的 `:`。
-// 返回下标；无则 -1。这保证 `http://x`（`:` 后为 `/`）按纯标量处理。
+// 返回**字节**下标；无则 -1。这保证 `http://x`（`:` 后为 `/`）按纯标量处理。
 func colon_sep(line: string, from: i64) -> i64 {
     var n: i64 = len(line)
     var i: i64 = from
     var depth: i64 = 0
     while i < n {
-        var c = str_char(line, i)
-        if c == "\"" {
+        var b: i64 = str_byte(line, i)
+        if b == 34 {
             i = skip_dq(line, i)
-        } else if c == "'" {
+        } else if b == 39 {
             i = skip_sq(line, i)
-        } else if c == "[" || c == "{" {
+        } else if b == 91 || b == 123 {
             depth = depth + 1
             i = i + 1
-        } else if c == "]" || c == "}" {
+        } else if b == 93 || b == 125 {
             if depth > 0 {
                 depth = depth - 1
             }
             i = i + 1
-        } else if c == ":" {
+        } else if b == 58 {
             if depth == 0 {
                 if i + 1 >= n {
                     return i
                 }
-                var nx = str_char(line, i + 1)
-                if nx == " " || nx == "\t" {
+                var nb: i64 = str_byte(line, i + 1)
+                if nb == 32 || nb == 9 {
                     return i
                 }
             }
@@ -307,15 +346,15 @@ func colon_sep(line: string, from: i64) -> i64 {
     return -1
 }
 
-// 跳过双引号段，返回闭引号后的下标。
+// 跳过双引号段，返回闭引号后的下标（字节索引）。
 func skip_dq(s: string, from: i64) -> i64 {
     var n: i64 = len(s)
     var i: i64 = from + 1
     while i < n {
-        var c = str_char(s, i)
-        if c == "\\" {
+        var b: i64 = str_byte(s, i)
+        if b == 92 {
             i = i + 2
-        } else if c == "\"" {
+        } else if b == 34 {
             return i + 1
         } else {
             i = i + 1
@@ -324,14 +363,14 @@ func skip_dq(s: string, from: i64) -> i64 {
     return n
 }
 
-// 跳过单引号段，返回闭引号后的下标（`''` 转义）。
+// 跳过单引号段，返回闭引号后的下标（`''` 转义；字节索引）。
 func skip_sq(s: string, from: i64) -> i64 {
     var n: i64 = len(s)
     var i: i64 = from + 1
     while i < n {
-        var c = str_char(s, i)
-        if c == "'" {
-            if i + 1 < n && str_char(s, i + 1) == "'" {
+        var b: i64 = str_byte(s, i)
+        if b == 39 {
+            if i + 1 < n && str_byte(s, i + 1) == 39 {
                 i = i + 2
             } else {
                 return i + 1
@@ -363,10 +402,10 @@ func parse_block(indent: i64) -> i64 {
         return parse_map(li)
     }
     // 独立标量（根标量文档或容错：映射值位置出现裸标量）
-    var token = str.trim(str.slice(line, li, len(line)))
+    var token = str.trim(bslice(line, li, len(line)))
     g_ln = g_ln + 1
     if is_fold_marker(token) {
-        return new_str_node(block_scalar(str_char(token, 0) == ">", li))
+        return new_str_node(block_scalar(str_byte(token, 0) == 62, li))
     }
     return parse_scalar_token(token)
 }
@@ -400,7 +439,7 @@ func parse_map(indent: i64) -> i64 {
         }
         g_ln = g_ln + 1
         var cs = colon_sep(line, li)
-        var key = str.trim(str.slice(line, li, cs))
+        var key = str.trim(bslice(line, li, cs))
         var v = parse_member_value(line, li)
         if v < 0 {
             return -1
@@ -432,7 +471,7 @@ func parse_map_from(indent: i64, first: string) -> i64 {
     // 首成员
     var cs = colon_sep(first, 0)
     if cs > 0 {
-        var key = str.trim(str.slice(first, 0, cs))
+        var key = str.trim(bslice(first, 0, cs))
         var v = parse_member_value(first, 0)
         if v < 0 {
             return -1
@@ -469,7 +508,7 @@ func parse_map_from(indent: i64, first: string) -> i64 {
         }
         g_ln = g_ln + 1
         var cs2 = colon_sep(line, li)
-        var key = str.trim(str.slice(line, li, cs2))
+        var key = str.trim(bslice(line, li, cs2))
         var v = parse_member_value(line, li)
         if v < 0 {
             return -1
@@ -501,7 +540,7 @@ func parse_member_value(line: string, li: i64) -> i64 {
         y_err_msg = "YAML 映射成员缺少 ':'"
         return -1
     }
-    var rest = str.trim(str.slice(line, cs + 1, n))
+    var rest = str.trim(bslice(line, cs + 1, n))
     if str_len(rest) == 0 {
         // 空值：子块或 null
         if g_ln >= g_nl || line_indent(g_lines[g_ln]) <= li {
@@ -515,7 +554,7 @@ func parse_member_value(line: string, li: i64) -> i64 {
         return v
     }
     if is_fold_marker(rest) {
-        return new_str_node(block_scalar(str_char(rest, 0) == ">", li))
+        return new_str_node(block_scalar(str_byte(rest, 0) == 62, li))
     }
     var v2 = parse_inline_value(rest)
     if v2 < 0 {
@@ -578,11 +617,12 @@ func parse_seq_item(content: string, indent: i64) -> i64 {
         var ci = line_indent(g_lines[g_ln])
         return parse_block(ci)
     }
-    if str_char(content, 0) == "[" || str_char(content, 0) == "{" {
+    var cb: i64 = str_byte(content, 0)
+    if cb == 91 || cb == 123 {
         return parse_flow(content)
     }
     if is_fold_marker(content) {
-        return new_str_node(block_scalar(str_char(content, 0) == ">", indent))
+        return new_str_node(block_scalar(str_byte(content, 0) == 62, indent))
     }
     var cs = colon_sep(content, 0)
     if cs > 0 {
@@ -609,24 +649,24 @@ func parse_flow(s: string) -> i64 {
     return nd
 }
 
-// 流式值解析（须以 `[`/`{`/引号/标量起始）。
+// 流式值解析（须以 `[`/`{`/引号/标量起始）。字节分派（[=91 {=123 "=34 '=39）。
 func flow_node(s: string) -> i64 {
     flow_skip_ws(s)
     if g_fpos >= len(s) {
         y_err_msg = "YAML 流式值意外结束"
         return -1
     }
-    var c = str_char(s, g_fpos)
-    if c == "[" {
+    var b: i64 = str_byte(s, g_fpos)
+    if b == 91 {
         return flow_array(s)
     }
-    if c == "{" {
+    if b == 123 {
         return flow_obj(s)
     }
-    if c == "\"" {
+    if b == 34 {
         return flow_quoted(s, true)
     }
-    if c == "'" {
+    if b == 39 {
         return flow_quoted(s, false)
     }
     return flow_plain(s)
@@ -640,7 +680,7 @@ func flow_array(s: string) -> i64 {
     var cnt: i64 = 0
     g_fpos = g_fpos + 1 // 跳过 [
     flow_skip_ws(s)
-    if g_fpos < len(s) && str_char(s, g_fpos) == "]" {
+    if g_fpos < len(s) && str_byte(s, g_fpos) == 93 {
         g_fpos = g_fpos + 1
         y_kids[nd] = len(y_elem_flat)
         y_ovals[nd] = 0
@@ -658,10 +698,10 @@ func flow_array(s: string) -> i64 {
             y_err_msg = "YAML 流式数组未闭合"
             return -1
         }
-        var c = str_char(s, g_fpos)
-        if c == "," {
+        var b: i64 = str_byte(s, g_fpos)
+        if b == 44 {
             g_fpos = g_fpos + 1
-        } else if c == "]" {
+        } else if b == 93 {
             g_fpos = g_fpos + 1
             break
         } else {
@@ -689,7 +729,7 @@ func flow_obj(s: string) -> i64 {
     var cnt: i64 = 0
     g_fpos = g_fpos + 1 // 跳过 {
     flow_skip_ws(s)
-    if g_fpos < len(s) && str_char(s, g_fpos) == "}" {
+    if g_fpos < len(s) && str_byte(s, g_fpos) == 125 {
         g_fpos = g_fpos + 1
         y_kids[nd] = len(y_key_flat)
         y_ovals[nd] = 0
@@ -701,7 +741,7 @@ func flow_obj(s: string) -> i64 {
             return -1
         }
         flow_skip_ws(s)
-        if g_fpos >= len(s) || str_char(s, g_fpos) != ":" {
+        if g_fpos >= len(s) || str_byte(s, g_fpos) != 58 {
             y_err_msg = "YAML 流式对象期望 :（位置 " + to_string(g_fpos) + "）"
             return -1
         }
@@ -718,10 +758,10 @@ func flow_obj(s: string) -> i64 {
             y_err_msg = "YAML 流式对象未闭合"
             return -1
         }
-        var c = str_char(s, g_fpos)
-        if c == "," {
+        var b: i64 = str_byte(s, g_fpos)
+        if b == 44 {
             g_fpos = g_fpos + 1
-        } else if c == "}" {
+        } else if b == 125 {
             g_fpos = g_fpos + 1
             break
         } else {
@@ -743,8 +783,8 @@ func flow_obj(s: string) -> i64 {
 
 // 流式键：引号串或纯标量，返回键文本；出错返回 ""（g_fpos 置 -1 表示失败）。
 func flow_key(s: string) -> string {
-    var c = str_char(s, g_fpos)
-    if c == "\"" {
+    var b0: i64 = str_byte(s, g_fpos)
+    if b0 == 34 {
         var nd = flow_quoted(s, true)
         if nd < 0 {
             g_fpos = -1
@@ -752,7 +792,7 @@ func flow_key(s: string) -> string {
         }
         return str_val(nd)
     }
-    if c == "'" {
+    if b0 == 39 {
         var nq = flow_quoted(s, false)
         if nq < 0 {
             g_fpos = -1
@@ -763,35 +803,35 @@ func flow_key(s: string) -> string {
     var start: i64 = g_fpos
     var n: i64 = len(s)
     while g_fpos < n {
-        var cc = str_char(s, g_fpos)
-        if cc == ":" || cc == "," || cc == "}" || cc == "]" {
+        var b: i64 = str_byte(s, g_fpos)
+        if b == 58 || b == 44 || b == 125 || b == 93 {
             break
         }
         g_fpos = g_fpos + 1
     }
-    return str.trim(str.slice(s, start, g_fpos))
+    return str.trim(bslice(s, start, g_fpos))
 }
 
-// 流式引号标量。
+// 流式引号标量。r.1.3.2：str_byte 字节扫描；多字节内容按字节复制。
 func flow_quoted(s: string, is_double: bool) -> i64 {
     g_fpos = g_fpos + 1 // 开引号
     var n: i64 = len(s)
     var sb = string_builder()
     if is_double {
         while g_fpos < n {
-            var c = str_char(s, g_fpos)
-            if c == "\"" {
+            var b: i64 = str_byte(s, g_fpos)
+            if b == 34 {
                 g_fpos = g_fpos + 1
                 return new_str_node(sb_build(sb))
             }
-            if c == "\\" {
+            if b == 92 {
                 var ni = append_escape(sb, s, g_fpos)
                 if ni < 0 {
                     return -1
                 }
                 g_fpos = ni
             } else {
-                sb_append(sb, c)
+                sb_append_byte(sb, b)
                 g_fpos = g_fpos + 1
             }
         }
@@ -799,17 +839,17 @@ func flow_quoted(s: string, is_double: bool) -> i64 {
         return -1
     }
     while g_fpos < n {
-        var c = str_char(s, g_fpos)
-        if c == "'" {
-            if g_fpos + 1 < n && str_char(s, g_fpos + 1) == "'" {
-                sb_append(sb, "'")
+        var b: i64 = str_byte(s, g_fpos)
+        if b == 39 {
+            if g_fpos + 1 < n && str_byte(s, g_fpos + 1) == 39 {
+                sb_append_byte(sb, 39)
                 g_fpos = g_fpos + 2
             } else {
                 g_fpos = g_fpos + 1
                 return new_str_node(sb_build(sb))
             }
         } else {
-            sb_append(sb, c)
+            sb_append_byte(sb, b)
             g_fpos = g_fpos + 1
         }
     }
@@ -817,18 +857,18 @@ func flow_quoted(s: string, is_double: bool) -> i64 {
     return -1
 }
 
-// 流式纯标量（读至 , ] } 或行尾，分类）。
+// 流式纯标量（读至 , ] } 或行尾，分类）。字节扫描（,=44 ]=93 }=125）。
 func flow_plain(s: string) -> i64 {
     var start: i64 = g_fpos
     var n: i64 = len(s)
     while g_fpos < n {
-        var c = str_char(s, g_fpos)
-        if c == "," || c == "]" || c == "}" {
+        var b: i64 = str_byte(s, g_fpos)
+        if b == 44 || b == 93 || b == 125 {
             break
         }
         g_fpos = g_fpos + 1
     }
-    var token = str.trim(str.slice(s, start, g_fpos))
+    var token = str.trim(bslice(s, start, g_fpos))
     return parse_scalar_token(token)
 }
 
@@ -836,8 +876,8 @@ func flow_plain(s: string) -> i64 {
 func flow_skip_ws(s: string) {
     var n: i64 = len(s)
     while g_fpos < n {
-        var c = str_char(s, g_fpos)
-        if c == " " || c == "\t" {
+        var b: i64 = str_byte(s, g_fpos)
+        if b == 32 || b == 9 {
             g_fpos = g_fpos + 1
         } else {
             return
@@ -849,10 +889,10 @@ func flow_skip_ws(s: string) {
 // 注意：parse_int/parse_float 对非法输入直接运行时错误，必须先自检
 // （is_int_str / is_float_str）后再调用。
 
-// 解析内联标量值：流式或标量 token。
+// 解析内联标量值：流式或标量 token（[=91 {=123 字节分派）。
 func parse_inline_value(s: string) -> i64 {
-    var c0 = str_char(s, 0)
-    if c0 == "[" || c0 == "{" {
+    var b0: i64 = str_byte(s, 0)
+    if b0 == 91 || b0 == 123 {
         return parse_flow(s)
     }
     return parse_scalar_token(s)
@@ -873,11 +913,11 @@ func parse_scalar_token(token: string) -> i64 {
         y_ivals[b2] = 0
         return b2
     }
-    var c0 = str_char(token, 0)
-    if c0 == "\"" {
+    var b0: i64 = str_byte(token, 0)
+    if b0 == 34 {
         return unquote_double(token)
     }
-    if c0 == "'" {
+    if b0 == 39 {
         return unquote_single(token)
     }
     if is_int_str(token) {
@@ -893,22 +933,22 @@ func parse_scalar_token(token: string) -> i64 {
     return new_str_node(token)
 }
 
-// 字符串是否为合法整数（可选 '-' + 全数字）。
+// 字符串是否为合法整数（可选 '-' + 全数字）。字节扫描（-=45、0-9=48-57）。
 func is_int_str(s: string) -> bool {
     var n: i64 = len(s)
     if n == 0 {
         return false
     }
     var i: i64 = 0
-    if str_char(s, 0) == "-" {
+    if str_byte(s, 0) == 45 {
         if n == 1 {
             return false
         }
         i = 1
     }
     while i < n {
-        var c = str_char(s, i)
-        if c < "0" || c > "9" {
+        var b: i64 = str_byte(s, i)
+        if b < 48 || b > 57 {
             return false
         }
         i = i + 1
@@ -917,30 +957,32 @@ func is_int_str(s: string) -> bool {
 }
 
 // 字符串是否为合法浮点（可选符号 + 数字 + 可选 .小数 + 可选 e/E 指数）。
+// 字节扫描（-=45 +=43 . =46 e=101 E=69；ASCII 单字节，字节等价码点）。
 func is_float_str(s: string) -> bool {
     var n: i64 = len(s)
     if n == 0 {
         return false
     }
     var i: i64 = 0
-    if str_char(s, 0) == "-" || str_char(s, 0) == "+" {
+    var b0: i64 = str_byte(s, 0)
+    if b0 == 45 || b0 == 43 {
         i = 1
     }
     var digits: i64 = 0
     while i < n {
-        var c = str_char(s, i)
-        if c >= "0" && c <= "9" {
+        var b: i64 = str_byte(s, i)
+        if b >= 48 && b <= 57 {
             digits = digits + 1
             i = i + 1
         } else {
             break
         }
     }
-    if i < n && str_char(s, i) == "." {
+    if i < n && str_byte(s, i) == 46 {
         i = i + 1
         while i < n {
-            var d = str_char(s, i)
-            if d >= "0" && d <= "9" {
+            var d: i64 = str_byte(s, i)
+            if d >= 48 && d <= 57 {
                 digits = digits + 1
                 i = i + 1
             } else {
@@ -951,50 +993,56 @@ func is_float_str(s: string) -> bool {
     if digits == 0 {
         return false
     }
-    if i < n && (str_char(s, i) == "e" || str_char(s, i) == "E") {
-        i = i + 1
-        if i < n && (str_char(s, i) == "-" || str_char(s, i) == "+") {
+    if i < n {
+        var eb: i64 = str_byte(s, i)
+        if eb == 101 || eb == 69 {
             i = i + 1
-        }
-        var ed: i64 = 0
-        while i < n {
-            var e = str_char(s, i)
-            if e >= "0" && e <= "9" {
-                ed = ed + 1
-                i = i + 1
-            } else {
-                break
+            if i < n {
+                var sb2: i64 = str_byte(s, i)
+                if sb2 == 45 || sb2 == 43 {
+                    i = i + 1
+                }
             }
-        }
-        if ed == 0 {
-            return false
+            var ed: i64 = 0
+            while i < n {
+                var e: i64 = str_byte(s, i)
+                if e >= 48 && e <= 57 {
+                    ed = ed + 1
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            if ed == 0 {
+                return false
+            }
         }
     }
     return i >= n
 }
 
-// 双引号串解码（token 以 `"` 开头）。
+// 双引号串解码（token 以 `"` 开头）。r.1.3.2：str_byte 字节扫描。
 func unquote_double(token: string) -> i64 {
     var n: i64 = len(token)
     var i: i64 = 1
     var sb = string_builder()
     while i < n {
-        var c = str_char(token, i)
-        if c == "\"" {
+        var b: i64 = str_byte(token, i)
+        if b == 34 {
             if i != n - 1 {
                 y_err_msg = "YAML 双引号串闭引号后有多余内容"
                 return -1
             }
             return new_str_node(sb_build(sb))
         }
-        if c == "\\" {
+        if b == 92 {
             var ni = append_escape(sb, token, i)
             if ni < 0 {
                 return -1
             }
             i = ni
         } else {
-            sb_append(sb, c)
+            sb_append_byte(sb, b)
             i = i + 1
         }
     }
@@ -1002,26 +1050,26 @@ func unquote_double(token: string) -> i64 {
     return -1
 }
 
-// 单引号串解码（token 以 `'` 开头；`''` 表字面引号）。
+// 单引号串解码（token 以 `'` 开头；`''` 表字面引号）。字节扫描（'=39）。
 func unquote_single(token: string) -> i64 {
     var n: i64 = len(token)
     var i: i64 = 1
     var sb = string_builder()
     while i < n {
-        var c = str_char(token, i)
-        if c == "'" {
+        var b: i64 = str_byte(token, i)
+        if b == 39 {
             if i == n - 1 {
                 return new_str_node(sb_build(sb))
             }
-            if str_char(token, i + 1) == "'" {
-                sb_append(sb, "'")
+            if str_byte(token, i + 1) == 39 {
+                sb_append_byte(sb, 39)
                 i = i + 2
             } else {
                 y_err_msg = "YAML 单引号串闭引号后有多余内容"
                 return -1
             }
         } else {
-            sb_append(sb, c)
+            sb_append_byte(sb, b)
             i = i + 1
         }
     }
@@ -1029,18 +1077,18 @@ func unquote_single(token: string) -> i64 {
     return -1
 }
 
-// 键文本去引号化（quoted 键返回纯文本；否则原样）。
+// 键文本去引号化（quoted 键返回纯文本；否则原样）。字节分派（"=34 '=39）。
 func unquote_key(k: string) -> string {
     var n: i64 = len(k)
     if n >= 2 {
-        var c0 = str_char(k, 0)
-        if c0 == "\"" {
+        var b0: i64 = str_byte(k, 0)
+        if b0 == 34 {
             var nd = unquote_double(k)
             if nd >= 0 {
                 return str_val(nd)
             }
         }
-        if c0 == "'" {
+        if b0 == 39 {
             var nd2 = unquote_single(k)
             if nd2 >= 0 {
                 return str_val(nd2)
@@ -1050,58 +1098,59 @@ func unquote_key(k: string) -> string {
     return k
 }
 
-// 在 s 中从反斜杠下标 i 处解码一个转义序列，追加到 sb，返回序列后的下标。
-// 失败返回 -1（y_err_msg 已置）。
+// 在 s 中从反斜杠下标 i（字节索引）处解码一个转义序列，追加到 sb，返回
+// 序列后的字节下标。失败返回 -1（y_err_msg 已置）。
+// r.1.3.2：转义字母/十六进制全为 ASCII 单字节，str_byte 判定（字节等价码点）。
 func append_escape(sb: i64, s: string, i: i64) -> i64 {
     var n: i64 = len(s)
     if i + 1 >= n {
         y_err_msg = "YAML 双引号串转义不完整"
         return -1
     }
-    var e = str_char(s, i + 1)
-    if e == "n" {
+    var eb: i64 = str_byte(s, i + 1)
+    if eb == 110 {
         sb_append(sb, "\n")
         return i + 2
     }
-    if e == "r" {
+    if eb == 114 {
         sb_append(sb, "\r")
         return i + 2
     }
-    if e == "t" {
+    if eb == 116 {
         sb_append(sb, "\t")
         return i + 2
     }
-    if e == "b" {
+    if eb == 98 {
         // 退格 0x08：tie 词法无 \b 字面量，按字节构造
         sb_append_byte(sb, 8)
         return i + 2
     }
-    if e == "f" {
+    if eb == 102 {
         // 换页 0x0C：tie 词法无 \f 字面量，按字节构造
         sb_append_byte(sb, 12)
         return i + 2
     }
-    if e == "0" {
+    if eb == 48 {
         sb_append_byte(sb, 0)
         return i + 2
     }
-    if e == "\"" {
+    if eb == 34 {
         sb_append(sb, "\"")
         return i + 2
     }
-    if e == "\\" {
+    if eb == 92 {
         sb_append(sb, "\\")
         return i + 2
     }
-    if e == "/" {
+    if eb == 47 {
         sb_append(sb, "/")
         return i + 2
     }
-    if e == "'" {
+    if eb == 39 {
         sb_append(sb, "'")
         return i + 2
     }
-    if e == "u" {
+    if eb == 117 {
         // \uXXXX：4 位十六进制 → 任意合法 Unicode 码点（utf.from_code 构造）；
         // 高代理（D800-DBFF）后须跟 \uDC00-\uDFFF 低代理合成补充平面码点；
         // 孤立代理报错。
@@ -1113,8 +1162,7 @@ func append_escape(sb: i64, s: string, i: i64) -> i64 {
         var k: i64 = 0
         var ok: bool = true
         while k < 4 {
-            var h = str_char(s, i + 2 + k)
-            var hv = hex_val(h)
+            var hv: i64 = hex_val(str_byte(s, i + 2 + k))
             if hv < 0 {
                 ok = false
             }
@@ -1131,7 +1179,7 @@ func append_escape(sb: i64, s: string, i: i64) -> i64 {
                 y_err_msg = "YAML \\u 高代理缺少低代理"
                 return -1
             }
-            if str_char(s, i + 6) != "\\" || str_char(s, i + 7) != "u" {
+            if str_byte(s, i + 6) != 92 || str_byte(s, i + 7) != 117 {
                 y_err_msg = "YAML \\u 高代理缺少低代理"
                 return -1
             }
@@ -1139,8 +1187,7 @@ func append_escape(sb: i64, s: string, i: i64) -> i64 {
             var lok: bool = true
             var lk: i64 = 0
             while lk < 4 {
-                var lh = str_char(s, i + 8 + lk)
-                var lhv = hex_val(lh)
+                var lhv: i64 = hex_val(str_byte(s, i + 8 + lk))
                 if lhv < 0 {
                     lok = false
                 }
@@ -1169,28 +1216,30 @@ func append_escape(sb: i64, s: string, i: i64) -> i64 {
         sb_append(sb, ch)
         return i + adv
     }
-    y_err_msg = "YAML 未知转义 \\" + e
+    // 未知转义：按字节定位字符再解码（错误路径，非热路径）
+    y_err_msg = "YAML 未知转义 \\" + utf.from_code(utf8_char_at(s, i + 1))
     return -1
 }
 
 // ---------- 多行折叠 | / > ----------
 
 // 检测折叠标记：| 或 > （可带 `-`/`+` 后缀，本实现一律 clip 语义）。
+// 字节判定（|=124 >=62 -=45 +=43）。
 func is_fold_marker(t: string) -> bool {
     var n: i64 = len(t)
     if n == 0 {
         return false
     }
-    var c0 = str_char(t, 0)
-    if c0 != "|" && c0 != ">" {
+    var b0: i64 = str_byte(t, 0)
+    if b0 != 124 && b0 != 62 {
         return false
     }
     if n == 1 {
         return true
     }
     if n == 2 {
-        var c1 = str_char(t, 1)
-        if c1 == "-" || c1 == "+" {
+        var b1: i64 = str_byte(t, 1)
+        if b1 == 45 || b1 == 43 {
             return true
         }
     }
@@ -1220,7 +1269,7 @@ func block_scalar(fold: bool, indent: i64) -> string {
         if li <= indent {
             break
         }
-        var body = str.slice(ln, bi, len(ln))
+        var body = bslice(ln, bi, len(ln))
         if !first {
             if fold {
                 sb_append_byte(sb, 32)
@@ -1240,33 +1289,32 @@ func block_scalar(fold: bool, indent: i64) -> string {
     return r
 }
 
-// 去掉字符串尾部的所有 `\n`。
+// 去掉字符串尾部的所有 `\n`（字节扫描：换行=10 单字节）。
 func trim_nl(s: string) -> string {
     var n: i64 = len(s)
     var e: i64 = n
     while e > 0 {
-        if str_char(s, e - 1) == "\n" {
+        if str_byte(s, e - 1) == 10 {
             e = e - 1
         } else {
             break
         }
     }
-    return str.slice(s, 0, e)
+    return bslice(s, 0, e)
 }
 
 // ---------- 内部工具（\u 用） ----------
 
-// 单个十六进制字符 → 值 0..15；非十六进制返回 -1。
-func hex_val(c: string) -> i64 {
-    var cp = char_code(c)
-    if cp >= 48 && cp <= 57 {
-        return cp - 48
+// 单字节十六进制字符 → 值 0..15；非十六进制返回 -1（ASCII 单字节，字节等价码点）。
+func hex_val(b: i64) -> i64 {
+    if b >= 48 && b <= 57 {
+        return b - 48
     }
-    if cp >= 65 && cp <= 70 {
-        return cp - 65 + 10
+    if b >= 65 && b <= 70 {
+        return b - 65 + 10
     }
-    if cp >= 97 && cp <= 102 {
-        return cp - 97 + 10
+    if b >= 97 && b <= 102 {
+        return b - 97 + 10
     }
     return -1
 }

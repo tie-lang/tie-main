@@ -42,29 +42,31 @@ neither continues the other**.
 
 - [ ] r.1.1.1 首读前必写清理 + 全量 alloca 提升 + 入口零初始化（RCA-2 栈溢出 / 未初始化读隐性契约 / ed25519 孤儿泄漏）——三阶自举真不动点重建
 
-- [ ] r.1.1.2 标量全局初值静默丢弃（`var g: i64 = 4` 实为 0；表全局 `= []` 却正常）——全局标量初值正确落位（静态存储/运行时初始化）+ 回归语料
+- [x] r.1.1.2 标量全局初值静默丢弃（`var g: i64 = 4` 实为 0；表全局 `= []` 却正常）——全局标量初值正确落位（静态存储/运行时初始化）+ 回归语料（已修 bool/char/f64/f32 及不可折叠初值哨兵，整数此前已修）
 
-- [ ] r.1.1.3 全局表字面量初始化 IR 缺陷（只允许空表 `[]`；字面量表直接赋全局不支持；空嵌套字面量 `[0 x i64]` 与 ptr 不符）——修正空嵌套字面量 IR 类型生成 + 全局表静态初始化路径
+- [x] r.1.1.3 全局表字面量初始化 IR 缺陷（只允许空表 `[]`；字面量表直接赋全局不支持；空嵌套字面量 `[0 x i64]` 与 ptr 不符）——修正空嵌套字面量 IR 类型生成 + 全局表静态初始化路径
 
 - [ ] r.1.1.4 嵌套表复绑定缺陷（代码被迫扁平为 table<i64> 规避）——复现最小用例 → 修嵌套表重绑定语义；事后允许回退扁平规避
 
-- [ ] r.1.1.5 全局 table<fn() -> i64> 惰性 `= []` 重赋值缺陷（fn 元素路径崩溃）——复现 + 修全局函数表重绑定
+- [x] r.1.1.5 全局 table<fn() -> i64> 惰性 `= []` 重赋值缺陷（fn 元素路径崩溃）——复现 + 修全局函数表重绑定
 
 - [ ] r.1.1.6 闭包字面量解析缺陷：`func() -> i64 {}` 在 var 初始化/实参位置历史性不稳（spawn 暂只能传命名函数）——复现 + 修位置解析；补 spawn 闭包语料
 
 - [ ] r.1.1.7 混合表元素类型推断缺陷（`table_push(ref参数, v)` 误选 string 桥；同模块混合表 ref push 推断错；std 规避密集：collection/sort）——统一 push 类型推断（按目标表元素静态类型而非值启发），修后拆规避
 
+- [ ] r.1.1.8 字符串字面量 `\0` 转义丢 NUL（`"A\0B"` 实测变 `"AB"`，字面量管线二进制不安全；r.1.5.1 FFM 核验时新发现，记 defect-report #12）——修 `compiler/backend/irgen_lit.tie:184` 自举串字面量 NUL 保留链路
+
 **安全（r.1.2）**
 
-- [ ] r.1.2.1 CSPRNG 底座原语 + TLS 密钥材料切换（x25519 私钥 / ClientHello random / session id / P-256 临时私钥——根治可预测会话密钥）
+- [x] r.1.2.1 CSPRNG 底座原语 + TLS 密钥材料切换（x25519 私钥 / ClientHello random / session id / P-256 临时私钥——根治可预测会话密钥；std/csprng.tie 走 BCryptGenRandom）
 
-- [ ] r.1.2.2 TLS 握手接入 chain.verify（Certificate 阶段解析链 + 证书链/主机名校验，堵中间人）
+- [x] r.1.2.2 TLS 握手接入 chain.verify（Certificate 阶段解析链 + 证书链/主机名校验，堵中间人；失败哨兵关闭 socket，不发密钥材料）
 
 **性能（r.1.3）**
 
-- [ ] r.1.3.1 std/json parse_string/parse_number 字节化（str_byte + string_builder，O(n²) 根治；httpc/LSP 均已字节化，唯独 json 漏网）
+- [x] r.1.3.1 std/json parse_string/parse_number 字节化（str_byte + string_builder，O(n²) 根治；httpc/LSP 均已字节化，唯独 json 漏网；顺带修 arr/obj 序列化与键去重 O(n²)）
 
-- [ ] r.1.3.2 std/yaml、std/markdown 逐码点 str_char 扫描字节化评估（preprocess/strip_comment/标题表格判定）
+- [x] r.1.3.2 std/yaml、std/markdown 逐码点 str_char 扫描字节化评估（preprocess/strip_comment/标题表格判定）
 
 **工具链（r.1.4）**
 
@@ -76,19 +78,19 @@ neither continues the other**.
 
 - [ ] r.1.4.4 llvmgen 未支持指令改硬错误（禁静默降级为 TODO 注释继续链接）
 
-- [ ] r.1.4.5 dbg_fsp 测试更新（旧 API str_char_slice 3 参→1 参）+ 工作区残留清理（未跟踪探针 exe/.ll/.obj）
+- [x] r.1.4.5 dbg_fsp 测试更新（旧 API str_char_slice 3 参→1 参；实测根因=测试自定义同名函数遮蔽 fs 内部调用）+ 工作区残留清理（.gitignore 补通配、删 449 个未跟踪构建产物）
 
 - [x] r.1.4.6 tiec --shared 自动链接 trm_lite.a（driver.link_shared 未传 g_used_trmlite，DLL 模式内置 spawn/ch/wg 缺符号，需手工 clang -shared 补链）——link_shared 与 link_exe 对齐传链参
 
 **互操作与标准库（r.1.5）**
 
-- [ ] r.1.5.1 tie string 跨 FFM 返回布局验证（Java FFM ↔ DLL string 返回未验证；冒烟以 i64 版本码替代）——设计并验证 string 返回 ABI（指针+长或 SSO 约定）+ 跨语言探针
+- [x] r.1.5.1 tie string 跨 FFM 返回布局验证（Java FFM ↔ DLL string 返回未验证；冒烟以 i64 版本码替代）——设计并验证 string 返回 ABI（指针+长或 SSO 约定）+ 跨语言探针（已核验：单指针 {ptr,len}，证据 tests/_r151_probe/，见 2026-09-09-defect-report.md P1 #9）
 
 - [ ] r.1.5.2 wg_count 观察内置（wg 原语集完备；ABI 冒烟被迫镜像计数）
 
 - [x] r.1.5.3 json/yaml `\uXXXX` 字符串构造放宽至任意码点（std/json、std/yaml 目前仅 ASCII 码点，`\b \f` 无法构造）
 
-- [ ] r.1.5.4 const 全局表：决策支持或报错文案更明确（compiler/proto/semantic.tie:1374 暂不支持）
+- [x] r.1.5.4 const 全局表：决策——**现役前端已支持**（table_push 内容修改允许、重绑定被 scheck 拦截；报错仅存于已废弃 proto/ 原型，未动）
 
 ### 开发计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全 / p.6.7=trm-lite并行 / p.6.8=Skia图形 / p.6.9=LSP重写 / p.6.10=内存治理 / p.6.11=tink v2 互联协议）
 

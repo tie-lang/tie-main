@@ -1,0 +1,10 @@
+type tie<logic>
+// 边界探测：全局 map 空表初始化 + 键写入。
+var m: map<i64> = []
+
+func main() {
+    m["a"] = 1
+    m["b"] = 2
+    println(to_string(len(m)))
+    println(to_string(m["b"]))
+}

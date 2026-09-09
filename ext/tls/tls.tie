@@ -24,12 +24,20 @@ type tie<class>
 //     rbuf。握手机能组装完成回传 Session（值返回），调用方接收。
 //   - 结构体字段表禁止直接 table_push / 下标写：必须经局部变量重拼/改后写回。
 //   - `port` 是 tie 保留字，端口参数命名为 pport。
+//
+// 证书校验（r.1.2.2）：握手 Certificate 阶段解析服务器证书链并调用
+// chn.verify（信任锚 ca.roots() + 逐级签名/有效期 + 主机名）。校验失败即
+// 以 handle<0 哨兵拒绝握手（关闭底层 socket、不发送客户端密钥材料、不崩溃）——
+// 中间人持任意自签证书无法再完成握手。公网站点若未发送受信根（多数只发
+// 中间链），将按未知 CA 拒绝——安全优先，探针以优雅失败兼容。
 // ============================================================================
 
 import "./tool.tie"
 import "./hash.tie"
 import "./tls1_3.tie"
 import "./tls1_2.tie"
+import "./chain.tie"
+import "./ca.tie"
 import "../../std/x25519.tie"
 import "../../std/net.tie"
 
@@ -88,7 +96,9 @@ func has_server_hello_done(s: table<i64>) -> bool {
 
 // ---- TLS 1.3 握手（ServerHello 已收，传输完剩余 flight + 校验）----
 // 成功返回填好的 Session（handle>0）；失败返回 handle<0 的 Session。
-func finish13(s: Session, h: i64, ch_msg: table<i64>, sh_body: table<i64>, server_pub: table<i64>, sk_hex: string) -> Session {
+// r.1.2.2：Certificate(11) 阶段解析证书链并 chn.verify——校验失败以哨兵
+// handle<0 拒绝并关闭 socket（不发送 client Finished，不崩溃）。
+func finish13(s: Session, h: i64, ch_msg: table<i64>, sh_body: table<i64>, server_pub: table<i64>, sk_hex: string, host: string) -> Session {
     var transcript = tbt.concat(ch_msg, sh_body)
     var shared = tls13.shared_secret(sk_hex, server_pub)
     if len(shared) != 32 {
@@ -154,8 +164,19 @@ func finish13(s: Session, h: i64, ch_msg: table<i64>, sh_body: table<i64>, serve
                 }
                 transcript = tbt.concat(transcript, full)
                 flight_done = true
+            } else if mtype == 11 {
+                // Certificate（r.1.2.2）：解析证书链 → chn.verify（信任锚 +
+                // 逐级签名/有效期 + 主机名）。失败即拒绝——中间人自签证书
+                // 无法完成握手。失败路径：关闭 socket + handle<0 哨兵，不崩溃。
+                var cert_chain = tls13.parse_cert_chain(mbody)
+                if len(cert_chain) == 0 || chn.verify(cert_chain, ca.roots(), host) == false {
+                    net.close(h)
+                    s.handle = -1
+                    return s
+                }
+                transcript = tbt.concat(transcript, full)
             } else {
-                // EncryptedExtensions(8)/Certificate(11)/CertificateVerify(15)
+                // EncryptedExtensions(8)/CertificateVerify(15)
                 transcript = tbt.concat(transcript, full)
             }
             hoff = hoff + 4 + mlen
@@ -194,6 +215,12 @@ func finish13(s: Session, h: i64, ch_msg: table<i64>, sh_body: table<i64>, serve
 // ---- TLS 1.2 完整握手（发 CH 起，含 CKE/CCS/Finished 双向）----
 func finish12(s: Session, h: i64, host: string) -> Session {
     var (rec, ch_msg, sk_hex, c_rand) = tls12.make_client_hello(host)
+    if len(rec) == 0 {
+        // r.1.2.1 哨兵：CSPRNG 失败（系统 RNG 不可用）→ 拒绝，不降级伪随机。
+        net.close(h)
+        s.handle = -1
+        return s
+    }
     // p.6.1.8：预生成 P-256 临时私钥——服务器可能选 0x0017（baidu 等仅 P-256）。
     var sk_p256 = tls12.gen_p256_sk()
     if len(sk_p256) != 64 {
@@ -241,6 +268,22 @@ func finish12(s: Session, h: i64, host: string) -> Session {
         spub_ok = true
     }
     if len(s_rand) != 32 || spub_ok == false {
+        s.handle = -1
+        return s
+    }
+
+    // r.1.2.2：服务器 Certificate(11) 链校验（信任锚 ca.roots() + 逐级签名/
+    // 有效期 + 主机名）。失败即拒绝——在发送客户端临时密钥（CKE/Finished）
+    // 之前中止，不向未验证对端泄露密钥材料；哨兵 handle<0，不崩溃。
+    var cert_body = tls12.server_cert_body(srv_hs)
+    if len(cert_body) == 0 {
+        net.close(h)
+        s.handle = -1
+        return s
+    }
+    var cert_chain = tls12.parse_cert_chain(cert_body)
+    if len(cert_chain) == 0 || chn.verify(cert_chain, ca.roots(), host) == false {
+        net.close(h)
         s.handle = -1
         return s
     }
@@ -349,13 +392,19 @@ pub func connect(host: string, pport: i64) -> Session {
     }
     // 优先 TLS 1.3：发 ClientHello（带 SNI），看 ServerHello 是否为 0x1301。
     var (rec, ch_msg, sk_hex) = tls13.make_client_hello(host)
+    if len(rec) == 0 {
+        // r.1.2.1 哨兵：CSPRNG 失败（系统 RNG 不可用）→ 拒绝，不降级伪随机。
+        net.close(h)
+        s.handle = -1
+        return s
+    }
     net.tcp_send_bytes(h, rec)
     var (otype, body) = tls13.recv_record(h)
     if otype == 22 {
         var (ver, cs, server_pub, sh_rand) = tls13.parse_server_hello(body)
         if cs == 0x1301 && len(server_pub) == 32 {
             // 确定为 TLS 1.3 服务器；握手失败即整体失败，不回退 1.2。
-            return finish13(s, h, ch_msg, body, server_pub, sk_hex)
+            return finish13(s, h, ch_msg, body, server_pub, sk_hex, host)
         }
     }
     // 回退 TLS 1.2：关闭重连后走 tls12 完整握手（同样带 SNI）。

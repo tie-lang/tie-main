@@ -1008,21 +1008,41 @@ pub func collect_global_var(v: i64) -> i64 {
     var k = types.kind(ty)
     if k == K_TABLE || k == K_MAP || ty == TK_TABLE || ty == TK_MAP {
         // 表全局：const 支持（内容修改如 table_push 允许，整变量重绑定由
-        // scheck 的 gb_const_of 拦截）；初始化必须空表
-        // 初始化若非空表字面量（对齐 Rust：元素类型可由标注推导，非空表
-        // 的静态布局与调用点克隆不一致）——拦截
+        // scheck 的 gb_const_of 拦截）。初始化：
+        //   - 参数化 table<T>/map<V>：允许表字面量（空/非空）——r.1.1.3 起
+        //     支持字面量静态初始化（irgen main 入口创建 + 逐元素 push）
+        //   - 裸 table/map：仅空表 []（元素类型未知，非空字面量无类型依据）
         if init >= 0 {
             var itag = s_tags[init]
-            var init_ok: bool = false
             if itag == S_N_TABLE_LIT {
                 if sstate.nchild(init) == 0 {
-                    init_ok = true
+                    // 空表 []：node_types 引导（元素宽由标注决定，irgen 选句柄）
+                    if types.is_table(ty) || types.is_map(ty) {
+                        node_types[init] = ty
+                    }
+                } else {
+                    // 非空字面量：仅参数化表/映射允许（元素类型可标注推导）
+                    if !(k == K_TABLE || k == K_MAP) {
+                        sm_err_line = s_lines[v]
+                        sm_err_col = s_cols[v]
+                        sm_err_msg = "全局表 '" + nm + "' 的非空字面量初始化仅支持参数化 table<T>/map<V>（元素类型由标注决定）"
+                        return -1
+                    }
+                    var it = sinfer.infer_expr(init)
+                    if it < 0 {
+                        return -1
+                    }
+                    if !stype.types_match(ty, it, init) && !stype.types_compatible(ty, it) {
+                        sm_err_line = s_lines[v]
+                        sm_err_col = s_cols[v]
+                        sm_err_msg = "全局表 '" + nm + "' 字面量初始化类型不匹配：期望 " + types.type_name(ty) + "，实际 " + types.type_name(it)
+                        return -1
+                    }
                 }
-            }
-            if !init_ok {
+            } else {
                 sm_err_line = s_lines[v]
                 sm_err_col = s_cols[v]
-                sm_err_msg = "全局表 '" + nm + "' 的初始化必须是空表 []（元素类型由标注决定）"
+                sm_err_msg = "全局表 '" + nm + "' 的初始化必须是表字面量 []（元素类型由标注决定）"
                 return -1
             }
         }
