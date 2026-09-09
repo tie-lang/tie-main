@@ -78,7 +78,13 @@ func tig_char_lit(name_id: i64) -> i64 {
         } else if e == "'" {
             ch = "'"
         } else if e == "0" {
-            ch = "\0"
+            // r.1.1.8：自举产物中 "\0" 字面量被吞成空串——用 sb_append_byte(0)
+            // 构建单 NUL 字节字符串（char_code 得码点 0）。须拆语句：嵌套
+            // `sb_build(sb_append_byte(...))` 把 void 结果当实参，自举产物
+            // 运行时崩溃。
+            var nbsb = string_builder()
+            sb_append_byte(nbsb, 0)
+            ch = sb_build(nbsb)
         } else {
             // 未知转义：取转义字符本身（与字符串保留反斜杠不同——字符无歧义）
             ch = e
@@ -149,6 +155,10 @@ func tig_ternary(id: i64) -> i64 {
 // 字符串字面量 lexeme（带引号）→ 纯文本池 id：去首尾引号 + 反转义
 // （\n \t \r \\ \" \' \0，与词法 scan_string 的转义集一致）。
 // 返回重新 intern 的纯文本池 id。
+// r.1.1.8：`\0` 分支用 sb_append_byte(0) 追加 NUL 字节（自举产物中 `"\0"`
+// 字面量本身被旧编译器吞成空串，`out + "\0"` 恒追加空 → "A\0B" 变 "AB"）。
+// 其余分支保持 `out + c` 码点级拼接（多字节 UTF-8 经 str_cat 字节保真，
+// 逐字节 sb_append_byte 版本被旧种子编译器误编译 → 中文字面量乱码）。
 func str_unescape_quoted(name_id: i64) -> i64 {
     var raw = interner.lookup(name_id)
     var n: i64 = str_len(raw)
@@ -182,7 +192,12 @@ func str_unescape_quoted(name_id: i64) -> i64 {
                 out = out + "'"
                 i = i + 2
             } else if e == "0" {
-                out = out + "\0"
+                // r.1.1.8：sb_append_byte(0) 字节构建单 NUL 字符串再拼接
+                //（须拆语句：嵌套 `sb_build(sb_append_byte(...))` 把 void 结果
+                // 当实参，自举产物运行时崩溃）
+                var nbsb = string_builder()
+                sb_append_byte(nbsb, 0)
+                out = out + sb_build(nbsb)
                 i = i + 2
             } else {
                 // 未知转义：原样保留反斜杠

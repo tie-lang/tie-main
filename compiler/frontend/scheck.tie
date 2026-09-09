@@ -799,6 +799,32 @@ pub func check_stmt(s: i64) -> i64 {
                     sm_err_msg = "复合赋值位运算只支持整数，目标类型是 " + types.type_name(target_ty)
                     return -1
                 }
+                // r.1.4.3：`<<=`/`>>=` 编译期常量移位量越界/负 → 编译错误
+                //（与 sinfer 二元移位同规则：0 ≤ 常量移位量 < 目标位宽）。
+                if op == 16 || op == 17 {
+                    var sc2 = sstate.child(s, 0)
+                    var cnt2: i64 = 0
+                    var is_const2: bool = false
+                    if s_tags[sc2] == S_N_INT_LIT {
+                        cnt2 = s_vals[sc2]
+                        is_const2 = true
+                    } else if s_tags[sc2] == S_N_UNARY && s_vals[sc2] == 0 {
+                        var oc2 = sstate.child(sc2, 0)
+                        if s_tags[oc2] == S_N_INT_LIT {
+                            cnt2 = 0 - s_vals[oc2]
+                            is_const2 = true
+                        }
+                    }
+                    if is_const2 {
+                        var w2 = stype.int_width(target_ty)
+                        if w2 > 0 && (cnt2 < 0 || cnt2 >= w2) {
+                            sm_err_line = s_lines[s]
+                            sm_err_col = s_cols[s]
+                            sm_err_msg = "移位量超出操作数位宽（" + to_string(w2) + " 位，当前 " + to_string(cnt2) + "）"
+                            return -1
+                        }
+                    }
+                }
                 if !stype.types_match(target_ty, vt, sstate.child(s, 0)) {
                     sm_err_line = s_lines[s]
                     sm_err_col = s_cols[s]

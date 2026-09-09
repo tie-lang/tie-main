@@ -1172,23 +1172,14 @@ func tig_stmt(id: i64) -> i64 {
             if iv < 0 {
                 return -1
             }
-            // P2b any 装箱：声明类型 any 且初始化值是具体类型 → box 为 {tag,payload}
-            if ty == types.named(TK_ANY) {
-                var it5 = node_types[init]
-                if it5 >= 0 && it5 != types.named(TK_ANY) {
-                    var bx = tig_box_any(iv, it5)
-                    if bx < 0 {
-                        return -1
-                    }
-                    iv = bx
-                }
-            }
             // p.6.10.3：VarDecl 表引用接管——init 是表表达式（非 table_new_* 构造、
             // 非函数调用返回——后者已在 callee 的 return 处 retain）→ retain（槽接收
-            // 引用，出口析构与之守恒）。
+            // 引用，出口析构与之守恒）。**必须先于 any 装箱**：装箱后 iv 是 {i64,i64}
+            // 聚合值，ptrtoint 会类型错（r.1.4.2 根因：`var x: any = <table>` 把盒值
+            // 当表句柄 retain）。
             // r.1.1.4：表字面量（tag 12）同调用一样是**瞬态值**（新表 rc=1，仅本槽
             // 持有）→ 免 retain（否则 rc=2、出口析构只 -1 → 每处字面量初始化泄漏 1）。
-            if iv >= 0 && init >= 0 {
+            if init >= 0 {
                 var iv4 = node_types[init]
                 if iv4 >= 0 && types.is_table(iv4) && s_tags[init] != 7 && s_tags[init] != 12 {
                     // p.6.1.7-RCA-3【2026-09-06】：元组**解构**字段读（var (a,b)=f() 由
@@ -1208,6 +1199,17 @@ func tig_stmt(id: i64) -> i64 {
                     }
                 }
             }
+            // P2b any 装箱：声明类型 any 且初始化值是具体类型 → box 为 {tag,payload}
+            if ty == types.named(TK_ANY) {
+                var it5 = node_types[init]
+                if it5 >= 0 && it5 != types.named(TK_ANY) {
+                    var bx = tig_box_any(iv, it5)
+                    if bx < 0 {
+                        return -1
+                    }
+                    iv = bx
+                }
+            }
             // p.6.10.3：entry 级析构候选登记——表变量且在 entry 块创建（循环/分支内
             // var 的 alloca 在非 entry 块，出口析构 load 会触发「not dominate」）。
             // p.6.1.7-RCA-2【2026-09-06】：此前仅登记 is_table(ty)，而表变量推断时
@@ -1215,8 +1217,11 @@ func tig_stmt(id: i64) -> i64 {
             // → 关键泄漏（bigint/ed25519 的 点阶梯每轮泄漏全部中间表）。补齐：init 的
             // 类型是 table/map 的表局部亦登记（decl retain 或 table_new 槽所有权由
             // 出口析构 release 守恒）。
-            var cand_tbl: bool = types.is_table(ty) || types.is_map(ty)
-            if !cand_tbl && init >= 0 && node_types[init] >= 0 &&
+            // r.1.4.2：槽类型为 any（盒值 {i64,i64}，非表句柄）不登记——出口析构
+            // load ptr 会对聚合槽类型错，且盒不由容器/出口释放（与 table<any> 元素
+            // 约定一致；盒内表的引用在装箱前 retain 守恒，生命周期随函数出口）。
+            var cand_tbl: bool = (types.is_table(ty) || types.is_map(ty)) && ty != types.named(TK_ANY)
+            if !cand_tbl && init >= 0 && node_types[init] >= 0 && ty != types.named(TK_ANY) &&
                (types.is_table(node_types[init]) || types.is_map(node_types[init])) {
                 cand_tbl = true
             }
@@ -1241,8 +1246,10 @@ func tig_stmt(id: i64) -> i64 {
             // 槽内当前持有，但**首次**进入该声明时槽未初始化（load 即崩）。用零值全局
             // 哨兵 + select 归零实参区分首次（跳过 release）与回边重写（release 上一轮
             // 表），内存有界且安全。entry 级表变量由 p.6.10.3 出口析构覆盖，不在此列。
+            // r.1.4.2：槽类型为 any（盒值）不入回边 release——load ptr 对聚合槽类型
+            // 错；盒内表引用在装箱前 retain 守恒（与出口不析构的约定一致）。
             var ivla = node_types[init]
-            if g_cur_block != g_entry_block && ivla >= 0 && types.is_table(ivla) {
+            if g_cur_block != g_entry_block && ivla >= 0 && types.is_table(ivla) && ty != types.named(TK_ANY) {
                 // p.6.1.7-RCA-6【2026-09-06】：回边重写前 **release 旧值**（原 p.6.10.4
                 // 哨兵语义）。p.6.1.8-RCA 的「先 store null 再 loopvar_release」在**非提升
                 // alloca**时代正确（循环体 alloca 每迭代重新分配 → 槽是未初始化垃圾，

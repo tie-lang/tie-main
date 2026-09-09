@@ -951,8 +951,14 @@ func gen_inst(inst_id: i64) {
         }
         return
     }
-    // 未支持指令：占位注释
-    line("; TODO op=" + to_string(op) + " inst=" + to_string(inst_id))
+    // r.1.4.4：未支持指令 = **硬错误**（不再静默降级为占位注释继续链接——
+    // 产物行为不可预测）。登记错误文本（含 op 号/指令 id/所在函数），
+    // emit() 末尾与 driver 侧 err_msg() 检测并以 render_error 报错终止编译。
+    if str_len(g_llvmgen_err) == 0 {
+        g_llvmgen_err = "未支持指令 op=" + to_string(op) +
+            "（inst=" + to_string(inst_id) + "，函数 " + intern.lookup(ir.func_name(g_pfid)) + "）"
+    }
+    line("; UNSUPPORTED op=" + to_string(op) + " inst=" + to_string(inst_id))
 }
 
 // 类型化实参引用（call/extern_call 通用）：const_str → "@.str.N"（指针直引，

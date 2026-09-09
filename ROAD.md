@@ -54,7 +54,7 @@ neither continues the other**.
 
 - [x] r.1.1.7 混合表元素类型推断缺陷（`table_push(ref参数, v)` 误选 string 桥；同模块混合表 ref push 推断错；std 规避密集：collection/sort）——统一 push 类型推断（按目标表元素静态类型而非值启发），修后拆规避（collection/sort 规避已拆，等价验证通过）
 
-- [ ] r.1.1.8 字符串字面量 `\0` 转义丢 NUL（`"A\0B"` 实测变 `"AB"`，字面量管线二进制不安全；r.1.5.1 FFM 核验时新发现，记 defect-report #12）——修 `compiler/backend/irgen_lit.tie:184` 自举串字面量 NUL 保留链路
+- [x] r.1.1.8 字符串字面量 `\0` 转义丢 NUL（`"A\0B"` 实测变 `"AB"`，字面量管线二进制不安全；r.1.5.1 FFM 核验时新发现，记 defect-report #12）——修 `compiler/backend/irgen_lit.tie:184` 自举串字面量 NUL 保留链路（NUL 字面量探针 PASS，intern 池改字节级比较）
 
 **安全（r.1.2）**
 
@@ -72,11 +72,11 @@ neither continues the other**.
 
 - [x] r.1.4.1 regress-s21.ps1 相对路径解析（硬编码 TIE_INTERP_LIB 失效路径 → 回归门禁假阳性根治）
 
-- [ ] r.1.4.2 table_coll_p2d IR 类型缺陷 RCA（`{i64,i64}` 当 ptr，opt 报 type mismatch；新旧不动点均复现）
+- [x] r.1.4.2 table_coll_p2d IR 类型缺陷 RCA（`{i64,i64}` 当 ptr，opt 报 type mismatch；新旧不动点均复现；根因=any 装箱后 retain + unbox 别名不 retain 双释放；p2d 7×PASS）
 
-- [ ] r.1.4.3 shift_neg_free 负例语义规则（应拒绝的移位越界/负自由当前编译成功）
+- [x] r.1.4.3 shift_neg_free 负例语义规则（应拒绝的移位越界/负自由当前编译成功；补编译期常量移位量 `0 ≤ cnt < 位宽` 检查，运行期变量保留既有语义）
 
-- [ ] r.1.4.4 llvmgen 未支持指令改硬错误（禁静默降级为 TODO 注释继续链接）
+- [x] r.1.4.4 llvmgen 未支持指令改硬错误（禁静默降级为 TODO 注释继续链接；核实无静默降级实际被使用，死路径无需实现）
 
 - [x] r.1.4.5 dbg_fsp 测试更新（旧 API str_char_slice 3 参→1 参；实测根因=测试自定义同名函数遮蔽 fs 内部调用）+ 工作区残留清理（.gitignore 补通配、删 449 个未跟踪构建产物）
 
@@ -86,7 +86,7 @@ neither continues the other**.
 
 - [x] r.1.5.1 tie string 跨 FFM 返回布局验证（Java FFM ↔ DLL string 返回未验证；冒烟以 i64 版本码替代）——设计并验证 string 返回 ABI（指针+长或 SSO 约定）+ 跨语言探针（已核验：单指针 {ptr,len}，证据 tests/_r151_probe/，见 2026-09-09-defect-report.md P1 #9）
 
-- [ ] r.1.5.2 wg_count 观察内置（wg 原语集完备；ABI 冒烟被迫镜像计数）
+- [x] r.1.5.2 wg_count 观察内置（wg 原语集完备；ABI 冒烟免镜像计数；trm_lite_wg$wg_count 已存在，三处登记补齐）
 
 - [x] r.1.5.3 json/yaml `\uXXXX` 字符串构造放宽至任意码点（std/json、std/yaml 目前仅 ASCII 码点，`\b \f` 无法构造）
 

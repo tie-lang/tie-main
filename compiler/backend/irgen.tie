@@ -986,7 +986,10 @@ func fold_char_code(name_id: i64) -> i64 {
         } else if e == "'" {
             ch = "'"
         } else if e == "0" {
-            ch = "\0"
+            // r.1.1.8：同 tig_char_lit——sb_append_byte(0) 字节构建 NUL 字符
+            var fc0 = string_builder()
+            sb_append_byte(fc0, 0)
+            ch = sb_build(fc0)
         } else {
             ch = e
         }

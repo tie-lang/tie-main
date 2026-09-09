@@ -449,6 +449,11 @@ func tig_unbox_any(v: i64, vty: i64, fname: string) -> i64 {
         var ip2 = ir.new_inst(g_cur_block, 25, types.named(TK_STR))  // inttoptr
         ir.add_operand(ip2, pv, 0)
         pv = ir.get_value(ip2)
+        // r.1.4.2：as_table_* 返回**别名句柄**，按「表返回函数在 return 处 retain」
+        // 契约补 retain——调用方 `var x = as_table_i64(...)` 存变量并登记出口析构，
+        // 不 retain 会提前把源表引用减到 0 → 出口析构双重释放（p2d 嵌套表路径
+        // 0xC0000374 根因：back_i/m_i/inner_back 与 inner_i 互别名）。
+        tig_tbl_retain_call(pv)
     }
     if vty == types.named(TK_BOOL) {
         var tr = ir.new_inst(g_cur_block, 37, types.named(TK_BOOL))  // trunc i64→i1

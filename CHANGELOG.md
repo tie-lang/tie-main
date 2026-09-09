@@ -22,6 +22,23 @@
 
 ## 2026.1（正式版，开发中）
 
+## [fix] r.1 波次二：编译器正确性收官 + TLS 安全 + std 字节化 + 工具链硬错误（2026-09-10）
+
+* r.1.1.1 alloca 提升 + 入口零初始化类型覆盖扩至 i1/i16/i32/i128/float/聚合（RCA-2 语料全过，ed25519 5MB 有界；三阶自举 tiecB==tiecC 逐字节一致）
+* r.1.1.2/1.1.3/1.1.5 全局初始化：bool/char/f64/f32 标量初值落位、表字面量全局（嵌套/map）、全局 fn 表惰性 `= []` 重赋值（皆带回归语料）
+* r.1.1.4 嵌套表复绑定：深表标记（esz bit62）+ tbl_release 逐元素递归释放（trm-lite 配套 tl_tbl/gc），200k 循环 125MB→4MB，双释放 0xC0000374 根治
+* r.1.1.6 闭包字面量：closure-push 0xC0000005 修复（闭包入口 g_tblcand 等状态隔离）；spawn 闭包语料 PASS
+* r.1.1.7 table_push 类型推断改按目标表元素静态类型（node_types）；std/collection、std/sort 规避拆除，等价验证（config_smoke 48/48 等）
+* r.1.1.8 字符串字面量 `\0` 保留 NUL（irgen_lit 自举链路修复 + std/intern 池改字节级比较），NUL 字面量探针 PASS
+* r.1.2.1 CSPRNG 底座（std/csprng.tie，BCryptGenRandom）+ TLS 密钥材料全切换；r.1.2.2 握手接入 chain.verify（TLS1.3/1.2 证书链+主机名校验，失败哨兵关闭不发密钥；tls_verify_probe 8/8）
+* r.1.3.1/3.2 std/json、yaml、markdown 解析/扫描全字节化（str_byte + string_builder，线性时间/内存；json 序列化与键去重 O(n²) 顺带根治）
+* r.1.4.2 table_coll_p2d IR 类型缺陷 RCA：any 装箱后 retain + unbox 别名不 retain 双释放（p2d 7×PASS）
+* r.1.4.3 shift 编译期常量移位量 `0 ≤ cnt < 位宽` 检查（负数/越界 = 编译错误，运行期变量语义保留）
+* r.1.4.4 llvmgen 未支持指令改硬错误（禁静默降级；核实无实际使用）
+* r.1.5.2 wg_count 观察内置（sbuiltin/irgen/data 三处登记，探针 PASS）
+* 回归：**103 PASS / 1 FAIL（try_probe panic 路径，长期已知）/ 2 SKIP**；自举不动点 tiecB==tiecC（SHA A4BD84EE）；生产 tiec.exe 已重建入库
+* 配套：trm-lite 6494c16（深表释放 + gc_mark 哨兵改名）
+
 ## [fix] r.1 首波三项：--shared 自动链 trm_lite.a / json-yaml 任意码点转义 / regress-s21 路径（2026-09-09）
 
 * r.1.4.6 tiec `--shared` 自动链接 trm_lite.a（`link_shared` 补 `g_used_trmlite` 与 `link_exe` 对齐；DLL 模式内置 spawn/ch/wg 免手工补链；自举不动点 tiec2==tiec3 字节一致，SHA 4E62EFBB）

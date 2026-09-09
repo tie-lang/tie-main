@@ -1,0 +1,61 @@
+type tie<logic>
+// tests/_p67_probe/wg_count_probe.tie —— r.1.5.2：wg_count 观察内置验收。
+// 纯内置（无 import）：wg_new/wg_add/wg_done/wg_wait/wg_count（trm_lite_wg$* 静态链接）。
+// wg_count(h) -> i64：当前未 done 的计数（trm-lite 实现 g_wg_cnt[h-1]，归零钳 0）。
+// 单线程确定性序列（无竞态）：
+//   wg_new → count=0；wg_add(h,3) → 3；wg_done → 2；wg_done → 1；wg_done → 0；
+//   超减（计数已 0 再 done）钳 0；多组句柄计数互相隔离。
+// 期望：PASS wg_count / exit 0。
+func main() {
+    var ok: i64 = 1
+    var h = wg_new()
+    if wg_count(h) != 0 {
+        ok = 0
+        println("FAIL c0=" + to_string(wg_count(h)))
+    }
+    wg_add(h, 3)
+    if wg_count(h) != 3 {
+        ok = 0
+        println("FAIL c1=" + to_string(wg_count(h)))
+    }
+    wg_done(h)
+    if wg_count(h) != 2 {
+        ok = 0
+        println("FAIL c2=" + to_string(wg_count(h)))
+    }
+    wg_done(h)
+    if wg_count(h) != 1 {
+        ok = 0
+        println("FAIL c3=" + to_string(wg_count(h)))
+    }
+    wg_done(h)
+    if wg_count(h) != 0 {
+        ok = 0
+        println("FAIL c4=" + to_string(wg_count(h)))
+    }
+    wg_wait(h)  // 计数已 0：立即返回
+    // 超减钳 0：计数已是 0 再 done → 仍 0
+    wg_done(h)
+    if wg_count(h) != 0 {
+        ok = 0
+        println("FAIL c5=" + to_string(wg_count(h)))
+    }
+    // 多组隔离：h2 的计数不影响 h
+    var h2 = wg_new()
+    wg_add(h2, 5)
+    if wg_count(h) != 0 || wg_count(h2) != 5 {
+        ok = 0
+        println("FAIL iso h=" + to_string(wg_count(h)) + " h2=" + to_string(wg_count(h2)))
+    }
+    wg_done(h2)
+    if wg_count(h2) != 4 {
+        ok = 0
+        println("FAIL iso2=" + to_string(wg_count(h2)))
+    }
+    if ok == 1 {
+        println("PASS wg_count")
+    } else {
+        println("FAIL wg_count")
+        exit(1)
+    }
+}

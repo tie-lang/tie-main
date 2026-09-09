@@ -90,6 +90,9 @@ var g_wsock_enabled: i64 = 0;
 // 可捕获 panic（dev33 批次 7）：启用标记。irgen 首次生成 catch_panic/受捕
 // panic 置位，emit 据此输出 @tie_panic_jb / @tie_panic_msg / @tie_panic_active。
 var g_catch_enabled: i64 = 0;
+// r.1.4.4：未支持指令硬错误（不再静默降级为占位注释继续链接）——
+// gen_inst 命中未支持 op 时登记错误文本；emit() 末尾与 driver 侧拦截报错。
+var g_llvmgen_err: string = "";
 // 阶段 A：str_cat 内联序列的临时寄存器计数（与 printf sext 同款独立命名空间，
 // 避免与 %N 值编号冲突）
 var g_str_reg_cnt: i64 = 0;
@@ -881,6 +884,11 @@ func join_lines() -> string {
 
 // ==================== 模块生成 ====================
 // 生成完整 .ll 文本
+// r.1.4.4：未支持指令硬错误文本（空 = 无错误；driver 在 emit() 后检查）
+pub func err_msg() -> string {
+    return g_llvmgen_err
+}
+
 pub func emit() -> string {
     collect_strings()
     collect_externs()
@@ -962,6 +970,11 @@ pub func emit() -> string {
     // SSO 短串池全局段 + @tie_sso_alloc helper：**必须在函数遍历之后**输出——
     // op56（str_cat）在 gen_func 时才调 sso_enable()，提前输出会漏 helper。
     emit_sso_globals()
+    // r.1.4.4：未支持指令 = 硬错误——gen_inst 已登记 g_llvmgen_err，
+    // 提前终止生成（返回错误文本，driver 侧 err_msg() 检测并 render_error）
+    if str_len(g_llvmgen_err) > 0 {
+        return "; llvmgen error: " + g_llvmgen_err
+    }
     unsafe {
         var et2 = GetTickCount()
     }

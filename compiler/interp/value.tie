@@ -540,6 +540,9 @@ pub func unescape_str(raw: string) -> string {
             }
         }
     }
+    // r.1.1.8：`\0` 分支用 sb_append_byte(0) 构建单 NUL 字符串再拼接（自举
+    // 产物中 "\0" 字面量被吞成空串，`out + "\0"` 追加空 → 丢 NUL）。其余分支
+    // 保持 `out + c` 码点级拼接（多字节 UTF-8 经 str_cat 字节保真）。
     var out: string = ""
     var m = str_len(raw)
     var i: i64 = 0
@@ -566,7 +569,9 @@ pub func unescape_str(raw: string) -> string {
                 out = out + "'"
                 i = i + 2
             } else if e == "0" {
-                out = out + "\0"
+                var zsb = string_builder()
+                sb_append_byte(zsb, 0)
+                out = out + sb_build(zsb)
                 i = i + 2
             } else {
                 // 未知转义：原样保留反斜杠（对齐 irgen）

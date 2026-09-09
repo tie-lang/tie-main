@@ -599,6 +599,36 @@ pub func infer_expr(id: i64) -> i64 {
                 sm_err_msg = "位运算只支持整数，不能用于 " + types.type_name(lhs)
                 return -1
             }
+            // S1.3 B2 移位语义（r.1.4.3）：**编译期常量**移位量必须在
+            // 0..操作数位宽 范围内——负数移位/越界移位 = 编译错误（负例
+            // shift_neg_free 未拒根因）。运行期变量移位量保持既有定义行为
+            // （llvmgen & 63 掩码 / 窄类型 select 保护，shift_bound 探针不变）。
+            // i128 常量移位（1i128 << 100/127）按 128 位宽放行。
+            if op == 16 || op == 17 {
+                var sc = sstate.child(id, 1)
+                var cnt: i64 = 0
+                var is_const: bool = false
+                if s_tags[sc] == S_N_INT_LIT {
+                    cnt = s_vals[sc]
+                    is_const = true
+                } else if s_tags[sc] == S_N_UNARY && s_vals[sc] == 0 {
+                    // -N 字面量（U_NEG 包 IntLit）
+                    var oc = sstate.child(sc, 0)
+                    if s_tags[oc] == S_N_INT_LIT {
+                        cnt = 0 - s_vals[oc]
+                        is_const = true
+                    }
+                }
+                if is_const {
+                    var w = stype.int_width(lhs)
+                    if w > 0 && (cnt < 0 || cnt >= w) {
+                        sm_err_line = s_lines[id]
+                        sm_err_col = s_cols[id]
+                        sm_err_msg = "移位量超出操作数位宽（" + to_string(w) + " 位，当前 " + to_string(cnt) + "）"
+                        return -1
+                    }
+                }
+            }
             if op == 4 && !types.is_int(lhs) {
                 sm_err_line = s_lines[id]
                 sm_err_col = s_cols[id]

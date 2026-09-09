@@ -1004,6 +1004,17 @@ pub func builtin_call(fn_name: string, args: table<i64>, call_node: i64) -> i64 
         }
         return types.named(TK_VOID)
     }
+    // wg_count(h) -> i64（r.1.5.2）：观察量——当前未 done 的计数（wg_wait 轮询
+    // 用；与 trm-lite wg 实现一致，计数归零钳 0），1 参数。
+    if fn_name == "wg_count" {
+        if nargs != 1 {
+            sm_err_line = s_lines[call_node]
+            sm_err_col = s_cols[call_node]
+            sm_err_msg = "wg_count() 期望 1 个参数（句柄），实际 " + to_string(nargs) + " 个"
+            return -2
+        }
+        return types.named(TK_I64)
+    }
     // ---------- channel 原语（p.6.5.7：mailbox 承载，静态链接 trm_lite.a）----------
     // ch_open() -> i64（新通道句柄），0 参数。
     if fn_name == "ch_open" {

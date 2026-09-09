@@ -1,23 +1,15 @@
 type tie<logic>
-// S1.3 B2 移位语义：移过量 >= 位宽有定义（非 UB）
+// r.1.4.3 负例：负数移位 / 越界移位 = 编译期错误（S1.3 B2 语义定界）
+// 编译期常量移位量必须 0 <= 移位量 < 操作数位宽；负数/越界 → 拒绝。
+// （运行期变量移位量保持定义行为：掩码/select 保护，见 shift_bound 探针。）
 func main() {
-    // 左移移过量 >= 宽度 → 0
     var a: u8 = 0x80
-    var b = a << 1
-    println(to_string(b))
-    var c = a << 8
-    println(to_string(c))
-    var d = a << 9
-    println(to_string(d))
-    // 右移：u8 逻辑右移
-    var e = a >> 1
-    println(to_string(e))
-    var f = a >> 8
-    println(to_string(f))
-    // i8 算术右移（符号保持）
+    var b = a << -1        // 负数移位 → 编译错误
+    var c = a << 8         // u8 位宽 8：移过量 8 >= 8 → 编译错误
+    var d: i64 = 1
+    var e = d << 64        // i64 位宽 64：移过量 64 → 编译错误
+    var f = d >> -2        // 负数移位 → 编译错误
     var g: i8 = -4
-    var h = g >> 1
-    println(to_string(h))
-    var i = g >> 9
-    println(to_string(i))
+    var h = g >> 9         // i8 位宽 8：移过量 9 >= 8 → 编译错误
+    println(to_string(b + c + e + f + h))
 }

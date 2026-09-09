@@ -1157,6 +1157,11 @@ func compile_program(src: string) -> i64 {
         var t3e = clock()
     }
     g_t_emit = t3e - t3
+    // r.1.4.4：未支持指令硬错误——不再静默降级为占位注释继续链接
+    if str_len(llvmgen.err_msg()) > 0 {
+        println(diagcode.render_error(-1, -1, "代码生成失败: " + llvmgen.err_msg()))
+        return 1
+    }
     // IR 文件路径：--emit-ir → -o 或 输入.ll；否则中间文件（输出基准）
     var ir_path = replace_ext(g_input, "ll")
     if str_len(g_output) > 0 {
