@@ -3,9 +3,9 @@ type tie<class>
 // "tie 当数据交换格式"定位（文件头 tie:data 角色的互操作核心之一）。
 // API 句柄风格对齐 std/json.tie：parse(text) -> i64 节点句柄 + 同款访问器
 // （type_of/int_val/float_val/str_val/arr_len/arr_at/obj_keys/obj_get/
-// is_null + err_msg()）。节点存储为平行表（见下），只依赖底座原语
+// is_null + err_msg()). 节点存储为平行表（见下），只依赖底座原语
 // （str_len/str_char/char_code/parse_int/parse_float/table_new_*/table_push
-// /len）+ string_builder + std/string（仅 trim/slice）。
+// /len）+ string_builder + std/string（仅 trim/slice）+ std/utf（\u 解码）。
 //
 // 节点表示（平行表，节点 id 为下标，对齐 json.tie）：
 //   y_types[i]  节点类型：0=null 1=bool 2=int 3=float 4=str 5=array 6=object
@@ -30,8 +30,8 @@ type tie<class>
 //   3. 标量：str/int/float/bool/null/引号串。int 为十进制（is_int_str 自检后
 //      parse_int）；float 需含 `.` 或指数（is_float_str 自检后 parse_float）；
 //      bool = true/false（含 True/TRUE 变体）；null = null/Null/NULL/~；
-//      双引号串支持 \n \r \t \0 \" \\ \/ \' 与 \uXXXX（仅可构造 ASCII 码点，
-//      同 json.tie 局限）；单引号串无转义、`''` 表字面引号。
+//      双引号串支持 \n \r \t \0 \b \f \" \\ \/ \' 与 \uXXXX（任意合法 Unicode
+//      码点，含代理对合成，经 utf.from_code 构造）；单引号串无转义、`''` 表字面引号。
 //   4. `#` 注释剥离：整行注释与行内注释（`#` 前为空白或行首才视作注释起始，
 //      引号串内的 `#` 不剥离）。
 //   5. 多行 `|`/`>` 折叠：已实现并测——`|` 字面（行间换行）、`>` 折叠（行间
@@ -52,6 +52,7 @@ type tie<class>
 // 200KB 输入线性，无 O(n²)。命名规范：命名空间内函数不加 yaml_ 前缀。
 
 import "./string.tie" as str
+import "./utf.tie" as utf
 
 // ==================== 节点存储（模块级全局，命名空间外） ====================
 var y_types: table<i64>;
@@ -1070,6 +1071,16 @@ func append_escape(sb: i64, s: string, i: i64) -> i64 {
         sb_append(sb, "\t")
         return i + 2
     }
+    if e == "b" {
+        // 退格 0x08：tie 词法无 \b 字面量，按字节构造
+        sb_append_byte(sb, 8)
+        return i + 2
+    }
+    if e == "f" {
+        // 换页 0x0C：tie 词法无 \f 字面量，按字节构造
+        sb_append_byte(sb, 12)
+        return i + 2
+    }
     if e == "0" {
         sb_append_byte(sb, 0)
         return i + 2
@@ -1091,7 +1102,9 @@ func append_escape(sb: i64, s: string, i: i64) -> i64 {
         return i + 2
     }
     if e == "u" {
-        // \uXXXX：4 位十六进制 → 码点；仅可构造 ASCII 码点成功。
+        // \uXXXX：4 位十六进制 → 任意合法 Unicode 码点（utf.from_code 构造）；
+        // 高代理（D800-DBFF）后须跟 \uDC00-\uDFFF 低代理合成补充平面码点；
+        // 孤立代理报错。
         if i + 7 > n {
             y_err_msg = "YAML \\u 转义不完整"
             return -1
@@ -1112,13 +1125,49 @@ func append_escape(sb: i64, s: string, i: i64) -> i64 {
             y_err_msg = "YAML \\u 含非十六进制字符"
             return -1
         }
-        var ch = cp_to_char(cp)
+        var adv: i64 = 6
+        if cp >= 0xD800 && cp <= 0xDBFF {
+            if i + 13 > n {
+                y_err_msg = "YAML \\u 高代理缺少低代理"
+                return -1
+            }
+            if str_char(s, i + 6) != "\\" || str_char(s, i + 7) != "u" {
+                y_err_msg = "YAML \\u 高代理缺少低代理"
+                return -1
+            }
+            var lo: i64 = 0
+            var lok: bool = true
+            var lk: i64 = 0
+            while lk < 4 {
+                var lh = str_char(s, i + 8 + lk)
+                var lhv = hex_val(lh)
+                if lhv < 0 {
+                    lok = false
+                }
+                lo = lo * 16 + lhv
+                lk = lk + 1
+            }
+            if !lok {
+                y_err_msg = "YAML \\u 含非十六进制字符"
+                return -1
+            }
+            if lo < 0xDC00 || lo > 0xDFFF {
+                y_err_msg = "YAML \\u 高代理后需低代理 \\uDC00-\\uDFFF"
+                return -1
+            }
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+            adv = 12
+        } else if cp >= 0xDC00 && cp <= 0xDFFF {
+            y_err_msg = "YAML \\u 孤立低代理无法构造"
+            return -1
+        }
+        var ch = utf.from_code(cp)
         if str_len(ch) == 0 {
-            y_err_msg = "YAML \\u 仅支持可构造 ASCII 码点"
+            y_err_msg = "YAML \\u 码点无法构造"
             return -1
         }
         sb_append(sb, ch)
-        return i + 6
+        return i + adv
     }
     y_err_msg = "YAML 未知转义 \\" + e
     return -1
@@ -1220,28 +1269,6 @@ func hex_val(c: string) -> i64 {
         return cp - 97 + 10
     }
     return -1
-}
-
-// 码点（0..127）→ 字符。可构造集合：\0\t\n\r 特判字面量，32..126 查可打印表；
-// 其余（含非 ASCII 码点）无法构造返回空串（同 json.tie \u 一致）。
-func cp_to_char(cp: i64) -> string {
-    if cp == 0 {
-        return "\0"
-    }
-    if cp == 9 {
-        return "\t"
-    }
-    if cp == 10 {
-        return "\n"
-    }
-    if cp == 13 {
-        return "\r"
-    }
-    if cp >= 32 && cp <= 126 {
-        var chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
-        return str_char(chars, cp - 32)
-    }
-    return ""
 }
 
 // ---------- 访问器 ----------

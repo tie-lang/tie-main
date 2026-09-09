@@ -3,7 +3,7 @@ type tie<class>
 // "tie 当数据交换格式"定位（文件头 tie:data 角色的互操作核心）。
 // 实现：JSON 值 = 节点 id（AST 式平行表，模仿 compiler 前端模式），
 // 只依赖底座原语（str_len/str_char/char_code/parse_int/parse_float/
-// table_new_*/table_push/table_at/len）+ 字符串拼接。
+// table_new_*/table_push/table_at/len）+ string_builder + std/utf（\u 解码）。
 //
 // 节点表示（平行表，节点 id 为下标）：
 //   j_types[i]  节点类型：0=null 1=bool 2=int 3=float 4=str 5=array 6=object
@@ -29,11 +29,11 @@ type tie<class>
 // （0 / 空串 / -1），不崩溃。
 //
 // 局限：
-//   1. \uXXXX 转义仅支持可构造 ASCII 码点（\0 \t \n \r 与 32..126）：
-//      tie 无「码点 → 任意字符」原语（utf.to_char 仅 32..126），非 ASCII
-//      码点无法构造字符，解析报错。中文字符在 JSON 原文中直接出现即可解析。
-//   2. \b \f 转义：tie 词法不支持 \b \f 字面量（无法构造退格/换页字符），
-//      解析遇 \b \f 报错（j_err_msg 注明）。
+//   1. \uXXXX 转义：支持任意合法 Unicode 码点（经 utf.from_code / 底座
+//      str_from_code 构造，含中文/emoji）；代理对 \uD800-\uDBFF + \uDC00-
+//      \uDFFF 合成补充平面码点；孤立代理（无配对）与非法码点报错。
+//   2. \b \f 转义：tie 词法无 \b \f 字面量，按字节（8/12）经 string_builder
+//      构造，解析与序列化对称（escape_json_str 输出 \b \f）。
 //   3. 浮点输出用 to_string 近似（to_string_f64 的 Rust 格式）。
 //   4. 字符串深度递归：tie 支持递归函数，深层嵌套受调用栈限制。
 //   5. 对象重复键：后者覆盖前者（obj_get 线性扫描取区间内最后命中）。
@@ -44,6 +44,7 @@ type tie<class>
 // 失败 Err(错误消息，含 j_err_msg)；parse(s) 及访问器保持句柄式不变）。
 
 import "./result.tie"
+import "./utf.tie" as utf
 
 // ==================== 节点存储（模块级全局，命名空间外） ====================
 var j_types: table<i64>;
@@ -285,18 +286,18 @@ func parse_number(s: string) -> i64 {
 }
 
 // 解析 JSON 字符串（含引号）：处理转义 \" \\ \/ \b \f \n \r \t \uXXXX。
-// \uXXXX 仅支持可构造 ASCII 码点；\b \f 无法构造报错（文件头局限）。
+// \uXXXX 支持任意合法 Unicode 码点（含代理对合成）；\b \f 按字节构造。
 func parse_string(s: string) -> i64 {
     var n: i64 = str_len(s)
     // 跳过开引号
     g_pos = g_pos + 1
-    var out: string = ""
+    var sb = string_builder()
     while g_pos < n {
         var c = str_char(s, g_pos)
         if c == "\"" {
             // 闭引号：返回字符串节点
             g_pos = g_pos + 1
-            return new_str_node(out)
+            return new_str_node(sb_build(sb))
         }
         if c == "\\" {
             // 转义序列
@@ -306,67 +307,84 @@ func parse_string(s: string) -> i64 {
             }
             var e = str_char(s, g_pos + 1)
             if e == "\"" {
-                out = out + "\""
+                sb_append(sb, "\"")
                 g_pos = g_pos + 2
             } else if e == "\\" {
-                out = out + "\\"
+                sb_append(sb, "\\")
                 g_pos = g_pos + 2
             } else if e == "/" {
-                out = out + "/"
+                sb_append(sb, "/")
                 g_pos = g_pos + 2
             } else if e == "b" {
-                // tie 词法不支持 \b 字面量（无法构造退格字符）→ 报错
-                j_err_msg = "JSON \\b（退格）转义无法构造（tie 语言限制，位置 " + to_string(g_pos) + "）"
-                return -1
+                // 退格 0x08：tie 词法无 \b 字面量，按字节构造
+                sb_append_byte(sb, 8)
+                g_pos = g_pos + 2
             } else if e == "f" {
-                // tie 词法不支持 \f 字面量（无法构造换页字符）→ 报错
-                j_err_msg = "JSON \\f（换页）转义无法构造（tie 语言限制，位置 " + to_string(g_pos) + "）"
-                return -1
+                // 换页 0x0C：tie 词法无 \f 字面量，按字节构造
+                sb_append_byte(sb, 12)
+                g_pos = g_pos + 2
             } else if e == "n" {
-                out = out + "\n"
+                sb_append(sb, "\n")
                 g_pos = g_pos + 2
             } else if e == "r" {
-                out = out + "\r"
+                sb_append(sb, "\r")
                 g_pos = g_pos + 2
             } else if e == "t" {
-                out = out + "\t"
+                sb_append(sb, "\t")
                 g_pos = g_pos + 2
             } else if e == "u" {
-                // \uXXXX：解析 4 位十六进制
+                // \uXXXX：4 位十六进制 → 码点。任意合法 Unicode 码点经
+                // utf.from_code 构造；高代理（D800-DBFF）后须紧跟 \uXXXX
+                // 低代理（DC00-DFFF）合成补充平面码点；孤立代理报错。
                 if g_pos + 6 >= n {
                     j_err_msg = "JSON \\u 转义不完整（位置 " + to_string(g_pos) + "）"
                     return -1
                 }
-                var cp: i64 = 0
-                var k: i64 = 0
-                var ok: bool = true
-                while k < 4 {
-                    var h = str_char(s, g_pos + 2 + k)
-                    var hv: i64 = hex_val(h)
-                    if hv < 0 {
-                        ok = false
-                    }
-                    cp = cp * 16 + hv
-                    k = k + 1
-                }
-                if !ok {
+                var cp: i64 = u4_hex(s, g_pos + 2, n)
+                if cp == -1 {
                     j_err_msg = "JSON \\u 含非十六进制字符（位置 " + to_string(g_pos) + "）"
                     return -1
                 }
-                // 码点 → 字符：仅可构造集合（\0 \t \n \r 特判，32..126 查表）
-                var ch = cp_to_char(cp)
-                if str_len(ch) == 0 {
-                    j_err_msg = "JSON \\u 仅支持可构造 ASCII 码点（\\u" + hex4(cp) + "，位置 " + to_string(g_pos) + "）"
+                var adv: i64 = 6
+                if cp >= 0xD800 && cp <= 0xDBFF {
+                    // 高代理：要求紧跟低代理 \uDC00-\uDFFF
+                    if g_pos + 12 >= n {
+                        j_err_msg = "JSON \\u 高代理缺少低代理（\\u" + hex4(cp) + "，位置 " + to_string(g_pos) + "）"
+                        return -1
+                    }
+                    if str_char(s, g_pos + 6) != "\\" || str_char(s, g_pos + 7) != "u" {
+                        j_err_msg = "JSON \\u 高代理缺少低代理（\\u" + hex4(cp) + "，位置 " + to_string(g_pos) + "）"
+                        return -1
+                    }
+                    var lo: i64 = u4_hex(s, g_pos + 8, n)
+                    if lo == -1 {
+                        j_err_msg = "JSON \\u 含非十六进制字符（位置 " + to_string(g_pos) + "）"
+                        return -1
+                    }
+                    if lo < 0xDC00 || lo > 0xDFFF {
+                        j_err_msg = "JSON \\u 高代理后需低代理 \\uDC00-\\uDFFF（位置 " + to_string(g_pos) + "）"
+                        return -1
+                    }
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                    adv = 12
+                } else if cp >= 0xDC00 && cp <= 0xDFFF {
+                    j_err_msg = "JSON \\u 孤立低代理无法构造（\\u" + hex4(cp) + "，位置 " + to_string(g_pos) + "）"
                     return -1
                 }
-                out = out + ch
-                g_pos = g_pos + 6
+                // 码点 → 字符：utf.from_code（底座 str_from_code，任意合法码点）
+                var ch = utf.from_code(cp)
+                if str_len(ch) == 0 {
+                    j_err_msg = "JSON \\u 码点无法构造（\\u" + hex4(cp) + "，位置 " + to_string(g_pos) + "）"
+                    return -1
+                }
+                sb_append(sb, ch)
+                g_pos = g_pos + adv
             } else {
                 j_err_msg = "JSON 未知转义 \\" + e + "（位置 " + to_string(g_pos) + "）"
                 return -1
             }
         } else {
-            out = out + c
+            sb_append(sb, c)
             g_pos = g_pos + 1
         }
     }
@@ -594,31 +612,37 @@ func obj_to_str(n: i64) -> string {
     return out + "}"
 }
 
-// 字符串 JSON 转义：\" \\ \n \r \t；其余（含中文）直接输出（UTF-8）。
-// 注：\b \f 在 tie 中无法构造（词法不支持 \b \f 字面量），故无此分支；
-// 反向解析遇 \b \f 报错（见 parse_string）。
+// 字符串 JSON 转义：\" \\ \b \f \n \r \t；其余（含中文）直接输出（UTF-8）。
+// \b \f 无 tie 字面量，按码点 8/12 判定后输出 \b \f（与 parse_string 对称）。
 func escape_json_str(s: string) -> string {
-    var out: string = "\""
+    var sb = string_builder()
+    sb_append(sb, "\"")
     var n: i64 = str_len(s)
     var i: i64 = 0
     while i < n {
         var c = str_char(s, i)
+        var cp: i64 = char_code(c)
         if c == "\"" {
-            out = out + "\\\""
+            sb_append(sb, "\\\"")
         } else if c == "\\" {
-            out = out + "\\\\"
+            sb_append(sb, "\\\\")
+        } else if cp == 8 {
+            sb_append(sb, "\\b")
+        } else if cp == 12 {
+            sb_append(sb, "\\f")
         } else if c == "\n" {
-            out = out + "\\n"
+            sb_append(sb, "\\n")
         } else if c == "\r" {
-            out = out + "\\r"
+            sb_append(sb, "\\r")
         } else if c == "\t" {
-            out = out + "\\t"
+            sb_append(sb, "\\t")
         } else {
-            out = out + c
+            sb_append(sb, c)
         }
         i = i + 1
     }
-    return out + "\""
+    sb_append(sb, "\"")
+    return sb_build(sb)
 }
 
 // ---------- 访问器 ----------
@@ -761,26 +785,24 @@ func hex_val(c: string) -> i64 {
     return -1
 }
 
-// 码点（0..127）→ 单字符。可构造集合：\0（0）、\t（9）、\n（10）、\r（13）
-// 用字面量特判；32..126 查可打印 ASCII 表；其余无法构造返回空串。
-func cp_to_char(cp: i64) -> string {
-    if cp == 0 {
-        return "\0"
+// 读取 4 位十六进制 → 码点（不校验 \u 前缀，从 from 处读 4 位）。
+// 含非十六进制字符返回 -1；下标越界（from+4 > n）返回 -2。
+// \uXXXX 与代理对第二段共用（见 parse_string）。
+func u4_hex(s: string, from: i64, n: i64) -> i64 {
+    if from + 4 > n {
+        return -2
     }
-    if cp == 9 {
-        return "\t"
+    var cp: i64 = 0
+    var k: i64 = 0
+    while k < 4 {
+        var hv: i64 = hex_val(str_char(s, from + k))
+        if hv < 0 {
+            return -1
+        }
+        cp = cp * 16 + hv
+        k = k + 1
     }
-    if cp == 10 {
-        return "\n"
-    }
-    if cp == 13 {
-        return "\r"
-    }
-    if cp >= 32 && cp <= 126 {
-        var chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
-        return str_char(chars, cp - 32)
-    }
-    return ""
+    return cp
 }
 
 // 码点 → 4 位大写十六进制（\uXXXX 错误消息用）。

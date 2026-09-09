@@ -22,6 +22,12 @@
 
 ## 2026.1（正式版，开发中）
 
+## [fix] r.1 首波三项：--shared 自动链 trm_lite.a / json-yaml 任意码点转义 / regress-s21 路径（2026-09-09）
+
+* r.1.4.6 tiec `--shared` 自动链接 trm_lite.a（`link_shared` 补 `g_used_trmlite` 与 `link_exe` 对齐；DLL 模式内置 spawn/ch/wg 免手工补链；自举不动点 tiec2==tiec3 字节一致，SHA 4E62EFBB）
+* r.1.5.3 std/json、std/yaml 转义解码放宽至任意码点（`\uXXXX` 代理对合成 + `\b \f`；string_builder 化守 O(n²) 铁律）；新探针 tests/_r153_probe/unesc_probe.tie 31 断言全 PASS
+* r.1.4.1 regress-s21.ps1 的 TIE_INTERP_LIB 改 `$Root` 相对解析 + 缺 lib 警告；复跑 99 PASS / 4 FAIL / 2 SKIP 与基线一致，5 个假失败全转 PASS
+
 ## [docs] r.1 轨启动：全面审计报告（漏洞/性能/缺陷/工具链）+ 修复模块规划（2026-09-08）
 
 * 基于 `fa12f94`（Harbor-2026.1-preview.6 版本边界）创建 r.1 分支，启动 2026.1

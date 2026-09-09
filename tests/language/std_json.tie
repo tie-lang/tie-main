@@ -4,8 +4,8 @@ type tie<logic>
 // - parse：标量/字符串（转义 \u）/数组/对象/嵌套 + 错误路径
 // - 访问器：type_of / int_val / str_val / arr_len / arr_at / obj_keys / obj_get
 // - 序列化：to_str 紧凑格式往返
-// 局限说明（见 std/json.tie 头注释）：\uXXXX 仅支持可构造 ASCII 码点，
-// 中文在原文中直接出现；浮点输出用 to_string 近似。
+// 局限说明（见 std/json.tie 头注释）：\uXXXX 支持任意合法 Unicode 码点
+// （含代理对合成）；\b \f 按字节构造；浮点输出用 to_string 近似。
 // 预期输出：std_json 验收通过（全部断言通过，无 assert 失败退出）。
 import "../../std/result.tie"
 import "../../std/assert.tie"
@@ -43,11 +43,20 @@ func main() {
     assert.assert_eq(json.str_val(n5), "你好")
     var n6 = json.parse("\"a\\nb\"")
     assert.assert_eq(json.str_val(n6), "a\nb")
-    // \u 转义：ASCII 可构造（\u0041 = "A"）
+    // \u 转义：任意合法 Unicode 码点（\u0041="A"、\u4E2D="中"、\u00E9="é"）
     var n7 = json.parse("\"\\u0041\"")
     assert.assert_eq(json.str_val(n7), "A")
-    // 非 ASCII \u：报错
-    assert.assert_eq(json.parse("\"\\u4E2D\""), -1)
+    var n7b = json.parse("\"\\u4E2D\\u00E9\"")
+    assert.assert_eq(json.str_val(n7b), "中é")
+    // 代理对（😀 U+1F600）与 \b \f（按字节构造）
+    var n7c = json.parse("\"\\uD83D\\uDE00\"")
+    assert.assert_eq(json.str_val(n7c), "😀")
+    var n7d = json.parse("\"\\b\\f\"")
+    assert.assert_eq(json.str_val(n7d), str_from_code(8) + str_from_code(12))
+    // 孤立代理（高/低）→ 非法码点，parse 报错
+    assert.assert_eq(json.parse("\"\\uD83D\""), -1)
+    assert.assert(str_len(json.err_msg()) > 0)
+    assert.assert_eq(json.parse("\"\\uDE00\""), -1)
     assert.assert(str_len(json.err_msg()) > 0)
 
     // ---- 数组 ----

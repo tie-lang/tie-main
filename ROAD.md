@@ -13,6 +13,8 @@
 >   任何新功能**，只做优化与稳定性；开发号 **R.x.y.z**。正式版与预发布是**双轨**
 >   （两个独立轨道）：预发布轨 **P.x.y.z** 做新功能，正式版轨 **R.x.y.z** 只做优化与
 >   稳定性，两轨共用 x.y.z 格式但**各自独立编号、不互相延续**。
+> - **当前状态（2026-09-08）**：preview\.6 已发布（2026-09-07）；**r.1 轨已启动**
+>   （r.1 分支，基于 `fa12f94`），任务见下方「正式版轨 r.1」一节。
 
 EN: Positioning — 2026.1 follows a two-stage "preview → stable" development model. The
 preview stage (preview\.6) does all new features under p.6.x modules, numbered P.x.y.z
@@ -22,6 +24,71 @@ numbers its work R.x.y.z. The stable and preview are **dual-track** (two indepen
 tracks): the preview track (P.x.y.z) does new features, the stable track (R.x.y.z) only
 does optimization/stability; both share the x.y.z format but **number independently and
 neither continues the other**.
+
+### 正式版轨 r.1（2026.1，只做优化与稳定性）
+
+> 启动：2026-09-08（r.1 分支，基于 fa12f94 = Harbor-2026.1-preview.6 版本边界）。
+> 审计基线：docs/bugreports/2026-09-08-r1-audit.md（回归 99 PASS / 4 FAIL / 2 SKIP，零新增回归）。
+> 缺陷源：docs/plans/reports/2026-09-09-defect-report.md（Mantle p.0.1 ABI 冒烟 + trm-lite 已知限制 + 源码标注）。
+> 修复纪律：每项以最小用例 + 回归语料闭环；编译期改动维持 tiec 二阶自举不动点；English commit。
+>
+> EN: Stable track r.1 (2026.1, optimization/stability only). Started 2026-09-08 on
+> branch r.1 (base fa12f94 = preview.6 boundary); baseline re-verified with zero new
+> regressions (99 PASS / 4 FAIL / 2 SKIP). Defect sources consolidated in the
+> 2026-09-09 defect report. Fix discipline: minimal corpus + regression corpus per
+> item; compiler changes keep the tiec second-order self-host fixpoint.
+
+**正确性（r.1.1）**
+
+- [ ] r.1.1.1 首读前必写清理 + 全量 alloca 提升 + 入口零初始化（RCA-2 栈溢出 / 未初始化读隐性契约 / ed25519 孤儿泄漏）——三阶自举真不动点重建
+
+- [ ] r.1.1.2 标量全局初值静默丢弃（`var g: i64 = 4` 实为 0；表全局 `= []` 却正常）——全局标量初值正确落位（静态存储/运行时初始化）+ 回归语料
+
+- [ ] r.1.1.3 全局表字面量初始化 IR 缺陷（只允许空表 `[]`；字面量表直接赋全局不支持；空嵌套字面量 `[0 x i64]` 与 ptr 不符）——修正空嵌套字面量 IR 类型生成 + 全局表静态初始化路径
+
+- [ ] r.1.1.4 嵌套表复绑定缺陷（代码被迫扁平为 table<i64> 规避）——复现最小用例 → 修嵌套表重绑定语义；事后允许回退扁平规避
+
+- [ ] r.1.1.5 全局 table<fn() -> i64> 惰性 `= []` 重赋值缺陷（fn 元素路径崩溃）——复现 + 修全局函数表重绑定
+
+- [ ] r.1.1.6 闭包字面量解析缺陷：`func() -> i64 {}` 在 var 初始化/实参位置历史性不稳（spawn 暂只能传命名函数）——复现 + 修位置解析；补 spawn 闭包语料
+
+- [ ] r.1.1.7 混合表元素类型推断缺陷（`table_push(ref参数, v)` 误选 string 桥；同模块混合表 ref push 推断错；std 规避密集：collection/sort）——统一 push 类型推断（按目标表元素静态类型而非值启发），修后拆规避
+
+**安全（r.1.2）**
+
+- [ ] r.1.2.1 CSPRNG 底座原语 + TLS 密钥材料切换（x25519 私钥 / ClientHello random / session id / P-256 临时私钥——根治可预测会话密钥）
+
+- [ ] r.1.2.2 TLS 握手接入 chain.verify（Certificate 阶段解析链 + 证书链/主机名校验，堵中间人）
+
+**性能（r.1.3）**
+
+- [ ] r.1.3.1 std/json parse_string/parse_number 字节化（str_byte + string_builder，O(n²) 根治；httpc/LSP 均已字节化，唯独 json 漏网）
+
+- [ ] r.1.3.2 std/yaml、std/markdown 逐码点 str_char 扫描字节化评估（preprocess/strip_comment/标题表格判定）
+
+**工具链（r.1.4）**
+
+- [x] r.1.4.1 regress-s21.ps1 相对路径解析（硬编码 TIE_INTERP_LIB 失效路径 → 回归门禁假阳性根治）
+
+- [ ] r.1.4.2 table_coll_p2d IR 类型缺陷 RCA（`{i64,i64}` 当 ptr，opt 报 type mismatch；新旧不动点均复现）
+
+- [ ] r.1.4.3 shift_neg_free 负例语义规则（应拒绝的移位越界/负自由当前编译成功）
+
+- [ ] r.1.4.4 llvmgen 未支持指令改硬错误（禁静默降级为 TODO 注释继续链接）
+
+- [ ] r.1.4.5 dbg_fsp 测试更新（旧 API str_char_slice 3 参→1 参）+ 工作区残留清理（未跟踪探针 exe/.ll/.obj）
+
+- [x] r.1.4.6 tiec --shared 自动链接 trm_lite.a（driver.link_shared 未传 g_used_trmlite，DLL 模式内置 spawn/ch/wg 缺符号，需手工 clang -shared 补链）——link_shared 与 link_exe 对齐传链参
+
+**互操作与标准库（r.1.5）**
+
+- [ ] r.1.5.1 tie string 跨 FFM 返回布局验证（Java FFM ↔ DLL string 返回未验证；冒烟以 i64 版本码替代）——设计并验证 string 返回 ABI（指针+长或 SSO 约定）+ 跨语言探针
+
+- [ ] r.1.5.2 wg_count 观察内置（wg 原语集完备；ABI 冒烟被迫镜像计数）
+
+- [x] r.1.5.3 json/yaml `\uXXXX` 字符串构造放宽至任意码点（std/json、std/yaml 目前仅 ASCII 码点，`\b \f` 无法构造）
+
+- [ ] r.1.5.4 const 全局表：决策支持或报错文案更明确（compiler/proto/semantic.tie:1374 暂不支持）
 
 ### 开发计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全 / p.6.7=trm-lite并行 / p.6.8=Skia图形 / p.6.9=LSP重写 / p.6.10=内存治理 / p.6.11=tink v2 互联协议）
 

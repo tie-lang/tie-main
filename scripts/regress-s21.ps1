@@ -5,7 +5,10 @@ param(
 )
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot
-$env:TIE_INTERP_LIB = 'F:\Projects\tie\target\release\tie_interp.lib'
+$env:TIE_INTERP_LIB = Join-Path $Root 'target\release\tie_interp.lib'
+if (-not (Test-Path $env:TIE_INTERP_LIB)) {
+    Write-Warning "TIE_INTERP_LIB 不存在: $env:TIE_INTERP_LIB（回归结果将不可信）"
+}
 $pass = 0; $fail = 0; $known = 0
 
 function Compile-Run($src, $runIt) {

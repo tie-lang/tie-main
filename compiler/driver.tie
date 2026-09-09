@@ -1273,7 +1273,7 @@ func compile_shared(ir_path: string, opt_path: string, target: string) -> i64 {
             dll_path = replace_ext(g_input, "dll")
         }
     }
-    var src = tc.link_shared(opt_path, dll_path, target, g_used_interp, g_used_wsock)
+    var src = tc.link_shared(opt_path, dll_path, target, g_used_interp, g_used_trmlite, g_used_wsock)
     if src != 0 {
         println(diagcode.render_error(-1, -1, "后端失败: " + tc_err_msg))
         return 1

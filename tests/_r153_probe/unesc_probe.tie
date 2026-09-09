@@ -1,0 +1,137 @@
+type tie<logic>
+// r.1.5.3 探针：std/json + std/yaml 字符串转义解码缺陷（\uXXXX 仅 ASCII、
+// \b \f 无法构造）的复现与验证。
+//   - 修复前：\u4E2D（中）、\u00E9（é）、\b、\f、代理对 → parse 失败（返回 -1）。
+//   - 修复后：全部成功，解码结果与期望逐字节一致；JSON 序列化往返保持字节一致。
+// 注意：json/yaml 每次 parse 重置节点表，句柄跨 parse 失效——值须紧接 parse 捕获。
+// 编译运行：compiler\tiec.exe tests\_r153_probe\unesc_probe.tie -o <exe> && <exe>
+import "../../std/json.tie" as json
+import "../../std/yaml.tie" as yaml
+import "../../std/utf.tie" as utf
+
+func chk(name: string, got: string, want: string) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=[" + got + "] want=[" + want + "]")
+        exit(1)
+    }
+}
+
+func chk_i64(name: string, got: i64, want: i64) {
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+// 字符串 → 码点表（逐码点抽取；表元素 == 比较即逐字节验证 UTF-8 编码一致）。
+func cps(s: string) -> table<i64> {
+    var t = table_new_i64()
+    var n: i64 = str_len(s)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, char_code(str_char(s, i)))
+        i = i + 1
+    }
+    return t
+}
+
+func chk_cps(name: string, got: string, want: string) {
+    var g = cps(got)
+    var w = cps(want)
+    if len(g) != len(w) {
+        println("FAIL " + name + " cp_count got=" + to_string(len(g)) + " want=" + to_string(len(w)))
+        exit(1)
+    }
+    var i: i64 = 0
+    while i < len(g) {
+        if g[i] != w[i] {
+            println("FAIL " + name + " cp[" + to_string(i) + "] got=" + to_string(g[i]) + " want=" + to_string(w[i]))
+            exit(1)
+        }
+        i = i + 1
+    }
+    println("PASS " + name)
+}
+
+func main() {
+    // ==================== json：\uXXXX 任意码点（值紧接 parse 捕获） ====================
+    var j1 = json.parse("\"\\u4E2D\"")
+    var v_j1 = json.str_val(j1)
+    var j2 = json.parse("\"\\u00E9\"")
+    var v_j2 = json.str_val(j2)
+    var j3 = json.parse("\"\\u0041\"")
+    var v_j3 = json.str_val(j3)
+    var j3b = json.parse("\"a\\u4E2Db\\u00E9c\"")
+    var v_j3b = json.str_val(j3b)
+    var j4 = json.parse("\"\\b\\f\"")
+    var v_j4 = json.str_val(j4)
+    var j5 = json.parse("\"\\u0008\\u000C\"")
+    var v_j5 = json.str_val(j5)
+    var j6 = json.parse("\"\\uD83D\\uDE00\"")
+    var v_j6 = json.str_val(j6)
+
+    chk("json_u4e2d", v_j1, "中")
+    chk("json_ue9", v_j2, "é")
+    chk("json_ascii", v_j3, "A")
+    chk("json_mixed", v_j3b, "a中béc")
+    chk("json_bf", v_j4, str_from_code(8) + str_from_code(12))
+    chk("json_u0008_u000c", v_j5, str_from_code(8) + str_from_code(12))
+    chk("json_surrogate", v_j6, "😀")
+    // 孤立高/低代理 → 非法码点，parse 失败
+    chk_i64("json_lone_high", json.parse("\"\\uD83D\""), -1)
+    chk_i64("json_lone_low", json.parse("\"\\uDE00\""), -1)
+
+    // ==================== json：字节级与往返 ====================
+    chk_i64("json_u4e2d_blen", utf.byte_len(v_j1), 3)
+    chk_i64("json_ue9_blen", utf.byte_len(v_j2), 2)
+    chk_i64("json_bf_blen", utf.byte_len(v_j4), 2)
+    chk_i64("json_emoji_blen", utf.byte_len(v_j6), 4)
+    // 往返：parse → to_str → parse，字节一致（含中文/é/\b/\f/emoji）
+    var jm = json.parse("\"中é\\b\\f\\uD83D\\uDE00\"")
+    var jms = json.to_str(jm)
+    var rt = json.parse(jms)
+    var v_rt = json.str_val(rt)
+    chk("json_rt_str", v_rt, "中é" + str_from_code(8) + str_from_code(12) + "😀")
+    chk_cps("json_rt_cps", v_rt, "中é" + str_from_code(8) + str_from_code(12) + "😀")
+
+    // ==================== yaml：\uXXXX 任意码点（块式 + 流式） ====================
+    var y1 = yaml.parse("k: \"\\u4E2D\"\n")
+    var yk1 = yaml.str_val(yaml.obj_get(y1, "k"))
+    var y2 = yaml.parse("k: \"\\u00E9\"\n")
+    var yk2 = yaml.str_val(yaml.obj_get(y2, "k"))
+    var y3 = yaml.parse("k: \"\\u0041\"\n")
+    var yk3 = yaml.str_val(yaml.obj_get(y3, "k"))
+    var y4 = yaml.parse("flow: {k: \"\\u4E2D\"}\n")
+    var yk4 = yaml.str_val(yaml.obj_get(yaml.obj_get(y4, "flow"), "k"))
+    var y5 = yaml.parse("k: \"\\b\\f\"\n")
+    var yk5 = yaml.str_val(yaml.obj_get(y5, "k"))
+    var y6 = yaml.parse("k: \"\\u0008\\u000C\"\n")
+    var yk6 = yaml.str_val(yaml.obj_get(y6, "k"))
+    var y7 = yaml.parse("k: \"\\uD83D\\uDE00\"\n")
+    var yk7 = yaml.str_val(yaml.obj_get(y7, "k"))
+
+    chk("yaml_u4e2d", yk1, "中")
+    chk("yaml_ue9", yk2, "é")
+    chk("yaml_ascii", yk3, "A")
+    chk("yaml_flow_u4e2d", yk4, "中")
+    chk("yaml_bf", yk5, str_from_code(8) + str_from_code(12))
+    chk("yaml_u0008_u000c", yk6, str_from_code(8) + str_from_code(12))
+    chk("yaml_surrogate", yk7, "😀")
+    chk_i64("yaml_lone_high", yaml.parse("k: \"\\uD83D\"\n"), -1)
+    chk_i64("yaml_lone_low", yaml.parse("k: \"\\uDE00\"\n"), -1)
+
+    // ==================== yaml：字节级 ====================
+    chk_i64("yaml_u4e2d_blen", utf.byte_len(yk1), 3)
+    chk_i64("yaml_ue9_blen", utf.byte_len(yk2), 2)
+    chk_i64("yaml_bf_blen", utf.byte_len(yk5), 2)
+    chk_i64("yaml_emoji_blen", utf.byte_len(yk7), 4)
+    chk_cps("yaml_u4e2d_cps", yk1, "中")
+    chk_cps("yaml_surrogate_cps", yk7, "😀")
+
+    println("done")
+    exit(0)
+}
