@@ -1988,6 +1988,21 @@ func builtin_expr(nm: string, id: i64) -> i64 {
                 te = le
             }
         }
+        // r.1.1.7：**目标表实参节点的语义类型**（按目标表元素静态类型，非值类型
+        // 启发）——table<T> 标注/推断的变量节点 node_types 是逐表达式语义推断，
+        // 不依赖按名登记的 lv_telem（后者在 irgen 阶段只剩最后一次登记，同模块
+        // 混合 i64/string 表时 ref 参数/局部表 push 会误取另一函数的同名登记 →
+        // 误选 string 桥生成 `store ptr <i64值>` → opt 类型错）。裸 table（
+        // table_new_* 返回）node_types 无元素类型，自然落空继续走 sinfer 兜底。
+        if te < 0 {
+            var aty = node_types[tname_node]
+            if types.is_table(aty) && !types.is_map(aty) && aty != types.named(TK_TABLE) {
+                var ale = types.table_elem(aty)
+                if ale > 0 {
+                    te = ale
+                }
+            }
+        }
         if te < 0 {
             te = sinfer.var_table_elem(tnid)
         }
@@ -2006,9 +2021,14 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         // p.6.10.4：嵌套表元素 retain——push 表值（如容器表 push 另一张表）→ 容器
         // 元素持有引用。容器 release 只释放 data 缓冲、不释放元素表，元素表由各自
         // 引用方负责释放——此处在 push 前 retain 保证元素表引用计数正确不悬垂。
+        // r.1.1.4：仅**别名值**（变量/下标/字段读，tag≠7/12）retain（源槽仍持引用，
+        // 容器与源各自持 1 份）；**瞬态值**（调用返回 tag 7 / 表字面量 tag 12）所有权
+        // 转移给容器（rc 不变）——否则字面量 rc=1 + retain=2，容器 release 只 -1 剩
+        // 1 份无人释放 → 每 push 泄漏 1 引用（嵌套表/扁平表重绑定内存无界增长）。
         // 在桥选/装箱之前对原始表句柄 retain（x 可能是后续装箱产物，非表句柄）。
         var pv_t = node_types[call_arg(id, 1)]
-        if pv_t >= 0 && types.is_table(pv_t) {
+        var pv_tag = s_tags[call_arg(id, 1)]
+        if pv_t >= 0 && types.is_table(pv_t) && pv_tag != 7 && pv_tag != 12 {
             tig_tbl_retain_call(x)
         }
         // 桥选择：按**值**的实际类型判定（嵌套表/字符串值 → push_string 存 ptr；

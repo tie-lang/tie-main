@@ -232,7 +232,11 @@ func tig_field_assign(id: i64) -> i64 {
         var fld_new_tbl: bool = false
         if fty >= 0 && types.is_table(fty) {
             fld_is_tbl = true
-            if s_tags[val] == 7 {
+            // r.1.1.4：表字面量（tag 12）同 table_new_* 构造是瞬态新表 → 免 retain
+            //（所有权随存储转移给字段；字段不 release 旧值，设计已接受）。
+            if s_tags[val] == 12 {
+                fld_new_tbl = true
+            } else if s_tags[val] == 7 {
                 var cnmf2 = sstate.name_str(val)
                 if cnmf2 == "table_new_i64" || cnmf2 == "table_new_f64" ||
                     cnmf2 == "table_new_string" || cnmf2 == "table_new_bool" {
@@ -973,7 +977,7 @@ func tig_table_lit(id: i64) -> i64 {
     // 数字实参必须先转值 id（gen_ext_call* 的实参都是值 id，直接传数字
     // 会被当作值引用生成前向引用 %N）
     var size_v = tig_int_lit_ty(size, types.named(TK_I64))
-    var t = s21_table_new(size_v)
+    var t = s21_table_new_ty(elem, size_v)  // r.1.1.4：元素为表 → 深表（release 逐元素释放）
     // 逐元素 push
     var i: i64 = 0
     while i < nc {
@@ -1027,6 +1031,19 @@ func tig_table_lit(id: i64) -> i64 {
                     return -1
                 }
                 v = bx
+            }
+        }
+        // r.1.1.4：字面量元素为**别名表值**（变量/下标/字段读，tag≠7/12）→
+        // retain——容器元素持引用，深容器 release 时 -1 守恒（否则内层表所有权
+        // 只挂在别名变量上：变量先析构 → 容器深释放读悬垂句柄 → 双重释放
+        // 0xC0000374）。瞬态值（调用 tag 7 / 表字面量 tag 12）所有权转移给容器
+        //（rc 不变）——与 table_push 内建路径同纪律。仅深容器（元素为表）需要；
+        // 元素为 any 盒（flat 容器）不 retain（盒本就不由容器释放）。
+        if types.is_table(elem) && pty != types.named(TK_ANY) {
+            var vte = node_types[val]
+            var vte_tag = s_tags[val]
+            if vte >= 0 && types.is_table(vte) && vte_tag != 7 && vte_tag != 12 {
+                tig_tbl_retain_call(v)
             }
         }
         s21_table_push(t, pty, v)

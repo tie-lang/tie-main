@@ -28,17 +28,11 @@ namespace coll {
 // 向最小堆 t 插入值 v：追加到尾部后上浮，保持堆序（父 <= 子）。
 // 上浮：从新元素位置开始，与父节点比较，比父小则交换，逐级上移。
 // 修改类函数用 ref 表参数（T0.3）：内容写回调用方实参槽。
+// r.1.1.7：直接 table_push(ref参数, v) + 原地交换（编译器 push 桥按目标表
+// 元素静态类型选择，同模块混合 i64/string 表不再误选 string 桥）。
 pub func heap_push(t: ref table<i64>, v: i64) {
-    // 局部表 + push + 上浮 + rebind（规避同模块混合 i64/string 表的 ref push
-    // 元素类型推断缺陷——直接 table_push(ref参数, v) 会误选 string 桥）
-    var nt = table_new_i64()
-    var i: i64 = 0
-    while i < len(t) {
-        table_push(nt, t[i])
-        i = i + 1
-    }
-    table_push(nt, v)
-    var j: i64 = len(nt) - 1
+    table_push(t, v)
+    var j: i64 = len(t) - 1
     var up: bool = true
     while up {
         // 已到根：上浮结束
@@ -47,18 +41,16 @@ pub func heap_push(t: ref table<i64>, v: i64) {
         } else {
             var p: i64 = (j - 1) / 2
             // 比父小则交换（最小堆），否则堆序已满足
-            if nt[j] < nt[p] {
-                var tmp: i64 = nt[j]
-                nt[j] = nt[p]
-                nt[p] = tmp
+            if t[j] < t[p] {
+                var tmp: i64 = t[j]
+                t[j] = t[p]
+                t[p] = tmp
                 j = p
             } else {
                 up = false
             }
         }
     }
-    // 重绑定写回调用方（ref 语义，T0.3）
-    t = nt
 }
 
 // 取出堆顶并删除：空堆返回哨兵 0。删除 = 末元素放根 + 下沉调整。
@@ -135,16 +127,9 @@ pub func heap_size(t: table<i64>) -> i64 {
 // ---------- 栈 ----------
 
 // 入栈：追加到表尾（表尾即栈顶）。修改类函数用 ref 表参数（T0.3）。
-// 局部表 + push + rebind（规避同模块混合表的 ref push 推断缺陷，同 heap_push）。
+// r.1.1.7：直接 table_push(ref参数, v)（编译器按目标表元素静态类型选桥）。
 pub func stack_push(t: ref table<i64>, v: i64) {
-    var nt = table_new_i64()
-    var i: i64 = 0
-    while i < len(t) {
-        table_push(nt, t[i])
-        i = i + 1
-    }
-    table_push(nt, v)
-    t = nt
+    table_push(t, v)
 }
 
 // 出栈并删除栈顶：空栈返回哨兵 0。无缩表原语，ref 重建前 n-1 个元素重绑定。
@@ -713,7 +698,8 @@ pub func contains_string(t: table<string>, value: string) -> bool {
 // 载体：有序 table<i64> / table<string>（元素唯一、升序）——纯 std 实现，复用
 // std/sort 的二分查找（contains_i64/index_of_i64）与有序插入（insert_sorted_*）。
 // 集合运算（union/intersect/diff）用双指针归并（两表都升序，O(n+m)）。
-// 修改类函数（set_add_*/set_remove_*）用 ref 表参数 + 局部表重绑定（T0.3）。
+// 修改类函数（set_add_*/set_remove_*）用 ref 表参数（T0.3）；set_remove 因无
+// 缩表原语重建新表重绑定（功能所需，r.1.1.7 后不再是为规避 push 推断）。
 // 注意：tie 的逻辑 && **不短路**，表下标访问用嵌套 if 防护越界（同 heap_pop）。
 
 // 空集合（i64）。

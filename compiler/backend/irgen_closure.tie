@@ -223,6 +223,13 @@ func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, p_ref
     // 保存外层作用域（入口函数用独立作用域：捕获变量 + 参数登记；生成完
     // 恢复——否则闭包构造点的 tig_var_ref 会查到入口函数的 env 字段地址，
     // 跨函数引用产生 undefined value）。tie 表变量赋值 = 引用，须开新表。
+    // r.1.1.6：**全部 per-function 登记**一并保存/恢复（对齐 tig_fn_def 的每
+    // 函数重置清单）——否则入口函数继承外层函数的 g_tblcand_allocas 等表：
+    // 闭包体尾部 tig_tbl_exit_release 按**外层** value id 取槽地址，落到入口
+    // 函数的参数寄存器（env 为参数 0）→ `load ptr, ptr %0` 在 env=null 时
+    // 读地址 0 崩溃（0xC0000005；实测闭包字面量作 table_push 实参必崩——
+    // r.1.1.6 最小复现）。g_tv_keys/g_param_nids/g_gt_*/g_sb_*/g_cbs_* 同理会
+    // 使闭包内选桥/析构/字符串构建错用外层状态，一并隔离。
     var s_keys = g_sc_keys
     var s_allocas = g_sc_allocas
     var s_tys = g_sc_tys
@@ -231,6 +238,16 @@ func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, p_ref
     var s_lpb = g_lp_breaks
     var s_lpc = g_lp_cont
     var s_lpt = g_lp_top
+    var s_gtn = g_gt_names
+    var s_gtb = g_gt_blks
+    var s_tvk = g_tv_keys
+    var s_tve = g_tv_elems
+    var s_pn = g_param_nids
+    var s_tc = g_tblcand_allocas
+    var s_sbk = g_sb_keys
+    var s_sbh = g_sb_hv
+    var s_cbsk = g_cbs_keys
+    var s_cbsa = g_cbs_acc
     g_sc_keys = table_new_i64()
     g_sc_allocas = table_new_i64()
     g_sc_tys = table_new_i64()
@@ -239,6 +256,16 @@ func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, p_ref
     g_lp_breaks = table_new_i64()
     g_lp_cont = table_new_i64()
     g_lp_top = 0
+    g_gt_names = table_new_i64()
+    g_gt_blks = table_new_i64()
+    g_tv_keys = table_new_i64()
+    g_tv_elems = table_new_i64()
+    g_param_nids = table_new_i64()
+    g_tblcand_allocas = table_new_i64()
+    g_sb_keys = table_new_i64()
+    g_sb_hv = table_new_i64()
+    g_cbs_keys = table_new_i64()
+    g_cbs_acc = table_new_i64()
     var params: table<i64> = table_new_i64()
     table_push(params, types.named(TK_STR))  // env ptr（隐藏第一参数）
     var k: i64 = 0
@@ -313,7 +340,7 @@ func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, p_ref
             ir.add_operand(ret, dv, 0)
         }
     }
-    // 恢复外层作用域（入口函数作用域已用尽）
+    // 恢复外层作用域与 per-function 登记（入口函数作用域已用尽；r.1.1.6）
     g_sc_keys = s_keys
     g_sc_allocas = s_allocas
     g_sc_tys = s_tys
@@ -322,6 +349,16 @@ func tig_closure_entry_fn(ci: i64, id: i64, ret_ty: i64, ptys: table<i64>, p_ref
     g_lp_breaks = s_lpb
     g_lp_cont = s_lpc
     g_lp_top = s_lpt
+    g_gt_names = s_gtn
+    g_gt_blks = s_gtb
+    g_tv_keys = s_tvk
+    g_tv_elems = s_tve
+    g_param_nids = s_pn
+    g_tblcand_allocas = s_tc
+    g_sb_keys = s_sbk
+    g_sb_hv = s_sbh
+    g_cbs_keys = s_cbsk
+    g_cbs_acc = s_cbsa
     return fid
 }
 

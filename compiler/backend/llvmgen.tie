@@ -1134,14 +1134,31 @@ func gen_func(fid: i64) {
                             // 按形参原样保留——小号 id 的 alloca 补 store 会写成对形参的
                             // store（opt reject：defined i64 expected ptr），跳过即可。
                             if v_a >= g_pcnt {
+                                // r.1.1.1 全类型入口零初始化：此前仅 i64/i8/ptr/double
+                                // 四型覆盖（i1/i32 等槽位提升后读旧值/垃圾，语义不确定）。
+                                // 实测编译器自身 IR 含 i1×249/i32×11/聚合×21 等未清零 alloca；
+                                // 补齐后任何提升槽首读必得确定 0（分析确认当前无读先于写，
+                                // 故零初始化语义透明，纯防御加固）。聚合/any 用 zeroinitializer。
                                 if ty_a == "i64" {
                                     line("store i64 0, ptr %" + to_string(v_a))
                                 } else if ty_a == "i8" {
                                     line("store i8 0, ptr %" + to_string(v_a))
+                                } else if ty_a == "i16" {
+                                    line("store i16 0, ptr %" + to_string(v_a))
+                                } else if ty_a == "i32" {
+                                    line("store i32 0, ptr %" + to_string(v_a))
+                                } else if ty_a == "i128" {
+                                    line("store i128 0, ptr %" + to_string(v_a))
+                                } else if ty_a == "i1" {
+                                    line("store i1 false, ptr %" + to_string(v_a))
                                 } else if ty_a == "ptr" {
                                     line("store ptr null, ptr %" + to_string(v_a))
+                                } else if ty_a == "float" {
+                                    line("store float 0.0, ptr %" + to_string(v_a))
                                 } else if ty_a == "double" {
                                     line("store double 0.0, ptr %" + to_string(v_a))
+                                } else {
+                                    line("store " + ty_a + " zeroinitializer, ptr %" + to_string(v_a))
                                 }
                             }
                         }

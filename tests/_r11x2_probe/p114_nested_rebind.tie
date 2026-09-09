@@ -1,0 +1,36 @@
+type tie<logic>
+// r.1.1.4 正例语料：嵌套表可用性——字面量/重绑定/深度/字符串内层/函数返回/
+// 动态 push/循环重绑定内存有界。期望输出逐行：
+//   a=2 a[1][0]=c / c[0][0][1]=2 / d=2 d[1][0]=7 / e=3 e[2][1]=6 /
+//   mem loop done 2 4
+func make_nested() -> table<table<i64>> {
+    var t: table<table<i64>> = [[5, 6], [7, 8]]
+    return t
+}
+
+func main() {
+    // 1. string 内层嵌套表 + 重绑定（复绑定：空表 → 嵌套表 → 换新表）
+    var a: table<table<string>> = [["x"], ["y", "z"]]
+    a = [["a", "b"], ["c"]]
+    println("a=" + to_string(len(a)) + " a[1][0]=" + a[1][0])
+    // 2. 深度 3 嵌套：c[0][0] 是内层表，c[0][0][1] 是 i64
+    var c: table<table<table<i64>>> = [[[1, 2], [3]], [[4]]]
+    println("c[0][0][1]=" + to_string(c[0][0][1]))
+    // 3. 函数返回嵌套表 + 重绑定
+    var d: table<table<i64>> = [[1]]
+    d = make_nested()
+    println("d=" + to_string(len(d)) + " d[1][0]=" + to_string(d[1][0]))
+    // 4. 动态构造：push 内层表字面量到外层（嵌套表元素 retain 路径）
+    var e: table<table<i64>> = []
+    e = [[1, 2], [3, 4]]
+    table_push(e, [5, 6])
+    println("e=" + to_string(len(e)) + " e[2][1]=" + to_string(e[2][1]))
+    // 5. 循环重绑定 20 万次：内存有界（深容器 release 逐元素释放内层表）+ 行为正确
+    var i: i64 = 0
+    var t: table<table<i64>> = []
+    while i < 200000 {
+        t = [[1, 2], [3, 4]]
+        i = i + 1
+    }
+    println("mem loop done " + to_string(len(t)) + " " + to_string(t[1][1]))
+}

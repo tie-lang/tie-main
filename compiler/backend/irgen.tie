@@ -135,6 +135,10 @@ var g_ret_tup_tbl: i64 = 0;
 // 回边重写（槽持上一轮表，store 前须 release）。零值全局天然首版为 0，无需入口
 // 初始化（循环内栈槽无法安全置空：alloca 在非 entry 块）。
 var g_tf_ctr: i64 = 0;
+// r.1.1.4：loopf 哨兵名按「所在函数名 + 计数」命名（tig_loopvar_release）——
+// 独立编译再静态链接的单元（用户程序 vs trm_lite.a）函数名天然不同，哨兵
+// 名 tl_loopf_<fn>_<n> 互不冲突（LNK2005 多重定义根治），且命名逻辑随源码
+// 确定——种子编译器与自举产物同源同逻辑 → 两轮 --emit-ir 逐字节一致。
 // 顶层全局变量登记：name 池 id → 类型 id / 表元素类型 id（对齐 sstate gb_*，
 // 直接查 gb_keys/gb_vals/gb_telem；此处仅缓存 llvm 初始化需要的标记）。
 // （llvmgen 侧维护 g_global_* 登记表，irgen 仅转发登记。）
@@ -185,6 +189,7 @@ var g_cbs_keys: table<i64>;   // 提升中变量名池 id（字节表变量）
 var g_cbs_acc: table<i64>;    // 平行：私有累积表句柄
 
 namespace irgen {
+
 // 变量引用：load 指令（从 alloca 读取）。含全局变量（标量 load @g /
 // 表全局 load ptr, ptr @g——表指针本身）。
 func tig_var_ref(name_id: i64) -> i64 {
@@ -1368,7 +1373,7 @@ func tig_fn_def(fn_node: i64, prefix: string) -> i64 {
                 } else {
                     var gsz = elem_size(gte)
                     var gsz_v = tig_int_lit_ty(gsz, types.named(TK_I64))
-                    gv = s21_table_new(gsz_v)
+                    gv = s21_table_new_ty(gte, gsz_v)  // r.1.1.4：元素为表 → 深表
                     if gv < 0 {
                         return -1
                     }

@@ -206,7 +206,20 @@ func tig_tbl_exit_release() {
 // 支配关系（实测分裂块在大型自举代码中触发 LLVM「instruction does not dominate」）。
 func tig_loopvar_release(av: i64) {
     g_tf_ctr = g_tf_ctr + 1
-    var fname = "tl_loopf_" + to_string(g_tf_ctr)
+    // r.1.1.4：哨兵名含所在函数名——独立编译再静态链接的单元（用户程序 vs
+    // trm_lite.a）函数名天然不同，哨兵名互不冲突（LNK2005 多重定义根治；
+    // 实测 rebuild trm_lite.a 后与用户程序同发 tl_loopf_1 → 链接失败）。
+    // `::` → `$`（对齐 llvmgen 命名空间 mangle），其余标识符字符本就合法。
+    var fn_san = str.clone(g_cur_fn_name)
+    var si: i64 = 0
+    while si < str_len(fn_san) {
+        if str_char(fn_san, si) == ":" {
+            // "::" 两字符 → 替换为 "$"
+            fn_san = slice(fn_san, 0, si) + "$" + slice(fn_san, si + 2, str_len(fn_san))
+        }
+        si = si + 1
+    }
+    var fname = "tl_loopf_" + fn_san + "_" + to_string(g_tf_ctr)
     llvmgen.global_scalar_reg(fname, types.named(TK_I64))
     // 显式置零初值（llvmgen 标量默认 -1 哨兵，须归 0 让「首次」判定成立）
     llvmgen.global_scalar_init(fname, 0)
@@ -423,8 +436,10 @@ func tig_index_assign(id: i64) -> i64 {
     // 普通赋值，v 即表句柄（ptr）；复合赋值 op>=0 的 v 是运算结果（i64），且表
     // 元素复合赋值不合法，故仅普通写。须在 any 装箱之前 retain（装箱后 v 是
     // any 聚合盒，非表句柄——code 30，与 table_push 的 p.6.10.4 同构）。
+    // r.1.1.4：瞬态值（调用 tag 7 / 表字面量 tag 12）免 retain（所有权转移给
+    // 容器），仅别名值（变量/下标/字段读）retain——与 table_push 同纪律。
     var ivt = node_types[val]
-    if op < 0 && ivt >= 0 && types.is_table(ivt) {
+    if op < 0 && ivt >= 0 && types.is_table(ivt) && s_tags[val] != 7 && s_tags[val] != 12 {
         tig_tbl_retain_call(v)
     }
     // P2b 异构元素装箱：表<any> 下标写，值须 box 为 any
@@ -1171,9 +1186,11 @@ func tig_stmt(id: i64) -> i64 {
             // p.6.10.3：VarDecl 表引用接管——init 是表表达式（非 table_new_* 构造、
             // 非函数调用返回——后者已在 callee 的 return 处 retain）→ retain（槽接收
             // 引用，出口析构与之守恒）。
+            // r.1.1.4：表字面量（tag 12）同调用一样是**瞬态值**（新表 rc=1，仅本槽
+            // 持有）→ 免 retain（否则 rc=2、出口析构只 -1 → 每处字面量初始化泄漏 1）。
             if iv >= 0 && init >= 0 {
                 var iv4 = node_types[init]
-                if iv4 >= 0 && types.is_table(iv4) && s_tags[init] != 7 {
+                if iv4 >= 0 && types.is_table(iv4) && s_tags[init] != 7 && s_tags[init] != 12 {
                     // p.6.1.7-RCA-3【2026-09-06】：元组**解构**字段读（var (a,b)=f() 由
                     // 解析器降级为 `var a = _tmp.Item1`，tag 15）——元素表所有权已随被调
                     // 函数返回转移给调用方，此处再 retain(+1) 会与 loopvar 的 -1 不对等，
@@ -1826,7 +1843,9 @@ func tig_stmt(id: i64) -> i64 {
                 // 双引用、覆盖时只 -1 → 每个欧几里得步的 clone 重赋值泄漏 ~2KB（enode
                 // 失控根因）。仅**变量/别名** RHS（rx=nx、sy1=red，tag 6）仍 retain（两
                 // 槽共享同一表，需各自持引用）。
-                if s_tags[val] == 7 {
+                // r.1.1.4：表字面量 RHS（tag 12）同调用是瞬态值（新表 rc=1）→ 免
+                // retain（否则每轮 `t = [..]` 重绑定泄漏 1 引用 → 循环内无界增长）。
+                if s_tags[val] == 7 || s_tags[val] == 12 {
                     assign_new_tbl = true
                 }
             }

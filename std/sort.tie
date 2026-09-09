@@ -8,14 +8,11 @@ type tie<class>
 //   sort_i64 / sort_string 冒泡排序；insert_sorted_* 有序插入；contains_*/index_of_i64
 //   只读二分查找（非 ref）。
 // 实现说明（编译器约束）：
-//   - 本模块同时存在 table<i64> 与 table<string> 元素的存取。当前 tiec 后端在"同一
-//     模块混合 i64/string 表"时，`table_push(ref参数, ...)` 的元素类型推断会出错
-//     （生成的 IR `store ptr <i64值>` 在优化阶段报类型不匹配）。规避：所有修改类
-//     函数用 `table_new_i64()/table_new_string()` 显式构建**局部**表，仅向其 table_push，
-//     最后用 ref 重绑定 `t = ns` 写回调用方——观察行为等价于原地修改。
-// 表操作约束：只追加（table_push）+ 局部表下标赋值/读。局部表的元素类型由
-//   table_new_* 显式决定，规避混合类型推断缺陷。
-// 排序算法：冒泡排序（迭代式，双循环 + 相邻交换，禁止递归），在局部副本上进行后回写。
+//   - 表操作约束：只追加（table_push）+ 局部表下标赋值/读。修改类函数直接
+//     对 ref 表参数 table_push / 下标交换（r.1.1.7：编译器 push 桥按目标表
+//     元素静态类型选择，同模块混合 i64/string 表不再误选 string 桥，原
+//     「局部表 + rebind」规避已拆除）。
+// 排序算法：冒泡排序（迭代式，双循环 + 相邻交换，禁止递归），原地进行后 ref 回写。
 // 字符串比较：直接用 < / > / == 运算符（IR 走 strcmp，按码点序）。
 // 调用：import 后 sort.sort_i64(t) / sort.insert_sorted_i64(t, v) / sort.contains_i64(t, x)
 // 命名规范：命名空间内函数不加 sort_ 前缀（sort_i64/sort_string 是算法+元素类型
@@ -24,122 +21,104 @@ type tie<class>
 namespace sort {
 // 对无序 i64 表 t 冒泡排序（升序）。ref 表参数：排序结果写回调用方实参槽。
 // 迭代式：外层 n 趟，内层相邻比较交换，每趟把当前最大者沉到尾部。
-// 在局部副本 ns 上冒泡，再以 ref 重绑定写回（规避混合表类型推断缺陷）。
+// 原地冒泡（r.1.1.7：直接下标交换 ref 表参数）。
 pub func sort_i64(t: ref table<i64>) {
-    var ns = table_new_i64()
     var n: i64 = len(t)
-    var i: i64 = 0
-    while i < n {
-        table_push(ns, t[i])
-        i = i + 1
-    }
     var a: i64 = 0
     while a < n {
         var j: i64 = 0
         while j < n - 1 - a {
-            if ns[j] > ns[j + 1] {
-                var tmp: i64 = ns[j]
-                ns[j] = ns[j + 1]
-                ns[j + 1] = tmp
+            if t[j] > t[j + 1] {
+                var tmp: i64 = t[j]
+                t[j] = t[j + 1]
+                t[j + 1] = tmp
             }
             j = j + 1
         }
         a = a + 1
     }
-    t = ns
 }
 
 // 对无序 string 表 t 冒泡排序（升序，strcmp 码点序）。ref 回写；算法同 sort_i64。
+// 原地冒泡（r.1.1.7）。
 pub func sort_string(t: ref table<string>) {
-    var ns = table_new_string()
     var n: i64 = len(t)
-    var i: i64 = 0
-    while i < n {
-        table_push(ns, t[i])
-        i = i + 1
-    }
     var a: i64 = 0
     while a < n {
         var j: i64 = 0
         while j < n - 1 - a {
-            if ns[j] > ns[j + 1] {
-                var tmp = ns[j]
-                ns[j] = ns[j + 1]
-                ns[j + 1] = tmp
+            if t[j] > t[j + 1] {
+                var tmp = t[j]
+                t[j] = t[j + 1]
+                t[j + 1] = tmp
             }
             j = j + 1
         }
         a = a + 1
     }
-    t = ns
 }
 
 // 对无序 f64 表 t 冒泡排序（升序）。ref 回写；算法同 sort_i64。
+// 原地冒泡（r.1.1.7）。
 pub func sort_f64(t: ref table<f64>) {
-    var ns = table_new_f64()
     var n: i64 = len(t)
-    var i: i64 = 0
-    while i < n {
-        table_push(ns, t[i])
-        i = i + 1
-    }
     var a: i64 = 0
     while a < n {
         var j: i64 = 0
         while j < n - 1 - a {
-            if ns[j] > ns[j + 1] {
-                var tmp: f64 = ns[j]
-                ns[j] = ns[j + 1]
-                ns[j + 1] = tmp
+            if t[j] > t[j + 1] {
+                var tmp: f64 = t[j]
+                t[j] = t[j + 1]
+                t[j + 1] = tmp
             }
             j = j + 1
         }
         a = a + 1
     }
-    t = ns
 }
 
 // 有序插入 i64：把 value 插入升序表 t，保持升序。ref 回写调用方。
-// 用局部 ns 从左到右扫描合并（value 在序点插入一次），再 ref 重绑定。
+// r.1.1.7：直接 table_push(ref参数, value) 扩尾 + 原地右移后写序点。
 pub func insert_sorted_i64(t: ref table<i64>, value: i64) {
-    var ns = table_new_i64()
     var n: i64 = len(t)
+    var pos: i64 = n
     var i: i64 = 0
-    var done: bool = false
     while i < n {
-        // 在第一个比 value 大的元素前插入（升序）
-        if !done && value < t[i] {
-            table_push(ns, value)
-            done = true
+        if value < t[i] {
+            pos = i
+            i = n
         }
-        table_push(ns, t[i])
         i = i + 1
     }
-    // value 大于全部元素：追加到尾部
-    if !done {
-        table_push(ns, value)
+    table_push(t, value)
+    var k: i64 = n
+    while k > pos {
+        t[k] = t[k - 1]
+        k = k - 1
     }
-    t = ns
+    t[pos] = value
 }
 
 // 有序插入字符串：把 value 插入升序表 t，保持升序（strcmp 码点序）。ref 回写。
+// r.1.1.7：直接 table_push(ref参数, value) 扩尾 + 原地右移后写序点。
 pub func insert_sorted_string(t: ref table<string>, value: string) {
-    var ns = table_new_string()
     var n: i64 = len(t)
+    var pos: i64 = n
     var i: i64 = 0
-    var done: bool = false
     while i < n {
-        if !done && value < t[i] {
-            table_push(ns, value)
-            done = true
+        if value < t[i] {
+            pos = i
+            i = n
         }
-        table_push(ns, t[i])
         i = i + 1
     }
-    if !done {
-        table_push(ns, value)
+    table_push(t, value)
+    var k: i64 = n
+    while k > pos {
+        t[k] = t[k - 1]
+        k = k - 1
     }
-    t = ns
+    t[pos] = value
 }
 
 // 二分查找 value 在升序 i64 表 t 中的下标；未找到返回 -1。

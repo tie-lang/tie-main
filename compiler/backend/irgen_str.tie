@@ -760,6 +760,23 @@ func s21_table_new(esz_v: i64) -> i64 {
     return t21_intp(tl_i64_1("tl_tbl$tbl_new", esz_v))
 }
 
+// r.1.1.4 深表建表：元素为表（table<T> 嵌套表 / map 元素，句柄 8 字节）→
+// tl_tbl$tbl_new_deep 标记深表——tbl_release 释放容器时逐元素释放内层表句柄，
+// 修复嵌套表重绑定的内层表引用泄漏（无界内存增长）；元素为标量/字符串/any 盒
+// 的普通表保持既有行为（数据缓冲整体释放）。is_table 已含 map；any 盒（16 字节
+// {tag,payload}）非表句柄，is_table(any)=false 自然落普通表。
+func s21_table_new_ty(elem: i64, esz_v: i64) -> i64 {
+    if types.is_table(elem) {
+        return s21_table_new_deep(esz_v)
+    }
+    return s21_table_new(esz_v)
+}
+
+func s21_table_new_deep(esz_v: i64) -> i64 {
+    g_used_trmlite = true
+    return t21_intp(tl_i64_1("tl_tbl$tbl_new_deep", esz_v))
+}
+
 // p.6.10.2 修复（2026-09-05）：内联表构造器统一走运行时建表 + 采纳预建数据缓冲。
 // 背景：p.6.10.2 表内存治理把运行时 tl_tbl 句柄从 32 字节 {cap@0,len@8,data@16,esz@24}
 // 扩为 48 字节 {cap,len,data,esz,lock@32,refcount@40}（新增每表 CRITICAL_SECTION 与

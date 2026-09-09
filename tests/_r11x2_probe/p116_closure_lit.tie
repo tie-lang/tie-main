@@ -1,0 +1,59 @@
+type tie<logic>
+// r.1.1.6 正例语料：闭包字面量位置稳定性——var 初始化 / 实参 / 捕获 / 嵌套 /
+// spawn 直接闭包。期望输出逐行：
+//   a=1 / b=5 / c=5 / d=15 / e=13 / f=10 / g=4 / h=10 / t1=0 t2=1
+func apply(f: fn() -> i64, x: i64) -> i64 {
+    return f() + x
+}
+func apply1(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(x)
+}
+
+func main() {
+    // 1. 无捕获 var 初始化
+    var a = func() -> i64 { return 1 }
+    println("a=" + to_string(a()))
+    // 2. 无捕获 实参位置
+    println("b=" + to_string(apply(func() -> i64 { return 2 }, 3)))
+    // 3. 有参闭包 实参位置
+    println("c=" + to_string(apply1(func(x: i64) -> i64 { return x + 1 }, 4)))
+    // 4. 捕获闭包 var 初始化
+    var base: i64 = 10
+    var d = func() -> i64 { return base + 5 }
+    println("d=" + to_string(d()))
+    // 5. 捕获闭包 实参位置
+    println("e=" + to_string(apply(func() -> i64 { return base + 2 }, 1)))
+    // 6. 多行闭包体 实参位置
+    println("f=" + to_string(apply(func() -> i64 {
+        var s: i64 = 0
+        var i: i64 = 0
+        while i < 5 {
+            s = s + i
+            i = i + 1
+        }
+        return s
+    }, 0)))
+    // 7. 嵌套闭包（闭包体内再定义闭包）
+    var g = func() -> i64 {
+        var inner = func() -> i64 { return 3 }
+        return inner() + 1
+    }
+    println("g=" + to_string(g()))
+    // 8. 级联实参
+    var h = apply(func() -> i64 { return 7 }, apply(func() -> i64 { return 1 }, 2))
+    println("h=" + to_string(h))
+    // 9. spawn 直接闭包字面量（无捕获；irgen 支持 fn() -> i64 签名）
+    var t1 = spawn(func() -> i64 { return 7 })
+    var t2 = spawn(func() -> i64 {
+        var a2: i64 = 3
+        var b2: i64 = 5
+        return a2 + b2
+    })
+    yield()
+    println("t1=" + to_string(t1) + " t2=" + to_string(t2))
+    // 10. 闭包字面量作 table_push 实参（r.1.1.6 入口函数 per-function 登记隔离：
+    // 曾因继承外层 g_tblcand_allocas 在闭包体内对 env(null) 做 load 崩溃 0xC0000005）
+    var ft: table<fn() -> i64> = []
+    table_push(ft, func() -> i64 { return 3 })
+    println("ft0=" + to_string(ft[0]()))
+}
