@@ -85,6 +85,8 @@ opencode.json
 /assets/.render/
 /assets/concepts/.render/
 /assets/preview/.render/
+# brainstorming 可视化会话临时目录
+/.superpowers/
 # S2.3 错误处理探针编译产物（tests/s23_probe/*.tie 由 tiec 编译生成）
 /tests/s23_probe/*.exe
 # S2.4 接口 port 探针编译产物（tests/s24_probe/*.tie 由 tiec 编译生成）
@@ -189,3 +191,27 @@ hello_b2.exe
 /tests/ax_matrix/*.exe
 /tests/ax_matrix/*.obj
 /tests/ax_matrix/*.ll
+
+# ---- r.1.4.5 探针编译/运行产物通用模式 ----
+# tests/ 下探针：.tie 源入库，.exe/.ll/.obj/.log 构建产物不入库（含任意层级子目录）；
+# 既有入库的演示 .exe（cipher/kdf/_p651 等）为已跟踪文件，gitignore 不作用于已跟踪文件，不受影响
+/tests/**/*.exe
+/tests/**/*.exe.new
+/tests/**/*.tie.*exe
+/tests/**/*.ll
+/tests/**/*.opt.ll
+/tests/**/*.obj
+/tests/**/*.log
+# errors/golden 的编译期望产物（err_021/err_053.exe）保留在盘，不被忽略
+!/tests/errors/golden/*.exe
+
+# Python 缓存与临时探针残留（_tmp_ 前缀文件/目录、trace 文本、bench 输出）
+__pycache__/
+_tmp_*
+*_tr.txt
+*_tmp*.txt
+/tests/tsha_bench/OUTPUT.txt
+
+# std 探针编译/运行产物（tink/tsha 系列：.tie 源入库，.exe/.log 不入库）
+/std/*_probe.exe
+/std/*_probe.log
