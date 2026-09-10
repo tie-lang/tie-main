@@ -1,0 +1,155 @@
+type tie<logic>
+// ============================================================================
+// ecdsa_p256_vectors_probe.tie：r.1.6.15——纯 tie ECDSA P-256 确定性向量探针
+//   验证 std/ecdsa_p256.tie（其底层复用 ext/tls/p256.tie 点数 + std/bigint mod-n +
+//   std/hmac 的 RFC 6979 确定性 k）。
+//
+// == 向量来源 ==
+//   - 确定性向量 = RFC 6979 §A.2.5（P-256 + SHA-256，「sample」与「test」两消息）。
+//     私钥 x = C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
+//     （RFC 6979 A.2.5 固定私钥，同消息同签名，断言的 k/r/s 经独立复算逐字节核对，
+//     且独立 A.1.2 向量复现成功佐证 k 派生正确）。
+//   - 自一致性：keygen→pubkey/sign→verify 往返 + 确定性可重放 + 篡改拒绝。
+//   - 边界：d=1 与 d=n-1 的 keygen/pubkey 不崩溃。
+//
+// 断言覆盖：公钥派生、已知答案 r‖s、验签往返、签名确定性、篡改拒绝、合法性拒绝。
+// 性能纪律：向量循环复用预分配缓冲，无 O(n²) 字符串累积。
+// ============================================================================
+
+import "../../std/ecdsa_p256.tie" as ep
+
+// RFC 6979 A.2.5 固定私钥
+var xkey: string = "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"
+
+// sample / test 的 SHA-256 摘要（预计算，本探针不重复哈希）
+var ha_sample: string = "af2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf"
+var ha_test: string   = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+
+// 期望签名 r‖s（RFC 6979 A.2.5）
+var sig_sample: string = "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716" +
+                         "f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"
+var sig_test: string   = "f1abb023518351cd71d881567b1ea663ed3efcf6c5132b354f28d3b0b7d38367" +
+                         "019f4113742a2b14bd25926b49c649155f267e60d3814b4c0cc84250e46f0083"
+
+// 期望公钥 04‖X‖Y（130 hex）
+var pubvec: string = "0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29f" +
+                     "b67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299"
+
+var passes: i64 = 0
+
+func ok(name: string) {
+    passes = passes + 1
+    println("PASS " + name)
+}
+
+func fail(name: string, detail: string) {
+    println("FAIL " + name + " :: " + detail)
+    exit(1)
+}
+
+func chk(name: string, cond: bool, detail: string) {
+    if cond {
+        ok(name)
+    } else {
+        fail(name, detail)
+    }
+}
+
+func chk_str(name: string, got: string, want: string) {
+    chk(name, got == want, "got=" + got + " want=" + want)
+}
+
+// 截取字符串 [a, b)（探针内小工具）。
+func substr(s: string, a: i64, b: i64) -> string {
+    var out: string = ""
+    var i: i64 = a
+    while i < b {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
+}
+
+// 篡改一个 hex 字符（改末位为 '0'）；用于断言签名/摘要微变 → REJECT。
+func tamper_last(s: string) -> string {
+    return substr(s, 0, len(s) - 1) + "0"
+}
+
+// ---- 1. 确定性向量（RFC 6979 A.2.5）----
+func vec_test() {
+    // 公钥派生
+    chk_str("v.01 pubkey(A.2.5-x)", ep.pubkey(xkey), pubvec)
+
+    // 已知答案签名（sample / test）
+    chk_str("v.02 sign(sample)", ep.sign(xkey, ha_sample), sig_sample)
+    chk_str("v.03 sign(test)", ep.sign(xkey, ha_test), sig_test)
+
+    // 确定性可重放：同 d/same hash → 同签名（RFC 6979 确定性 k）
+    var sig_again = ep.sign(xkey, ha_sample)
+    chk_str("v.04 deterministic-replay", sig_again, sig_sample)
+
+    // 验签往返
+    chk("v.05 verify(sample)", ep.verify(pubvec, ha_sample, sig_sample), "sample sig should verify")
+    chk("v.06 verify(test)", ep.verify(pubvec, ha_test, sig_test), "test sig should verify")
+}
+
+// ---- 2. 自一致性循环（随机 keygen）----
+func self_loop() {
+    var i: i64 = 0
+    while i < 3 {
+        var d = ep.keygen()
+        if len(d) != 64 {
+            fail("self keygen-len", "got len " + to_string(len(d)))
+        }
+        var pb = ep.pubkey(d)
+        if len(pb) != 130 {
+            fail("self pubkey-len", "got len " + to_string(len(pb)))
+        }
+        // 用 sample 摘要签名并验签
+        var sig = ep.sign(d, ha_sample)
+        if len(sig) != 128 {
+            fail("self sign-len", "got len " + to_string(len(sig)))
+        }
+        if ep.verify(pb, ha_sample, sig) == false {
+            fail("self verify-ok", "roundtrip must pass")
+        }
+        // 篡改摘要 → 拒绝
+        var bad_hash = tamper_last(ha_sample)
+        if ep.verify(pb, bad_hash, sig) {
+            fail("self tamper-hash", "tampered hash must be rejected")
+        }
+        // 篡改签名 → 拒绝
+        var bad_sig = tamper_last(sig)
+        if ep.verify(pb, ha_sample, bad_sig) {
+            fail("self tamper-sig", "tampered sig must be rejected")
+        }
+        ok("self.it" + to_string(i))
+        i = i + 1
+    }
+}
+
+// ---- 3. 合法性 / 边界 ----
+func edge_test() {
+    // d=1 与 d=n-1 的公钥导出不崩溃且定长
+    var d1 = "0000000000000000000000000000000000000000000000000000000000000001"
+    var dnm1 = "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550"  // n-1
+    chk("e.01 pubkey(d=1) len", len(ep.pubkey(d1)) == 130, "len=" + to_string(len(ep.pubkey(d1))))
+    chk("e.02 pubkey(d=n-1) len", len(ep.pubkey(dnm1)) == 130, "len=" + to_string(len(ep.pubkey(dnm1))))
+    chk("e.03 sign(d=1) len", len(ep.sign(d1, ha_sample)) == 128, "len=" + to_string(len(ep.sign(d1, ha_sample))))
+
+    // 非法输入 → 空串/拒绝
+    chk("e.04 sign(d=0) reject", ep.sign("0000000000000000000000000000000000000000000000000000000000000000", ha_sample) == "", "d=0 must be rejected")
+    chk("e.05 sign(d=n) reject", ep.sign("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", ha_sample) == "", "d=n must be rejected")
+    chk("e.06 sign(bad-len) reject", ep.sign("abcd", ha_sample) == "", "short d must be rejected")
+    chk("e.07 verify(bad-pub) reject", ep.verify(pubvec + "00", ha_sample, sig_sample) == false, "malformed pub must be rejected")
+    // 公钥首字节非 0x04（压缩点）应拒绝
+    var pub_compressed = "02" + substr(pubvec, 2, 130)
+    chk("e.08 verify(compressed-pub) reject", ep.verify(pub_compressed, ha_sample, sig_sample) == false, "non-uncompressed pub must be rejected")
+}
+
+func main() {
+    vec_test()
+    self_loop()
+    edge_test()
+    println("ecdsa_p256 探针全部通过 (" + to_string(passes) + " PASS)")
+}

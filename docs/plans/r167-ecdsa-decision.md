@@ -190,3 +190,34 @@ EN: 6. Draft plan for r.1.6.14: add a pure-tie ECDSA module importing the existi
 | 实现 | r.1.6.14（本文件为 r.1.6.13 裁定，不含实现） |
 
 EN: Decision record — route A pure tie (reuse existing P-256 point math + bigint + csprng), reject B/C, no combination needed; implementation deferred to r.1.6.14.
+
+---
+
+## 9. 已实现（r.1.6.14 / r.1.6.15）
+*EN: 9. Implemented (r.1.6.14 / r.1.6.15)*
+
+> 状态：**已实现，探针 17/17 PASS**（2026-09-10）。
+> EN: Status: **Implemented; probe 17/17 PASS** (2026-09-10).
+
+- **r.1.6.14**：新增 `std/ecdsa_p256.tie`（命名空间 `ecdsa_p256`）。复用 `ext/tls/p256.tie`
+  点数 + `std/bigint.tie` mod-n + `std/hmac.tie`。`ext/tls/p256.tie` 新增 6 个 pub 复用入口
+  （`mulf`/`mulp`/`addp`/`curve_order`/`curve_prime`/`curve_b`，均返回纯 bigint/布尔原语，
+  不跨命名空间暴露 Point）。序列化（本模块独立定义，**与旧 `ext/ecdsa` CNG blob 不同**）：
+  私钥 = d 的 32B hex（64 hex）、公钥 = 未压缩 04‖X‖Y（130 hex）、签名 = r‖s（128 hex）。
+  API：`keygen() / pubkey(d_hex) / sign(d_hex, hash_hex) / verify(pub_hex, hash_hex, sig_hex)`。
+- **确定性 k：已实现 RFC 6979（HMAC-SHA256 DRBG）**——同 d/same hash → 同签名，签名可重放。
+- **r.1.6.15**：新增 `tests/_r167_probe/ecdsa_p256_vectors_probe.tie`，断言 17 项全 PASS：
+  RFC 6979 §A.2.5（sample/test 两消息）公钥 + 已知答案 r‖s 逐字节；自一致性 keygen→sign→verify
+  往返 + 确定性重放；篡改签名/摘要 → 拒绝；d=1、d=n-1 边界；非法输入拒绝。
+- **Windows 本地验证**：`compiler/tiec.exe`（wt-167c）编译探针运行，17 PASS / 0 FAIL；既有
+  `tests/tls_probe/p256_ecdh_probe.tie` 复编复跑仍 7 PASS（p256 微改无回归）。
+- **Linux 交叉现状**：本模块纯 tie，无新增外部符号（BCrypt* 等 9 个 extern 仍由旧
+  `ext/ecdsa` 与 `std/csprng`（独立子项）持有，本模块不引入新符号）；本 worktree 的
+  `tiec` 仅接入 win32 后端，未在本机跑 `--target linux-x64` 链接（预期与其它纯 tie 模块同，
+  仅 CRT 级依赖，无 ecdsa 侧新增）。
+
+EN abbreviated: implemented as route A. `std/ecdsa_p256.tie` (namespace `ecdsa_p256`) reuses
+`p256` point math + bigint mod-n + hmac RFC6979 deterministic k; serialization = raw d hex /
+uncompressed pub / r‖s. `ext/tls/p256.tie` gained 6 pub reuse helpers. Probe (r.1.6.15) asserts
+RFC6979 A.2.5 byte-exact + self-consistency + tamper-reject + boundary; 17/17 PASS on Windows;
+existing p256 ECDH probe still 7 PASS; pure tie, no new extern symbols.
