@@ -98,10 +98,10 @@ neither continues the other**.
 > 现状盘点：`normalize_target` 已有 linux-x64/arm64 三元组、`link_shared` 已有 `.so`+`-fPIC`+`-fuse-ld=lld` 分支；绑定面在 toolchain 查找/链接器、std 系统层（fs/process/net 为 Win32 内联）、trm-lite 同步原语。
 
 - [x] r.1.6.1 工具链平台分支：find_tool 去 `.exe` 后缀 + POSIX 候选路径；link_exe/link_shared 按 target 选择系统库（Linux 不链 ws2_32/user32 等）与链接器（lld）；compile_logic 输出名按平台（Linux 无 `.exe`）；未指定 target 保持本机而非写死 windows（自举不动点 tiecB==tiecC；交叉冒烟 clang --target=linux 走到链接阶段，缺 Linux CRT 待 CI 验证）
-- [ ] r.1.6.2 std/fs POSIX 实现（Win32 UTF-16 `\*W` API → open/read/write/mkdir/opendir/unlink/stat 等，UTF-8 直通）
+- [x] r.1.6.2 std/fs POSIX 实现（编译器 file_* 内置 Linux 分支：15 内置按 target 生成 open/read/write/stat/opendir 等 POSIX extern，UTF-8 直通，Win32 路径不变；自举不动点 + 交叉冒烟到链接；Linux 实机 readdir/stat 布局验证待 CI）
 - [ ] r.1.6.3 std/process + args/cwd/env POSIX（exec_output 去 `cmd >` 语义改 POSIX 重定向/pipe）
 - [ ] r.1.6.4 std/net POSIX socket（Winsock2 → socket/connect/recv/send/bind，TLS 依赖字节级 IO 不变）
-- [ ] r.1.6.5 trm-lite pthread（CRITICAL_SECTION/CONDITION_VARIABLE/CreateThread → pthread_mutex/cond/线程）
+- [x] r.1.6.5 trm-lite pthread（新增 tl_pthread.tie + tl_linux_shim.tie：Win32 同名函数 pthread 实现 + trm_lite_linux.a 构建约定；Windows 全探针回归；编译器侧 is_libc_sym 登记 + `-lpthread` + tiec 重建为配套项，Linux 实机验证待 CI）
 - [ ] r.1.6.6 Linux 自举 + 回归 + 打包（Linux tiec 自举不动点、全量回归、tie-2026.1-linux-x64.zip、捆绑 Linux LLVM 工具链 + 头文件）
 
 ### 开发计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全 / p.6.7=trm-lite并行 / p.6.8=Skia图形 / p.6.9=LSP重写 / p.6.10=内存治理 / p.6.11=tink v2 互联协议）

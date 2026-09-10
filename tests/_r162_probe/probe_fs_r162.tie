@@ -1,0 +1,114 @@
+type tie<logic>
+// _r162_probe：r.1.6.2 Linux POSIX 文件系统分支探针。
+// ============================================================
+// 覆盖 file_* 内置全集（read/write/append/exists/is_file/is_dir/size/delete/
+// mkdir_all/remove_dir_all/list_dir/walk_dir/copy/move + byte_read）——Windows
+// 本机直跑（Win32 分支回归门禁）；Linux 走 CI（.github/workflows/linux-r16.yml，
+// ubuntu-latest）验证 POSIX 分支（UTF-8 直通 / open-read-write / opendir-readdir /
+// stat / unlink-rmdir）。
+// 夹具：相对路径 _r162_fx/（当前工作目录下；运行前清理旧残留）。
+// 输出 PASS/FAIL 逐项 + done,exit 0。
+import "../../std/fs.tie"
+import "../../std/result.tie"
+using fs;
+
+var asserts: i64 = 0
+
+func chk(name: string, got: i64, want: i64) {
+    asserts = asserts + 1
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + to_string(got) + " want=" + to_string(want))
+        exit(1)
+    }
+}
+
+func chk_bool(name: string, got: bool) {
+    asserts = asserts + 1
+    if got {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name)
+        exit(1)
+    }
+}
+
+func chk_str(name: string, got: string, want: string) {
+    asserts = asserts + 1
+    if got == want {
+        println("PASS " + name)
+    } else {
+        println("FAIL " + name + " got=" + got + " want=" + want)
+        exit(1)
+    }
+}
+
+func read_all(p: string) -> string {
+    var r = fs.read_text(p)
+    var content = ""
+    switch r {
+        case Result.Ok(v):
+            content = v
+        case Result.Err(e):
+            println("FAIL read_text err=" + e)
+            exit(1)
+    }
+    return content
+}
+
+func main() {
+    var root = "_r162_fx"
+    // 清理旧残留（上次异常退出可能遗留）
+    if fs.exists(root) {
+        chk_bool("cleanup.old", fs.remove_all(root))
+    }
+    // create_dir_all 多级 + is_dir/is_file 判定（Linux: mkdir 循环；Windows: CreateDirectoryW）
+    var dir = root + "/sub/deep"
+    chk_bool("mkdir_all", fs.create_dir_all(dir))
+    chk_bool("is_dir", fs.is_dir(dir))
+    chk_bool("is_file.dir.false", !fs.is_file(dir))
+    // write_text / exists / size / is_file（Linux: open+write；Windows: CreateFileW+WriteFile）
+    var f = dir + "/hello.txt"
+    chk_bool("write_text", fs.write_text(f, "hello 世界"))
+    chk_bool("exists", fs.exists(f))
+    chk_bool("is_file", fs.is_file(f))
+    chk("size", fs.size(f), 12)  // "hello 世界"：6 ASCII（含空格）+ 3 中文×2 UTF-8 字节 = 12
+    // read_text 往返（Linux: open+read 循环；Windows: ReadFile）
+    chk_str("read_text", read_all(f), "hello 世界")
+    // append 追加（Linux: O_APPEND；Windows: FILE_APPEND_DATA）
+    chk_bool("append_text", fs.append_text(f, "!"))
+    chk("size.after.append", fs.size(f), 13)
+    chk_str("read_text.append", read_all(f), "hello 世界!")
+    // read_lines（fs 层拆分；底层 file_read 已验）
+    var lf = dir + "/lines.txt"
+    chk_bool("write_lines", fs.write_text(lf, "a\nbb\nccc"))
+    var lines = fs.read_lines(lf)
+    chk("read_lines.len", len(lines), 3)
+    chk_str("read_lines[0]", lines[0], "a")
+    chk_str("read_lines[2]", lines[2], "ccc")
+    // copy / rename（Linux: open/read/write 复制 + rename；Windows: CopyFileW/MoveFileW）
+    var cf = dir + "/copy.txt"
+    chk_bool("copy", fs.copy(f, cf))
+    chk_bool("copy.exists", fs.exists(cf))
+    chk("copy.size", fs.size(cf), 13)
+    var mf = dir + "/moved.txt"
+    chk_bool("rename", fs.rename(cf, mf))
+    chk_bool("rename.gone", !fs.exists(cf))
+    chk_bool("rename.exists", fs.exists(mf))
+    // read_bytes（byte_read 底座：libc fopen/fread，双平台共用）
+    var bd = byte_read(f)
+    chk("byte_read.len", len(bd), 13)
+    // list_dir / walk_dir（Linux: opendir/readdir；Windows: FindFirstFileW/FindNextFileW）
+    var sub = root + "/sub"
+    var lst = fs.read_dir(sub)
+    chk("read_dir.len", len(lst), 1)
+    var wl = fs.walk(root)
+    chk("walk.len", len(wl), 5)  // sub、sub/deep、hello.txt、lines.txt、moved.txt
+    // remove / remove_all（Linux: unlink + 后序 rmdir；Windows: DeleteFileW/SHFileOperationW）
+    chk_bool("remove.file", fs.remove(mf))
+    chk_bool("remove.all", fs.remove_all(root))
+    chk_bool("remove.all.gone", !fs.exists(root))
+
+    println("done " + to_string(asserts) + " asserts ok")
+}

@@ -611,6 +611,15 @@ func is_libc_sym(sym: string) -> bool {
         sym == "inet_addr" || sym == "gethostbyname" || sym == "WSAStartup" {
         return true
     }
+    // r.1.6.2：Linux POSIX 文件系统符号（file_* 内置 Linux 分支，UTF-8 直通）。
+    // 全为 libc 符号（非 interp 桥）——Linux 目标链 tie_interp.lib 会直接报错，
+    // 凡引用 POSIX 文件符号必须置 is_libc，否则 link_exe 判 need_interp 失败。
+    if sym == "open" || sym == "read" || sym == "write" || sym == "close" ||
+        sym == "access" || sym == "unlink" || sym == "mkdir" || sym == "rmdir" ||
+        sym == "opendir" || sym == "readdir" || sym == "closedir" ||
+        sym == "stat" || sym == "rename" {
+        return true
+    }
     return false
 }
 
