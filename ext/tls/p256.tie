@@ -293,4 +293,58 @@ pub func dh(d_hex: string, peer_pub: table<i64>) -> table<i64> {
     return to_be32(S.x)
 }
 
+// ---- ECDSA 复用入口（r.1.6.14）----
+// 保持 Point 类型模块内私有，对外暴露纯 bigint/布尔原语，供 std/ecdsa_p256 复用
+// 标量乘与点加，避免跨命名空间的结构体字段访问。三函数均以内核 g_n 约束标量。
+
+// k·G → (x, y, ok)；oc=false 表示 k 非法（0 或 ≥n）或结果为无穷点。
+pub func mulf(k: table<i64>) -> (table<i64>, table<i64>, bool) {
+    ensure()
+    if bigint.is_zero(k) || bigint.cmp(k, g_n) >= 0 {
+        return (table_new_i64(), table_new_i64(), false)
+    }
+    var P = scalar_mul(k, pt(g_gx, g_gy))
+    if P.inf {
+        return (table_new_i64(), table_new_i64(), false)
+    }
+    return (P.x, P.y, true)
+}
+
+// k·Q（Q=(qx,qy)，调用方须已做过 on-curve 校验）→ (x, y, ok)；ok=false 同上。
+pub func mulp(k: table<i64>, qx: table<i64>, qy: table<i64>) -> (table<i64>, table<i64>, bool) {
+    ensure()
+    if bigint.is_zero(k) || bigint.cmp(k, g_n) >= 0 {
+        return (table_new_i64(), table_new_i64(), false)
+    }
+    var P = scalar_mul(k, pt(qx, qy))
+    if P.inf {
+        return (table_new_i64(), table_new_i64(), false)
+    }
+    return (P.x, P.y, true)
+}
+
+// 仿射点加 A+B → (x, y, ok)；ok=false 表示结果为无穷点（A=-B 等退化）。
+pub func addp(ax: table<i64>, ay: table<i64>, bx: table<i64>, by: table<i64>) -> (table<i64>, table<i64>, bool) {
+    ensure()
+    var R = point_add(pt(ax, ay), pt(bx, by))
+    if R.inf {
+        return (table_new_i64(), table_new_i64(), false)
+    }
+    return (R.x, R.y, true)
+}
+
+// 群阶 n / 域模 p / 系数 b（从 hex 固定常量重建，供跨模块共享基准，单次符号量可忽略）。
+pub func curve_order() -> table<i64> {
+    ensure()
+    return g_n
+}
+pub func curve_prime() -> table<i64> {
+    ensure()
+    return g_p
+}
+pub func curve_b() -> table<i64> {
+    ensure()
+    return g_b
+}
+
 }   // namespace p256
