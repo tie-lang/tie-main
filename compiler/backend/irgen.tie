@@ -651,6 +651,19 @@ func is_libc_sym(sym: string) -> bool {
         sym == "sendto" || sym == "recvfrom" {
         return true
     }
+    // r.1.6.16：Linux 目标私有豁免——由 trm_lite_linux.a 的 compat shim 成员解析
+    // （BCryptGenRandom = getrandom(2) shim，r.1.6.8；tie_regex_* 五原语 = POSIX
+    // regcomp 桥，r.1.6.11）。仅在 Linux 目标登记：Windows 下二者保持原 interp
+    // 桥路径（tie_interp.lib / bcrypt.dll 解析），避免破坏既有链接行为。
+    // 注意 tig_is_linux() 取 g_asm_target（driver 注入，恒非空）。
+    if tig_is_linux() {
+        if sym == "BCryptGenRandom" ||
+            sym == "tie_regex_match" || sym == "tie_regex_find" ||
+            sym == "tie_regex_find_all" || sym == "tie_regex_group" ||
+            sym == "tie_regex_replace" {
+            return true
+        }
+    }
     return false
 }
 
