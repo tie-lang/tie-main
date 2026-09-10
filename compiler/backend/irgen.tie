@@ -545,6 +545,12 @@ func is_libc_sym(sym: string) -> bool {
     if sym == "exit" || sym == "remove" {
         return true
     }
+    // r.1.6.6：libc/CRT 常用符号——abs（整数绝对值）/atexit（退出注册）/
+    // _setjmp/longjmp（闭包/分发栈回退，glibc 提供 _setjmp）。未登记会把纯
+    // libc 程序误判为 interp 桥，Linux 目标链接直接拒绝。
+    if sym == "abs" || sym == "atexit" || sym == "_setjmp" || sym == "longjmp" {
+        return true
+    }
     // r.1.6.6：libc clock（tiec 内部计时点，Windows CRT/POSIX 均提供）——
     // 未登记会把纯 libc 程序误判为 interp 桥，Linux 目标链接直接拒绝。
     if sym == "clock" {
