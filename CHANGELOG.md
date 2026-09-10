@@ -22,6 +22,12 @@
 
 ## 2026.1（正式版，开发中）
 
+## [fix] r.1 复查轮二：zero-rust-check $home 覆盖、run-interp-tests 过时路径（2026-09-10）
+
+* **zero-rust-check.ps1**：`Find-LlvmTool` 内 `$home` 覆盖 PowerShell 只读自动变量 `$HOME` → 脚本一运行即炸。改名 `$llvmHome`。修复后 G3 核心三步（hello 16 行 / 运行时内联 libc / Rust-free 符号扫描）全 PASS。
+* **run-interp-tests.ps1**：`$TestDir` 指向已不存在的 `compiler\tests\interp`（repo 重构后移至 `tests\interp`）→ 修复路径。
+* **遗留（既有环境缺口，非本轨引入）**：repl-parity Rust 通道与 run-interp-tests 的 11 项失败源于陈旧 Rust 种子 `target\release\tie-llvm.exe` 对现行源码的兼容缺口（repl 链接期 printf 未定义 / 现行 interp 语料超出种子解释器能力）——种子是 0-Rust 启动边界，需 cargo 重建种子方可闭合；核心 0-Rust 验证不受影响。
+
 ## [fix] r.1 复查轮：diagcode 目录再生成（新文案 E00000 兜底）+ char_code(char) i32-as-ptr + llvm-ar 陈旧产物（2026-09-10）
 
 * **diagcode 门禁回归**：r.1.1.3 把全局表初始化错误文案改为「必须是表字面量 []」，旧目录未登记 → 该错误落 E00000 兜底（golden 失败 1）。重跑生成器（545 条诊断）+ 自举重建，golden 0 回退、ALL PASS。

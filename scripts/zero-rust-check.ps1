@@ -26,9 +26,9 @@ $seed = Join-Path $root 'target\release\tie-llvm.exe'
 
 # 按 TIE_LLVM_HOME → 固定安装目录 → PATH 顺序查找 LLVM 工具。
 function Find-LlvmTool([string]$name) {
-    $home = $env:TIE_LLVM_HOME
-    if ($home) {
-        $cand = Join-Path $home "bin\$name.exe"
+    $llvmHome = $env:TIE_LLVM_HOME
+    if ($llvmHome) {
+        $cand = Join-Path $llvmHome "bin\$name.exe"
         if (Test-Path $cand) { return $cand }
     }
     foreach ($dir in @('D:\LLVM\bin', 'C:\Program Files\LLVM\bin', 'C:\LLVM\bin')) {

@@ -25,7 +25,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
-$TestDir = Join-Path $Root "compiler\tests\interp"
+$TestDir = Join-Path $Root "tests\interp"
 $Tiec = Join-Path $Root "target\release\tie-llvm.exe"
 $Work = Join-Path $env:TEMP "opencode\interp-tests"
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
