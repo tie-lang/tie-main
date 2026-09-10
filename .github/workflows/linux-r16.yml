@@ -91,11 +91,12 @@ jobs:
       - name: Linux regression suite
         run: |
           cd "$GITHUB_WORKSPACE"
-          pwsh scripts/regress-s21.ps1 compiler/tiec-linux2 | tee /tmp/regress.log | tail -4
-          echo "--- FAIL list (platform-diff audit) ---"
-          grep '^FAIL' /tmp/regress.log || true
-          echo "--- SKIP list ---"
-          grep 'SKIP' /tmp/regress.log || true
+          pwsh scripts/regress-s21.ps1 compiler/tiec-linux2 > /tmp/regress.out 2>&1
+          tail -4 /tmp/regress.out
+          echo "--- FAIL lines (verbatim) ---"
+          grep -a 'FAIL' /tmp/regress.out | cat -A | head -20 || true
+          echo "--- SKIP lines ---"
+          grep -a 'SKIP' /tmp/regress.out | cat -A | head -6 || true
 
       - name: Package tie-2026.1-linux-x64.zip
         run: |
