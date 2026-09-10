@@ -1,0 +1,17 @@
+type tie<logic>
+import "./lib_actor.tie" as liba
+
+func main() {
+    liba.init_url(0, "http://a.com/1")
+    liba.init_url(1, "http://a.com/2")
+    var f = run Fetch()
+    var n1 = liba.start_fetch(f, 0)
+    var n2 = liba.start_fetch(f, 1)
+    println("n1=" + to_string(n1) + " n2=" + to_string(n2))
+    if n1 == 1 && n2 == 2 {
+        println("lib actor PASS")
+        exit(0)
+    }
+    println("lib actor FAIL")
+    exit(1)
+}

@@ -2,22 +2,22 @@
 *EN: Design Finalization: trm (tie runtime suite) Final Design*
 
 > 状态：**设计定稿**（2026-08-22 讨论对齐，2026-08-23 定稿）
-> 本文档是 trm 的**唯一权威运行时设计**，取代 `docs/plans/trm-arch.md` 作为执行依据。
+> 本文档是 trm 的**唯一权威运行时设计**，取代 [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) 作为执行依据。
 > 定位：**双层 + 非对称**——纯编译路线 A（保留现状，零依赖）+ trm 运行时路线 B
 > （tieir 字节码 + interp 前端 + 可替换后端 + 引擎级 GC + 全 tie 平台实现）。
 > 哲学：**纯编译是安全默认（actor/纯逻辑）；运行时是能力增强（GC/M:N/反射/热更/动态）**，
 > 老鸟可用 unsafe 显式接入运行时。
-> 决策依据：`docs/plans/trm-design-compare.md`（方案对比，此处为定稿）。
+> 决策依据：[trm-design-compare.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-design-compare.md)（方案对比，此处为定稿）。
 > 关联：`docs/designs/concurrency-model.md`（actor 原生语法零运行时）、
-> `docs/plans/dynamic-library.md`（M5 平台桥，本文档扩展其边界）、
-> `docs/plans/tieir-format.md`（tieir 字节码契据）、`docs/plans/unsafe-model.md`。
+> 2026.1 期规划文档（已随版本归档/演进实现）（M5 平台桥，本文档扩展其边界）、
+> [tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md)（tieir 字节码契据）、2026.1 期规划文档（已随版本归档/演进实现）。
 
 > EN: Status: **Design finalized** (2026-08-22 discussion alignment, 2026-08-23 finalization)
-> EN: This document is trm's **sole authoritative runtime design**, superseding `docs/plans/trm-arch.md` as the basis for implementation.
+> EN: This document is trm's **sole authoritative runtime design**, superseding [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) as the basis for implementation.
 > EN: Positioning: **two-tier + asymmetric** — pure-compilation Route A (preserve the status quo, zero dependencies) + trm runtime Route B (tieir bytecode + interp front-end + replaceable backend + engine-level GC + all-tie platform implementation).
 > EN: Philosophy: **pure compilation is the safe default (actor / pure logic); the runtime is an capability enhancement (GC/M:N/reflection/hot reload/dynamic)**, and veterans can explicitly hook into the runtime with unsafe.
-> EN: Decision basis: `docs/plans/trm-design-compare.md` (option comparison; this is the finalization).
-> EN: Related: `docs/designs/concurrency-model.md` (native actor syntax with zero runtime), `docs/plans/dynamic-library.md` (M5 platform bridge, whose boundary this document extends), `docs/plans/tieir-format.md` (the tieir bytecode contract), `docs/plans/unsafe-model.md`.
+> EN: Decision basis: [trm-design-compare.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-design-compare.md) (option comparison; this is the finalization).
+> EN: Related: `docs/designs/concurrency-model.md` (native actor syntax with zero runtime), 2026.1 期规划文档（已随版本归档/演进实现） (M5 platform bridge, whose boundary this document extends), [tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md) (the tieir bytecode contract), 2026.1 期规划文档（已随版本归档/演进实现）.
 
 ## 1. 一句话总览
 *EN: 1. One-Line Overview*
@@ -409,17 +409,17 @@ EN: 6. **Whether to retire trm-arch.md**: this finalization is authoritative; wh
 ## 13. 相关文档
 *EN: 13. Related Documents*
 
-- 方案对比（决策依据）：`docs/plans/trm-design-compare.md`
-- EN: Option comparison (decision basis): `docs/plans/trm-design-compare.md`
-- 规划稿：`docs/plans/trm-arch.md`（被本文档取代，待归档）
-- EN: Draft: `docs/plans/trm-arch.md` (superseded by this document, pending archival)
+- 方案对比（决策依据）：[trm-design-compare.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-design-compare.md)
+- EN: Option comparison (decision basis): [trm-design-compare.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-design-compare.md)
+- 规划稿：[trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md)（被本文档取代，待归档）
+- EN: Draft: [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) (superseded by this document, pending archival)
 - actor 零运行时：`docs/designs/concurrency-model.md`
 - EN: actor with zero runtime: `docs/designs/concurrency-model.md`
-- 动态库边界（被扩展）：`docs/plans/dynamic-library.md`
-- EN: Dynamic-library boundary (being extended): `docs/plans/dynamic-library.md`
-- tieir 字节码：`docs/plans/tieir-format.md`
-- EN: tieir bytecode: `docs/plans/tieir-format.md`
-- unsafe 凭据门禁：`docs/plans/unsafe-model.md`
-- EN: unsafe credential gates: `docs/plans/unsafe-model.md`
-- 实施路线图：`docs/plans/roadmap.md`（S4.1 trm）
-- EN: Implementation roadmap: `docs/plans/roadmap.md` (S4.1 trm)
+- 动态库边界（被扩展）：2026.1 期规划文档（已随版本归档/演进实现）
+- EN: Dynamic-library boundary (being extended): 2026.1 期规划文档（已随版本归档/演进实现）
+- tieir 字节码：[tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md)
+- EN: tieir bytecode: [tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md)
+- unsafe 凭据门禁：2026.1 期规划文档（已随版本归档/演进实现）
+- EN: unsafe credential gates: 2026.1 期规划文档（已随版本归档/演进实现）
+- 实施路线图：[roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md)（S4.1 trm）
+- EN: Implementation roadmap: [roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md) (S4.1 trm)

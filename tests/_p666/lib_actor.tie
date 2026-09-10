@@ -1,0 +1,26 @@
+type tie<class>
+// 一次性探针库：验证 actor 能否在库文件（type tie<class>）内声明/run/同步 RPC。
+// Fetch 演员：读模块全局 url 表（标量 id 消息），写回状态码（标量返回）。
+var g_urls: table<string>;
+var g_status: table<i64>;
+
+namespace liba {
+
+pub func init_url(id: i64, u: string) {
+    g_urls[id] = u
+}
+
+pub func start_fetch(f: Fetch, id: i64) -> i64 {
+    return f.go(id)
+}
+
+}
+
+actor Fetch {
+    var n: i64 = 0
+    pub func go(id: i64) -> i64 {
+        n = n + 1
+        g_status[n - 1] = id
+        return n
+    }
+}

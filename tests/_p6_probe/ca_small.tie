@@ -1,0 +1,24 @@
+type tie<logic>
+// p.6.1.4 根因最小复现：字节表累积拼接 body = byte_concat(body, seg)
+// 与字符串 str_cat 累积同构的 O(n²) 无名分配（tie 无 GC，旧表永不释放）。
+// 模拟 encode 段构造：每迭代生成一小段字节表再 concat 进累积表。
+func seg(i: i64) -> table<i64> {
+    var t = table_new_i64()
+    table_push(t, (i >> 8) & 255)
+    table_push(t, i & 255)
+    return t
+}
+func build(n: i64) -> i64 {
+    var body = table_new_i64()
+    var i: i64 = 0
+    while i < n {
+        body = byte_concat(body, seg(i))
+        i = i + 1
+    }
+    return len(body)
+}
+func main() -> i64 {
+    var r = build(2000)
+    println("byte-concat accum len=" + to_string(r))
+    return 0
+}

@@ -1,0 +1,30 @@
+type tie<logic>
+import "../../tests/p617_bisect/e2_dbg.tie"
+using e2dbg;
+func main() {
+    var mode: i64 = 0
+    if arg_count() > 0 {
+        mode = to_number(arg_string(0))
+    }
+    var out: string = ""
+    if mode == 1 {
+        out = e2dbg.add_loop(256)
+    }
+    if mode == 2 {
+        out = e2dbg.bi_loop(256)
+    }
+    if mode == 3 {
+        out = e2dbg.add_loop_capture(256)
+    }
+    if mode == 4 {
+        out = e2dbg.bi_loop(2000)
+    }
+    if mode == 5 {
+        out = e2dbg.add_loop(2000)
+    }
+    if mode == 0 {
+        out = e2dbg.add_loop(256)
+    }
+    file_write("e2_tr.txt", out)
+    exit(0)
+}

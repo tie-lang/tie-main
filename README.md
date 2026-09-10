@@ -14,13 +14,12 @@
 | [README.md](README.md) | 本文件：工程入口（快速开始、CLI、结构、路线图）/ This file: entry point (quick start, CLI, structure, roadmap) |
 | [docs/language.md](docs/language.md) | 语法规范：文件结构、类型系统、语句/控制流、函数、数据结构、语法速查表 / Language spec: file structure, type system, statements/control flow, functions, data structures, quick reference |
 | [docs/cli.md](docs/cli.md) | CLI 用法：主入口选项、包管理器子命令、多文件并行编译、库编译、REPL 自举 / CLI usage: main entry options, package-manager commands, parallel multi-file builds, library builds, REPL bootstrap |
-| [docs/language-comparison.md](docs/language-comparison.md) | 语言对比报告：tie vs 42 种语言的特性/标准库全景对比 / Comparison report: tie vs 42 languages (features / stdlib panorama) |
 | [docs/tiec.md](docs/tiec.md) | tiec 自举编译器文档：架构、自举链、CLI、运行时依赖 / tiec self-hosted compiler: architecture, bootstrap chain, CLI, runtime deps |
 | [docs/tie-script.md](docs/tie-script.md) | tie:script 模块协议：注册/调用机制、模块约定、协议文本格式 / tie:script module protocol: registration/call mechanism, module conventions, wire format |
 | [docs/ai-guide.md](docs/ai-guide.md) | AI 教学指南：语言用法 + 负例 + 编译器架构 / AI teaching guide: usage + negative examples + compiler architecture |
 | [docs/prompt-pack.md](docs/prompt-pack.md) | 可粘贴 Prompt 包：自包含简介，直接发给任何 AI / Copy-paste prompt pack: self-contained intro for any AI |
 | [NEW.md](NEW.md) | 发行版新鲜事：本发行版的新功能与特色速览 / Release highlights: what's new in this release |
-| [docs/plans/](docs/plans/) | 后续开发模块设计规划（trm/tiu/UI/LSP/PQC/硬件加速等；已实现规划归档至 [tie-archive](https://github.com/tie-lang/tie-archive)）/ Upcoming development-module plans (trm/tiu/UI/LSP/PQC/hw-accel…; implemented plans archived in tie-archive) |
+| [docs/plans/](docs/plans/) | 后续开发模块设计规划（PQC 后量子 / 硬件加速 / SLH-DSA；已随 2026.1 发布归档的历史文档移至 [tie-lang/old_docs](https://github.com/tie-lang/old_docs) `2026.1/` 目录）/ Upcoming development-module plans (PQC / hardware acceleration / SLH-DSA; docs archived with 2026.1 now live in [tie-lang/old_docs](https://github.com/tie-lang/old_docs) under `2026.1/`) |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更记录（按发布档）/ Changelog (grouped by release slot) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南：p.x.x.x 编号规范、CHANGELOG 规范、发布流程 / Contributing guide: p.x.x.x numbering, CHANGELOG rules, release flow |
 

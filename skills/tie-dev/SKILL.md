@@ -613,7 +613,7 @@ tie 不是孤立的单一仓库——套件按职责拆分为多个仓库（均�
 | 数据互联 | `tink/` + `tink-<20+语言>/` | 帧协议多语言实现（v1 CRC32 + v2 tsha1f；rust/go/python/js/c/cpp/csharp/java/kotlin/zig/v/lua/ruby/php/dart/elixir/fsharp/gleam/julia/nim/odin/crystal/powershell/godot/wenyan/aardio…） |
 | 诊断文档 | `tie-diag/` | tiec 诊断标号（E/W codes）双语文档（成因 / 解决方案 / 警告影响） |
 | Office 文档 | `tofflib/` | docx/xlsx/pptx 生成（ooxml/omml/vml + tiedoc 渲染） |
-| 归档 | `tie-archive/` | 旧设计/规划文档归档；`lib_v1/` = library-v2 重构前的旧版 std/ext/rdu |
+| 归档 | `old_docs/`（`tie-lang/old_docs`）| 历史文档归档：按版本分目录（2026.1/ 已开放）；`lib_v1/` 同前（library-v2 重构前的旧版 std/ext/rdu） |
 | 论文 | `papers/` | TSHA1 学术论文（docx） |
 
 * 写程序用 `tie-main/`（tiec + std/ext/rdu）；写并发用 `trm-lite/`

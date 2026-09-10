@@ -1,0 +1,28 @@
+type tie<logic>
+import "../../std/result.tie"
+import "../../std/assert.tie"
+import "../../std/fs.tie"
+using assert;
+using fs;
+
+func main() {
+    var tmp = "C:/Users/Jiro/AppData/Local/Temp/opencode/t6_inline_zh.txt"
+    assert.assert(fs.write_text(tmp, "zhongwen abc"))
+    assert.assert(fs.exists(tmp))
+    assert.assert(fs.is_file(tmp))
+    assert.assert(!fs.is_dir(tmp))
+    var st = fs.read_text(tmp)
+    switch st {
+        case Ok(v): assert.assert_eq(v, "zhongwen abc")
+        case Err(e): panic("read failed")
+    }
+    assert.assert(fs.append_text(tmp, "def"))
+    var st2 = fs.read_text(tmp)
+    switch st2 {
+        case Ok(v): assert.assert_eq(v, "zhongwen abcdef")
+        case Err(e): panic("append read failed")
+    }
+    assert.assert(fs.remove(tmp))
+    assert.assert(!fs.exists(tmp))
+    println("fs_inline1 OK")
+}

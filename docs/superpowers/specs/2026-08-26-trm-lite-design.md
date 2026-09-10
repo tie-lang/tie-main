@@ -3,7 +3,7 @@
 - **日期**：2026-08-26
 - **状态**：设计定稿（待 review 后进入实现规划）
 - **范围**：为 tie 引入 **Go 式静态内置 runtime** 形态；分两小级——简单 M:N/GC 作 **tiec 内置原语**（供 actor/常规），复杂 M:N/GC 作 **trm-lite runtime 库**（`import` 静态链接进单一二进制）。**与 trm（路线 B，字节码 VM）并行开发、互不干扰。**
-- **依据**：`docs/language-comparison.md`（Go 缺口）、`docs/designs/concurrency-model.md`（actor §7.1 C 组接入运行时的语法门）、`docs/designs/trm-final-design.md`（trm 定稿，本设计为其静态形态的旁支、非取代）。
+- **依据**：[language-comparison.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/language-comparison.md)（Go 缺口）、`docs/designs/concurrency-model.md`（actor §7.1 C 组接入运行时的语法门）、`docs/designs/trm-final-design.md`（trm 定稿，本设计为其静态形态的旁支、非取代）。
 
 ## 1. 背景与现状
 
@@ -129,7 +129,7 @@ A→B 经 channel/mailbox 传消息（无共享可变，消除竞争）
 
 ## 9. 相关文档与待决
 
-- 相关：`docs/designs/concurrency-model.md`（actor、C 组接入门）、`docs/designs/trm-final-design.md`（trm 定稿）、`docs/language-comparison.md`（Go 缺口）。
+- 相关：`docs/designs/concurrency-model.md`（actor、C 组接入门）、`docs/designs/trm-final-design.md`（trm 定稿）、[language-comparison.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/language-comparison.md)（Go 缺口）。
 - 与 trm 关系：**并行开发、互不干扰**；本设计上文不 gate 于 trm 引擎，trm 亦不被本设计牵制。落地位置遵循独立路径原则，与 trm-final-design 正交。
 - **已定（2026-08-26）**：
   1. actor **以「简单执行体默认承载」替换当前 1:1 线程默认**（见 §4.1）。

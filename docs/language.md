@@ -1743,9 +1743,9 @@ namespace Dog {
 *EN: 9. First-class functions and closures (implemented in S2.2; follow-ups: nested capture + fn×generic + C callbacks)*
 
 > 早期草案「一等函数……后续版本」已落地：`func` 字面量 = 闭包，`fn(A)->R` = 函数类型，
-> 支持高阶函数与环境捕获。设计见 [docs/plans/closure-model.md](plans/closure-model.md)。
+> 支持高阶函数与环境捕获。（此设计见 2026.1 期规划文档 closure-model，已随版本演进实现并归档。）
 
-> The early-draft statement "first-class functions… later versions" has landed: a `func` literal = a closure, `fn(A)->R` = a function type, with support for higher-order functions and environment capture. Design: [docs/plans/closure-model.md](plans/closure-model.md).
+> The early-draft statement "first-class functions… later versions" has landed: a `func` literal = a closure, `fn(A)->R` = a function type, with support for higher-order functions and environment capture. (The closure-model design note from the 2026.1 period is archived with its release.)
 
 **函数字面量（闭包）**：`func(形参) -> ret { 体 }`，类型为 `fn(A)->R`：
 
@@ -1796,9 +1796,9 @@ Practice cases: `examples/oop.tie`, `tests/s22_probe/*.tie` (probes 1-8: no-capt
 *EN: 10. Interfaces (port / impl, implemented in S2.4)*
 
 tie 的 interface：方法签名集合 + 显式实现，**静态 / 动态双形态分发**（二分法 vtable）。
-设计见 [docs/plans/port-model.md](plans/port-model.md)。
+设计见 [port-model.md（2026.1 归档）](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/port-model.md)。
 
-tie's interface: a set of method signatures + explicit implementation, with **static / dynamic dual-form dispatch** (halving vtable). Design: [docs/plans/port-model.md](plans/port-model.md).
+tie's interface: a set of method signatures + explicit implementation, with **static / dynamic dual-form dispatch** (halving vtable). Design: [port-model.md (2026.1 archive)](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/port-model.md).
 
 ```c
 port Drawable {

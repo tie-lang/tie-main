@@ -1,0 +1,18 @@
+// 探针：确定当前 msg_* Rust 桥语义（改动前基准）
+func main() {
+    println("default_lang=[" + msg_get_lang() + "]")
+    println("t_unreg=[" + msg_t("nope") + "]")
+    println("t_lang_unreg=[" + msg_t_lang("nope", "en") + "]")
+    msg_register("greet", "zh", "你好")
+    msg_register("greet", "en", "Hello")
+    println("t_greet_default=[" + msg_t("greet") + "]")
+    msg_set_lang("zh")
+    println("lang_zh=[" + msg_get_lang() + "]")
+    println("t_greet_zh=[" + msg_t("greet") + "]")
+    println("t_lang_zh=[" + msg_t_lang("greet", "zh") + "]")
+    println("t_lang_en=[" + msg_t_lang("greet", "en") + "]")
+    println("t_lang_fr=[" + msg_t_lang("greet", "fr") + "]")
+    msg_set_lang("en")
+    println("lang_en=[" + msg_get_lang() + "]")
+    println("t_greet_en=[" + msg_t("greet") + "]")
+}

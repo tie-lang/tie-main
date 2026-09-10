@@ -46,12 +46,12 @@ EN: In one sentence: **novices use actor, veterans hold credentials; actor is fu
 | 能力域 | 现状 | 依据 |
 | --- | --- | --- |
 | 内存管理 | ✅ 表作用域确定性释放（无 GC）| 语言核心（路线 A）|
-| 移动语义 | ✅ S1.3 / S1.5 smove（跨线程所有权转移底座）| docs/plans/roadmap.md |
-| unsafe/ptr/slice/asm | ✅ S1.2 | docs/plans/unsafe-model.md |
+| 移动语义 | ✅ S1.3 / S1.5 smove（跨线程所有权转移底座）| [roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md) |
+| unsafe/ptr/slice/asm | ✅ S1.2 | 2026.1 期规划文档（已随版本归档/演进实现） |
 | 原子类型 | ✅ `atomic<T>`（load/store/atomicrmw/cmpxchg + 内存序）| types.tie K_ATOMIC；sinfer.tie |
 | port/impl 接口 | ✅（actor 消息契约复用）| 语言已支持 |
 | actor | ✗ 无（一期实现）| 语言级（tiec codegen，零运行时）|
-| trm（tie 运行时）| 独立于 actor（actor 不用它）| docs/plans/trm-arch.md |
+| trm（tie 运行时）| 独立于 actor（actor 不用它）| [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) |
 
 > 结论：`atomic`、`unsafe`、`port`、move 均已就位；缺的正是 **actor 语法**（一期 pure-compile 落地）。
 
@@ -251,9 +251,9 @@ EN: tiec lowers actors directly to LLVM → native: mailbox, 1:1 OS threads, and
 ## 7. 同步原语（L2 逃生口 = **凭据门禁**）
 *EN: 7. Synchronization Primitives (L2 Escape Hatch = Credential Gates)*
 
-unsafe 越界统一走 **凭据门禁**（完整设计见 [unsafe-model.md](../plans/unsafe-model.md) §13）：
+unsafe 越界统一走 **凭据门禁**（完整设计见 2026.1 期规划文档（已随版本归档/演进实现） §13）：
 
-EN: All unsafe boundary-crossing uniformly goes through **credential gates** (full design in [unsafe-model.md](../plans/unsafe-model.md) §13):
+EN: All unsafe boundary-crossing uniformly goes through **credential gates** (full design in 2026.1 期规划文档（已随版本归档/演进实现） §13):
 
 ```tie
 var g = unsafe.get(share)                 // 「并发共享」凭据（move-only guard<share>）
@@ -566,12 +566,12 @@ unsafe fn bad() {
 ## 12. 相关文档与待决问题
 *EN: 12. Related Documents and Open Questions*
 
-- 相关：[docs/language-comparison.md](../language-comparison.md)（缺口与路线）、
+- 相关：[language-comparison.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/language-comparison.md)（缺口与路线）、
   [docs/designs/trm-final-design.md](../designs/trm-final-design.md)（trm 定稿，§8 actor 接入、
-  §10 能力分期）、[docs/plans/trm-arch.md](../plans/trm-arch.md)（规划稿）、
-  [docs/plans/roadmap.md](../plans/roadmap.md)、[docs/plans/unsafe-model.md](../plans/unsafe-model.md)
+  §10 能力分期）、[trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md)（规划稿）、
+  [roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md)、2026.1 期规划文档（已随版本归档/演进实现）
   （含 §13 凭据门禁设计）。
-- EN: Related: [docs/language-comparison.md](../language-comparison.md) (gaps and routes), [docs/designs/trm-final-design.md](../designs/trm-final-design.md) (trm final design, §8 actor hook-in, §10 capability phasing), [docs/plans/trm-arch.md](../plans/trm-arch.md) (draft), [docs/plans/roadmap.md](../plans/roadmap.md), [docs/plans/unsafe-model.md](../plans/unsafe-model.md) (incl. §13 credential-gate design).
+- EN: Related: [language-comparison.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/language-comparison.md) (gaps and routes), [docs/designs/trm-final-design.md](../designs/trm-final-design.md) (trm final design, §8 actor hook-in, §10 capability phasing), [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) (draft), [roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md), 2026.1 期规划文档（已随版本归档/演进实现） (incl. §13 credential-gate design).
 - 已收敛（2026-08-23）：actor 创建关键字=`run`；默认同步+`async`；句柄可复制+可选 move；
   消息=actor 内直声明（port 渐进）；unsafe=凭据门禁三域 mem/ext/share+委派/对象绑定/层级回收/审计。
 - EN: Converged (2026-08-23): actor creation keyword = `run`; default sync + `async`; handles copyable + optional move; messages = declared directly in the actor (gradual toward port); unsafe = credential gates over the three domains mem/ext/share + delegation/object binding/hierarchical reclamation/auditing.

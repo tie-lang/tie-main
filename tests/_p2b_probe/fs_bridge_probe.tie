@@ -1,0 +1,11 @@
+type tie<logic>
+import "../../std/fs.tie" as fs;
+import "../../std/string.tie" as str;  
+func main() {
+    var r = fs.read_text("examples/hello.tie") ?
+    if str.starts_with(r, "Hello") {
+        println("FS_OK")
+    } else {
+        println("FS_CONTENT_LEN=" + to_string(str.len(r)))
+    }
+}
