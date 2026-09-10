@@ -620,6 +620,14 @@ func is_libc_sym(sym: string) -> bool {
         sym == "stat" || sym == "rename" {
         return true
     }
+    // r.1.6.3：Linux POSIX process/cwd/env 符号（exec_output/cwd/set_env 内置
+    // Linux 分支，UTF-8 直通；全为 libc 符号，非 interp 桥——同 r.1.6.2 注释）。
+    // pipe/fork/dup2/execl/waitpid 供 exec_output 管道捕获；getcwd/setenv 供
+    // cwd/set_env；strlen 已登记（arg_string/exec_output 取参长）。
+    if sym == "getcwd" || sym == "setenv" || sym == "pipe" || sym == "fork" ||
+        sym == "dup2" || sym == "execl" || sym == "waitpid" {
+        return true
+    }
     return false
 }
 
@@ -742,8 +750,10 @@ func is_extern_fn_id(fid: i64) -> bool {
 }
 
 // 注入编译目标（driver 调用：normalize_target(g_target)，空则本机默认）。
+// r.1.6.3：同步注入 llvmgen（Linux main 入口 argc/argv 签名平台判据）。
 pub func set_target(t: string) {
     g_asm_target = t
+    llvmgen.set_linux(tig_is_linux())
 }
 
 // 注入动态库模式（driver 在 detect_shared_mode 后调用，M5 dev33 批次 12）。

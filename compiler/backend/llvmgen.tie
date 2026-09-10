@@ -116,6 +116,19 @@ var g_hoisted_cnt: i64 = 0;
 // 重编号映射表（直索引）：旧值 id → 新值 id（-1 = 未设；旧值 id 稠密小整数）
 var g_ren_map: table<i64>;
 var g_ren_next: i64 = 1;
+// r.1.6.3：每函数重编号的形参占位基数（renumber_lines 的 g_ren_next 初值）。
+// 普通函数 = g_pcnt；Linux main（带 i32 %0, ptr %1 附加形参）由 gen_func 置 2，
+// 防止函数体指令重编号为 %0 与形参撞号（opt：instruction expected to be
+// numbered '%2' or greater）。
+var g_ren_base: i64 = 0;
+// r.1.6.3：编译目标是否 Linux（irgen.set_target 经 set_linux 注入；空/Windows
+// 恒 0）——main 入口带 argc/argv 签名 + entry 捕获 store 的平台分支判据。
+var g_linux_target: i64 = 0;
+// r.1.6.3：程序是否使用 arg_* 内置（irgen 首调 linux_args_enable 置位）。置位
+// 后：Linux 目标下 main 定义带 `i32 %0, ptr %1`（argc/argv，CRT 注入），entry
+// 首条把两者 store 进 @__tig_argc/@__tig_argv 全局（arg_count/arg_string 读）；
+// Windows 目标忽略（CommandLineToArgvW 既有路径，main 保持无参、IR 逐字节不变）。
+var g_linux_args: i64 = 0;
 
 namespace llvmgen {
 
@@ -191,6 +204,32 @@ pub func global_scalar_reg(nm: string, ty: i64) {
     table_push(g_global_inits_ok, 0)
     table_push(g_global_fps, -1)
     table_push(g_global_strs, -1)
+}
+
+// r.1.6.3：注入编译目标是否 Linux（irgen.set_target 同步调用；幂等）。
+// 驱动 main 带参签名（g_linux_target）与 entry 捕获（g_linux_args）双判定。
+pub func set_linux(v: bool) {
+    if v {
+        g_linux_target = 1
+    } else {
+        g_linux_target = 0
+    }
+}
+
+// r.1.6.3：程序使用 arg_* 内置时启用 Linux 入口捕获（幂等）。首次调用登记
+// 两个运行期全局槽（emit_globals 输出零值 global）：
+//   @__tig_argc : i32  —— main 入口 store 的 argc（含程序名）
+//   @__tig_argv : ptr  —— main 入口 store 的 argv（char**，UTF-8 直通）
+// gen_func 据此把 main 定义改为 `define i32 @main(i32 %0, ptr %1)` 并在 entry
+// 首条 store 两形参入全局；arg_count/arg_string（irgen_expr.tie）读槽返回。
+// Windows 目标不置 g_linux_target，本标记不影响 main 签名（IR 逐字节不变）。
+pub func linux_args_enable() {
+    if g_linux_args == 1 {
+        return
+    }
+    g_linux_args = 1
+    global_scalar_reg("__tig_argc", types.named(TK_I32))
+    global_scalar_reg("__tig_argv", types.ptr_of(types.named(TK_I8)))
 }
 
 // 标量初始值（i64 字面量/字符码点/bool 0-1）：emit_globals 输出 @g = global T <v>
@@ -652,10 +691,12 @@ func str_prefix(s: string, pre: string) -> bool {
 // 的 %extN 为独立命名空间（非纯数字），不受影响。
 func renumber_lines() {
     var out = table_new_string()
-    // 每函数独立重编号：映射表清空，新编号从形参个数 g_pcnt 起（形参值 id 占
-    // 0..N-1，定义行保留原样 %0..%N-1，指令新编号从 %N 起避免撞号）。
+    // 每函数独立重编号：映射表清空，新编号从形参占位基数 g_ren_base 起
+    //（普通函数 = g_pcnt：形参值 id 占 0..N-1，定义行保留原样 %0..%N-1，
+    // 指令新编号从 %N 起避免撞号；r.1.6.3 Linux main 带 i32 %0, ptr %1 两个
+    // 附加形参，g_ren_base 由 gen_func 置 2，防止指令重编号为 %0 撞形参）。
     g_ren_map = table_new_i64()
-    g_ren_next = g_pcnt
+    g_ren_next = g_ren_base
     var n = len(g_fn_lines)
     var i: i64 = 0
     while i < n {
@@ -1060,16 +1101,34 @@ func gen_func(fid: i64) {
     if sym == "main" && ret_llvm == "void" {
         ret_llvm = "i32"
     }
+    // r.1.6.3：Linux 目标 + 程序用 arg_*（g_linux_args）→ main 定义带
+    // `i32 %0, ptr %1`（argc/argv，C 运行期注入；tie main 本身无参，LLVM 层
+    // 附加形参，irgen 生成的指令不引用它们）。Windows 保持无参（IR 逐字节
+    // 不变，CommandLineToArgvW 既有路径）。形参 %0/%1 在 renumber 时按
+    // N < g_pcnt 原样保留（ren_ref），entry 捕获 store 行于重编号后插入，
+    // 不参与映射。
+    var linux_main: bool = g_linux_target == 1 && g_linux_args == 1 && sym == "main"
+    // r.1.6.3：Linux main 附加形参占位——renumber 起始编号须避开形参 %0/%1
+    //（普通函数 = g_pcnt；Linux main = 2，见 g_ren_base 注释）。
+    if linux_main {
+        g_ren_base = 2
+    } else {
+        g_ren_base = g_pcnt
+    }
     // 形参列表：`i64 %0, ptr %1, ...`（参数值 id 是全局编号，形参按位置
     // %0..%n-1 命名；opnd_ref 经 param_ref 把参数值 id 映射到位置号）
     var params_llvm = ""
-    var pk: i64 = 0
-    while pk < g_pcnt {
-        if pk > 0 {
-            params_llvm = params_llvm + ", "
+    if linux_main {
+        params_llvm = "i32 %0, ptr %1"
+    } else {
+        var pk: i64 = 0
+        while pk < g_pcnt {
+            if pk > 0 {
+                params_llvm = params_llvm + ", "
+            }
+            params_llvm = params_llvm + llvm_ty(ir.func_param_ty(fid, pk)) + " %" + to_string(pk)
+            pk = pk + 1
         }
-        params_llvm = params_llvm + llvm_ty(ir.func_param_ty(fid, pk)) + " %" + to_string(pk)
-        pk = pk + 1
     }
     // M5 动态库导出面（dev33 批次 12）：动态库模式下，irgen 登记的导出函数
     // （顶层函数 + 命名空间 pub func，ir.func_exported==1）带 dllexport——
@@ -1198,6 +1257,28 @@ func gen_func(fid: i64) {
         var gft1 = GetTickCount()
     }
     g_t_ren = g_t_ren + (gft1 - gft0)
+    // r.1.6.3：Linux main 入口捕获 store——重编号后插入（store 引用的 %0/%1
+    // 是形参，renumber 前插入会被 ren_ref 误映射为指令值 id）。entry 块标签
+    // 行（"bb{eblk}:"）后首行插入两条 store，把 argc/argv 落全局槽供
+    // arg_count/arg_string 读取；LLVM 对 store 位置只要求在被引用前（SSA），
+    // 形参在函数头已定义，插在 entry 首条（alloca 提升行前）安全。
+    if linux_main {
+        var nl2 = table_new_string()
+        var ins_done: i64 = 0
+        var eblk2 = ir.func_entry(fid)
+        var elabel = "bb" + to_string(eblk2) + ":"
+        var rj: i64 = 0
+        while rj < len(g_fn_lines) {
+            table_push(nl2, g_fn_lines[rj])
+            if ins_done == 0 && g_fn_lines[rj] == elabel {
+                table_push(nl2, "store i32 %0, ptr @__tig_argc")
+                table_push(nl2, "store ptr %1, ptr @__tig_argv")
+                ins_done = 1
+            }
+            rj = rj + 1
+        }
+        g_fn_lines = nl2
+    }
     var rn: i64 = 0
     while rn < len(g_fn_lines) {
         table_push(out_lines, g_fn_lines[rn])

@@ -1,0 +1,21 @@
+type tie<logic>
+// r.1.6.3 Windows 回归探针：内置 exec_output/cwd/exec_code 的 Windows 路径
+// 保持原语义（CreateProcessW 管道捕获 / GetCurrentDirectoryW / libc system）。
+// Windows 下 exec_output 直接 CreateProcessW 不经 cmd，故命令须为可执行文件
+// 或 `cmd /c ...`（对齐 p.6.4.6 既有语义）。
+func main() {
+    var o1 = exec_output("cmd /c echo hello-r163")
+    print("exec_output=[")
+    print(o1)
+    println("]")
+    var c0 = exec_code("cmd /c exit 0")
+    print("exec_code=")
+    println(to_string(c0))
+    var wd = cwd()
+    print("cwd_len=")
+    println(to_string(str_len(wd)))
+    var r = exec_output("cmd /c echo err1 1>&2")
+    print("err_capture_len=")
+    println(to_string(str_len(r)))
+    exit(0)
+}
