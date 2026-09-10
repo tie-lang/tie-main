@@ -1,9 +1,17 @@
 name: linux-r16
 
-# r.1.6 Linux 平台移植的 Linux 验证通道（2026-09-10 立项）
-# 本地 VMware 环境不可用（绿色版无法实质运行 guest），改由 CI 提供
-# ubuntu-latest：apt 装 clang/lld/llvm → 后续接入 Linux 自举 + 回归。
-# 当前为骨架：先验证 Linux 工具链可用，自举流水线随 r.1.6.6 接入。
+# r.1.6 Linux 平台自举 + 回归 + 打包（2026-09-10 立项，本版完整流水线）
+# 本地 VMware 不可用（绿色版无法实质运行 guest）→ GitHub Actions CI 提供
+# ubuntu-latest Linux 验证通道。两条 job 的职责：
+#   gen-linux-ir（windows-latest）：用**入库 stage0 tiec.exe**（r.1.6 系列改造后
+#     重建，含 set_target 接线）交叉编译 compiler/driver.tie --target linux-x64
+#     --emit-ir → driver-linux.ll（纯 POSIX 符号、零 Win32 call——见 r.1.6.2/3/4
+#     编译器内联平台分支，Linux 目标在 IR 生成期即分支到 POSIX 直调）；
+#   linux-bootstrap（ubuntu-latest）：clang 链接 driver-linux.ll（ubuntu 自带
+#     crt/libc，Windows 侧缺的 Linux CRT 恰在此解决）→ tiec-linux（stage0）→
+#     自举 tiec-linux2（--emit-ir 双份 SHA 恒等 = Linux 自举不动点）→
+#     regress-s21 全量回归 → 打包 tie-2026.1-linux-x64.zip（捆绑 apt LLVM 工具链
+#     clang/opt/llvm-ar/lld + std/ext/rdu/docs）。
 
 on:
   push:
@@ -11,31 +19,90 @@ on:
   workflow_dispatch:
 
 jobs:
-  linux-toolchain:
+  gen-linux-ir:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Linux-target compiler IR (stage0 tiec.exe)
+        shell: pwsh
+        run: |
+          .\compiler\tiec.exe compiler\driver.tie --target linux-x64 --emit-ir -o driver-linux
+          Get-Item driver-linux.ll | Select-Object Length
+
+      - name: Sanity check — no Win32 calls in Linux-target IR
+        shell: pwsh
+        run: |
+          $ll = Get-Content driver-linux.ll -Raw
+          $w = ([regex]::Matches($ll, 'call[^\n]*@(CreateProcessW|ReadFile|WriteFile|CreateFileW|closesocket|WSAStartup|GetProcAddress|CreateThread)\(')).Count
+          $p = ([regex]::Matches($ll, 'call[^\n]*@(socket|connect|open|read|write|close|pipe|fork|getcwd|setenv|stat|opendir)\(')).Count
+          Write-Host "W32_CALLS=$w POSIX_CALLS=$p"
+          if ($w -gt 0) { throw "Linux-target compiler IR still contains Win32 calls" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driver-linux-ll
+          path: driver-linux.ll
+
+  linux-bootstrap:
+    needs: gen-linux-ir
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM toolchain
+      - name: Install LLVM toolchain, pwsh, zip
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld llvm
+          sudo apt-get install -y -qq clang lld llvm libc6-dev powershell zip
           clang --version | head -1
-          lld --version | head -1
-          llvm-ar --version | head -1
+          ld.lld --version | head -1
 
-      - name: Toolchain smoke (compile a trivial tie IR)
-        run: |
-          printf 'define i32 @main() {\n  ret i32 0\n}\n' > smoke.ll
-          clang smoke.ll -o smoke.elf
-          file smoke.elf
-          ./smoke.elf && echo "ELF smoke OK"
+      - uses: actions/download-artifact@v4
+        with:
+          name: driver-linux-ll
+          path: .
 
-      - name: Linux self-host pipeline (wired in r.1.6.6)
+      - name: Link stage0 Linux tiec
         run: |
-          if [ -x compiler/tiec-linux ]; then
-            echo "tiec-linux found — running bootstrap"
-            ./compiler/tiec-linux --version || true
-          else
-            echo "tiec-linux not yet built (r.1.6.6 pending)"
-          fi
+          clang -O1 -fuse-ld=lld driver-linux.ll -o compiler/tiec-linux
+          file compiler/tiec-linux
+
+      - name: Linux self-host fixpoint (tiec-linux -> tiec-linux2)
+        run: |
+          cd compiler
+          ./tiec-linux driver.tie --emit-ir -o tiec-linux-1.ll || exit 1
+          ./tiec-linux driver.tie -o tiec-linux2 || exit 1
+          ./tiec-linux2 driver.tie --emit-ir -o tiec-linux-2.ll || exit 1
+          h1=$(sha256sum tiec-linux-1.ll | cut -d' ' -f1)
+          h2=$(sha256sum tiec-linux-2.ll | cut -d' ' -f1)
+          echo "h1=$h1"
+          echo "h2=$h2"
+          [ "$h1" = "$h2" ] && echo "SELFHOST FIXPOINT OK" || { echo "FIXPOINT MISMATCH"; exit 1; }
+
+      - name: Linux regression suite
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          pwsh scripts/regress-s21.ps1 compiler/tiec-linux2 | tail -6
+
+      - name: Package tie-2026.1-linux-x64.zip
+        run: |
+          set -e
+          V=2026.1
+          STAGE=dist/stage/tie-linux
+          mkdir -p $STAGE/bin/llvm dist
+          cp compiler/tiec-linux2 $STAGE/tiec
+          cp -r std ext rdu examples docs $STAGE/ 2>/dev/null || true
+          cp compiler/README.tie compiler/config.tie $STAGE/ 2>/dev/null || true
+          # 捆绑 apt LLVM 工具链（clang/opt/llvm-ar/lld + ld.lld 链接器，发行即用）
+          for t in clang opt llvm-ar lld ld.lld; do
+            p=$(command -v $t || true)
+            [ -n "$p" ] && cp -L "$p" $STAGE/bin/llvm/ || true
+          done
+          ls $STAGE/bin/llvm/
+          cd dist/stage && zip -r ../tie-$V-linux-x64.zip tie-linux >/dev/null
+          ls -la ../tie-$V-linux-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tie-2026.1-linux-x64.zip
+          path: dist/tie-2026.1-linux-x64.zip
