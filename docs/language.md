@@ -40,6 +40,19 @@ tie is a **general-purpose programming language** whose goal is to let users com
 
 What role a given `.tie` file plays is determined by the **Header** at its first few lines. The header is strictly separated from the main content.
 
+### 品牌支柱 / Brand pillars
+
+**效率 · 性能 · 安全 · 通用** —— 一门以四根支柱立身的语言。我们的目标「全领域通用，Python 的体验，Rust 的性能与安全」，正是这四根支柱的落点。
+
+**Efficiency · Performance · Safety · Universality** — a language built on four pillars. Our goal — universal across domains, with Python's experience and Rust's performance and safety — is exactly where these four pillars land.
+
+| 支柱 / Pillar | 含义 / Meaning |
+| --- | --- |
+| 效率 / Efficiency | 一门语法覆盖全部角色（logic/script/class/data/ir/port），深广标准库开箱即用，REPL + LSP + 包管理器 + 诊断标号让工程化闭环自足——把时间留给业务 / One syntax across every role (logic/script/class/data/ir/port); a deep, wide stdlib out of the box; REPL + LSP + package manager + diagnostic codes make the toolchain self-contained — time goes to your product |
+| 性能 / Performance | LLVM 后端 + 值类型内联布局，无 GC 包袱；静态分发零开销、纯程序零运行时依赖——性能靠设计，不靠"等优化" / LLVM backend with zero-cost value types, no GC tax; zero-cost static dispatch, zero runtime dependencies for pure programs — performance by design, not by hoping |
+| 安全 / Safety | 静态类型 + unsafe 门禁，指针/FFI/汇编显式解锁；move 语义与编译期拦截——安全由编译器保证而非运行时检查，与性能不打架 / Static types behind an unsafe gate — pointers/FFI/asm are explicit; move semantics and compile-time checks — the compiler, not runtime checks, enforces safety, so safety never fights performance |
+| 通用 / Universality | 逻辑/界面/数据库/数据格式/嵌入一体；tink 帧协议 + zd 序列化构成语言无关的通用 ABI——tie 是生态的一员，不是孤岛 / Logic, UI, databases, data formats and embedding in one language; tink framing + zd serialization as a language-agnostic ABI — tie is a citizen of its ecosystem, not an island |
+
 ## 2. 文件结构：头 + 内容
 
 *EN: 2. File structure: header + content*
