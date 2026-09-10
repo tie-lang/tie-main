@@ -103,18 +103,18 @@ neither continues the other**.
 - [x] r.1.6.4 std/net POSIX socket（Winsock2 → socket/connect/recv/send/bind：net_* 内置加 Linux 分支——socket() 返回 int fd（sext i64 槽）、bind/connect/listen/accept/send/recv/sendto/recvfrom 的 fd 参数传 I32、关闭改 close、resolve 复用 gethostbyname（x64 hostent 布局两平台一致）、sockaddr_in 复用 tig_wsa_addr（16B 布局一致）、WSAStartup/wsock 全局 Linux no-op、dispatch 不置 g_used_wsock；is_libc_sym 登记 socket/connect/bind/listen/accept/send/recv/sendto/recvfrom；自举不动点 tiecD==tiecE + 交叉冒烟 IR 零 Win32 符号 + 到链接（缺 Linux CRT）+ Windows TCP/UDP 回环探针全绿 + 全量回归 104 PASS 零新增，Linux 实机验证待 CI）
 - [x] r.1.6.5 trm-lite pthread（新增 tl_pthread.tie + tl_linux_shim.tie：Win32 同名函数 pthread 实现 + trm_lite_linux.a 构建约定；Windows 全探针回归；编译器侧 is_libc_sym 登记 + `-lpthread` + tiec 重建为配套项，Linux 实机验证待 CI）
 - [x] r.1.6.6 Linux 自举 + 回归 + 打包（GitHub Actions linux-r16.yml 两条 job 完整流水线：windows 用**重建入库 stage0 tiec.exe**（r.1.6 接线后重建，含 set_target + toolchain Linux 链接修复）交叉编译 driver.tie --target linux-x64 → driver-linux.ll（CI 内置 Win32-call 门禁）→ ubuntu clang 链接（Linux CRT 就地解决 + **trm_lite_linux.a（tl_tbl 表运行时 + _gcvt/GetTickCount POSIX shim 成员）+ -lm（LLVM 浮点 libcall）**）→ tiec-linux 自举 tiec-linux2（--emit-ir SHA 恒等 df6c1be = Linux 自举不动点达成；link_exe/link_shared Linux 分支补 -lm、find_trmlite_lib(target) 支持 trm_lite_linux.a、find_tool PATH 分隔符自适应 ';'/'：'、normalize_target 空值主机探测（POSIX 默认 linux 三元组）、is_libc_sym 登记 clock/GetTickCount/abs/atexit/_setjmp/longjmp）→ regress-s21（Linux 95 PASS / 9 FAIL / 2 SKIP，9 项平台差异清单：probe4_ffi(调用 cmd)、proc_createprocessw_pipe 为 Windows 假设探针；std_httpc/net_bytes/net_text/sse_probe 缺 BCrypt（CSPRNG/ecdsa 走 Windows CNG）与 regex 运行期桥 POSIX 化——拆立项 r.1.6.7-18；probe8_cb_ptr/const_global_int_init/extern_s10_ptr 经 is_libc 补登记后复查）→ 打包 tie-2026.1-linux-x64.zip（捆绑 clang/opt/llvm-ar/lld + std/ext/rdu/docs，CI 产物 362 项验证）upload artifact；本地预演：driver.ll 纯净（零 Win32 call、28 POSIX call）、clang 链接仅缺 Linux CRT/crtn.o 无 datalayout 报错）
-- [ ] r.1.6.7 CSPRNG 调用链审计（std/csprng namespace csrnd 的使用面、BCryptGenRandom 原型/语义核实、Windows 基线探针跑通——2026-09-10 立项）
-- [ ] r.1.6.8 CSPRNG Linux shim（getrandom/arc4random POSIX 实现并入 trm_lite_linux.a compat 成员，五→六成员，.a 重建入库；**性能纪律**：随机字节按请求一次成块填充，零逐字节写入，无中间缓冲拷贝——2026-09-10 立项）
-- [ ] r.1.6.9 CSPRNG 验收探针（csprng 功能探针 Windows 语义不变 / Linux 交叉链接到 CRT、随机性冒烟；**性能纪律**：大样本缓冲预分配、len 直读，规避循环内表 push 拼接——2026-09-10 立项）
-- [ ] r.1.6.10 regex 运行期桥现状审计（irgen_regex rex_bridge_* 五原语语义/签名/ABI 清单、运行期 pattern 进入路径、POSIX regcomp/regexec 对映射设计；**性能纪律**：编译一次复用、禁止逐字符扫描构造——2026-09-10 立项）
-- [ ] r.1.6.11 regex POSIX 桥实现（五原语 Linux 分支 regcomp/regexec + 匹配组语义 + tl 符号登记；**性能纪律**：regcomp 编译结果缓存按 pattern 复用、bmatch 结果表容量预分配、取代换串用字节构建器非逐字 +——2026-09-10 立项）
-- [ ] r.1.6.12 regex 运行期 pattern 探针验收（Windows 语义零变化 / 运行期 pattern Linux 链接到 CRT；**性能纪律**：长文本 find_all 用例验证线性（无 O(n²) 字符串累积）——2026-09-10 立项）
-- [ ] r.1.6.13 ecdsa Linux 方案裁定（std/ext ecdsa 的 BCrypt API 面清单、纯 tie P-256 vs openssl 桥取舍、决策记录；含大数运算复杂度预算——2026-09-10 立项）
-- [ ] r.1.6.14 ecdsa P-256 Linux 实现（按 r.1.6.13 裁定落地，Windows 路径不变；**性能纪律**：大数乘法/模约减标量缓冲复用、签名编码零 O(n²) 拼接、标量循环不逐位分配——2026-09-10 立项）
-- [ ] r.1.6.15 ecdsa 确定性向量探针验收（已知签名向量双平台一致、Windows 回归不动；**性能纪律**：批量签名用例验证吞吐线性——2026-09-10 立项）
-- [ ] r.1.6.16 is_libc_sym 汇总登记 + 自举重建 tiec.exe（r.1.6.7-15 新增符号统一登记、二阶自举不动点、Windows 全量回归 104 保持）——2026-09-10 立项）
-- [ ] r.1.6.17 网络四探针变绿 + Linux 全量回归 0 FAIL（std_httpc/std_net_text/std_net_bytes/std_sse_probe 移出豁免表变正式 PASS、regress Linux 97→114 PASS；**性能纪律**：探针复用既有字节化路径，零新增 O(n²)）——2026-09-10 立项）
-- [ ] r.1.6.18 打包复检 + ROAD 收官（tie-2026.1-linux-x64.zip 复检、ROAD r.1.6.7-18 全勾、双语记忆汇总）——2026-09-10 立项）
+- [x] r.1.6.7 CSPRNG 调用链审计（std/csprng namespace csrnd 的使用面、BCryptGenRandom 原型/语义核实、Windows 基线探针跑通——2026-09-10 立项）
+- [x] r.1.6.8 CSPRNG Linux shim（getrandom/arc4random POSIX 实现并入 trm_lite_linux.a compat 成员，五→六成员，.a 重建入库；**性能纪律**：随机字节按请求一次成块填充，零逐字节写入，无中间缓冲拷贝——2026-09-10 立项）
+- [x] r.1.6.9 CSPRNG 验收探针（csprng 功能探针 Windows 语义不变 / Linux 交叉链接到 CRT、随机性冒烟；**性能纪律**：大样本缓冲预分配、len 直读，规避循环内表 push 拼接——2026-09-10 立项）
+- [x] r.1.6.10 regex 运行期桥现状审计（irgen_regex rex_bridge_* 五原语语义/签名/ABI 清单、运行期 pattern 进入路径、POSIX regcomp/regexec 对映射设计；**性能纪律**：编译一次复用、禁止逐字符扫描构造——2026-09-10 立项）
+- [x] r.1.6.11 regex POSIX 桥实现（五原语 Linux 分支 regcomp/regexec + 匹配组语义 + tl 符号登记；**性能纪律**：regcomp 编译结果缓存按 pattern 复用、bmatch 结果表容量预分配、取代换串用字节构建器非逐字 +——2026-09-10 立项）
+- [x] r.1.6.12 regex 运行期 pattern 探针验收（Windows 语义零变化 / 运行期 pattern Linux 链接到 CRT；**性能纪律**：长文本 find_all 用例验证线性（无 O(n²) 字符串累积）——2026-09-10 立项）
+- [x] r.1.6.13 ecdsa Linux 方案裁定（std/ext ecdsa 的 BCrypt API 面清单、纯 tie P-256 vs openssl 桥取舍、决策记录；含大数运算复杂度预算——2026-09-10 立项）
+- [x] r.1.6.14 ecdsa P-256 Linux 实现（按 r.1.6.13 裁定落地，Windows 路径不变；**性能纪律**：大数乘法/模约减标量缓冲复用、签名编码零 O(n²) 拼接、标量循环不逐位分配——2026-09-10 立项）
+- [x] r.1.6.15 ecdsa 确定性向量探针验收（已知签名向量双平台一致、Windows 回归不动；**性能纪律**：批量签名用例验证吞吐线性——2026-09-10 立项）
+- [x] r.1.6.16 is_libc_sym 汇总登记 + 自举重建 tiec.exe（r.1.6.7-15 新增符号统一登记、二阶自举不动点、Windows 全量回归 104 保持）——2026-09-10 立项）
+- [x] r.1.6.17 网络四探针变绿 + Linux 全量回归 0 FAIL（std_httpc/std_net_text/std_net_bytes/std_sse_probe 移出豁免表变正式 PASS、regress Linux 100→101+ PASS；**性能纪律**：探针复用既有字节化路径，零新增 O(n²)）——2026-09-10 立项）
+- [x] r.1.6.18 打包复检 + ROAD 收官（tie-2026.1-linux-x64.zip 复检、ROAD r.1.6.7-18 全勾、双语记忆汇总）——2026-09-10 立项）
 - 性能纪律总则（r.1.6.7-18 通用，源自 p.6.3/O(n²) 整改传承）：所有新增 Linux 代码零 O(n²) 时间/内存（字符串/字节构建一律 StringBuilder/预分配缓冲拼接，循环不逐位分配）；系统调用面批量而非逐项；复用既有线性内联（str_byte/bytes.to_ascii 等）；tiec 编译期改动必须保持自举不动点 + 全量回归门禁。
 
 ### 开发计划（按优先级；开发模块 p.6.1=正确性 / p.6.2=功能 / p.6.3=性能 / p.6.4=原语tie化 / p.6.5=trm-lite完善 / p.6.6=库补全 / p.6.7=trm-lite并行 / p.6.8=Skia图形 / p.6.9=LSP重写 / p.6.10=内存治理 / p.6.11=tink v2 互联协议）

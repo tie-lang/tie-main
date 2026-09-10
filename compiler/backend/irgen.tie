@@ -663,6 +663,12 @@ func is_libc_sym(sym: string) -> bool {
             sym == "tie_regex_replace" {
             return true
         }
+        // r.1.6.18：trm-lite Win32 同步原语对等（tl_linux_shim.o 成员提供 pthread
+        // 实现：Sleep→nanosleep、WakeAllConditionVariable→pthread_cond_broadcast）——
+        // std_net_bytes 等复杂形态程序的 channel 广播/时限路径，Linux 由 .a 解析。
+        if sym == "Sleep" || sym == "WakeAllConditionVariable" {
+            return true
+        }
     }
     return false
 }

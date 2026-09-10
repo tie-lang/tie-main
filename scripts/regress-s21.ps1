@@ -12,14 +12,13 @@ if (-not (Test-Path $env:TIE_INTERP_LIB)) {
 $pass = 0; $fail = 0; $known = 0
 
 # r.1.6.6：Linux 平台差异豁免表——探针显式依赖 Windows 语义（CMD、CreateProcessW、
-# 控制台 API）与 trm-lite 复杂形态桥 extern（std_net_bytes 的 tl_runtime_ctx——
-# Linux is_libc 登记列入 r.1.6.18 收尾），Linux 下记为已知平台 SKIP（不算 fail）。
+# 控制台 API），Linux 下记为已知平台 SKIP（不算 fail）。r.1.6.17/18 已把
+# BCrypt 网络探针与 std_net_bytes（trm-lite shim 登记）移出，转正式 PASS。
 $IsLinux = ($IsWindows -eq $false)
 $linuxKnown = @(
     'probe4_ffi.tie',            # 运行 cmd（Windows CMD）
     'proc_createprocessw_pipe.tie', # CreateProcessW 进程管道探针
-    'extern_s10_ptr.tie',        # GetStdHandle/GetConsoleMode Win32 控制台 extern
-    'std_net_bytes.tie'          # tl_runtime_ctx 复杂形态桥 extern（r.1.6.18 登记后移除）
+    'extern_s10_ptr.tie'         # GetStdHandle/GetConsoleMode Win32 控制台 extern
 )
 function Is-LinuxKnown($name) {
     if (-not $IsLinux) { return $false }
