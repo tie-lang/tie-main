@@ -6,10 +6,6 @@
 
 **效率 · 性能 · 安全 · 通用** / *Efficiency · Performance · Safety · Universality*
 
-tie 是一门**通用编程语言**：用一门语言写逻辑、写界面、写数据库、当数据交换格式。
-
-EN: tie is a **general-purpose programming language**: one language for logic, UI, databases, and data-exchange formats.
-
 ## 文档目录
 *EN: Documentation*
 
