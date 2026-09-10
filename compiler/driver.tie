@@ -184,6 +184,26 @@ func parse_args() -> i64 {
 // 目标三元组别名归一化（对齐 Rust normalize_target）：已知别名映射，
 // 未知名称原样透传。
 func normalize_target(t: string) -> string {
+    // r.1.6.6：空目标 → 本机默认。Windows 主机（OS=Windows_NT 存在）保持空串
+    // （传统 Windows 链接路径，行为零变化）；POSIX 主机默认 Linux 三元组——
+    // Linux 自举链（tiec-linux 编译探针/回归程序无 --target 时）走 Linux 平台
+    // 分支与链接参数（sockaddr/管道无 Windows 假设）。
+    if str_len(t) == 0 {
+        var osv = get_env("OS")
+        var osl: i64 = str_len(osv)
+        var wflag: i64 = 0
+        var j: i64 = 0
+        while j + 7 <= osl {
+            if slice(str.clone(osv), j, j + 7) == "Windows" {
+                wflag = 1
+            }
+            j = j + 1
+        }
+        if wflag == 0 {
+            return "x86_64-unknown-linux-gnu"
+        }
+        return t
+    }
     if t == "win-x64" || t == "windows-x64" {
         return "x86_64-pc-windows-msvc"
     }

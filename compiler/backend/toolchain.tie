@@ -103,13 +103,19 @@ pub func find_llvm_ar() -> string {
 
 // 按 ';' 拆分 PATH 为目录表（忽略空段）。
 func split_env(path_var: string) -> table<string> {
+    // r.1.6.6：分隔符自适应——Windows PATH 用 ';'，POSIX 用 ':'。含 ';' 按 ';'
+    // 拆（Windows 惯例，避免盘符冒号误拆）；否则含 ':' 按 ':' 拆（Linux 自举链）。
+    var sep = ";"
+    if !has_sub(path_var, ";") && has_sub(path_var, ":") {
+        sep = ":"
+    }
     var dirs = table_new_string()
     var n: i64 = str_len(path_var)
     var cur: string = ""
     var i: i64 = 0
     while i < n {
         var c = str_char(path_var, i)
-        if c == ";" {
+        if c == str_char(sep, 0) {
             if str_len(cur) > 0 {
                 table_push(dirs, cur)
             }
