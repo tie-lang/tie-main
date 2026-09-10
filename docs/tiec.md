@@ -1,9 +1,9 @@
 # tiec —— tie 自举编译器
 *EN: tiec — the tie self-hosting compiler*
 
-> ⚠️ **早期开发阶段**：tiec 为自举 v2 的产物，随实现持续演进，功能与限制以本文件与源码为准。
+> tiec 为自举 v2 的产物，随实现持续演进，功能与限制以本文件与源码为准。
 
-> EN: ⚠️ **Early development stage**: tiec is a product of bootstrap v2 and keeps evolving with the implementation; features and limitations are as documented in this file and in the source.
+> tiec is a product of bootstrap v2 and keeps evolving with the implementation; features and limitations are as documented in this file and in the source.
 
 tiec 是 tie 语言 **100% 自写**的完整命令行编译器，是自举 v2 计划（`compiler/` 目录）的最终交付物。
 它由 tie 语言自身编写，经 stage0 入库二进制引导后可以编译自身，形成自举闭环（0-Rust）。
@@ -148,19 +148,24 @@ compiler\tiec2.exe compiler\driver.tie -o compiler\tiec3.exe
 LLVM 工具发现顺序：`TIE_LLVM_HOME\bin` → tiec.exe 同目录 `llvm\bin` → `PATH`
 → 固定目录（`D:\LLVM\bin`、`C:\Program Files\LLVM\bin`、`C:\LLVM\bin`）。
 发行版 zip 内置精简 LLVM（`bin/llvm/`），`TIE_LLVM_HOME` 指向它即开箱即用。
-链接时若缺少运行时静态库，需要先构建 `std/runtime.a`（见第 5 节）。
+纯程序零运行时依赖；需要 tie-interp 桥（read_line/file/regex 等）的程序链接
+`tie_interp.lib`（见第 5 节）。
 
 EN: LLVM tool discovery order: `TIE_LLVM_HOME\bin` → `llvm\bin` next to tiec.exe → `PATH`
 → fixed directories (`D:\LLVM\bin`, `C:\Program Files\LLVM\bin`, `C:\LLVM\bin`).
 The release zip bundles a minimal LLVM (`bin/llvm/`); pointing `TIE_LLVM_HOME` at it works out of the box.
-If the runtime static library is missing at link time, build `std/runtime.a` first (see section 5).
+Pure programs need no runtime library; programs that need the tie-interp bridge
+(read_line/file/regex etc.) link `tie_interp.lib` (see section 5).
 
 ## 4. CLI 用法
 *EN: 4. CLI usage*
 
 ```
 tiec <input.tie> [-o <out>] [-O0|-O1|-O2|-O3] [--target <三元组>]
-                 [--emit-ir] [--keep-ir] [--prep-only] [--config <f>] [--help]
+                 [--emit-ir] [--keep-ir] [--prep-only] [--config <f>]
+                 [--profile <p>] [--backend <b>] [--shared]
+                 [--tieir-out <f>] [--dump-irt <f>] [--lsp] [--help]
+tiec --compress-data <in.data.tie> [-o <out.zd>]     # td → zd 压缩数据子命令
 ```
 
 ### 选项
@@ -171,14 +176,21 @@ tiec <input.tie> [-o <out>] [-O0|-O1|-O2|-O3] [--target <三元组>]
 | `<input.tie>` | 输入源文件（必需） |
 | `-o <file>` | 输出文件路径。logic/script 角色默认输出输入同名 `.exe`，class/type 角色默认输出同名 `.a` |
 | `-O0` / `-O1` / `-O2` / `-O3` | 优化级别，映射到 `opt -O{0..3}`，默认 `-O2` |
-| `--target <三元组>` | 交叉编译目标（如 `x86_64-pc-windows-msvc`），默认本机 |
+| `--target <三元组>` | 交叉编译目标（如 `x86_64-pc-windows-msvc`、`linux-x64`），默认本机 |
 | `--emit-ir` | 只生成 LLVM IR（`.ll`），不继续编译 |
 | `--keep-ir` | 保留中间 IR 文件（`.ll` / `.opt.ll`） |
 | `--prep-only` | 只做头部识别并打印识别结果，不编译 |
-| `--config <f>` | 协调统筹配置文件（单文件编译时暂忽略） |
+| `--config <f>` | 构建配置文件（默认查当前目录 `config.data.tie`，分层合并：CLI > 项目 > 用户 > 内置默认） |
+| `--profile <p>` | 构建 profile（dev/release，覆盖配置顶层 `profile` 键） |
+| `--backend <b>` | 后端实现选择（win32；其余 port 尚未接入） |
+| `--shared` | 编译为动态库（`.dll` / `.so`；library 角色） |
+| `--tieir-out <f>` | 编译后序列化 tieir 分发单元（S3.2；`.tieir` 二进制） |
+| `--dump-irt <f>` | 只读 `.tieir` 并输出可读摘要（S3.2；不编译） |
+| `--lsp` | 语言服务器模式（stdio） |
+| `--compress-data` | td → zd 压缩数据子命令（读取 `type tie<data>` 文件：裸表或可选表名，无 `var`） |
 | `--help` / `-h` | 显示帮助 |
 
-EN: The table above (with Chinese descriptions) documents the CLI options: `<input.tie>` is the required input source; `-o <file>` sets the output path (executables default to the input name with `.exe` for logic/script, `.a` for class/type); `-O0..-O3` map to `opt -O{0..3}` with a default of `-O2`; `--target <三元组>` sets a cross-compilation target (default native); `--emit-ir` emits LLVM IR (`.ll`) only; `--keep-ir` keeps intermediate IR files (`.ll` / `.opt.ll`); `--prep-only` only does header recognition and prints the result without compiling; `--config <f>` selects a coordination config file; and `--help`/`-h` shows help.
+EN: The table above (with Chinese descriptions) documents the CLI options: `<input.tie>` is the required input source; `-o <file>` sets the output path (executables default to the input name with `.exe` for logic/script, `.a` for class/type); `-O0..-O3` map to `opt -O{0..3}` with a default of `-O2`; `--target <三元组>` sets a cross-compilation target (default native); `--emit-ir` emits LLVM IR (`.ll`) only; `--keep-ir` keeps intermediate IR files (`.ll` / `.opt.ll`); `--prep-only` only does header recognition and prints the result without compiling; `--config <f>` selects a build config file (layered: CLI > project > user > built-in defaults); `--profile <p>` picks a build profile; `--backend <b>` selects the backend; `--shared` builds a shared library; `--tieir-out <f>` serializes a tieir distribution unit after compiling; `--dump-irt <f>` reads a `.tieir` and prints a readable summary only; `--lsp` runs in language-server mode (stdio); `--compress-data` converts td data (`type tie<data>` files: bare table literals or optional table names, no `var`) to zd; and `--help`/`-h` shows help.
 
 ### 退出码
 *EN: Exit codes*
@@ -205,9 +217,11 @@ and looks for a `type tie` / `type tie<X>` declaration (independent of the prep 
 | `type tie<logic>` / `type tie<script>` | 逻辑 / 脚本 | 编译为可执行文件 |
 | `type tie<class>` / `type tie` | 类/库 / 泛型入口 | 编译为静态库 `.a` |
 | `type tie<ir>` | IR | 直接生成 LLVM IR（`.ll`），不继续 opt/clang 链接（等价 `--emit-ir`） |
-| `type tie<data>` / `type tie<ui>` / `type tie<db>` / `type tie<port>` | 数据 / 界面 / 数据库 / 端口 | 提示对应工具链未实现 |
+| `type tie<data>` | 数据 | 纯数据文件（表字面量，可 import；也作为构建配置 `config.data.tie` / `--compress-data` 输入） |
+| `type tie<port>` | 接口 | port 语言特性已实现（§10：接口/impl/泛型约束静态分发/unsafe 动态分发），但独立「端口文件」工具链尚未接入 |
+| `type tie<ui>` / `type tie<db>` / `type tie<zd>` | 界面 / 数据库 / zd | 提示对应工具链未实现 |
 
-EN: The table above (with Chinese descriptions) shows role recognition: `type tie<logic>`/`type tie<script>` compile to an executable; `type tie<class>`/`type tie` compile to a static library `.a`; `type tie<ir>` emits LLVM IR directly (equivalent to `--emit-ir`); and `type tie<data>`/`type tie<ui>`/`type tie<db>`/`type tie<port>` report that the corresponding toolchain is not implemented.
+EN: The table above (with Chinese descriptions) shows role recognition: `type tie<logic>`/`type tie<script>` compile to an executable; `type tie<class>`/`type tie` compile to a static library `.a`; `type tie<ir>` emits LLVM IR directly (equivalent to `--emit-ir`); `type tie<data>` is pure data (table literals, importable; also used as build-config `config.data.tie` and as input to `--compress-data`); `type tie<port>` marks an interface file — the port language feature is implemented (interfaces/impl/constrained static dispatch/unsafe dynamic dispatch) but the standalone "port-file" toolchain is not yet wired; and `type tie<ui>`/`type tie<db>`/`type tie<zd>` report that the corresponding toolchain is not implemented.
 
 未声明头时按 `logic` 处理。
 文件名为 `xxx.<角色>.tie` 时可作为默认角色（如 `lib_math.class.tie`），但头部声明
@@ -246,24 +260,40 @@ tiec --help                     # 帮助
 ## 5. 运行时依赖
 *EN: 5. Runtime dependencies*
 
-tiec 链接用户程序时需要一个运行时静态库：
+**纯程序零运行时依赖**：`exec_code` / `get_env` / `time_now` 已**内联到 libc**
+（编译期直接映射 `system` / `getenv` / 时钟调用），只用这些内置的程序不链接任何
+运行时库（`std/runtime.a` 已退役，不再存在）。
 
-EN: When linking user programs, tiec needs a runtime static library:
+EN: **Pure programs have zero runtime dependencies**: `exec_code` / `get_env` / `time_now`
+are **inlined to libc** (mapped directly to `system` / `getenv` / clock calls at compile time);
+programs using only these built-ins link no runtime library (`std/runtime.a` has been retired
+and no longer exists).
+
+需要 **tie-interp C ABI 桥**（`read_line` / `eval`，或 file/regex 等经桥的 std 函数）的
+程序链接 `tie_interp.lib`（Rust tie-interp 静态库，随发布包分发）：
+
+EN: Programs that need the **tie-interp C ABI bridge** (`read_line` / `eval`, or bridged std
+functions such as file/regex) link `tie_interp.lib` (the Rust tie-interp static library,
+shipped with the release package).
 
 | 产物 | 说明 |
 | --- | --- |
-| `std/runtime.a` | tie 自写运行时静态库（T4.5）。由 `std/runtime.tie` 编译而来，提供 `tie_exec_code` / `tie_get_env` / `tie_time_now` 等桥符号，顶层裸函数不 mangle，与语言底座 `extern fn` 声明字节级匹配 |
-| `tie_interp.lib` | 历史回退（Rust tie-interp 静态库）。`std/runtime.a` 不存在时作为备选链接 |
+| `tie_interp.lib` | Rust tie-interp 静态库，提供 `read_line` / `eval` 及 file/regex 等 C ABI 桥符号；需要桥的程序链接它 |
+| `std/runtime.a` | **已退役**（T4.5 时代的 tie 自写运行时静态库，提供 `tie_exec_code` / `tie_get_env` / `tie_time_now` 桥符号）；exec_code/get_env/time_now 现内联 libc，不再需要 |
 
-EN: The table above lists the runtime artifacts: `std/runtime.a` is the tie-written runtime static library (T4.5), compiled from `std/runtime.tie`, providing bridge symbols such as `tie_exec_code` / `tie_get_env` / `tie_time_now`, with top-level bare functions unmangled and byte-for-byte compatible with the language base `extern fn` declaration; `tie_interp.lib` is a historical fallback (Rust tie-interp static library) used only when `std/runtime.a` is absent.
+EN: The table above lists the runtime artifacts: `tie_interp.lib` is the Rust tie-interp static
+library providing C ABI bridge symbols such as `read_line` / `eval` and the file/regex bridges,
+linked by programs that need the bridge; `std/runtime.a` is **retired** (the T4.5-era
+tie-written runtime static library providing `tie_exec_code` / `tie_get_env` / `tie_time_now`;
+exec_code/get_env/time_now are inlined to libc now, so it is no longer needed).
 
-**G3 闸门验证**：移走 Rust `tie_interp.lib` 后，tiec 仍能编译并运行
-`exec_code` / `time_now` / `get_env` 程序，运行时栈 Rust-free 检查通过。
-`std/runtime.a` 是 0-Rust 链路的关键一环，链接用户程序时必需。
+**G3 闸门验证（0-Rust）**：移走 Rust `tie_interp.lib` 后，tiec 仍能编译并运行
+`exec_code` / `time_now` / `get_env` 程序，运行时栈 Rust-free 检查通过（这些内置
+不依赖任何运行时库）。
 
-EN: **G3 gate verification**: after removing the Rust `tie_interp.lib`, tiec can still compile and run
-`exec_code` / `time_now` / `get_env` programs, and the Rust-free runtime-stack check passes.
-`std/runtime.a` is a key link in the 0-Rust chain and is required when linking user programs.
+EN: **G3 gate verification (0-Rust)**: after removing the Rust `tie_interp.lib`, tiec can
+still compile and run `exec_code` / `time_now` / `get_env` programs, and the Rust-free
+runtime-stack check passes (these built-ins depend on no runtime library).
 
 ### LLVM 工具链依赖
 *EN: LLVM toolchain dependencies*
@@ -378,12 +408,14 @@ EN: The table above (with Chinese descriptions) tracks the bootstrap v2 progress
 ## 8. 已知限制与当前状态
 *EN: 8. Known limitations and current status*
 
-- **角色支持**：当前只编译 `logic`/`script`（可执行）与 `class`/`type`（静态库）、`ir`（直接产出 `.ll`）；`data` / `ui` / `db` / `port` 角色提示挂接点未实现；
+- **角色支持**：编译 `logic`/`script`（可执行）与 `class`/`type`（静态库）、`ir`（直接产出 `.ll`）；
+  `data` 角色作为构建配置与 `--compress-data` 输入已接入；port 语言特性（§10）已实现，
+  但 `ui` / `db` / `zd` 角色与 port 的独立「端口文件」工具链仍提示挂接点未实现；
 - **T5 后续进行中**：irgen 最小集扩展仍在推进；**enum 已实现（2026-08-15，无数据/带数据/泛型变体 + 构造/匹配全链路）**，函数指针方向的 C1 规划仍待覆盖；
 - **解释器桥限制**：需要指针类型的桥函数（如 file_read / str_char / rand_range / arg_*）无法 tie 化，仍走 Rust 底座转发；
 - **自举细节**：tiec 由 stage0 入库二进制自举（曾由 Rust 种子编译，历史 bootstrap 界限），此后 0-Rust；Rust 参考编译器已归档至 tiec_rust 独立仓库。
 
-- EN: **role support**: currently only `logic`/`script` (executable), `class`/`type` (static library), and `ir` (emit `.ll` directly) are compiled; the `data`/`ui`/`db`/`port` roles report that their hooks are not implemented;
+- EN: **role support**: `logic`/`script` (executable), `class`/`type` (static library), and `ir` (emit `.ll` directly) are compiled; the `data` role is wired in as build config and `--compress-data` input; the port language feature (§10) is implemented, while the `ui`/`db`/`zd` roles and the standalone port-file toolchain still report that their hooks are not implemented;
 - EN: **T5 follow-up in progress**: the irgen minimal-set extension is still ongoing; **enum is implemented (2026-08-15, data-less / data-carrying / generic variants + full construction/matching path)**, while the C1 plan toward function pointers remains to be covered;
 - EN: **interpreter-bridge limitation**: bridge functions that require pointer types (e.g. file_read / str_char / rand_range / arg_*) cannot be adopted into tie and still go through the Rust backend;
 - EN: **self-hosting detail**: tiec is bootstrapped from the checked-in stage0 binary (once compiled by the Rust seed — a historical bootstrap boundary), and has been 0-Rust since; the Rust reference compiler has been archived into the separate tiec_rust repo.

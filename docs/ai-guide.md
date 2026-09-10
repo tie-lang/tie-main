@@ -5,53 +5,58 @@
 > 覆盖语法、语义、已实现/未实现边界与编译器架构。你（AI）应严格按本文件 +
 > [language.md](language.md) 工作，不得使用本文件未列出的特性（很可能未实现）。
 >
-> 更新于 2026-08-10（自举 v2 阶段 0：ref 表参数 / 全局表 / map 排序 / intern / extern 完成后）。
+> 更新于 2026.1（Harbor 正式版；自举编译器 tiec 由 tie 100% 自写，0-Rust）。
 
 EN: This document is written specifically for **AI assistants (LLMs)**: it is a "paste-and-go" complete language manual covering syntax, semantics, implemented/unimplemented boundaries, and the compiler architecture. You (the AI) should work strictly according to this file plus [language.md](language.md), and must not use features not listed in this document (they are likely unimplemented).
 
-EN: Updated 2026-08-10 (after bootstrap v2 phase 0: `ref` table parameters / global tables / map sorting / `intern` / `extern` were completed).
+EN: Updated for 2026.1 (the Harbor stable release; the self-hosting compiler tiec is 100% written in tie, 0-Rust).
 
 ## 0. 一句话定位
 *EN: One-Sentence Positioning*
 
 tie 是一门**静态类型、四段式编译**的通用语言（预处理 → 前端 → 中端 → 后端），
-后端为 LLVM。类/元组/表是**值类型**（非引用、无 GC、无虚表）。
+后端为 LLVM。struct/元组/表是**值类型**（非引用、无 GC、无虚表）。
 
-EN: tie is a general-purpose language with **static typing and a four-stage compilation pipeline** (preprocessing → front end → middle end → back end), with LLVM as its back end. Classes / tuples / tables are **value types** (not references, no GC, no vtable).
+EN: tie is a general-purpose language with **static typing and a four-stage compilation pipeline** (preprocessing → front end → middle end → back end), with LLVM as its back end. Structs / tuples / tables are **value types** (not references, no GC, no vtable).
 
 ```bash
-cargo build --workspace          # 构建
-cargo run -p tie -- a.tie        # 编译并运行 a.tie
-tie a.tie -o out -O2             # 指定输出与优化级别
-tie                             # 无参数 → REPL
+compiler\tiec.exe a.tie            # 编译 a.tie → a.exe（自举编译器，0-Rust）
+a.exe                              # 运行
+compiler\tiec.exe                  # 无参数 → REPL
+tie a.tie -o out -O2               # 指定输出与优化级别（tie = 四段式调度器入口）
 ```
 
 ## 1. 文件头（Header / 角色声明）
 *EN: File Header (role declaration)*
 
-文件前几行以 `// tie:` 开头的指令决定文件角色（每行一个，连续排列）：
+文件**最前面几行**用语法行 `type tie<X>` 声明角色（非 `// tie:` 注释指令，该体系已移除）：
 
-EN: The directives at the top of a file that start with `// tie:` determine the file's role (one per line, placed consecutively):
+EN: The first few lines of a file declare the role with the syntactic header `type tie<X>` (not the `// tie:` comment-directive system, which has been removed):
 
 ```c
-// tie:logic                     // 逻辑代码（默认角色，可省略）：编译为可执行文件
-// tie:data                      // 数据交换：纯数据，类似 JSON，可被 import
-// tie:library                   // 库文件：不生成 main
-// tie:target=win-x64            // 编译目标（选项 key=value 跟在角色后）
-// tie:opt=3                     // 优化级别
+type tie<logic>                   // 逻辑代码（默认角色，可省略）：编译为可执行文件
+type tie<data>                    // 数据交换：纯数据（表字面量），类似 JSON，可被 import / 作构建配置
+type tie<class>                   // 类/库文件：编译为静态库 .a，不生成 main
+type tie<port>                    // 接口：port 语言特性已实现（接口/impl/泛型约束/动态分发）
+func main() {
+    println("hello")
+}
 ```
 
 | 角色 | 说明 |
 |---|---|
 | `logic`（默认） | 可执行文件；必须含 `func main()` |
-| `data` | 纯数据声明，供其他文件 `import` |
-| `library` | 编译为库，不生成 main |
-| `ui` / `db` | 规划中（M4），**未实现** |
+| `data` | 纯数据声明（表字面量），供其他文件 `import`，也作构建配置 `config.data.tie` |
+| `class` / `type` | 编译为静态库 `.a`，不生成 main |
+| `script` | 脚本（编译可执行） |
+| `ir` | 直接生成 LLVM IR（`.ll`） |
+| `port` | 接口文件；port 语言特性已实现，独立端口工具链未接入 |
+| `ui` / `db` | 规划中，**未实现** |
 
-EN: The table above lists the file roles: `logic` (default) — an executable that must contain `func main()`; `data` — pure data declarations for other files to `import`; `library` — compiled as a library without generating `main`; `ui` / `db` — planned for M4, **not implemented**.
+EN: The table above lists the file roles: `logic` (default) — an executable that must contain `func main()`; `data` — pure data declarations (table literals) for other files to `import`, also used as the build config `config.data.tie`; `class`/`type` — compiled as a static library `.a` without generating `main`; `script` — an executable script; `ir` — emits LLVM IR (`.ll`) directly; `port` — interface file (the port language feature is implemented; the standalone port-file toolchain is not wired yet); `ui` / `db` — planned, **not implemented**.
 
-## 2. 已实现特性清单（截至 2026-08-10，含自举 v2 阶段 0）
-*EN: Implemented Feature Checklist (as of 2026-08-10, including bootstrap v2 phase 0)*
+## 2. 已实现特性清单（2026.1 Harbor 正式版）
+*EN: Implemented Feature Checklist (2026.1 Harbor stable)*
 
 以下特性**可以使用**，示例均已验证：
 
@@ -582,9 +587,9 @@ func main() {
 
 EN: Note the ASI rule: **each statement takes its own line** (`return "..."` and `}` cannot be on the same line, because a semicolon is auto-inserted only at a newline; multiple statements on the same line must use an explicit `;`).
 
-保存为 `demo.tie` 后用 `cargo run -p tie -- demo.tie` 编译运行，输出应为：
+保存为 `demo.tie` 后用 `compiler\tiec.exe demo.tie` 编译（生成 `demo.exe`）再运行，输出应为：
 
-EN: Save it as `demo.tie`, then compile and run it with `cargo run -p tie -- demo.tie`; the output should be:
+EN: Save it as `demo.tie`, then compile it with `compiler\tiec.exe demo.tie` (producing `demo.exe`) and run it; the output should be:
 
 ```
 Rex

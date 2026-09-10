@@ -32,10 +32,13 @@ tie init|add|remove|install|update|build|run|publish|search|info|help   # 包管
 | `--profile <p>`       | 构建 profile（dev/release，覆盖配置顶层 `profile` 键；Cargo 风格，S3.1）                                                                                                      |
 | `--backend <b>`       | 后端实现选择（win32/LLVM 工具链；其余 port 尚未接入，S3.1）                                                                                                                      |
 | `--module <file.tie>` | tie-prep：挂载自定义 tie 转换器模块（顶层 `process(src)->string`），输出为模块转换结果（Harbor M3 可扩展性）                                                                                 |
+| `--compress-data` | td → zd 压缩数据子命令（`tie --compress-data <in.data.tie> -o <out.zd>`；读取 `type tie<data>` 表字面量文件：裸表或可选表名，无 `var`，产出 zd record）                                                               |
+| `--tieir-out <f>` | 编译后序列化 tieir 分发单元（S3.2；`.tieir` 二进制）                                                                                                                                  |
+| `--dump-irt <f>` | 只读 `.tieir` 并输出可读摘要（S3.2；不编译）                                                                                                                                           |
 | `--lsp`               | 以语言服务器模式运行（读 stdin 的 LSP 消息、写 stdout，等价于 `tie-lsp`）                                                                                                           |
 | `-h, --help`          | 显示帮助                                                                                                                                                          |
 
-EN: The table above (with Chinese descriptions) lists each option and its effect: `-o <file>` sets the output path, `-O0..-O3` the optimization level, `--target <三元组>` a cross-compilation target, `--emit-ir` emits LLVM IR only, `--keep-ir` keeps intermediate IR files, `--shared` builds a shared library, `--prep-only` runs preprocessing only, `--config <file>` selects a build config file (layered: CLI > project config > user `~/.config/tie/config.data.tie` > built-in defaults), `--profile <p>` picks a build profile, `--backend <b>` selects the backend, `--module <file.tie>` mounts a custom tie transformer module, `--lsp` runs in language-server mode, and `-h, --help` shows help.
+EN: The table above (with Chinese descriptions) lists each option and its effect: `-o <file>` sets the output path, `-O0..-O3` the optimization level, `--target <三元组>` a cross-compilation target, `--emit-ir` emits LLVM IR only, `--keep-ir` keeps intermediate IR files, `--shared` builds a shared library, `--prep-only` runs preprocessing only, `--config <file>` selects a build config file (layered: CLI > project config > user `~/.config/tie/config.data.tie` > built-in defaults), `--profile <p>` picks a build profile, `--backend <b>` selects the backend, `--module <file.tie>` mounts a custom tie transformer module, `--compress-data` converts td data (a `type tie<data>` table-literal file: bare tables or optional table names, no `var`) to zd, `--tieir-out <f>` serializes a tieir distribution unit, `--dump-irt <f>` reads a `.tieir` and prints a readable summary, `--lsp` runs in language-server mode, and `-h, --help` shows help.
 
 流程：`tie-prep` 预处理（清理代码 + 识别文件类型）→ 按角色自动转交工具链。
 
@@ -111,11 +114,13 @@ tie examples/lib_math.tie -o lib_math.lib   # → MSVC 兼容静态库 .lib（CO
 
 - 静态库 `.a` / `.lib`（Windows 上均为 COFF 归档）：导出符号为 `命名空间$函数`
   （如 `mathlib$add`），C/其他语言可链接消费；
-- 动态库（`.dll` / `.so`）编译为 Harbor M5 内容（见 docs/plans/dynamic-library.md）。
+- 动态库（`.dll` / `.so`）编译为 Harbor M5 内容（历史设计文档已随 2026.1 归档至
+  [tie-lang/old_docs](https://github.com/tie-lang/old_docs) `2026.1/`）。
 
 - EN: static libraries `.a` / `.lib` (both COFF archives on Windows) export symbols as `命名空间$函数`
   (e.g. `mathlib$add`) and can be linked and consumed from C / other languages;
-- EN: dynamic libraries (`.dll` / `.so`) are compiled per Harbor M5 (see docs/plans/dynamic-library.md).
+- EN: dynamic libraries (`.dll` / `.so`) are compiled per Harbor M5 (the historical design doc has
+  been archived with 2026.1 into [tie-lang/old_docs](https://github.com/tie-lang/old_docs) under `2026.1/`).
 
 ## 子工具
 *EN: Sub-tools*

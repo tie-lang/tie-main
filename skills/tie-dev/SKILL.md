@@ -10,7 +10,7 @@ tie：静态类型、四段式编译（预处理→前端→中端→后端 LLVM
 目标：全领域通用——写逻辑、写界面、写数据库、当数据交换格式。
 编译器 **tiec 由 tie 100% 自写**（自举闭环，0-Rust）；发布包内置精简 LLVM 工具链，解压即用。
 本文档是**应用开发者向**：用 tie 写程序，不涉及编译器内部开发。
-并发（preview\.6）：内置 actor 原语 + channel（Go 语义：close 广播 / select 多路，p.6.7.12）
+并发（2026.1）：内置 actor 原语 + channel（Go 语义：close 广播 / select 多路，p.6.7.12）
 + WaitGroup（p.6.7.11）+ 双形态真并行（S-pool/S-deque 简单形态、C-pool/C-deque 复杂形态，
 p.6.7.x 全落地）；复杂形态 `import trm-lite`（work-stealing + 并发三色 GC 分代/整理 +
 协作抢占，p.6.5.x 完整落地）。
@@ -379,6 +379,7 @@ IO/系统：fs / path / args / process / time / version / intern / assert
 哈希/密码：sha1 / sha256 / sha512 / sha3 / blake2 / blake3 / shake / md5（遗留）/
           siphash / xxh3（非加密）/ hmac / poly1305 / ascon_mac / hkdf / pbkdf2 /
           ed25519 / x25519 / tsha1 / tsha1_w48（TIE Secure Hash，state-per-n）
+加密安全：csprng（csrnd：strong_bytes(n)，BCryptGenRandom/Linux getrandom shim，r.1.2.1）/ ecdsa_p256（纯 tie P-256 ECDSA：keygen/pubkey/sign/verify，r.1.6.14）
 数据互联：tink（帧 v1 CRC32）/ tink_v2（帧 v2：tsha1f 校验 + zrpc + 加密位，p.6.11.x；zd 序列化见下方）
 其他：crypto / db / result
 ```
@@ -546,7 +547,7 @@ magic+version+flags+TLV+tsha1f 校验）；`stream_chunk_make/split/join`（分�
 
 * 用途：CRC32 增量（tink 复用）、无堆位运算、定点数、嵌入式 MAC——零动态内存/零递归/无全局状态。
 
-## 12. 数据互联：tink 帧协议（v1/v2）与 zd 序列化（preview\.6 核心）
+## 12. 数据互联：tink 帧协议（v1/v2）与 zd 序列化（2026.1 核心）
 
 ### 12.1 tink 节点帧协议（std/tink.tie）
 
@@ -653,6 +654,9 @@ tiec --compress-data <in.data.tie> -o <out.zd>     # td → zd（12.3）
 | `--config <f>`    | 构建配置文件（分层合并：CLI > 项目 config > 用户 > 内置默认）              |
 | `--profile <p>`   | 构建 profile（dev/release，Cargo 风格）                      |
 | `--backend <b>`   | 后端选择（win32 唯一可用）                                      |
+| `--shared`        | 编译为动态库（.dll / .so；library 角色）                           |
+| `--tieir-out <f>` | 编译后序列化 tieir 分发单元（.tieir 二进制）                       |
+| `--dump-irt <f>`  | 只读 .tieir 并输出可读摘要（不编译）                              |
 | `--compress-data` | td → zd 压缩数据子命令（表字面量 → DFS → zd record）               |
 | `--lsp`           | 语言服务器模式（stdio）                                        |
 

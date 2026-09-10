@@ -1,16 +1,19 @@
-# tie 语言规范（v0.1 草案）
+# tie 语言规范（2026.1 正式版）
 
-*EN: The tie Language Specification (v0.1 draft)*
+*EN: The tie Language Specification (2026.1 stable)*
 
-> ⚠️ **早期开发阶段**：本规范随实现演进，语法与语义可能变更，一切以实现为准。
+> 本文是 tie 语言**语法规范**的权威文档，与自举编译器 `tiec`（tie 100% 自写，0-Rust）
+> 的实现保持同步；如发现与实现不一致，以实现为准并请反馈。
 
-> **Early development stage**: this specification evolves with the implementation; the syntax and semantics may change, and the implementation is authoritative.
+> This document is the authoritative **syntax specification** of the tie language, kept in
+> sync with the self-hosting compiler `tiec` (100% written in tie, 0-Rust); in case of any
+> discrepancy with the implementation, the implementation is authoritative and feedback is welcome.
 
 > 工程结构、CLI 用法、编译流水线与路线图见根目录 [README.md](../README.md)。
-> 当前版本：0.1（设计阶段）
+> 当前版本：2026.1（Harbor 正式版，首个正式版）
 
 > For project structure, CLI usage, the compilation pipeline and the roadmap, see the repository-root [README.md](../README.md).
-> Current version: 0.1 (design stage)
+> Current version: 2026.1 (the Harbor stable release, the first stable release)
 
 ## 1. 语言定位
 
@@ -197,6 +200,30 @@ BODY:12             ← 正文码点数（str_len 语义，Rust 侧按字符截�
 > [docs/tie-script.md](tie-script.md)。
 
 > tie:script is the generalizing protocol of the above mechanism: the module convention, the `eval`/`eval_call` execution semantics, the protocol-text format, and the three-tier call entry points (Rust / CLI / inside a tie program) are fully described in [docs/tie-script.md](tie-script.md).
+
+### 2.5 包管理器（Harbor M6，tie 语言自写）
+
+*EN: 2.5 Package manager (Harbor M6, written in tie)*
+
+包管理器（`pkg/`，tie 语言自写，主入口 `pkg/main.tie`）提供依赖与构建编排：
+
+The package manager (`pkg/`, written in tie, main entry `pkg/main.tie`) provides dependency
+management and build orchestration:
+
+```bash
+tie init <项目名>                    # 初始化（tie.pkg 清单 + main.tie 模板）
+tie add path:./lib_math             # 添加依赖（path:/git+https://.../ registry 约束如 log@^1.2）
+tie remove <包名>                    # 移除依赖
+tie install                         # 解析 + 拉取依赖到 .tie/deps/，生成/校验 tie.lock
+tie update [包名]                    # 重新解析并更新 tie.lock
+tie build / tie run                 # 编译 / 编译并运行
+tie publish                         # 打包发布（.tie/dist/<name>-<version>.tar.gz + tag + push）
+tie search <关键词> / tie info <包>   # 查询注册表 index.tie（TIE_REGISTRY 可指定基址）
+```
+
+完整子命令说明见 [docs/cli.md](cli.md)「包管理器子命令」。
+
+Full subcommand details are in [docs/cli.md](cli.md), section "Package manager subcommands".
 
 ## 3. 类型系统（静态类型）
 
@@ -877,6 +904,39 @@ switch s {
 
 **Reference acceptance**: `tests/language/enum.tie` (data-less/data-bearing/generic/struct fields/cross-function), `tests/language/enum_neg.tie` (duplicate variant names/payload whitelist/== comparison/function-name conflict).
 
+### 3.9 `any` 动态类型（P2b/P2c 已实现）
+
+*EN: 3.9 The `any` dynamic type (P2b/P2c implemented)*
+
+`any` 是**一等值**动态类型：struct / enum / fn / 标量均可自动装箱为 `any`（堆分配），
+可作函数参数/返回值、struct 字段、`map` 键值。
+
+`any` is a **first-class** dynamic type: struct / enum / fn / scalars can be auto-boxed into an `any` (heap-allocated), usable as function parameters/return values, struct fields, and `map` keys/values.
+
+```c
+func store(v: any) -> any { return v }        // 函数参数/返回值
+var m: map<any> = ["k": 123, "s": "hi"]       // map 键值异构
+var t: table<any> = [1, "x", 3.5]             // 异构元素表
+```
+
+- **装箱自动**（标量/struct/enum/fn 传 any 处自动装箱）；`println(any)` 运行时分派打印；
+- **Auto-boxing** (scalars/struct/enum/fn are boxed automatically when passed to `any`); `println(any)` dispatches at runtime;
+- **拆箱**：`as_i64 / as_f64 / as_string / as_struct<T> / as_enum<T>`（`as_*` 运行时 tag 检查）；
+  另可 `var x = v.any_tag` 取动态类型 tag；
+- **Unboxing**: `as_i64 / as_f64 / as_string / as_struct<T> / as_enum<T>` (runtime tag checks); `var x = v.any_tag` also exposes the dynamic type tag;
+- **类型匹配**：`switch` 对 `any` 主体用 `case T:`（`case string: / case i64:`）按动态类型分派
+  （见 §5.1）；复合元素表 `t[0](5)` fn 值间接调用、`t[i].field` 可寻址读写（struct/enum 元素）、
+  `map_keys / map_values / map_contains` 内置；
+- **Type matching**: `switch` on an `any` subject dispatches by dynamic type via `case T:` (`case string: / case i64:`) (see §5.1); composite tables support `t[0](5)` fn-value indirect calls, addressable `t[i].field` reads/writes (struct/enum elements), and the built-ins `map_keys / map_values / map_contains`;
+- 注意：`std/collection.tie` 的 `coll.any` / `any_i64` / `any_string` 是**谓词版 any**
+  （「是否存在满足条件的元素」），与此动态类型 `any` 无关系，勿混淆。
+- Note: `coll.any` / `any_i64` / `any_string` in `std/collection.tie` are the **predicate** `any`
+  ("does any element satisfy the condition"), unrelated to this `any` dynamic type — do not confuse them.
+
+**参考验收**：`tests/_p2b_probe/`（any_box / any_unbox / any_decl / any_switch / p2c_survey）。
+
+**Reference acceptance**: `tests/_p2b_probe/` (any_box / any_unbox / any_decl / any_switch / p2c_survey).
+
 ## 4. 语句与分隔符（ASI 自动补全）
 
 *EN: 4. Statements and separators (ASI auto-completion)*
@@ -1031,7 +1091,7 @@ switch n {                                  // 多分支：case 值: 后接语�
         println("three to six")
     case 8 when flag:                       // 守卫：值匹配 且 flag 为真才进入
         println("eight and flag")
-    case string:                            // 类型匹配：subject 为动态类型容器时才允许
+    case string:                            // 类型匹配：subject 为 any 动态类型时才允许
         println("a string")
     default:                                // 可省略；守卫不满足时落入下一个 case
         println("other")
@@ -1055,10 +1115,14 @@ switch n {                                  // 多分支：case 值: 后接语�
 
 - **Ranges**: `case 3..7:` (integers) or `case 'a'..'e':` (chars) — left-inclusive right-exclusive, `start < end`; float ranges are explicitly unsupported;
 
-- **类型匹配**：`case string:` / `case i64:`——按对象的动态类型匹配，仅在宽类型/动态
-  容器对象（表、元组等）上有意义；普通静态类型对象上报错（类型恒定，恒真/恒假无意义）。
+- **类型匹配**：`case string:` / `case i64:`——按**对象的动态类型**匹配，仅对 `any`
+  动态类型主体有意义（其它静态类型变量类型恒定，恒真/恒假无意义 → 报错）；
+  宽类型/表/元组等复合类型主体不支持类型匹配。
 
-- **Type matching**: `case string:` / `case i64:` — matches by the subject's dynamic type, meaningful only on wide-type/dynamic-container subjects (tables, tuples, etc.); on ordinary statically-typed subjects an error is reported (the type is constant, so always-true/always-false is meaningless).
+- **Type matching**: `case string:` / `case i64:` — matches by the subject's **dynamic type** and is
+  meaningful only on an `any` subject (other statically-typed subjects have constant types, so
+  always-true/always-false would be meaningless → an error is reported); wide types, tables, tuples
+  and other composite subjects do not support type matching.
 
 **规则**：
 
@@ -1581,14 +1645,15 @@ The built-in filesystem primitives `file_read` / `file_write` / `file_append` / 
 EN: The filesystem primitives with signatures and semantics: `file_read` reads the full text (empty string on failure); `file_write` overwrites; `file_append` appends (creating the file if it does not exist); `file_exists` checks existence (read-probe; directories/unreadable → false); `file_delete` deletes the file (→ false if absent); `file_size` returns the byte size (−1 on failure such as absence); `file_is_dir` tests whether the path is a directory; `file_is_file` tests whether the path is a regular file.
 
 **完整封装**：`std/fs`（命名空间 `fs`，Rust std::fs 风格 API）：读取
-`read_to_string` / `read_text` / `read_bytes` / `read_lines`，写入 `write` /
-`write_text` / `append` / `append_text` / `write_lines`，元数据 `exists` /
-`is_file` / `is_dir` / `size`，删除 `remove_file` / `delete` / `remove_dir_all` /
-`remove_all`，目录 `create_dir_all` / `mkdir_all` / `read_dir` / `list` / `walk` /
-`copy_dir`，复制移动 `copy` / `rename` / `move`，归档 `untar_gz` / `unzip`。
-全部基于上述 UTF-8 桥，中文路径安全。
+`read_text`（`Result<string,string>`）/ `read_bytes` / `read_lines`，写入
+`write_text` / `append_text` / `write_lines`，元数据 `exists` /
+`is_file` / `is_dir` / `size`，删除 `remove` / `remove_all`，目录
+`create_dir_all` / `read_dir` / `walk` / `copy_dir`，复制移动 `copy` / `rename`，
+归档 `untar_gz` / `unzip`。全部基于上述 UTF-8 桥，中文路径安全。
+（注：早期文档中的 `read_to_string` / `write` / `append` / `remove_file` /
+`mkdir_all` / `list` / `move` 等名称已随库实现统一为上述真实签名，新建代码勿用旧名。）
 
-**Full wrapper**: `std/fs` (namespace `fs`, a Rust std::fs-style API): reading `read_to_string` / `read_text` / `read_bytes` / `read_lines`, writing `write` / `write_text` / `append` / `append_text` / `write_lines`, metadata `exists` / `is_file` / `is_dir` / `size`, deletion `remove_file` / `delete` / `remove_dir_all` / `remove_all`, directories `create_dir_all` / `mkdir_all` / `read_dir` / `list` / `walk` / `copy_dir`, copy/move `copy` / `rename` / `move`, and archives `untar_gz` / `unzip`. All are based on the UTF-8 bridge above and are safe for Chinese paths.
+**Full wrapper**: `std/fs` (namespace `fs`, a Rust std::fs-style API): reading `read_text` (`Result<string,string>`) / `read_bytes` / `read_lines`, writing `write_text` / `append_text` / `write_lines`, metadata `exists` / `is_file` / `is_dir` / `size`, deletion `remove` / `remove_all`, directories `create_dir_all` / `read_dir` / `walk` / `copy_dir`, copy/move `copy` / `rename`, and archives `untar_gz` / `unzip`. All are based on the UTF-8 bridge above and are safe for Chinese paths. (Note: early-draft names such as `read_to_string` / `write` / `append` / `remove_file` / `mkdir_all` / `list` / `move` have been unified with the real signatures above; new code should not use the old names.)
 
 ## 8. 数据结构与逻辑分离（struct / 命名空间函数 / 继承）
 
@@ -1893,6 +1958,16 @@ func main() {
 
 - Target-type guidance: `?` and the function return type infer each other, and errors carry type information.
 
+**诊断标号（p.6.9.15）**：`tiec` 的全部错误/警告带 **C# 式五位数标号**——
+`error[E#####]` / `warning[W#####]`（E00001 起全局连续；兜底 E00000 / W00000）。
+成因与常见解决方案见 [tie-diag](https://github.com/tie-lang/tie-diag) 仓库（双语文档）；
+语义 OK 附带的警告段形如 `;W:l c core|警告标号|正文`。
+
+**Diagnostic codes (p.6.9.15)**: all `tiec` errors/warnings carry **C#-style five-digit codes** —
+`error[E#####]` / `warning[W#####]` (globally consecutive from E00001; fallback E00000 / W00000).
+Causes and common solutions live in the [tie-diag](https://github.com/tie-lang/tie-diag) repo
+(bilingual docs); a semantic-OK result may carry a warning segment like `;W:l c core|code|message`.
+
 ## 12. 宏与元编程（S3.3 已实现；过程/语句级/跨文件三大方向 dev33 批次8-10 落地）
 
 *EN: 12. Macros and metaprogramming (implemented in S3.3; the three directions — procedural/statement-level/cross-file — landed in dev33 batches 8-10)*
@@ -2120,6 +2195,7 @@ func main() {
 | `misc`      | 宽类型：兜底（§3.3）                | `var c: misc = true`          |
 | `map`       | 键值表类型（§3.4.1）               | `var m: map = ["a":1]`        |
 | `table`     | 表类型（§3.4）                   | `var t: table = [1,2]`        |
+| `any`       | 动态装箱类型（§3.9）                | `var v: any = 42`             |
 | `actor`     | 并发 actor 声明（§15）             | `actor Counter { }`           |
 | `async`     | actor 异步投递方法（§15）            | `pub async func m() { }`      |
 | `port`      | 接口声明（§10）                   | `port Drawable { }`           |
@@ -2173,6 +2249,7 @@ EN: The keyword tables list every keyword with its purpose and an example; they 
 | `ptr<T>`   | 复合类型  | 指针（unsafe，§14.1）             | `ptr`                   |
 | `slice<T>` | 复合类型  | 连续内存切片（unsafe，§14.1）        | `{ptr,len}`              |
 | `atomic<T>`| 复合类型  | 原子类型（unsafe，§14.2）          | `i64` + 原子指令           |
+| `any`      | 复合类型  | 动态装箱（struct/enum/fn/标量，§3.9） | 对象 + 运行时 tag          |
 | `Result<T,E>` / `Option<T>` | 标准库 | 错误处理枚举（§11，std/result） | tag+payload 结构体   |
 | `guard<cap>` | 凭据   | move-only 并发凭据（§14.6）       | move-only guard          |
 
