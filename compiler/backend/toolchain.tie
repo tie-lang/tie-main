@@ -198,6 +198,9 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
     var cmd = tool + lld_flag + " " + input_opt + " -o " + output_exe
     if is_linux {
         cmd = cmd + " -Wl,--build-id=none"
+        // r.1.6.6：Linux 目标 LLVM libcall（floor/pow/sqrt 等浮点运算下降为
+        // libm 函数）须显式 -lm——glibc 默认不链 libm，缺符号链接失败。
+        cmd = cmd + " -lm"
     } else {
         cmd = cmd + " -Wl,/Brepro -Wl,/STACK:134217728"
     }
@@ -237,7 +240,7 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
     // table 码生成的 extern 引用）→ 不追加 .a（避免多重定义：模块定义 + .a 重复）。
     if need_trmlite {
         if llvmgen.tbl_inlined_check() == 0 {
-            var tlib = find_trmlite_lib()
+            var tlib = find_trmlite_lib(target)
             if str_len(tlib) == 0 {
                 tc_err_msg = "程序使用了 trm-lite 运行时（spawn/yield/collect 或表容器 table<T>），但未找到 trm-lite 静态库。" +
                     "请先构建 trm_lite.a（tiec core/runtime/tl_runtime.tie -o trm_lite.a），或设置环境变量 TIE_TRM_LITE_LIB"
@@ -294,6 +297,10 @@ pub func link_shared(input_opt: string, output_so: string, target: string, need_
     if str_len(target) > 0 {
         cmd = cmd + " --target=" + target
     }
+    // r.1.6.6：Linux .so 同样显式 -lm（LLVM 浮点 libcall）
+    if is_linux {
+        cmd = cmd + " -lm"
+    }
     // Windows 目标：链接 GDI/用户库（平台适配器 extern user32/gdi32）
     if str_len(target) == 0 || has_sub(target, "windows") {
         // p.6.4.1：arg_count/arg_string 内联 CommandLineToArgvW（shell32）；即使
@@ -324,7 +331,7 @@ pub func link_shared(input_opt: string, output_so: string, target: string, need_
     // table 码生成的 extern 引用）→ 不追加 .a（避免多重定义：模块定义 + .a 重复）。
     if need_trmlite {
         if llvmgen.tbl_inlined_check() == 0 {
-            var tlib = find_trmlite_lib()
+            var tlib = find_trmlite_lib(target)
             if str_len(tlib) == 0 {
                 tc_err_msg = "程序使用了 trm-lite 运行时（spawn/yield/collect 或表容器 table<T>），但未找到 trm-lite 静态库。" +
                     "请先构建 trm_lite.a（tiec core/runtime/tl_runtime.tie -o trm_lite.a），或设置环境变量 TIE_TRM_LITE_LIB"
@@ -414,10 +421,27 @@ func find_interp_lib() -> string {
     return ""
 }
 // 定位 trm-lite 静态库：TIE_TRM_LITE_LIB 环境变量 → 相对默认路径。找不到返回空串。
-func find_trmlite_lib() -> string {
+func find_trmlite_lib(target: string) -> string {
     var env = get_env("TIE_TRM_LITE_LIB")
     if str_len(env) > 0 && file_exists(env) {
         return env
+    }
+    // r.1.6.6：Linux 目标优先 trm_lite_linux.a（r.1.6.5 构建约定，pthread/POSIX
+    // 符号版）；路径分隔用 POSIX '/'（自举链在 Linux 上运行，反斜杠无效）。
+    if has_sub(target, "linux") {
+        var lc = table_new_string()
+        table_push(lc, "../../trm-lite/trm_lite_linux.a")
+        table_push(lc, "../trm-lite/trm_lite_linux.a")
+        table_push(lc, "trm_lite_linux.a")
+        var ln: i64 = len(lc)
+        var li: i64 = 0
+        while li < ln {
+            if file_exists(lc[li]) {
+                return lc[li]
+            }
+            li = li + 1
+        }
+        return ""
     }
     var cands = table_new_string()
     table_push(cands, "..\\..\\trm-lite\\trm_lite.a")  // tiec 位于 compiler/ 时
