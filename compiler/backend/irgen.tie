@@ -545,6 +545,11 @@ func is_libc_sym(sym: string) -> bool {
     if sym == "exit" || sym == "remove" {
         return true
     }
+    // r.1.6.6：libc clock（tiec 内部计时点，Windows CRT/POSIX 均提供）——
+    // 未登记会把纯 libc 程序误判为 interp 桥，Linux 目标链接直接拒绝。
+    if sym == "clock" {
+        return true
+    }
     // libm 数学函数（llvmgen 无条件 declare；f64 → f64）
     if sym == "sqrt" || sym == "sin" || sym == "cos" || sym == "tan" ||
         sym == "exp" || sym == "log" || sym == "floor" || sym == "ceil" ||
@@ -566,8 +571,11 @@ func is_libc_sym(sym: string) -> bool {
         return true
     }
     // p.6.4.1 UTF-16 宽字符桥：Windows 系统调用面（kernel32/shell32，非 interp 桥）
+    // r.1.6.6：GetTickCount（kernel32 毫秒时钟，tiec 内部计时点）补登记——未登记
+    // 会把纯 libc 程序误判为 interp 桥；Linux 由 linux_compat.c shim 解析。
     if sym == "GetCommandLineW" || sym == "CommandLineToArgvW" || sym == "LocalFree" ||
-        sym == "SetEnvironmentVariableW" || sym == "GetCurrentDirectoryW" {
+        sym == "SetEnvironmentVariableW" || sym == "GetCurrentDirectoryW" ||
+        sym == "GetTickCount" {
         return true
     }
     // p.6.6.20 std/sqlite 动态加载：kernel32 LoadLibraryW/GetProcAddress
