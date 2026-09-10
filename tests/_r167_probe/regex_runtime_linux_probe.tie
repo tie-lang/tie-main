@@ -1,0 +1,123 @@
+type tie<logic>
+// r.1.6.12 验收探针：正则五原语【运行期 pattern】桥路径（POSIX bridge 目标）
+//
+// 目标：验证 r.1.6.11 在 trm_lite_linux.a 提供的 tie_regex_* 五桥（C 实现，内部
+// glibc regcomp/regexec REG_EXTENDED）符号与 ABI。**所有 pattern 都以变量传入**（非
+// 字面量）→ irgen_regex.tie 的 rex_lit_pat 判 s_tags==2 为 false → 走 rex_bridge_*
+// → 符号 tie_regex_*（运行期桥路径），而非字面量内联 VM。
+//
+// 平台：主要服务 Linux 交叉验证。Windows 本机运行需 tie_interp.lib（Rust 桥，
+// regress-s21 TIE_INTERP_LIB 指 tie-main\target\release\tie_interp.lib）；当前
+// tie-main 尚未构建该 lib → Windows 首跑会链接失败（undefined tie_regex_*），属
+// 预期——本探针在 Linux CI 以 trm_lite_linux.a 验证桥符号。Linux 下亦需 r.1.6.16
+// 主代理在 is_libc_sym 登记 tie_regex_* 五符号（否则 g_used_interp 置位 → link_exe
+// 报"Linux 目标暂不支持 tie-interp 桥"屏障；登记后仅剩 Linux CRT 缺失）。详见同目录
+// README.md。
+//
+// 性能纪律：find_all 长文本（重复模式 ×1000）验证线性——桥内 regcomp 只编译一次、
+// find_all/replace 用 C 侧 realloc 块增长缓冲预分配拼接（无 O(n²) 逐字 strcat）、
+// 空匹配前进 1 字节防死循环。不写超时断言，仅注释说明意图。
+
+func main() -> i64 {
+    // 运行期 pattern（全部为变量，强制走桥路径）
+    var p_num = "[0-9]+"
+    var p_small = "[a-z]+"
+    var p_digits = "\\d+"
+    var p_digit = "\\d"
+    var p_space = "\\s"
+    var p_ab = "(a)(b)"
+    var p_dash = "(\\d+)-(\\d+)"
+
+    // 1. regex_match：部分匹配即真；无匹配即假。
+    if !regex_match("a123b", p_num) {
+        println("FAIL(r1) regex_match 部分匹配应为 true")
+        return 1
+    }
+    if regex_match("abc", p_num) {
+        println("FAIL(r2) regex_match 不匹配应为 false")
+        return 1
+    }
+
+    // 2. regex_find：返回首个匹配子串；无匹配返回空串。
+    var f1 = regex_find("a123b", p_small)
+    if f1 != "a" {
+        println("FAIL(r3) regex_find 应为 a，实际 '" + f1 + "'")
+        return 1
+    }
+    var f2 = regex_find("hello", p_num)
+    if f2 != "" {
+        println("FAIL(r4) regex_find 无匹配应为空串，实际 '" + f2 + "'")
+        return 1
+    }
+
+    // 3. regex_find_all：返回全部非重叠匹配子串表；逐元素断言（≥3 匹配）。
+    var all = regex_find_all("a1b22c333d4444", p_digits)
+    if len(all) != 4 {
+        println("FAIL(r5) find_all 数量应为 4，实际 " + to_string(len(all)))
+        return 1
+    }
+    if all[0] != "1" || all[1] != "22" || all[2] != "333" || all[3] != "4444" {
+        println("FAIL(r6) find_all 元素不符")
+        return 1
+    }
+
+    // 4. regex_group：$0 整体；k=1/2 各组；越界/未参与 → 空串。
+    var g0 = regex_group("ab", p_ab, 0)
+    var g1 = regex_group("ab", p_ab, 1)
+    var g2 = regex_group("ab", p_ab, 2)
+    var gx = regex_group("ab", p_ab, 5)
+    if g0 != "ab" || g1 != "a" || g2 != "b" || gx != "" {
+        println("FAIL(r7) group 捕获组不符：g0=" + g0 + " g1=" + g1 + " g2=" + g2 + " gx=" + gx)
+        return 1
+    }
+
+    // 5. regex_replace：\d 速记逐字替换；$2/$1 重排；$0 整体引用。
+    var r1 = regex_replace("a1b2c3", p_digit, "#")
+    if r1 != "a#b#c#" {
+        println("FAIL(r8) replace 逐字应为 a#b#c#，实际 '" + r1 + "'")
+        return 1
+    }
+    var r2 = regex_replace("2026-08", p_dash, "$2/$1")
+    if r2 != "08/2026" {
+        println("FAIL(r9) replace 重排应为 08/2026，实际 '" + r2 + "'")
+        return 1
+    }
+    var r3 = regex_replace("2026-08", p_dash, "[$0]")
+    if r3 != "[2026-08]" {
+        println("FAIL(r10) replace 整体引用应 [2026-08]，实际 '" + r3 + "'")
+        return 1
+    }
+    // 速记覆盖：\s 空格替换。
+    var r4 = regex_replace("a b\tc", p_space, "_")
+    if r4 != "a_b_c" {
+        println("FAIL(r11) replace \\s 应 a_b_c，实际 '" + r4 + "'")
+        return 1
+    }
+
+    // 性能纪律：find_all 长文本（重复模式 ×1000）——桥内 regcomp 仅一次、缓冲预分配
+    // 拼接；实现无 O(n²)。此处仅遍历断言结果正确（数量/值），不写超时。文本用
+    // string_builder 线性组装（避免循环串接 O(n²) 触 W0003）。
+    var sb = string_builder()
+    var bi: i64 = 0
+    while bi < 1000 {
+        sb_append(sb, "x1y2z3")
+        bi = bi + 1
+    }
+    var big = sb_build(sb)
+    var many = regex_find_all(big, p_digits)
+    if len(many) != 3000 {
+        println("FAIL(r12) find_all 长文本数量应为 3000，实际 " + to_string(len(many)))
+        return 1
+    }
+    var chk: i64 = 0
+    while chk < 3000 {
+        if many[chk] != "1" && many[chk] != "2" && many[chk] != "3" {
+            println("FAIL(r13) find_all 长文本元素不符@" + to_string(chk) + "=" + many[chk])
+            return 1
+        }
+        chk = chk + 1
+    }
+
+    println("r.1.6.12 regex runtime-pattern probe PASS")
+    return 0
+}
