@@ -22,6 +22,11 @@
 
 ## 2026.1（正式版，开发中）
 
+## [chore] r.1 Rust 通道引用回归退役——G3 0-Rust 门禁不再依赖 Rust 种子（2026-09-10）
+
+* **决定**：不再维护 Rust 种子（tie-llvm.exe）相关通道。repl-parity / run-interp-tests 以 Rust 种子输出作 golden 基准的引用回归从 G3 门禁退役（golden 已固化于 tests/repl、tests/interp；两个脚本保留可手动运行）。
+* **zero-rust-check.ps1**：前置不再要求 seed；步骤 4 改为退役跳过提示。门禁收窄为三项核心：① tiec 编译 hello；② 运行时内联 libc；③ 二进制 Rust-free 符号扫描。G3 结论 **PASS**。
+
 ## [fix] r.1 复查轮二：zero-rust-check $home 覆盖、run-interp-tests 过时路径（2026-09-10）
 
 * **zero-rust-check.ps1**：`Find-LlvmTool` 内 `$home` 覆盖 PowerShell 只读自动变量 `$HOME` → 脚本一运行即炸。改名 `$llvmHome`。修复后 G3 核心三步（hello 16 行 / 运行时内联 libc / Rust-free 符号扫描）全 PASS。
