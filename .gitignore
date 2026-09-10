@@ -202,6 +202,7 @@ hello_b2.exe
 /tests/**/*.opt.ll
 /tests/**/*.obj
 /tests/**/*.log
+/tests/**/*.a
 # errors/golden 的编译期望产物（err_021/err_053.exe）保留在盘，不被忽略
 !/tests/errors/golden/*.exe
 
