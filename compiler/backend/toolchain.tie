@@ -38,14 +38,28 @@ namespace tc {
 // （D:\LLVM\bin → C:\Program Files\LLVM\bin → C:\LLVM\bin）。找不到返回空串。
 // 实现：get_env("TIE_LLVM_HOME") 非空则先查 {home}\bin\{name}.exe（vendored LLVM
 // 发行目录，Rust 侧 tie 启动器设置；home 假定无空格，命令不加引号）；再按 ';' 拆分
-// PATH 逐目录查 {name}.exe；最后查固定目录（file_exists）。
+// PATH 逐目录查。r.1.6.1：候选目录内查工具——Windows 工具带 .exe，Linux 本机工具无后缀。
+// 路径分隔符统一用 "/"（Win32 file_exists 接受正斜杠，POSIX 亦然）。
+func tool_probe(dir: string, name: string) -> string {
+    var pe = dir + "/" + name + ".exe"
+    if file_exists(pe) {
+        return pe
+    }
+    var np = dir + "/" + name
+    if file_exists(np) {
+        return np
+    }
+    return ""
+}
+
+// PATH 逐目录查工具（name.exe 优先，无后缀兼容 Linux）；最后查固定目录。
 func find_tool(name: string) -> string {
     // 1) TIE_LLVM_HOME：优先于 PATH 与固定目录
     var home = get_env("TIE_LLVM_HOME")
     if str_len(home) > 0 {
-        var exe_home = home + "\\bin\\" + name + ".exe"
-        if file_exists(exe_home) {
-            return exe_home
+        var r = tool_probe(home + "/bin", name)
+        if str_len(r) > 0 {
+            return r
         }
     }
     // 2) PATH 拆分查找
@@ -54,9 +68,9 @@ func find_tool(name: string) -> string {
     var n: i64 = len(dirs)
     var i: i64 = 0
     while i < n {
-        var exe = dirs[i] + "\\" + name + ".exe"
-        if file_exists(exe) {
-            return exe
+        var r = tool_probe(dirs[i], name)
+        if str_len(r) > 0 {
+            return r
         }
         i = i + 1
     }
@@ -68,9 +82,9 @@ func find_tool(name: string) -> string {
     var m: i64 = len(fixed)
     i = 0
     while i < m {
-        var exe2 = fixed[i] + "\\" + name + ".exe"
-        if file_exists(exe2) {
-            return exe2
+        var r = tool_probe(fixed[i], name)
+        if str_len(r) > 0 {
+            return r
         }
         i = i + 1
     }
@@ -153,29 +167,40 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
         tc_err_msg = "未找到 clang，请确认 LLVM 已安装并在 PATH 中"
         return -1
     }
+    // r.1.6.1：Linux 目标用 lld 链接（clang 默认 GNU ld 在 Windows 宿主不可用）。
+    var is_linux = str_len(target) > 0 && has_sub(target, "linux")
     // /STACK:134217728（128MB）：自举链编译器（tiec 编译的 driver）处理大文件
     // （编译 driver 自身）时递归/嵌套调用栈深，默认 1MB 栈会 0xC00000FD 溢出；
     // S3.3 整合后 interp 深递归使大树检查深度超过 16MB，提至 128MB（命令行
-    // 工具虚拟内存充裕，无副作用）。
+    // 工具虚拟内存充裕，无副作用）。仅 Windows（/Brepro /STACK 为 MSVC 风格）。
     // -fuse-ld=lld 仅对「vendored LLVM」生效：clang 必须来自 TIE_LLVM_HOME
     // 指定的目录（发布包场景，用户无 MSVC → 用随包 lld-link）。
     var lld_flag = ""
-    var home = get_env("TIE_LLVM_HOME")
-    if str_len(home) > 0 {
-        if tool == home + "\\bin\\clang.exe" {
-            if file_exists(home + "\\bin\\lld-link.exe") {
-                lld_flag = " -fuse-ld=lld"
-            }
-        }
+    if is_linux {
+        lld_flag = " -fuse-ld=lld"
     } else {
-        // 本机开发（无 TIE_LLVM_HOME，clang 来自 PATH/固定目录）：必须显式
-        // 加 -fuse-ld=link 恢复 link.exe 行为——clang 22 起 Windows 默认链接器
-        // 已从 link.exe 改为 lld-link，而 lld-link 解析 Rust staticlib
-        // （tie_interp.lib）的 CRT 符号有缺陷（undefined symbol: printf），
-        // 会破坏 interp 桥程序（repl/pkg/interp 测试）的链接。
-        lld_flag = " -fuse-ld=link"
+        var home = get_env("TIE_LLVM_HOME")
+        if str_len(home) > 0 {
+            if tool == home + "\\bin\\clang.exe" {
+                if file_exists(home + "\\bin\\lld-link.exe") {
+                    lld_flag = " -fuse-ld=lld"
+                }
+            }
+        } else {
+            // 本机开发（无 TIE_LLVM_HOME，clang 来自 PATH/固定目录）：必须显式
+            // 加 -fuse-ld=link 恢复 link.exe 行为——clang 22 起 Windows 默认链接器
+            // 已从 link.exe 改为 lld-link，而 lld-link 解析 Rust staticlib
+            // （tie_interp.lib）的 CRT 符号有缺陷（undefined symbol: printf），
+            // 会破坏 interp 桥程序（repl/pkg/interp 测试）的链接。
+            lld_flag = " -fuse-ld=link"
+        }
     }
-    var cmd = tool + lld_flag + " " + input_opt + " -o " + output_exe + " -Wl,/Brepro -Wl,/STACK:134217728"
+    var cmd = tool + lld_flag + " " + input_opt + " -o " + output_exe
+    if is_linux {
+        cmd = cmd + " -Wl,--build-id=none"
+    } else {
+        cmd = cmd + " -Wl,/Brepro -Wl,/STACK:134217728"
+    }
     if str_len(target) > 0 {
         cmd = cmd + " --target=" + target
     }
@@ -187,11 +212,17 @@ pub func link_exe(input_opt: string, output_exe: string, target: string, need_in
         cmd = cmd + " -luser32 -lgdi32 -lshell32"
     }
     // p.6.4.5：程序用了网络原语（net_* 内联 Winsock2）→ 独立链 ws2_32
-    // （脱离 tie_interp 后不再借道 interp 的 -lws2_32）。
+    // （脱离 tie_interp 后不再借道 interp 的 -lws2_32）。Linux socket 在 libc，不链。
     if need_wsock {
-        cmd = cmd + " -lws2_32"
+        if !is_linux {
+            cmd = cmd + " -lws2_32"
+        }
     }
     if need_interp {
+        if is_linux {
+            tc_err_msg = "Linux 目标暂不支持 tie-interp 桥（0-Rust 后不应存在桥依赖程序）"
+            return -1
+        }
         var lib = find_interp_lib()
         if str_len(lib) == 0 {
             tc_err_msg = "程序使用了 tie-interp 桥内置，但未找到 tie-interp 静态库。" +
@@ -275,6 +306,10 @@ pub func link_shared(input_opt: string, output_so: string, target: string, need_
         cmd = cmd + " -lws2_32"
     }
     if need_interp {
+        if is_linux {
+            tc_err_msg = "Linux 目标暂不支持 tie-interp 桥（0-Rust 后不应存在桥依赖程序）"
+            return -1
+        }
         var lib = find_interp_lib()
         if str_len(lib) == 0 {
             tc_err_msg = "程序使用了 tie-interp 桥内置，但未找到 tie-interp 静态库。" +

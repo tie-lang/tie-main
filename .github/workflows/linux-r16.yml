@@ -1,0 +1,41 @@
+name: linux-r16
+
+# r.1.6 Linux 平台移植的 Linux 验证通道（2026-09-10 立项）
+# 本地 VMware 环境不可用（绿色版无法实质运行 guest），改由 CI 提供
+# ubuntu-latest：apt 装 clang/lld/llvm → 后续接入 Linux 自举 + 回归。
+# 当前为骨架：先验证 Linux 工具链可用，自举流水线随 r.1.6.6 接入。
+
+on:
+  push:
+    branches: [r.1]
+  workflow_dispatch:
+
+jobs:
+  linux-toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld llvm
+          clang --version | head -1
+          lld --version | head -1
+          llvm-ar --version | head -1
+
+      - name: Toolchain smoke (compile a trivial tie IR)
+        run: |
+          printf 'define i32 @main() {\n  ret i32 0\n}\n' > smoke.ll
+          clang smoke.ll -o smoke.elf
+          file smoke.elf
+          ./smoke.elf && echo "ELF smoke OK"
+
+      - name: Linux self-host pipeline (wired in r.1.6.6)
+        run: |
+          if [ -x compiler/tiec-linux ]; then
+            echo "tiec-linux found — running bootstrap"
+            ./compiler/tiec-linux --version || true
+          else
+            echo "tiec-linux not yet built (r.1.6.6 pending)"
+          fi

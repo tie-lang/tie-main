@@ -1230,7 +1230,12 @@ func compile_program(src: string) -> i64 {
 func compile_logic(ir_path: string, opt_path: string, target: string) -> i64 {
     var exe_path = g_output
     if str_len(exe_path) == 0 {
-        exe_path = replace_ext(g_input, "exe")
+        // r.1.6.1：Linux 可执行文件无扩展名（ELF）；Windows 默认 .exe
+        if is_linux_target(g_target) {
+            exe_path = replace_ext(g_input, "")
+        } else {
+            exe_path = replace_ext(g_input, "exe")
+        }
     }
     // need_interp = g_used_interp：有 Rust 桥才链 tie_interp.lib
     var bres = tc.link_exe(opt_path, exe_path, target, g_used_interp, g_used_trmlite, g_used_wsock)
@@ -1429,6 +1434,10 @@ func replace_ext(path: string, new_ext: string) -> string {
     var base: string = str.clone(path)
     if last_dot > 0 {
         base = slice(path, 0, last_dot)
+    }
+    // r.1.6.1：空后缀（Linux 可执行文件无扩展名）→ 返回去扩展名的基名，不带尾点
+    if str_len(new_ext) == 0 {
+        return base
     }
     return base + "." + new_ext
 }
