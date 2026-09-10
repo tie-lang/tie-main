@@ -107,6 +107,8 @@ jobs:
           cp compiler/tiec-linux2 $STAGE/tiec
           cp -r std ext rdu examples docs $STAGE/ 2>/dev/null || true
           cp compiler/README.tie compiler/config.tie $STAGE/ 2>/dev/null || true
+          # 发行文档 + 许可证置于包根（r.1 发布要求）
+          cp README.md NEW.md CHANGELOG.md LICENSE $STAGE/
           # 捆绑 apt LLVM 工具链（clang/opt/llvm-ar/lld + ld.lld 链接器，发行即用）
           for t in clang opt llvm-ar lld ld.lld; do
             p=$(command -v $t || true)
