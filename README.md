@@ -4,9 +4,6 @@
   <img src="assets/tie-logo-full.svg" alt="tie 语言 Logo / tie language logo" width="600">
 </p>
 
-> ⚠️ **早期开发阶段**：语言设计与实现仍在快速演进，语法、语义与工具链随时可能变更，暂不建议用于生产。
-> EN: **Early development stage**: the language is still evolving rapidly; syntax, semantics, and toolchain may change at any time. Not recommended for production yet.
-
 tie 是一门**通用编程语言**：用一门语言写逻辑、写界面、写数据库、当数据交换格式。
 
 EN: tie is a **general-purpose programming language**: one language for logic, UI, databases, and data-exchange formats.
@@ -107,8 +104,8 @@ tie/
 ├── repl/repl.tie         REPL 外壳
 ├── tieDB/                tieDB（内存数据库（含 zd 持久化副本））
 ├── pkg/                  包管理器（tie 语言自写）
-├── scripts/              构建与回归脚本（含 tie 自写打包器 package.tie）
-├── tests/                探针与回归测试（probe_*/language/errors）
+├── scripts/              构建与测试脚本（含 tie 自写打包器 package.tie）
+├── tests/                探针与测试（probe_*/language/errors）
 ├── skills/tie-dev/       tie-dev AI 开发技能（随发行包分发）
 ├── docs/                 文档（中英双语）
 └── examples/             示例程序
