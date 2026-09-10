@@ -45,9 +45,15 @@ Get-ChildItem (Join-Path $Root 'tests\s22_probe') -Filter '*.tie' | ForEach-Obje
 }
 
 Write-Host "=== 3. S2.3 探针（编译+运行） ==="
+# 预期 panic 探针：panic("消息") 语义 = 打印消息并以 exit 1 退出——rc=1 且输出含
+# 预期消息视为 PASS（否则探针本身无意义）。r.1 基线遗留 FAIL 的根因即此。
+$expectedPanic = @{ 'try_probe.tie' = '致命错误：除数不能为零' }
 Get-ChildItem (Join-Path $Root 'tests\s23_probe') -Filter '*.tie' | ForEach-Object {
     $r = Compile-Run $_.FullName $true
     if ($r.StartsWith("OK")) { Write-Host "PASS $($_.Name)"; $pass++ }
+    elseif ($expectedPanic.ContainsKey($_.Name) -and $r -match 'RUN_FAIL rc=1' -and $r.Contains($expectedPanic[$_.Name])) {
+        Write-Host "PASS(panic 预期) $($_.Name)"; $pass++
+    }
     else { Write-Host "FAIL $($_.Name) -> $r"; $fail++ }
 }
 

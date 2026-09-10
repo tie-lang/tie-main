@@ -22,6 +22,12 @@
 
 ## 2026.1（正式版，开发中）
 
+## [fix] r.1 regress-s21 支持预期 panic 探针——try_probe 基线 FAIL 闭环，回归全绿（2026-09-10）
+
+* **RCA**：`tests/s23_probe/try_probe.tie` 本就是「panic 语句语义」正例（末行 `panic("消息")` = 打印消息并以 exit 1 退出），脚本把预期内的 rc=1 一律当失败——非编译器缺陷，是回归框架缺口。
+* **修复**：regress-s21.ps1 增加 `$expectedPanic` 表（探针名 → 预期消息子串），`RUN_FAIL rc=1` 且输出含预期消息 → `PASS(panic 预期)`。不削弱断言：仍要求 rc=1 + 精确消息文本。
+* 回归：**104 PASS / 0 FAIL / 2 SKIP**（try_probe 转 PASS，r.1 审计 4 个基线 FAIL 全部闭环）。
+
 ## [fix] r.1 波次二：编译器正确性收官 + TLS 安全 + std 字节化 + 工具链硬错误（2026-09-10）
 
 * r.1.1.1 alloca 提升 + 入口零初始化类型覆盖扩至 i1/i16/i32/i128/float/聚合（RCA-2 语料全过，ed25519 5MB 有界；三阶自举 tiecB==tiecC 逐字节一致）
