@@ -1213,9 +1213,17 @@ func builtin_expr(nm: string, id: i64) -> i64 {
         // 去 Rust 桥（dev33 批次3 关联）：单字符 → 码点，用已内联的
         // s21_utf8_char_at(字符, 0)（等价 tie_char_code，纯 tie 生成，不再
         // 链接 tie_interp.lib）。语义：UTF-8 解码单字符首码点 = 该码点。
-        var v = tig_expr(call_arg(id, 0))
+        var cc_arg = call_arg(id, 0)
+        var v = tig_expr(cc_arg)
         if v < 0 {
             return -1
+        }
+        // r.1 复查修复：char_code(<char> 值) —— char 是 i32 标量码点，
+        // 直接 zext i32→i64 返回；仅 string（ptr）走 UTF-8 首码点解码。
+        // 此前把 char 值当 ptr 交给 s21_utf8_char_at → opt "i32 used as ptr"。
+        if node_types[cc_arg] == types.named(TK_CHAR) {
+            g_builtin_res = s21_zext(v, types.named(TK_CHAR))
+            return 0
         }
         var zlit = tig_int_lit_ty(0, types.named(TK_I64))
         g_builtin_res = s21_utf8_char_at(v, zlit)

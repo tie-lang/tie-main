@@ -22,6 +22,13 @@
 
 ## 2026.1（正式版，开发中）
 
+## [fix] r.1 复查轮：diagcode 目录再生成（新文案 E00000 兜底）+ char_code(char) i32-as-ptr + llvm-ar 陈旧产物（2026-09-10）
+
+* **diagcode 门禁回归**：r.1.1.3 把全局表初始化错误文案改为「必须是表字面量 []」，旧目录未登记 → 该错误落 E00000 兜底（golden 失败 1）。重跑生成器（545 条诊断）+ 自举重建，golden 0 回退、ALL PASS。
+* **char_code(<char> 值) i32-as-ptr**：char 是 i32 标量码点，irgen 却按 string(ptr) 交给 UTF-8 解码 → opt「i32 used as ptr」。修复：按实参静态类型分派——char 直接 zext i32→i64，string 走首码点解码（`char_code('A')`=65）。
+* **llvm-ar 陈旧产物**：class 角色 `-o` 指向已存在的 PE 文件时 llvm-ar rcs 先加载 →「file too small to be an archive」。修复：归档前先删陈旧输出。
+* 门禁：diagcodes ALL PASS；回归 104 PASS / 0 FAIL / 2 SKIP；自举不动点 tiecB==tiecC 一致；生产 tiec.exe 已重建入库。
+
 ## [fix] r.1 regress-s21 支持预期 panic 探针——try_probe 基线 FAIL 闭环，回归全绿（2026-09-10）
 
 * **RCA**：`tests/s23_probe/try_probe.tie` 本就是「panic 语句语义」正例（末行 `panic("消息")` = 打印消息并以 exit 1 退出），脚本把预期内的 rc=1 一律当失败——非编译器缺陷，是回归框架缺口。

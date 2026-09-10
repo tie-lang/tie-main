@@ -350,6 +350,11 @@ pub func archive(object: string, lib_path: string) -> i64 {
         tc_err_msg = "未找到 llvm-ar，请确认 LLVM 已安装并在 PATH 中"
         return -1
     }
+    // r.1 复查修复：lib_path 存在且是陈旧非归档产物（如误拷贝的 PE/exe）时，
+    // llvm-ar rcs 会先加载它 → "file too small to be an archive"。归档前先删。
+    if file_exists(lib_path) {
+        file_delete(lib_path)
+    }
     return run(tool + " rcs " + lib_path + " " + object)
 }
 
