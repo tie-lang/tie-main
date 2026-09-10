@@ -10,16 +10,20 @@
 
 ***
 
-Harbor-2026.1 是 tie 语言的首个**正式版**：预发布段（preview.1-6）能力全量固化，发布轨（r.1）聚焦**优化与稳定性收官**与**Linux 平台移植**——编译器全量回归 104 PASS 零失败、Linux 自举不动点 + 回归 101 PASS 零失败，密码学全家桶改为纯 tie 实现（ecdsa P-256 / RFC 6979 确定性签名），并开出第一趟 CI 打包流水线（tie-2026.1-linux-x64.zip / tie-2026.1-win-x64.zip）。
+tie语言迎来了**首个正式版**——2026.1！这意味着tie语言正式脱离早期开发阶段！
+
+本次更新聚焦于**安全性**与**稳定性**，以及一些**性能优化**。我们还将tie语言工具链开发到了Linux上。
+
+作者使用tie语言制作了5个大型项目，证明了tie语言可以投入生产环境。
 
 ## 亮点速览
 
-| ⚙️ **编译器**    | 双平台全绿回归（Windows 104 / Linux 101、0 FAIL）+ Linux 自举不动点 + 0-Rust 门禁退役 Rust 种子  |
-| ------------- | -------------------------------------------------------------------- |
-| 🐧 **Linux 平台** | 编译器内联 POSIX 分支（process/net/args/cwd/env）+ std/csprng getrandom + regex 运行期 POSIX 桥 + trm-lite pthread shim |
-| 🔐 **纯 tie 密码学** | ecdsa P-256 纯 tie 落地（复用 P-256 点数 + RFC 6979 确定性 k）+ TLS 认证链切换，弃 Windows CNG 依赖 |
-| 🕸️ **网络栈**    | std_httpc/std_net_bytes/std_net_text/std_sse_probe 四探针双平台变绿 |
-| 📦 **发行产物**   | tie-2026.1-win-x64.zip + tie-2026.1-linux-x64.zip（捆绑 LLVM 工具链，发行即用） |
+| ⚙️ **编译器**       | 双平台全绿回归（Windows 104 / Linux 101、0 FAIL）+ Linux 自举不动点 + 0-Rust 门禁退役 Rust 种子                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| 🐧 **Linux 平台**  | 编译器内联 POSIX 分支（process/net/args/cwd/env）+ std/csprng getrandom + regex 运行期 POSIX 桥 + trm-lite pthread shim |
+| 🔐 **纯 tie 密码学** | ecdsa P-256 纯 tie 落地（复用 P-256 点数 + RFC 6979 确定性 k）+ TLS 认证链切换，弃 Windows CNG 依赖                             |
+| 🕸️ **网络栈**      | std_httpc/std_net_bytes/std_net_text/std_sse_probe 四探针双平台变绿                                                |
+| 📦 **发行产物**      | tie-2026.1-win-x64.zip + tie-2026.1-linux-x64.zip（捆绑 LLVM 工具链，发行即用）                                        |
 
 ***
 
