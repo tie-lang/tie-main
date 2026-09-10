@@ -5,26 +5,21 @@
 > 工程全貌与用法见 [README.md](README.md)。
 
 **内部代号**：Harbor 港湾（2026.1 正式版代号，首个正式版 = 工具链第一次靠岸停泊）
-**本版**：Harbor-2026.1-preview.6
-**对比基线**：Harbor-2026.1-preview.5
+**本版**：Harbor-2026.1（正式版）
+**对比基线**：Harbor-2026.1-preview.6
 
 ***
 
-preview.6 是 2026.1 预发布段的**收官版**：编译器大程序崩溃根因收官、TLS 公网握手
-修复与 ed25519 泄漏根治，并完成 **0-Rust 自举收官**的最后一环——LSP 重写（tsp）。
-同时落地 trm-lite 双形态真并行与三色/分代 GC、23 个标准/扩展库补全、Skia 全栈图形
-（ptr/repr(C)/窗口/事件/主循环）、tink v2 互联协议（zrpc + 加密位接线）与 tiec
-诊断标号体系。
+Harbor-2026.1 是 tie 语言的首个**正式版**：预发布段（preview.1-6）能力全量固化，发布轨（r.1）聚焦**优化与稳定性收官**与**Linux 平台移植**——编译器全量回归 104 PASS 零失败、Linux 自举不动点 + 回归 101 PASS 零失败，密码学全家桶改为纯 tie 实现（ecdsa P-256 / RFC 6979 确定性签名），并开出第一趟 CI 打包流水线（tie-2026.1-linux-x64.zip / tie-2026.1-win-x64.zip）。
 
 ## 亮点速览
 
-| ⚙️ **编译器**    | 大程序崩溃根因收官（表引用计数）+ TLS 公网握手修复 + E/W 诊断标号体系 + 生产不动点  |
+| ⚙️ **编译器**    | 双平台全绿回归（Windows 104 / Linux 101、0 FAIL）+ Linux 自举不动点 + 0-Rust 门禁退役 Rust 种子  |
 | ------------- | -------------------------------------------------------------------- |
-| 🛰️ **LSP 重写** | tsp 0-Rust 收官：16 能力矩阵（补全/跳转/引用/语义令牌/重命名/格式化…）+ VSCode 接线 |
-| 🧵 **并发运行时** | trm-lite 双形态真并行（常驻池/窃取/细锁）+ 三色/分代 GC + WaitGroup + channel Go 语义 |
-| 📚 **库补全**    | 23 库落地：tls/httpc/sse/html/xml/spidey/ws/smtp/dns/yaml/toml/markdown/png/qr/svg/tpl/diff/cron/jwt/sqlite/http_server/llm/sys-win32 |
-| 🎨 **Skia 图形** | ptr 类型化指针 + repr(C) + extern unsafe + 窗口嵌入/事件/主循环 + 软件光栅基线 |
-| 🔗 **数据互联**   | tink v2 帧协议（tsha1f 校验）+ 多语言库 + zrpc 可靠传输 + x25519 加密位接线 |
+| 🐧 **Linux 平台** | 编译器内联 POSIX 分支（process/net/args/cwd/env）+ std/csprng getrandom + regex 运行期 POSIX 桥 + trm-lite pthread shim |
+| 🔐 **纯 tie 密码学** | ecdsa P-256 纯 tie 落地（复用 P-256 点数 + RFC 6979 确定性 k）+ TLS 认证链切换，弃 Windows CNG 依赖 |
+| 🕸️ **网络栈**    | std_httpc/std_net_bytes/std_net_text/std_sse_probe 四探针双平台变绿 |
+| 📦 **发行产物**   | tie-2026.1-win-x64.zip + tie-2026.1-linux-x64.zip（捆绑 LLVM 工具链，发行即用） |
 
 ***
 
