@@ -69,10 +69,10 @@ jobs:
 
       - name: Link stage0 Linux tiec
         run: |
-          # driver-linux.ll（链路）+ linux_compat.c（GetTickCount/_gcvt Windows CRT
-          # 符号的 POSIX 对等 shim，仅编译器自身引用）+ trm_lite_linux.a（tl_tbl 表
-          # 运行时）+ -lm（LLVM 浮点 libcall），Linux CRT 由 ubuntu 提供。
-          clang -O1 -fuse-ld=lld driver-linux.ll tests/_r166_probe/linux_compat.c \
+          # driver-linux.ll + trm_lite_linux.a（tl_tbl 表运行时 + _gcvt/GetTickCount
+          # POSIX shim 成员，r.1.6.6）+ -lm（LLVM 浮点 libcall），Linux CRT 由 ubuntu
+          # 提供。自举后的 tiec-linux 编译用户程序时 link_exe 自动定位同一 .a。
+          clang -O1 -fuse-ld=lld driver-linux.ll \
             ../trm-lite/trm_lite_linux.a -lm -o compiler/tiec-linux
           file compiler/tiec-linux
 
