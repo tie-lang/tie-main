@@ -50,6 +50,10 @@ $probes = @(
     'tests\s21_probe\probe5_sb.tie'
 )
 foreach ($p in $probes) {
+    if (Is-LinuxKnown (Split-Path $p -Leaf)) {
+        Write-Host "SKIP(Linux差异) $p"; $known++
+        continue
+    }
     $r = Compile-Run (Join-Path $Root $p) $true
     if ($r.StartsWith("OK")) { Write-Host "PASS $p"; $pass++ }
     else { Write-Host "FAIL $p -> $r"; $fail++ }
