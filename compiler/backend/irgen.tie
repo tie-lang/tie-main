@@ -628,6 +628,15 @@ func is_libc_sym(sym: string) -> bool {
         sym == "dup2" || sym == "execl" || sym == "waitpid" {
         return true
     }
+    // r.1.6.4：Linux POSIX socket 符号（net_* 内置 Linux 分支直调 libc socket 族，
+    // UTF-8/字节 IO 直通；全为 libc 符号，非 interp 桥——同 r.1.6.2 注释）。
+    // socket/connect/bind/listen/accept/send/recv/sendto/recvfrom 同 libc 名；
+    // gethostbyname/inet_addr 已在上方 Winsock 组登记（POSIX 亦存在）。
+    if sym == "socket" || sym == "connect" || sym == "bind" || sym == "listen" ||
+        sym == "accept" || sym == "send" || sym == "recv" ||
+        sym == "sendto" || sym == "recvfrom" {
+        return true
+    }
     return false
 }
 
