@@ -14,8 +14,8 @@ type tie<logic>
 // 流程与 scripts/package.ps1 一一对应（0-Rust，参考编译器已归档 tiec_rust）：
 //   1. 自举验证：tiec.exe 编译 driver.tie → tiec2.exe（编译零错误）
 //   2. repl.exe 自举（tiec 编译 repl/repl.tie；-skip-repl 可跳过）
-//   3. 组装 dist/tie-{版本}/（bin/doc/examples/editor + bin/llvm/ 精简工具链
-//      + std/ext/rdu + skills + compiler 源码）
+//   3. 组装 dist/tie-{版本}/（bin/examples/editor + bin/llvm/ 精简工具链
+//      + std/ext/rdu + skills + docs + compiler 源码 + 包根发行文档）
 //   4. tar 打包为 zip（Windows 自带 bsdtar：tar -a -c -f）
 
 // ---------- 命令行参数 ----------
@@ -173,14 +173,15 @@ func s3_llvm(dist: string) -> i64 {
 }
 
 func s3_doc(root: string, dist: string) -> i64 {
-    var _r = fs_create_dir_all(dist + "\\doc")
+    // 发行文档 + 许可证置于包根；docs/ 文档目录整体置于包根（不再有 doc/ 套层）
     foreach_doc(root, dist, "README.md")
+    foreach_doc(root, dist, "NEW.md")
     foreach_doc(root, dist, "CHANGELOG.md")
     foreach_doc(root, dist, "LICENSE")
     if fs_exists(root + "\\docs") {
-        var _r = fs_copy_dir(root + "\\docs", dist + "\\doc\\docs")
+        var _r = fs_copy_dir(root + "\\docs", dist + "\\docs")
     }
-    println("  doc/ ok")
+    println("  docs/ ok")
     return 0
 }
 
@@ -247,10 +248,10 @@ func step3_assemble(root: string, version: string, dist: string) -> i64 {
     return 0
 }
 
-// 文档复制辅助：存在才复制到 doc/
+// 文档复制辅助：存在才复制到包根
 func foreach_doc(root: string, dist: string, name: string) {
     if fs_exists(root + "\\" + name) {
-        var _r = fs_copy(root + "\\" + name, dist + "\\doc\\" + name)
+        var _r = fs_copy(root + "\\" + name, dist + "\\" + name)
     }
 }
 

@@ -208,24 +208,19 @@ else {
     }
 }
 
-# doc/：文档与许可
-$DocTarget = Join-Path $DistDir "doc"
-New-Item -ItemType Directory -Path $DocTarget -Force | Out-Null
-foreach ($doc in @("README.md", "CHANGELOG.md", "LICENSE")) {
+# 包根发行文档 + 许可证；docs/ 文档目录置于包根（不再有 doc/ 套层）
+foreach ($doc in @("README.md", "NEW.md", "CHANGELOG.md", "LICENSE")) {
     $src = Join-Path $Root $doc
     if (Test-Path $src) {
-        Copy-Item $src $DocTarget
+        Copy-Item $src $DistDir
     }
 }
-# docs/ 子目录（language.md / ai-guide.md / prompt-pack.md / release.md）
+# docs/ 全目录（language.md / ai-guide.md / prompt-pack.md / release.md）
 $DocsSub = Join-Path $Root "docs"
 if (Test-Path $DocsSub) {
-    New-Item -ItemType Directory -Path (Join-Path $DocTarget "docs") -Force | Out-Null
-    Get-ChildItem $DocsSub -Filter "*.md" | ForEach-Object {
-        Copy-Item $_.FullName (Join-Path $DocTarget "docs")
-    }
+    Copy-Item $DocsSub (Join-Path $DistDir "docs") -Recurse -Force
 }
-Write-Host "  doc/ ✔" -ForegroundColor DarkGray
+Write-Host "  docs/ ✔" -ForegroundColor DarkGray
 
 # examples/：示例源码
 $ExamplesSrc = Join-Path $Root "examples"

@@ -92,14 +92,15 @@ EN: The table above lists each binary component and its source/role: `tiec.exe` 
 ### 3.2 库与源码包
 *EN: Libraries and source packages*
 
-- `doc/`：README、CHANGELOG、LICENSE + `docs/` 文档全目录（language/ai-guide/prompt-pack/release 等）
+- 包根：`README.md`、`NEW.md`、`CHANGELOG.md`、`LICENSE`（发行文档 + 许可证置于包根）
+- `docs/`：文档全目录（language/ai-guide/prompt-pack/release 等）
 - `examples/`：示例 `.tie` 源码（hello / wide / table / tuple / oop / m4_ops 等）
 - `std/` `ext/` `rdu/`：标准库、扩展库与嵌入式基础层（全部 tie 语言自写；rdu 无栈纪律，零原语/零动态内存）
 - `skills/`：tie-dev 开发技能（SKILL.md，面向开发者与 AI 助手）
 - `editor/vscode-tie/`：VSCode 扩展（语法高亮 + LSP 诊断）
 - `compiler/`：编译器全部 `.tie` 源码（已剪除 `.exe/.ll/.bc` 编译产物，便于检视与二次开发）
 
-EN: `doc/` ships README, CHANGELOG, LICENSE plus the full `docs/` tree (language/ai-guide/prompt-pack/release, etc.); `examples/` ships example `.tie` sources; `std/`, `ext/` and `rdu/` are the standard library, extension library and embedded base layer (all written in tie; rdu follows stack-discipline with zero primitives/zero dynamic memory); `skills/` ships the tie-dev development skill; `editor/vscode-tie/` ships the VSCode extension (syntax highlighting + LSP diagnostics); `compiler/` ships all compiler `.tie` sources with build artifacts pruned.
+EN: The repo root of the package carries `README.md`, `NEW.md`, `CHANGELOG.md` and `LICENSE` (release docs + license at the package root); `docs/` ships the full documentation tree (language/ai-guide/prompt-pack/release, etc.); `examples/` ships example `.tie` sources; `std/`, `ext/` and `rdu/` are the standard library, extension library and embedded base layer (all written in tie; rdu follows stack-discipline with zero primitives/zero dynamic memory); `skills/` ships the tie-dev development skill; `editor/vscode-tie/` ships the VSCode extension (syntax highlighting + LSP diagnostics); `compiler/` ships all compiler `.tie` sources with build artifacts pruned.
 
 > 2026.2 变化：发行目录下设 `src/`，**将上述全部源码（compiler/std/ext/rdu/examples/skills/editor）收拢到 `src/` 下**；发行时另附一个**只带 `src/` 目录的源码包**（`tie-{版本}-src.zip`）。
 > EN (2026.2): a `src/` directory is added under the release layout; **all of the above sources (compiler/std/ext/rdu/examples/skills/editor) are gathered under `src/`**, and a **source-only archive containing just `src/`** (`tie-{version}-src.zip`) is shipped alongside.
@@ -165,7 +166,7 @@ EN: The release version and codename are injected as packager arguments; artifac
 `scripts/package.tie`（tie 语言自写，0-PowerShell，与旧 package.ps1 一一对应）：
 1. 自举验证（tiec 编译 driver.tie → tiec2.exe）
 2. repl.exe 自举（`skip-repl` 可跳过）
-3. 组装 `dist/tie-{版本}/`（bin / bin/llvm / doc / examples / std·ext·rdu / skills / editor / compiler 源码）
+3. 组装 `dist/tie-{版本}/`（bin / bin/llvm / docs / examples / std·ext·rdu / skills / editor / compiler 源码 + 包根发行文档）
 4. 打包 zip（Windows 自带 bsdtar：`tar -a -c -f`）
 
 用法（tiec 不支持在源码后直传脚本参数，须先编译再运行）：
@@ -176,7 +177,7 @@ EN: The release version and codename are injected as packager arguments; artifac
 > `dist/tie-{版本}/src/`，除全量包外另打 `tie-{版本}-src.zip`（只含 `src/`）。
 > EN (2026.2): sources are gathered under `dist/tie-{version}/src/`, and a `tie-{version}-src.zip` containing only `src/` is produced in addition to the full archive.
 
-EN: `scripts/package.tie` is the packager written in tie (0-PowerShell, one-to-one with the old package.ps1): 1. bootstrap verification (tiec compiles driver.tie → tiec2.exe); 2. repl.exe self-host build (`skip-repl` to skip); 3. assemble `dist/tie-{version}/` (bin / bin/llvm / doc / examples / std·ext·rdu / skills / editor / compiler sources); 4. zip via the Windows-bundled bsdtar (`tar -a -c -f`). compile the packager with `compiler/tiec.exe scripts/package.tie -o dist/package.exe`,
+EN: `scripts/package.tie` is the packager written in tie (0-PowerShell, one-to-one with the old package.ps1): 1. bootstrap verification (tiec compiles driver.tie → tiec2.exe); 2. repl.exe self-host build (`skip-repl` to skip); 3. assemble `dist/tie-{version}/` (bin / bin/llvm / docs / examples / std·ext·rdu / skills / editor / compiler sources + release docs at the package root); 4. zip via the Windows-bundled bsdtar (`tar -a -c -f`). compile the packager with `compiler/tiec.exe scripts/package.tie -o dist/package.exe`,
 then run `dist/package.exe 2026.2` (optional `skip-repl` / `skip-llvm`).
 
 ### 4.4 README 路线图
