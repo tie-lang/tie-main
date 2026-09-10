@@ -27,11 +27,11 @@ type tie<class>
 //     00 || DigestInfo(SHA-256)，还原后逐字节比较（bigint.powmod）。
 //   - RSA-PSS（RFC 8017 §9.1.2，MGF1-SHA256，sLen=32）：EMSA-PSS-VERIFY，
 //     用于 TLS1.3 CertificateVerify（RSA 键必须 PSS）。
-//   - ECDSA P-256：TLS 原始 r||s 64B，构造 ECCPUBLICBLOB，ext/ecdsa.verify。
+//   - ECDSA P-256：TLS 原始 r||s 64B → std/ecdsa_p256.verify（纯 tie，Linux 可链）。
 //   DigestInfo(SHA-256) = 30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00 04 20。
 //
 // == 依赖 ==
-//   x509（证书解析）、std/bigint（powmod）、ext/ecdsa（P-256 验签）、std/time（now）。
+//   x509（证书解析）、std/bigint（powmod）、std/ecdsa_p256（P-256 验签）、std/time（now）。
 //   全链字节表；hex 仅 bigint/ecdsa 适配层中转。
 // ============================================================================
 
@@ -40,7 +40,7 @@ import "./der.tie"
 import "./x509.tie"
 import "../../std/bigint.tie"
 import "../../std/time.tie"
-import "../../ext/ecdsa.tie"
+import "../../std/ecdsa_p256.tie" as ecdsa
 
 // DigestInfo(SHA-256) 前缀（19 字节，不含摘要）。
 var DI_PREFIX: table<i64>;
@@ -252,28 +252,11 @@ func verify_pss(n_bytes: table<i64>, e_bytes: table<i64>, sig_bytes: table<i64>,
     return tbt.eq(H2, H)
 }
 
-// ---- ECDSA（P-256，ext/ecdsa）----
-// EC 公钥点（0x04||X||Y 65B）-> ECCPUBLICBLOB hex（magic 'ECS1' + cbKey + X + Y）。
-func ec_blob_hex(point: table<i64>) -> string {
-    var blob = table_new_i64()
-    // BCRYPT_ECDSA_PUBLIC_P256_MAGIC = 0x31534345（小端 'ECS1'）
-    table_push(blob, 0x45)
-    table_push(blob, 0x43)
-    table_push(blob, 0x53)
-    table_push(blob, 0x31)
-    // cbKey = 32（小端 4 字节）
-    table_push(blob, 32)
-    table_push(blob, 0)
-    table_push(blob, 0)
-    table_push(blob, 0)
-    // point[0]==0x04 后 X(32) || Y(32)
-    var i: i64 = 1
-    while i < len(point) {
-        table_push(blob, point[i])
-        i = i + 1
-    }
-    return tbt.bytes_to_hex(blob)
-}
+// ---- ECDSA（P-256，std/ecdsa_p256 纯 tie）----
+// 验签走纯 tie ecdsa_p256.verify(pub_hex, hash_hex, sig_hex)：
+//   - pub_hex = 公钥点（0x04||X||Y，X/Y 各 32B 大端）的 hex（130 hex）；
+//   - hash_hex = 摘要字节的 hex（64 hex）；
+//   - sig_hex = 原始 r||s（64B）的 hex（128 hex）。
 
 // ECDSA 签名归一化：DER（0x30…，72B，OpenSSL 实况）→ 原始 r||s（64B）。
 // 失败（结构不符）返回空表——调用方按原始 64B 处理。
@@ -331,8 +314,8 @@ func verify_ecdsa(point: table<i64>, sig: table<i64>, digest: table<i64>) -> boo
         }
         raw = rr
     }
-    var kb = ec_blob_hex(point)
-    return ecdsa.verify(kb, tbt.bytes_to_hex(digest), tbt.bytes_to_hex(raw)) == 1
+    var pub_hex = tbt.bytes_to_hex(point)   // 0x04||X||Y（65B）→ 130 hex
+    return ecdsa.verify(pub_hex, tbt.bytes_to_hex(digest), tbt.bytes_to_hex(raw))
 }
 
 // ---- SPKI 解析 ----
