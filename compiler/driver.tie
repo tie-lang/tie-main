@@ -988,6 +988,8 @@ func keelcli_handle(cmd: string) -> i64 {
         sel = 11
     } else if cmd == "info" {
         sel = 12
+    } else if cmd == "pkg" {
+        sel = 13
     }
     switch sel {
         case 0:
@@ -1016,10 +1018,30 @@ func keelcli_handle(cmd: string) -> i64 {
             return keelcli_cmd_stub("search")
         case 12:
             return keelcli_cmd_stub("info")
+        case 13:
+            return keelcli_pkg_handle()
         default:
             println(diagcode.render_error(-1, -1, "未知命令: " + cmd))
             return 1
     }
+}
+
+// p.7.2.5 registry 客户端子命令路由：`tie pkg publish|info|versions`。
+// 实际三操作由 compiler/keel/keel_registry_cli.tie（namespace keelpkg，独立
+// 编译 + 探针验证）提供；本层按注册表稳定路由并给出用法（同 p.7.1.6 桩边界：
+// 真实工具链接入见 docs/release.md §4.6，服务端/协议随 p.9.2.2 正式落地）。
+func keelcli_pkg_handle() -> i64 {
+    var sub = arg_string(1)
+    if sub == "publish" || sub == "info" || sub == "versions" {
+        println("[keel-cli] 'pkg " + sub + "' 已按注册表分派（registry 客户端最小面，p.7.2.5）")
+        println("[keel-cli] 实际执行: keelpkg." + sub + "（keel_registry_cli.tie）——三操作探针见 tests/_p725_probe，格式见 docs/release.md §4.6")
+        return 0
+    }
+    println("[keel-cli] tie pkg 用法（registry 客户端，p.7.2.5）:")
+    println("  tie pkg publish <name> <version> <src.td> [描述]")
+    println("  tie pkg info <name>")
+    println("  tie pkg versions <name>")
+    return 0
 }
 
 // 入口：解析参数 → 读文件 → 头部扫描 → 角色分派。返回退出码。
@@ -1029,6 +1051,9 @@ func main() -> i64 {
     // 命中已登记 cli:xxx 时走注册表分派；否则原样走既有 tiec 参数解析（token
     // 非任何 cli 子命令 → 零行为变化）。
     keelboot.register_cli()
+    // p.7.2.5 registry 客户端：登记 `tie pkg`（publish|info|versions 子命令路由，
+    // 见 keelcli_pkg_handle；实际三操作驻 keel_registry_cli.tie 模块，探针验证）。
+    keelcli.register("cli:pkg", "包注册中心客户端：tie pkg publish|info|versions（p.7.2.5）")
     if keelcli_is_subcmd() == 1 {
         return keelcli_handle(arg_string(0))
     }

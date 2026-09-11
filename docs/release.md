@@ -348,7 +348,8 @@ benign/tamper/missing scenarios. The aggregate directory layout
 - **CLI 整合**：`tie pkg publish|info|versions` 经 keel_cli 注册表分派（p.7.1.6
   机制），driver 侧 `keelcli_handle` 路由 pkg 子命令；真实三操作由 keelpkg 模块
   提供（探针验证），服务端/协议其余部分随 p.9.2.2 包管理器正式落地。
-- **格式/协议文档**：存储在 `docs/designs/`（registry 条目，随 p.7.2.5 提交）。
+- **格式/协议文档**：本 §4.6 即包格式与存储布局的权威描述（探针
+  `tests/_p725_probe/reg_probe.tie` 为可运行规格）；不另立 design 文件。
 
 EN: The registry bootstrap (p.7.2.5) provides a storage skeleton for independent
 and aggregate releases: the package format reuses existing zdpub/keelaud
