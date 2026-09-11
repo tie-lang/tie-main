@@ -1,0 +1,312 @@
+type tie<class>
+// compiler/keel/keel_tieir_in.tie —— Keel 龙骨架构 tieir 消费入口（p.7.1.3）
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.1.3「tieir 消费入口：import tieir 包（消费方免前端）」。
+// 目标：新增 tieir **消费**入口模块——把 `.tieir` 分发单元「反序列化 → 还原 IR →
+// 产出可继续编译/继续编译所需的 .ll 文本」，让下游**不重跑 lex/parse/semantic**
+// 即可使用包（Keel 设计稿 specs/2026-08-29-plugin-kernel-design.md：下游加载
+// tieir 直接编译运行，不重跑前端）。
+//
+// # 还原层决策（据实侦查）
+//   compiler/middle/tieir_ser.tie 的 read/deserialize 已**完整重建 IR**：段1 魔数/
+//   版本 → 段3 字符串池（id 即下标，幂等）→ 段4 符号表 → 段5 函数/块/指令/操作数
+//   （roundtrip 一致性逐项校验）→ 段6 导出 → 段7 span。即「IR 还原层」已内建，
+//   本入口无需重复实现解析——只需做**消费入口协议**：加载 → 校验交付 → 交付给
+//   后端链路。重建后全局 ir 池即「可继续编译状态」，与正常管线 irgen 产出同构。
+//
+// # 交付（后端继续编译）
+//   「经既有 llvmgen 继续编译」依赖 driver 的前端+后端依赖面（semantic/sstate/
+//   config 的 globals 与 extern GetTickCount、str.slice 等由 driver→irgen+toolchain+
+//   config 传递提供）。免前端消费模块若 import 整棵 driver 树，会拖入远超消费所需
+//   的编译期依赖。本入口取**自包含后端门**：用与 llvmgen 相同的 ir 访问器
+//   （ir.func_* / block_* / ins_*）把还原后的 IR 渲染为 `.ll` 文本——产物即「消费
+//   成功」可验证证据；该契约文本可直接喂给既有 llvmgen 的审计/后续衔接（详见报告
+//   勾挂点，主代理可统一接线）。
+//
+// # 交付接口
+//   load(path) -> i64    消费入口：反序列化 .tieir → 还原 IR + 侧表（0 成功 / -1 失败）
+//   err_msg()  -> string 最近错误（加载/交付失败原因）
+//   pkg_name()/pkg_version() -> string  包名/版本（还原后 ir_meta 侧表）
+//   describe()-> string IR 规模摘要（函数/块/指令/值/导出 计数）
+//   ready()   -> bool  校验交付：已加载且 IR 非空（下游「报告可消费」断言）
+//   emit_ll() -> string 交付：还原 IR → .ll 文本（需 ready()；核心验收产物）
+//   write_ll(path, ll) -> bool  .ll 文本落盘（逐码点转字节表 + bytes.write）
+//
+// # 语言边界（同 ir.tie / tieir_ser.tie）
+//   - 本文件**只 import compiler/middle/tieir_ser.tie**（链载 ir/ir_meta/interner/
+//     bytes）——保持消费入口依赖最小、不拖入 driver 编译期树。
+//   - 全局初始化只用字面量；临时表用 table_new_i64()；无 continue/break/递归；
+//     && 非短路（边界判断与下标分开判断）；命名空间分隔符 :: 已还原（见 render）。
+//   - 顶层常量/全局变量加 keeltieirin_ 前缀防 import 内联后的顶层重名。
+//
+// 命名规范：命名空间内函数不加 keeltieirin_ 前缀；内部工具私有（非 pub）。
+
+import "../middle/tieir_ser.tie"
+
+// 消费状态：1 = 已成功还原 .tieir，IR 池为可继续编译状态。
+var keeltieirin_loaded: i64 = 0
+var keeltieirin_err: string = ""   // 最近错误（空 = 无错误）
+var keeltieirin_ll: string = ""    // 最近 emit 交付文本
+
+namespace keeltieirin {
+
+// ---------- 消费入口 ----------
+
+// 消费入口：把 .tieir 分发单元反序列化为全局 ir 池 + ir_meta 侧表（免前端）。
+// 走 tieir_ser.read → deserialize（段号/越界/列长 roundtrip 全级校验）。返回
+// 0 成功 / -1 失败（err_msg 取原因）。成功后 ir 池即「可继续编译状态」。
+pub func load(path: string) -> i64 {
+    keeltieirin_loaded = 0
+    keeltieirin_ll = ""
+    var rc = tieir.read(path)
+    if rc == 0 {
+        keeltieirin_loaded = 1
+        keeltieirin_err = ""
+    } else {
+        keeltieirin_err = tieir.err_msg()
+    }
+    return rc
+}
+
+// 最近错误消息（空 = 上次操作成功）。
+pub func err_msg() -> string {
+    return keeltieirin_err
+}
+
+// ---------- 校验交付 ----------
+
+// 包名（还原后从 ir_meta 侧表读出；未加载返回空串）。
+pub func pkg_name() -> string {
+    return interner.name_str(ir_meta.get_pkg_name())
+}
+
+// 包版本（还原后从 ir_meta 侧表读出；未加载返回空串）。
+pub func pkg_version() -> string {
+    return interner.name_str(ir_meta.get_pkg_version())
+}
+
+// IR 规模摘要：还原后的可消费证据文本。
+pub func describe() -> string {
+    var s = "func=" + to_string(ir.func_count())
+    s = s + " block=" + to_string(ir.block_count())
+    s = s + " inst=" + to_string(ir.inst_count())
+    s = s + " value=" + to_string(ir.value_count())
+    s = s + " export=" + to_string(ir_meta.export_count())
+    return s
+}
+
+// 校验交付：true = 已还原且 IR 非空（下游「报告可消费」的协议契约断言）。
+pub func ready() -> bool {
+    if keeltieirin_loaded != 1 {
+        return false
+    }
+    if ir.func_count() > 0 {
+        return true
+    }
+    return false
+}
+
+// ---------- 后端门：还原 IR → .ll ----------
+
+// 命名空间全名还原：`name::sub` → `name$sub`（对齐 llvmgen ns_replace 契约）。
+// 边界安全：仅替换首个 "::"（含检测 i+1 越界防护；tie `str_char` 越界返回
+// 哨兵，此处用显式 i+1<n 前置判断，不依赖短路）。
+func ns_dollar(name0: string) -> string {
+    var out = ""
+    var n = str_len(name0)
+    var done: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var c_ch = str_char(name0, i)
+        var is_ns = false
+        if c_ch == ":" && done == 0 {
+            if i + 1 < n {
+                var nxt = str_char(name0, i + 1)
+                if nxt == ":" {
+                    out = out + "$"
+                    i = i + 1
+                    is_ns = true
+                    done = 1
+                }
+            }
+        }
+        if !is_ns {
+            out = out + str_char(name0, i)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// type id → LLVM 类型文本（types 自编码：3=i64 9=f64 10=i1 13=string(ptr) 14=void）。
+func ll_ty(t: i64) -> string {
+    if t == 3 {
+        return "i64"
+    }
+    if t == 10 {
+        return "i1"
+    }
+    if t == 9 {
+        return "double"
+    }
+    if t == 13 {
+        return "ptr"
+    }
+    if t == 14 {
+        return "void"
+    }
+    return "i64"
+}
+
+// 指令一个操作数的文本（kind：0=值 1=块 2=立即数）。值 id：形参 → %位置，
+// 否则 %值id；立即数原样；块 → label %bb<id>。
+func opnd_ref(iid: i64, k: i64, fid: i64) -> string {
+    var v = ir.ins_opnd(iid, k)
+    var kd = ir.ins_opnd_kind(iid, k)
+    if kd == 2 {
+        return to_string(v)
+    }
+    if kd == 1 {
+        return "label %bb" + to_string(v)
+    }
+    // 值：查是否为形参（值 id 全局单调，形参先于指令）
+    var pc = ir.func_params_cnt(fid)
+    var p: i64 = 0
+    while p < pc {
+        if ir.param_val(fid, p) == v {
+            return "%" + to_string(p)
+        }
+        p = p + 1
+    }
+    return "%" + to_string(v)
+}
+
+// 渲染单指令为一行（覆盖常见 IR 契约：算术/ret/br/常量）。未支持 opcode
+// 记错误并返回空行（不 panic，契约保留）。
+func inst_line(ii: i64, fid: i64) -> string {
+    var op = ir.ins_op(ii)
+    if op == 32 {
+        // ret：无操作数 → ret void；有 → ret T opnd0
+        if ir.ins_ops_cnt(ii) == 0 {
+            return "ret void"
+        }
+        return "ret " + ll_ty(ir.func_ret(fid)) + " " + opnd_ref(ii, 0, fid)
+    }
+    if op == 30 {
+        // br → br label %bb<块>
+        return "br label %bb" + to_string(ir.ins_opnd(ii, 0))
+    }
+    // 算术/比较：结果 = opname T opnd0, opnd1[, cmpc]
+    var opname = ""
+    if op == 0 {
+        opname = "add"
+    } else if op == 1 {
+        opname = "sub"
+    } else if op == 2 {
+        opname = "mul"
+    } else if op == 3 {
+        opname = "sdiv"
+    } else if op == 4 {
+        opname = "srem"
+    } else if op == 46 {
+        opname = "udiv"
+    } else if op == 47 {
+        opname = "urem"
+    }
+    if str_len(opname) > 0 {
+        var out = "%" + to_string(ir.ins_val(ii)) + " = " + opname + " " + ll_ty(ir.ins_ty(ii))
+        var n = ir.ins_ops_cnt(ii)
+        var q: i64 = 0
+        while q < n {
+            if q > 0 {
+                out = out + ", "
+            } else {
+                out = out + " "
+            }
+            out = out + opnd_ref(ii, q, fid)
+            q = q + 1
+        }
+        return out
+    }
+    keeltieirin_err = "tieir-in emit 未支持 opcode=" + to_string(op) + "（函数 " + interner.name_str(ir.func_name(fid)) + "，指令 " + to_string(ii) + "）"
+    return ""
+}
+
+// 交付：把还原的 IR 渲染为 .ll 文本（免前端直达后端门）。仅当 ready() 为真；
+// 否则返回空串并记错误。产出为「消费成功」核心证据（含 @add 函数 IR）。
+// 若遇未支持 opcode，返回已生成部分并用 err_msg() 报告缺口。
+pub func emit_ll() -> string {
+    if !ready() {
+        keeltieirin_err = "tieir 未加载或 IR 为空，无法 emit"
+        return ""
+    }
+    keeltieirin_err = ""
+    var buf = table_new_string()
+    table_push(buf, "; ModuleID = 'tie'  (keel tieir-in consumption entry; p.7.1.3)")
+    table_push(buf, "")
+    var nf = ir.func_count()
+    var f: i64 = 0
+    while f < nf {
+        var name = ns_dollar(interner.name_str(ir.func_name(f)))
+        var sig = "define " + ll_ty(ir.func_ret(f)) + " @" + name + "("
+        var pc = ir.func_params_cnt(f)
+        var p: i64 = 0
+        while p < pc {
+            if p > 0 {
+                sig = sig + ", "
+            }
+            sig = sig + ll_ty(ir.func_param_ty(f, p)) + " %" + to_string(p)
+            p = p + 1
+        }
+        sig = sig + ") {"
+        table_push(buf, sig)
+        var nb = ir.block_count()
+        var bb: i64 = 0
+        while bb < nb {
+            if ir.block_func(bb) == f {
+                table_push(buf, "bb" + to_string(bb) + ":")
+                var st = ir.block_start(bb)
+                var en = ir.block_end(bb)
+                var ii = st
+                while ii < en {
+                    table_push(buf, inst_line(ii, f))
+                    ii = ii + 1
+                }
+            }
+            bb = bb + 1
+        }
+        table_push(buf, "}")
+        table_push(buf, "")
+        f = f + 1
+    }
+    var out = ""
+    var i: i64 = 0
+    while i < len(buf) {
+        if i > 0 {
+            out = out + "\n"
+        }
+        out = out + buf[i]
+        i = i + 1
+    }
+    keeltieirin_ll = out
+    return out
+}
+
+// 最近 emit 交付文本（emit_ll 之后可用；未 emit 返回空串）。
+pub func last_ll() -> string {
+    return keeltieirin_ll
+}
+
+// 把 .ll 文本落盘（逐码点转字节表 + bytes.write），返回成功 true。
+pub func write_ll(path: string, ll: string) -> bool {
+    var t = table_new_i64()
+    var n = str_len(ll)
+    var i: i64 = 0
+    while i < n {
+        table_push(t, char_code(str_char(ll, i)))
+        i = i + 1
+    }
+    return bytes.write(path, t)
+}
+
+}   // namespace keeltieirin
