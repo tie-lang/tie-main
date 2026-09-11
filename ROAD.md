@@ -174,6 +174,19 @@ development happens on branch p.7.
 
 - [ ] p.9.7.1 tiwi 安装器：**完全 tie 自研重构**——GUI 用 tiu（自定义）、逻辑全 tie 语言、自解压 setup（六边形架构；2026.2 收尾点，最后落地）
 
+**tge 游戏引擎 / t3d / trg（p.9.8，规划中，潜力档位）**
+
+> 定位（2026-09-12 定）：通用全栈游戏引擎，100% tie；立场中立（物理/网络/权威/中心化均为开发者可配置选项）。组装 t3d（3D 渲染框架）+ tiu（2D/UI）+ tink（多人）+ trg（共享渲染底栈）。
+>
+> EN: tge — general-purpose full-stack tie game engine, position-neutral; assembles
+> t3d (3D), tiu (2D/UI), tink (networking), trg (shared rendering substrate).
+
+- [ ] p.9.8.1 tge 全栈游戏引擎（ECS 骨架 / 帧模型 / 网络多路径；组件仓 `tie-lang/tge`）
+- [ ] p.9.8.2 t3d 3D 渲染框架（Forward+ / Deferred 双路径 · 三档 GI · GPU-driven · PBR 单源；组件仓 `tie-lang/t3d`）
+- [ ] p.9.8.3 trg 共享渲染底栈（帧图 / shader 预编译 / 资源管理；组件仓 `tie-lang/trg`）
+  - 设计文档（2026-09-12，规划期落于 `F:\Projects\tie-repo\tge\docs\designs\`）：`tge-architecture.md` · `t3d-architecture.md` · `trg-architecture.md`（建仓后迁入各组件仓）
+  - 状态：**规划中，未建仓**；依赖 2026.2 基本闭环后择期启动
+
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
