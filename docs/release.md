@@ -261,8 +261,10 @@ EN: The release version and codename are injected as packager arguments; artifac
 `scripts/package.tie`（tie 语言自写，0-PowerShell，与旧 package.ps1 一一对应）：
 1. 自举验证（tiec 编译 driver.tie → tiec2.exe）
 2. repl.exe 自举（`skip-repl` 可跳过）
-3. 组装 `dist/tie-{版本}/`（bin / bin/llvm / docs / examples / std·ext·rdu / skills / editor / compiler 源码 + 包根发行文档）
-4. 打包 zip（Windows 自带 bsdtar：`tar -a -c -f`）
+3. 组装 `dist/tie-{版本}/`（bin / bin/llvm / docs / 包根发行文档 +
+   `src/`——p.7.2.4 起源码 compiler/std/ext/rdu/examples/skills/editor 收拢到 `src/` 下）
+4. 打包完整 zip（Windows 自带 bsdtar：`tar -a -c -f`）
+5. 另打只含 `src/` 的 `tie-{版本}-src.zip`（p.7.2.4）
 
 用法（tiec 不支持在源码后直传脚本参数，须先编译再运行）：
 `compiler/tiec.exe scripts/package.tie -o dist/package.exe` 编译打包器，
@@ -272,7 +274,7 @@ EN: The release version and codename are injected as packager arguments; artifac
 > `dist/tie-{版本}/src/`，除全量包外另打 `tie-{版本}-src.zip`（只含 `src/`）。
 > EN (2026.2): sources are gathered under `dist/tie-{version}/src/`, and a `tie-{version}-src.zip` containing only `src/` is produced in addition to the full archive.
 
-EN: `scripts/package.tie` is the packager written in tie (0-PowerShell, one-to-one with the old package.ps1): 1. bootstrap verification (tiec compiles driver.tie → tiec2.exe); 2. repl.exe self-host build (`skip-repl` to skip); 3. assemble `dist/tie-{version}/` (bin / bin/llvm / docs / examples / std·ext·rdu / skills / editor / compiler sources + release docs at the package root); 4. zip via the Windows-bundled bsdtar (`tar -a -c -f`). compile the packager with `compiler/tiec.exe scripts/package.tie -o dist/package.exe`,
+EN: `scripts/package.tie` is the packager written in tie (0-PowerShell, one-to-one with the old package.ps1): 1. bootstrap verification (tiec compiles driver.tie → tiec2.exe); 2. repl.exe self-host build (`skip-repl` to skip); 3. assemble `dist/tie-{version}/` (bin / bin/llvm / docs / package-root release docs + `src/` — since p.7.2.4 all sources compiler/std/ext/rdu/examples/skills/editor are gathered under `src/`); 4. zip the full archive via the Windows-bundled bsdtar (`tar -a -c -f`); 5. produce a `tie-{version}-src.zip` containing only `src/` (p.7.2.4). Compile the packager with `compiler/tiec.exe scripts/package.tie -o dist/package.exe`,
 then run `dist/package.exe 2026.2` (optional `skip-repl` / `skip-llvm`).
 
 ### 4.4 README 路线图

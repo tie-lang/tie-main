@@ -1,8 +1,9 @@
 type tie<logic>
 // scripts/package.tie —— tie 正式发行版打包器（0-PowerShell，tie 语言自写）
 // ============================================================
-// 职责：构建 release 工具链（自举）→ 组装发行目录 → 生成 zip 压缩包。
-// 产物：dist/tie-{发行版号}-win-x64.zip（如 tie-Harbor-2026.1-preview.5-win-x64.zip）
+// 职责：构建 release 工具链（自举）→ 组装发行目录 → 生成 zip 压缩包 + 源码包。
+// 产物：dist/tie-{发行版号}-win-x64.zip + dist/tie-{发行版号}-src.zip
+//      （如 tie-Harbor-2026.1-preview.5-win-x64.zip）
 //
 // 用法（tiec 不支持在源码后直传脚本参数，须先编译再运行）：
 //   compiler/tiec.exe scripts/package.tie -o dist/package.exe   # 先编译打包器
@@ -15,8 +16,10 @@ type tie<logic>
 //   1. 自举验证：tiec.exe 编译 driver.tie → tiec2.exe（编译零错误）
 //   2. repl.exe 自举（tiec 编译 repl/repl.tie；-skip-repl 可跳过）
 //   3. 组装 dist/tie-{版本}/（bin/examples/editor + bin/llvm/ 精简工具链
-//      + std/ext/rdu + skills + docs + compiler 源码 + 包根发行文档）
+//      + std/ext/rdu + skills + docs + compiler 源码 + 包根发行文档；
+//      p.7.2.4：源码 compiler/std/ext/rdu/examples/skills/editor 收拢到 src/ 下）
 //   4. tar 打包为 zip（Windows 自带 bsdtar：tar -a -c -f）
+//   5. 另打 tie-{版本}-src.zip（只含 src/，p.7.2.4）
 
 // ---------- 命令行参数 ----------
 // 内置 version/args 原语见 tiec 环境；此处用 arg_string 读取（pkg 同款约定）。
@@ -87,7 +90,7 @@ func has_sub(s: string, sub: string) -> bool {
 // ---------- 第 1 步：自举验证 ----------
 
 func step1_bootstrap(root: string) -> i64 {
-    println("[1/4] 自举验证: tiec 编译 driver.tie -> tiec2.exe ...")
+    println("[1/5] 自举验证: tiec 编译 driver.tie -> tiec2.exe ...")
     // 先删旧 tiec2（避免陈旧产物误判成功）
     if fs_exists(root + "\\compiler\\tiec2.exe") {
         var _r = fs_remove(root + "\\compiler\\tiec2.exe")
@@ -100,7 +103,7 @@ func step1_bootstrap(root: string) -> i64 {
         println("[package] 自举编译失败（退出码 " + to_string(rc) + "，tiec2.exe 未生成）")
         return 1
     }
-    println("[1/4] 自举验证完成")
+    println("[1/5] 自举验证完成")
     return 0
 }
 
@@ -108,17 +111,17 @@ func step1_bootstrap(root: string) -> i64 {
 
 func step2_repl(root: string) -> i64 {
     if g_skip_repl {
-        println("[2/4] 已跳过 repl 自举（skip-repl）")
+        println("[2/5] 已跳过 repl 自举（skip-repl）")
         return 0
     }
-    println("[2/4] repl.exe 自举 ...")
+    println("[2/5] repl.exe 自举 ...")
     var cmd = shell_q(root + "\\compiler\\tiec.exe") + " " + shell_q(root + "\\repl\\repl.tie")
     var rc = exec_code(cmd)
     if !fs_exists(root + "\\repl\\repl.exe") {
         println("[package] repl.exe 编译失败（退出码 " + to_string(rc) + "，repl.exe 未生成）")
         return 1
     }
-    println("[2/4] repl.exe 自举完成")
+    println("[2/5] repl.exe 自举完成")
     return 0
 }
 
@@ -187,8 +190,8 @@ func s3_doc(root: string, dist: string) -> i64 {
 
 func s3_examples(root: string, dist: string) -> i64 {
     if fs_exists(root + "\\examples") {
-        var ok1 = fs_copy_dir(root + "\\examples", dist + "\\examples")
-        println("  examples/ ok (" + bool_s(ok1) + ")")
+        var ok1 = fs_copy_dir(root + "\\examples", dist + "\\src\\examples")
+        println("  src/examples/ ok (" + bool_s(ok1) + ")")
     }
     return 0
 }
@@ -199,27 +202,27 @@ func s3_libs(root: string, dist: string) -> i64 {
     while j < 3 {
         var l = libs[j]
         if fs_exists(root + "\\" + l) {
-            var _r = fs_copy_dir(root + "\\" + l, dist + "\\" + l)
-            println("  " + l + "/ ok")
+            var _r = fs_copy_dir(root + "\\" + l, dist + "\\src\\" + l)
+            println("  src/" + l + "/ ok")
         }
         j = j + 1
     }
     if fs_exists(root + "\\skills") {
-        var _r = fs_copy_dir(root + "\\skills", dist + "\\skills")
-        println("  skills/ ok")
+        var _r = fs_copy_dir(root + "\\skills", dist + "\\src\\skills")
+        println("  src/skills/ ok")
     }
     if fs_exists(root + "\\editor") {
-        var _r = fs_copy_dir(root + "\\editor", dist + "\\editor")
-        println("  editor/ ok")
+        var _r = fs_copy_dir(root + "\\editor", dist + "\\src\\editor")
+        println("  src/editor/ ok")
     }
     return 0
 }
 
 func s3_compiler(root: string, dist: string) -> i64 {
     if fs_exists(root + "\\compiler") {
-        var _r = fs_copy_dir(root + "\\compiler", dist + "\\compiler")
-        prune_artifacts(dist + "\\compiler")
-        println("  compiler/ ok")
+        var _r = fs_copy_dir(root + "\\compiler", dist + "\\src\\compiler")
+        prune_artifacts(dist + "\\src\\compiler")
+        println("  src/compiler/ ok")
     }
     return 0
 }
@@ -231,11 +234,13 @@ func prune_artifacts(dir: string) {
 }
 
 func step3_assemble(root: string, version: string, dist: string) -> i64 {
-    println("[3/4] 组装发行目录 " + dist + " ...")
+    println("[3/5] 组装发行目录 " + dist + " ...")
     if fs_exists(dist) {
         var _r = fs_remove_all(dist)
     }
     var _r = fs_create_dir_all(dist + "\\bin")
+    // p.7.2.4：源码收拢到 src/（composer 复制进 src/ 子目录）
+    var _r = fs_create_dir_all(dist + "\\src")
 
     var r1 = s3_bin(root, dist)
     var r2 = s3_llvm(dist)
@@ -244,7 +249,7 @@ func step3_assemble(root: string, version: string, dist: string) -> i64 {
     var r5 = s3_libs(root, dist)
     var r6 = s3_compiler(root, dist)
 
-    println("[3/4] 发行目录组装完成")
+    println("[3/5] 发行目录组装完成")
     return 0
 }
 
@@ -274,7 +279,7 @@ func ends_with(s: string, suffix: string) -> bool {
 // ---------- 第 4 步：打包 zip ----------
 
 func step4_zip(root: string, version: string, dist: string) -> i64 {
-    println("[4/4] 打包 zip ...")
+    println("[4/5] 打包 zip ...")
     var dir_name = "tie-" + version
     var zip_path = root + "\\dist\\" + dir_name + "-win-x64.zip"
     if fs_exists(zip_path) {
@@ -293,7 +298,25 @@ func step4_zip(root: string, version: string, dist: string) -> i64 {
         println("[package] zip 文件未生成")
         return 1
     }
-    println("[4/4] 打包完成: " + zip_path)
+    println("[4/5] 打包完成: " + zip_path)
+    return 0
+}
+
+// ---------- 第 5 步：源码包（只含 src/） ----------
+
+func step5_src_zip(root: string, version: string, dist: string) -> i64 {
+    println("[5/5] 打包源码包 src.zip ...")
+    var src_zip = root + "\\dist\\tie-" + version + "-src.zip"
+    if fs_exists(src_zip) {
+        var _r = fs_remove(src_zip)
+    }
+    // p.7.2.4：只含 src/——在 dist/tie-{version}/ 内打包 src 子树
+    var old = exec_code("cd /d " + shell_q(dist) + " && tar -a -c -f " + shell_q(src_zip) + " src")
+    if old != 0 || !fs_exists(src_zip) {
+        println("[package] src.zip 打包失败（退出码 " + to_string(old) + "）")
+        return 1
+    }
+    println("[5/5] 源码包完成: " + src_zip)
     return 0
 }
 
@@ -328,8 +351,9 @@ func main() -> i64 {
     if step2_repl(root) != 0 { return 1 }
     if step3_assemble(root, version, dist) != 0 { return 1 }
     if step4_zip(root, version, dist) != 0 { return 1 }
+    if step5_src_zip(root, version, dist) != 0 { return 1 }
 
-    println("打包完成: " + dist + "\\tie-" + version + "-win-x64.zip")
+    println("打包完成: " + dist + "\\tie-" + version + "-win-x64.zip (+ .src.zip)")
     return 0
 }
 
