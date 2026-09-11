@@ -2,10 +2,14 @@
 *EN: Design Finalization: trm (tie runtime suite) Final Design*
 
 > 状态：**设计定稿**（2026-08-22 讨论对齐，2026-08-23 定稿）
+> 修订（2026-09-11，2026.2 p.7.3 对齐）：**M:N 协程 / async 调度 / 可迁移栈移交 trm-lite**
+> （p.9.4 生成器式协程）；**trm 不再提供语言对象/表内存 GC**（归 trm-lite 引用计数）——
+> **引擎级 GC（tieir 运行时 Object/Value 生命期）保留**；语言层多线程归 trm-lite。
+> 本文档第 §5 节 M:N 协程与第 §10 节里程碑一并按 p.7.3.x 修订。
 > 本文档是 trm 的**唯一权威运行时设计**，取代 [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) 作为执行依据。
 > 定位：**双层 + 非对称**——纯编译路线 A（保留现状，零依赖）+ trm 运行时路线 B
 > （tieir 字节码 + interp 前端 + 可替换后端 + 引擎级 GC + 全 tie 平台实现）。
-> 哲学：**纯编译是安全默认（actor/纯逻辑）；运行时是能力增强（GC/M:N/反射/热更/动态）**，
+> 哲学：**纯编译是安全默认（actor/纯逻辑）；运行时是能力增强（GC/反射/热更/动态）**，
 > 老鸟可用 unsafe 显式接入运行时。
 > 决策依据：[trm-design-compare.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-design-compare.md)（方案对比，此处为定稿）。
 > 关联：`docs/designs/concurrency-model.md`（actor 原生语法零运行时）、
@@ -15,7 +19,7 @@
 > EN: Status: **Design finalized** (2026-08-22 discussion alignment, 2026-08-23 finalization)
 > EN: This document is trm's **sole authoritative runtime design**, superseding [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) as the basis for implementation.
 > EN: Positioning: **two-tier + asymmetric** — pure-compilation Route A (preserve the status quo, zero dependencies) + trm runtime Route B (tieir bytecode + interp front-end + replaceable backend + engine-level GC + all-tie platform implementation).
-> EN: Philosophy: **pure compilation is the safe default (actor / pure logic); the runtime is an capability enhancement (GC/M:N/reflection/hot reload/dynamic)**, and veterans can explicitly hook into the runtime with unsafe.
+> EN: Philosophy: **pure compilation is the safe default (actor / pure logic); the runtime is an capability enhancement (GC/reflection/hot reload/dynamic; M:N coroutines via trm-lite)**, and veterans can explicitly hook into the runtime with unsafe.
 > EN: Decision basis: [trm-design-compare.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-design-compare.md) (option comparison; this is the finalization).
 > EN: Related: `docs/designs/concurrency-model.md` (native actor syntax with zero runtime), 2026.1 期规划文档（已随版本归档/演进实现） (M5 platform bridge, whose boundary this document extends), [tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md) (the tieir bytecode contract), 2026.1 期规划文档（已随版本归档/演进实现）.
 
@@ -34,15 +38,16 @@ EN: **trm = the runtime suite of the tie platform**. A developer who does not `i
   tie 源码 ──tiec──▶ tieir 字节码 ──▶ trm 引擎执行
     ├── interp 前端（跨端一致解释）
     ├── 可替换后端（LLVM ORC JIT 热点 | wasm/AOT 扩展 | 移动端临时替代）
-    ├── 引擎级 GC 层（分代 + 移动 + 精确根扫描，管栈与对象）
-    ├── M:N 协程 / async 调度（可迁移栈）
+    ├── 引擎级 GC 层（分代 + 移动 + 精确根扫描，管 tieir 运行时 Object/Value）
     └── 库层（系统域 + 工具集成，全 tie 写）↔ 平台实现（动态库，全 tie 写）
+（M:N 协程 / async 调度 / 可迁移栈已移交 trm-lite，见 p.9.4，trm 不再提供）
 ```
 
-**一句话**：纯编译给所有人稳定零依赖；运行时给线路 B 的老鸟完整能力面（GC、M:N、
-反射、动态加载）。两条路同源一套源码，`import` 即选择。
+**一句话**：纯编译给所有人稳定零依赖；运行时给线路 B 的老鸟完整能力面（GC、
+反射、动态加载；M:N 协程由 trm-lite 提供，两套可协同）。两条路同源一套源码，
+`import` 即选择。
 
-EN: **In one sentence**: pure compilation gives everyone a stable zero-dependency base; the runtime gives veterans on track B the full capability surface (GC, M:N, reflection, dynamic loading). Both routes share a single source codebase; `import` is the choice.
+EN: **In one sentence**: pure compilation gives everyone a stable zero-dependency base; the runtime gives veterans on track B the full capability surface (GC, reflection, dynamic loading; M:N coroutines are provided by trm-lite, and the two can cooperate). Both routes share a single source codebase; `import` is the choice.
 
 ---
 
@@ -65,7 +70,6 @@ EN: **In one sentence**: pure compilation gives everyone a stable zero-dependenc
 │  ├── 后端接口（Backend trait，可替换）                      │
 │  │     └── LLVM ORC JIT（默认热点）| wasm/AOT | 移动临时    │
 │  ├── GC 层（引擎级统一 GC，分代+移动+精确根扫描）           │
-│  ├── M:N 协程 / async 调度（可迁移栈）                     │
 │  ├── tieir 加载（反序列化+语法/签名校验）→ 类加载器           │
 │  └── 对象模型 / 反射（运行期内省底座）                      │
 ├──────────────────────────────────────────────────────────┤
@@ -138,13 +142,11 @@ EN: **Decision: GC is an independent layer** — not an appendage of interp/back
 | --- | --- |
 | 根扫描 | **精确根扫描**（编译器/JIT 产栈图，interp 与后端通用） |
 | 回收策略 | **分代 + 移动式**（新生代复制 / 老年代整理） |
-| 协程栈 | **GC 管栈 + 对象**（M:N 可迁移栈是 GC 根来源与移动载体） |
+| 管理对象 | **引擎级 GC 管 tieir 运行时 Object/Value**（语言层表内存不归 trm，见修订注记：归 trm-lite 引用计数） |
 | 与路线 A | 路线 A 无 GC（确定性释放保持现状）；GC 是**路线 B 独有能力** |
 
-- 精确根扫描 → 可迁移栈成立 → M:N 协程成立；这是 GC 与 M:N 能够搭配的先决条件。
-- EN: Precise root scanning → migratable stacks are feasible → M:N coroutines are feasible; this is the precondition for GC and M:N to work together.
-- 栈既是根来源也是可移动对象载体：协程迁移时 GC 把栈一起管理，避免重分配丢失根。
-- EN: The stack is both a root source and a carrier of movable objects: when a coroutine migrates, GC manages the stack along with it, avoiding lost roots through reallocation.
+- 引擎级 GC 管 tieir 运行时 Object/Value 生命期（统一对象身份，interp/JIT 共用堆）。
+- EN: The engine-level GC manages the lifetimes of tieir runtime Objects/Values (unified object identity, shared heap across interp/JIT).
 
 ### 3.3 tieir 加载（类加载器）
 *EN: 3.3 tieir Loading (Class Loader)*
@@ -159,8 +161,8 @@ EN: Follows [tieir-format.md](tieir-format.md) §7: deserialization first + synt
 
 - 运行期类型查询、自动序列化、跨域身份——是 GC + 序列化 + 调试器 + 动态加载的公共底座。
 - EN: Runtime type query, automatic serialization, and cross-domain identity are the shared foundation for GC + serialization + debugger + dynamic loading.
-- 依赖通过 GC 的统一对象身份来建立（P4 立稳，P2 打底）。
-- EN: They rely on the unified object identity established through GC (solidified at P4, grounded at P2).
+- 依赖通过 GC 的统一对象身份来建立（引擎实现期立稳，interp 期打底）。
+- EN: They rely on the unified object identity established through GC (solidified in the engine implementation, grounded from the interp stage).
 
 ---
 
@@ -204,16 +206,22 @@ EN: log/compress/http/test/tui, etc.: a unified entry point via `import "trm:log
 
 ---
 
-## 5. M:N 协程 / async 调度
-*EN: 5. M:N Coroutines / async Scheduling*
+## 5. M:N 协程 / async 调度（已移交 trm-lite）
+*EN: 5. M:N Coroutines / async Scheduling (moved to trm-lite)*
 
-- **可迁移栈** + M:N 调度器，由 GC 一并管（§3.2）。
-- EN: **Migratable stacks** + an M:N scheduler, managed together by GC (§3.2).
-- **lean 设计**：async 表达式 / 方法内暂停，在路线 B 上实现（栈可迁移 → 真正可暂停）。
-  actor 的 `async` 投递（路线 A 已实现）是投递侧异步；路线 B 才有「方法内暂停」的完整 await。
-- EN: **lean design**: async expressions / mid-method suspension are implemented on Route B (migratable stacks → truly suspendable). An actor's `async` dispatch (already implemented on Route A) is dispatch-side asynchrony; only Route B has the complete in-method-suspension await.
-- 与 actor（路线 A 纯编译）的衔接见 §8。
-- EN: The interface with actor (Route A pure compilation) is in §8.
+> **2026-09-11 修订（p.7.3 对齐）**：M:N 协程 / async 调度 / 可迁移栈**不再由 trm 提供**，
+> 移交 **trm-lite**（2026.2 p.9.4：生成器式协程 `yield 值` + 惰性迭代/流；复用 trm-lite
+> 既有 work-stealing 调度与 P-段双端队列底座）。trm 引擎只做 tieir 执行 + 引擎级 GC。
+>
+> EN: **2026-09-11 revision (p.7.3 alignment)**: M:N coroutines / async scheduling /
+> migratable stacks are **no longer provided by trm**; they move to **trm-lite**
+> (2026.2 p.9.4: generator-style coroutines `yield value` + lazy iteration/streams;
+> reusing trm-lite's existing work-stealing scheduler and P-segment deques). The trm
+> engine only executes tieir and provides the engine-level GC.
+
+- 原设计（保留作历史）：**可迁移栈** + M:N 调度器由 GC 管；async 表达式 / 方法内暂停
+  走路线 B；actor `async` 投递（路线 A 已实现）为投递侧异步。
+- 与 actor（路线 A 纯编译）的衔接见 §8（不受移交影响）。
 
 ---
 
@@ -316,14 +324,14 @@ EN: `tie.pkg` declares `version / min_tiec / abi`; at compile time (when importi
 | 对象 | 默认（安全） | 老鸟（unsafe 显式） |
 | --- | --- | --- |
 | actor | **路线 A 纯编译**（现状已收官，1:1 线程 + mailbox 零运行时） | **unsafe 显式接入路线 B（trm）** |
-| 纯逻辑程序 | 路线 A 纯编译零依赖 | 路线 B（需要 GC/M:N/反射时） |
+| 纯逻辑程序 | 路线 A 纯编译零依赖 | 路线 B（需要 GC/反射时） |
 | 系统/UI 应用 | import trm → 路线 B | 同左 |
 
 - **actor 不被强制接 trm**：保持「actor 原生语法 · 零运行时」的安全默认。
 - EN: **actor is not forced into trm**: the safe default of "native actor syntax · zero runtime" is preserved.
-- **老鸟可用 unsafe 显式让 actor 走路线 B（trm）**：就能用上 M:N 协程、GC 对象模型、
-  动态加载等运行时能力——语法零改动，仅接入机制不同。
-- EN: **Veterans can explicitly make actors follow Route B (trm) with unsafe**: this unlocks runtime capabilities such as M:N coroutines, the GC object model, and dynamic loading — with zero syntax change, only a different hook-in mechanism.
+- **老鸟可用 unsafe 显式让 actor 走路线 B（trm）**：就能用上 GC 对象模型、
+  动态加载等运行时能力；M:N 协程由 trm-lite 提供（p.9.4）——语法零改动，仅接入机制不同。
+- EN: **Veterans can explicitly make actors follow Route B (trm) with unsafe**: this unlocks runtime capabilities such as the GC object model and dynamic loading (M:N coroutines via trm-lite, p.9.4) — with zero syntax change, only a different hook-in mechanism.
 - 由此，concurrency-model §6「actor 与 trm 解耦」的语义被放宽为：
   **默认解耦（路线 A），unsafe 显式接入（路线 B）**。
 - EN: Consequently, concurrency-model §6's "actor is decoupled from trm" is relaxed to: **decoupled by default (Route A), explicitly hooked in via unsafe (Route B)**.
@@ -345,22 +353,29 @@ EN: `tie.pkg` declares `version / min_tiec / abi`; at compile time (when importi
 
 ---
 
-## 10. 能力里程碑（分期）
-*EN: 10. Capability Milestones (Phasing)*
+## 10. 能力里程碑（按 2026.2 ROAD p.7.3.x 落地）
+*EN: 10. Capability Milestones (landed as ROAD p.7.3.x in 2026.2)*
 
-| 阶段 | 内容 | 依赖 | 验收 |
+> 2026-09-11 修订：里程碑不再用 P0–P5 自立编号，改按路线图 p.7.3.x 落地
+> （p.7.3.1 定稿修订 / p.7.3.2 引擎实现 / p.7.3.3 编译器 trm 目标接线）。
+
+| 里程碑（→ p.7.3.x） | 内容 | 依赖 | 验收 |
 | --- | --- | --- | --- |
-| **P0** | tieir 加载 + 校验 + interp 执行（跨端解释） | tieir_ser 已就绪 | **纯字节码验收**：tieir 加载+校验+interp 跑通一个纯函数 |
-| **P1** | 库层起步（terminal/process/fs/env/session）+ 平台桥（扩展链面）+ 动态库集成 | P0 + M5 + 本定稿 §6.2 边界扩展 | `import "trm:terminal"` → tieir → interp 执行 + 平台桥动态加载 |
-| **P2** | 引擎级 GC（分代+移动+精确根扫描） + M:N 协程 + 可迁移栈 | P0 | GC 探针 + 协程调度 + 根扫描正确 |
-| **P3** | ORC JIT 后端（热点逐函数，对标 HotSpot tiered） | P0 + 栈图（P2） | 热点函数提升 JIT，契约测试与 interp 一致 |
-| **P4** | 反射/内省 + 动态加载/热更 + 沙箱/校验强化 + 诊断 | P2（统一对象身份） | 动态加载 tieir + 类型内省 + 诊断 |
-| **P5** | 平台扩展细化（impl-posix/macos/android 深入）+ wasm/AOT 可选后端 | P0-P4 | 四端契约矩阵全绿 |
+| p.7.3.2-a | tieir 加载 + 校验 + interp 执行（跨端解释） | tieir_ser 已就绪 | **纯字节码验收**：tieir 加载+校验+interp 跑通一个纯函数 |
+| p.7.3.2-b | 库层起步（terminal/process/fs/env/session）+ 平台桥（扩展链面）+ 动态库集成 | 上项 + 本定稿 §6.2 边界扩展 | `import "trm:terminal"` → tieir → interp 执行 + 平台桥动态加载 |
+| p.7.3.2-c | 引擎级 GC（分代+移动+精确根扫描，管 tieir Object/Value） | 上项 | GC 探针 + 根扫描正确 |
+| p.7.3.2-d | ORC JIT 后端（热点逐函数，对标 HotSpot tiered） | 上项 + 栈图 | 热点函数提升 JIT，契约测试与 interp 一致 |
+| p.7.3.2-e | 反射/内省 + 动态加载/热更 + 沙箱/校验强化 + 诊断 | 上项（统一对象身份） | 动态加载 tieir + 类型内省 + 诊断 |
+| p.7.3.2-f | 平台扩展细化（impl-posix/macos/android 深入）+ wasm/AOT 可选后端 | 以上 | 四端契约矩阵全绿 |
 
-> P0→P1 线性（先字节码执行）；P1 库层可与 P2 并行（库层多用标量+句柄，不强依赖 GC）；
-> P3 若成本过高可后置（interp 已是可用形态）；每个阶段独立提交、双端推送、`roadmap.md` 关联段分解。
+> 落地线性：先字节码执行；库层可与 GC 并行（库层多用标量+句柄，不强依赖 GC）；
+> JIT 若成本过高可后置（interp 已是可用形态）；每步独立提交、回归零回归、
+> `roadmap.md` 关联段分解。
 
-> EN: P0→P1 is linear (bytecode execution first); the P1 library layer can run in parallel with P2 (the library layer mostly uses scalars + handles and does not strongly depend on GC); P3 can be deferred if too costly (interp is already a usable form); each phase is committed independently and pushed to both ends, with the associated `roadmap.md` sections decomposed accordingly.
+> EN: Linear landing: bytecode execution first; the library layer may parallelize with
+> the GC (mostly scalars + handles, no strong GC dependency); the JIT can be deferred if
+> too costly (interp is already usable); each step commits independently with zero
+> regression, and the associated ROAD sections are decomposed accordingly.
 
 ---
 
@@ -370,13 +385,13 @@ EN: `tie.pkg` declares `version / min_tiec / abi`; at compile time (when importi
 | 决策点 | 结论 | 备选（未选） |
 | --- | --- | --- |
 | 整体 | 双层 + 非对称（路线 A 纯编译保留 + 线路 B 运行时） | trm 强制、纯编译唯一 |
-| 运行时定位 | 运行时 = 能力增强（GC/M:N/反射/热更/动态），非唯一路径 | — |
+| 运行时定位 | 运行时 = 能力增强（GC/反射/热更/动态；M:N 协程移交 trm-lite），非唯一路径 | — |
 | 引擎层 | **interp 前端 + 可替换后端**（InterpBackend / ORC-JIT / wasm-AOT） | 固定 JIT、纯 JIT、纯 interp |
 | 后端迁移粒度 | **热点逐函数**（HotSpot tiered） | 全模块预编译、显式标记 |
-| GC | **引擎级统一 GC，独立层**，interp/JIT 共用堆 | interp 内建、无 GC |
+| GC | **引擎级统一 GC，独立层**，interp/JIT 共用堆（管 tieir 运行时 Object/Value；表内存不归 trm） | interp 内建、无 GC |
 | 根扫描 | **精确根扫描**（interp/JIT 通用栈图） | 保守扫描、混合 |
 | 回收策略 | **分代 + 移动式** | mark-sweep 起步 |
-| 协程栈 | **GC 管栈 + 对象** | 协程调度自管栈 |
+| 协程 | **移交 trm-lite**（2026.2 p.9.4 生成器式；trm 不提供） | GC 管协程栈 |
 | 库层 | **逻辑静态 + 平台动态混合**，全 tie 写 | 全静态、全动态 |
 | 平台桥 ABI | **扩展链面**：标量 + string + repr(C) pod struct + 带指针 struct + slice（unsafe/所有权约束） | 仅标量+string、暂不定义 |
 | 实现语言 | **全 tie 写**（库层 + 平台桥 + 引擎 core） | 引入 native、C 平台桥 |
@@ -391,16 +406,16 @@ EN: `tie.pkg` declares `version / min_tiec / abi`; at compile time (when importi
 ## 12. 未决 / 后续细化
 *EN: 12. Open Questions / Future Refinement*
 
-1. **精确根扫描的栈图实现**：interp 与后端共用一套栈图还是各自产（定稿倾向共用，待 P2 定）。
-EN: 1. **Stack-graph implementation for precise root scanning**: whether interp and the backends share one stack-graph set or each produces its own (the finalization leans toward sharing; to be decided at P2).
-2. **Android 临时替代**：用户自研轻量执行路径 vs 纯 interp 退化（P5 定）。
-EN: 2. **Android temporary substitute**: a user-developed lightweight execution path vs pure-interp fallback (decided at P5).
-3. **反射能力范围**：只读类型查询 vs 运行动态调用（invoke）——P4 定。
-EN: 3. **Reflection capability scope**: read-only type query vs runtime dynamic invocation (invoke) — decided at P4.
-4. **wasm/AOT 后端**：是否正式立项（P5，编译期 AOT 替 webui 场景）。
-EN: 4. **wasm/AOT backend**: whether to formally adopt it (P5, with compile-time AOT replacing the webui scenario).
-5. **带指针 struct / slice 跨库的所有权模型细化**：与 unsafe-model guard<ext> 对齐（P1 平台桥定）。
-EN: 5. **Refining the ownership model for pointer-carrying structs / slices across the library boundary**: align with unsafe-model's guard<ext> (decided at the P1 platform bridge).
+1. **精确根扫描的栈图实现**：interp 与后端共用一套栈图还是各自产（定稿倾向共用，引擎实现期定）。
+EN: 1. **Stack-graph implementation for precise root scanning**: whether interp and the backends share one stack-graph set or each produces its own (the finalization leans toward sharing; to be decided during the engine implementation).
+2. **Android 临时替代**：用户自研轻量执行路径 vs 纯 interp 退化（平台扩展细化期定）。
+EN: 2. **Android temporary substitute**: a user-developed lightweight execution path vs pure-interp fallback (decided at the platform-expansion stage).
+3. **反射能力范围**：只读类型查询 vs 运行动态调用（invoke）——引擎实现后期定。
+EN: 3. **Reflection capability scope**: read-only type query vs runtime dynamic invocation (invoke) — decided late in the engine implementation.
+4. **wasm/AOT 后端**：是否正式立项（平台扩展细化期，编译期 AOT 替 webui 场景）。
+EN: 4. **wasm/AOT backend**: whether to formally adopt it (at the platform-expansion stage, with compile-time AOT replacing the webui scenario).
+5. **带指针 struct / slice 跨库的所有权模型细化**：与 unsafe-model guard<ext> 对齐（库层起步期平台桥定）。
+EN: 5. **Refining the ownership model for pointer-carrying structs / slices across the library boundary**: align with unsafe-model's guard<ext> (decided at the library-layer-start stage platform bridge).
 6. **是否升级 trm-arch.md**：本定稿为权威，trm-arch 是否降为规划史/删除待定（用户决定）。
 EN: 6. **Whether to retire trm-arch.md**: this finalization is authoritative; whether trm-arch is downgraded to planning history or deleted is TBD (user decision).
 

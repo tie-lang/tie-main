@@ -2,7 +2,7 @@
 
 > 架构正式命名：**Keel（龙骨架构）**，对应发行版代号 **Shipyard（造船厂，2026.2）**——
 > 编译器彻底重构后核心只余机制层（注册表/审计器/加载器/执行骨架），一切行为皆为注册项。
-> 状态：**设计定稿**（2026-08-29 讨论定稿，S1 起逐步实现）
+> 状态：**设计定稿**（2026-08-29 讨论定稿，2026.2 p.7.1 起逐步实现）
 > 关联：角色模型（role-model.md，S3.4 插件化）、包模型（package-model.md，tieir 分发 L2/P5c）、
 > tieir 格式（tieir-format.md）、动态库（dynamic-library.md，M5）、编译解耦（compiler-decouple.md）。
 
@@ -155,19 +155,28 @@ tie.pkg（凭证区，包自带）
 
 ## 6. 落地顺序与验收（对齐先小任务后回归的工作流）
 
-| 步骤 | 内容 | 验收（每步自举零回归 + regress-s21 全绿） |
-|---|---|---|
-| S1 | 核心微内核化第一步：pipeline 5 槽 → 注册表执行骨架 + 内建引导集（默认管线注册项）；passmanager 接入 pipeline | tiec 自举 hash 不变；回归基线保持 |
-| S2 | id+version：注册项 schema 表驱动 + 同 id 异 version 仲裁 | 注册冲突负例正确拦截 |
-| S3 | tieir 消费入口：import tieir 包（消费方免前端） | 包 .tieir → 编译运行通过 |
-| S4 | data→zd 发布转换（publish 压缩 + 指纹计算） | zd 包加载运行与 data 等价 |
-| S5 | TSHA1 审计链接入（文件 tsha1f + 包树根 tsha1x，验证向量探针）→ 凭证+指纹审计链（指纹树→验签→fp 锚定 lock） | TSHA1 向量探针绿；篡改/冒名包负例全拦截 |
-| S6 | CLI 子命令注册化 + 库树收敛（std/ext/rdu ↔ lib_v1 定位） | 全命令行按注册项分派 |
+> 落地编号按 2026.2 路线图（ROAD.md p.7.1.x）执行：S1–S6 对应 p.7.1.1–p.7.1.6，
+> 安全算法底座对应 p.7.1.7、TSHA 家族对应 p.7.1.8；本文档不再自行编号。
+>
+> EN: Landing numbers follow ROAD.md p.7.1.x for 2026.2: S1–S6 ↔ p.7.1.1–p.7.1.6,
+> the security-algorithm base ↔ p.7.1.7, the TSHA family ↔ p.7.1.8; this document
+> no longer numbers steps itself.
 
-## 6.5 安全算法底座（并行于 S1–S6 的前置任务）
+| 步骤（→ p.7.1.x） | 内容 | 验收（每步自举零回归 + regress-s21 全绿） |
+|---|---|---|
+| p.7.1.1 | 核心微内核化第一步：pipeline 5 槽 → 注册表执行骨架 + 内建引导集（默认管线注册项）；passmanager 接入 pipeline | tiec 自举 hash 不变；回归基线保持 |
+| p.7.1.2 | id+version：注册项 schema 表驱动 + 同 id 异 version 仲裁 | 注册冲突负例正确拦截 |
+| p.7.1.3 | tieir 消费入口：import tieir 包（消费方免前端） | 包 .tieir → 编译运行通过 |
+| p.7.1.4 | data→zd 发布转换（publish 压缩 + 指纹计算） | zd 包加载运行与 data 等价 |
+| p.7.1.5 | TSHA1 审计链接入（文件 tsha1f + 包树根 tsha1x，验证向量探针）→ 凭证+指纹审计链（指纹树→验签→fp 锚定 lock） | TSHA1 向量探针绿；篡改/冒名包负例全拦截 |
+| p.7.1.6 | CLI 子命令注册化 + 库树收敛（std/ext/rdu ↔ lib_v1 定位） | 全命令行按注册项分派 |
+
+## 6.5 安全算法底座（并行于 p.7.1.1–p.7.1.6 的前置任务）
 
 **目标**：先巩固安全底座——调研当前经典与新兴安全算法，分类纳入 std/ext/rdu 三库，
 供插件审计链与平台应用使用。
+
+> 编号：本文档 §6.5 内容归入 ROAD p.7.1.7（安全算法底座）；§6.6 TSHA 归入 p.7.1.8。
 
 **分类归属**（写入 tie-main 树，lib_v1 为 library-v1 不可变归档不作修改）：
 
@@ -221,9 +230,9 @@ G 函数正确性；同构性测试（同消息比对差异仅限参数层）。
 
 ## 7. 风险与未决
 
-- **BLAKE2 纯 tie 实现性能**：编译器自举路径可能调用频繁；若慢，在 S5 前做基准与优化
+- **BLAKE2 纯 tie 实现性能**：编译器自举路径可能调用频繁；若慢，在 p.7.1.5 前做基准与优化
   （对齐内存效率优先的用户偏好）
 - **TOFU 的首次信任**：依赖用户核对 fp；文档需写明外带核对渠道（官网/README 发布 fp）
-- **tieir 稳定格式版本**：S3 实现时冻结格式版本号，跨版本兼容策略按 tieir-format.md 推进
-- **passmanager 与 pipeline 双轨消除**（S1）：审计 W1 警告要求二选一，S1 起以接入为主
-- Ed25519 纯 tie 实现为独立大工程（S5 前置依赖），评估周期后决定自研或 extern 系统库
+- **tieir 稳定格式版本**：p.7.1.3 实现时冻结格式版本号，跨版本兼容策略按 tieir-format.md 推进
+- **passmanager 与 pipeline 双轨消除**（p.7.1.1）：审计 W1 警告要求二选一，p.7.1.1 起以接入为主
+- Ed25519 纯 tie 实现为独立大工程（p.7.1.5 前置依赖），评估周期后决定自研或 extern 系统库
