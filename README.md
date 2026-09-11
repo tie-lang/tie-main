@@ -26,10 +26,33 @@
 ## 快速开始
 *EN: Quick start*
 
+**路径 A：下载发行包（整套工具链）**
+*Path A: download the release archive (full toolchain)*
+
+从 [GitHub Releases](https://github.com/tie-lang/tie-main/releases) 下载 `tie-2026.2-win-x64.zip`
+并解压（含自举 tiec、REPL、包管理器与捆绑 LLVM 精简工具链；发行目录布局见
+[docs/release.md](docs/release.md) §4.3）：
+
 ```bash
-# 编译并运行示例（tiec 自举编译器）/ compile and run an example (tiec self-hosted compiler)
+# 解压后，用发行包内的编译器编译并运行示例（示例源码位于 src/ 下）
+bin\tiec.exe src\examples\hello.tie
+src\examples\hello.exe
+```
+
+EN: Download `tie-2026.2-win-x64.zip` from GitHub Releases, unzip, then compile
+and run an example with the bundled self-hosted compiler (sources live under
+`src/` in the release).
+
+**路径 B：从源码构建整套工具链（0-Rust 自举）**
+*Path B: build the whole toolchain from source (0-Rust self-hosted)*
+
+```bash
+# 编译并运行示例 / compile and run an example (tiec self-hosted compiler)
 compiler\tiec.exe examples\hello.tie
 examples\hello.exe
+
+# 自举验证 + 回归门禁 / bootstrap verification + regression gate
+scripts\regress-s21.ps1 compiler\tiec.exe
 
 # 无参数 → 进入 REPL / no args → REPL
 compiler\tiec.exe repl\repl.tie
@@ -56,43 +79,66 @@ x 大于 y
 9
 ```
 
+## 发行模型
+*EN: Release model*
+
+tie 以 **tie-main 聚合/发行仓** + **组件独立仓** 双轨发行（2026.2 起，详见
+[docs/release.md](docs/release.md)）：
+
+- **整套工具链聚合发行包**：`dist/tie-{版本}-win-x64.zip`（bin/ + docs/ + src/ + 包根文档）
+  与源码包 `tie-{版本}-src.zip`；版本集约束在 `scripts/tie-versions.data.tie`，
+  聚合校验 `scripts/agg-check.tie`。
+- **组件独立发行**：各组件仓独立版本与 Release，附件命名
+  `tie-<component>-<version>-<platform>-<arch>.zip`，产物出仓不进 git。
+
+EN: tie ships on a dual track — the **tie-main aggregation/release repo** plus
+**per-component repos** (from 2026.2; see [docs/release.md](docs/release.md)):
+the full-toolchain aggregate archive `dist/tie-{version}-win-x64.zip` (+ the
+`tie-{version}-src.zip` source archive; version-set in
+`scripts/tie-versions.data.tie`, verified by `scripts/agg-check.tie`) and
+per-component archives named
+`tie-<component>-<version>-<platform>-<arch>.zip`, released from each component
+repo (artifacts stay out of git).
+
 ## 工程结构
 *EN: Repository structure*
 
+tie-main 是**聚合/发行仓**：保留 `dist/` 发行产物、当前版本文档与仓库级文件；
+源码目录处于**迁移中**（按 [docs/plans/2026-09-11-p721-repo-split.md](docs/plans/2026-09-11-p721-repo-split.md) 迁移清单
+逐项迁往组件仓）。
+
 ```text
-tie/
-|
-├── compiler/              编译器 / compiler：
-│                         - frontend/：词法/语法/语义分析器（lexer/parser/semantic）
-│                         - middle/：tie-IR 列式表 + 类型系统
-│                         - backend/：irgen + llvmgen + toolchain
-│                         - interp/：解释器（REPL 路径）
-│                         - config/tdzd：构建配置 / --compress-data（td→zd）
-│                         - driver.tie → tiec.exe：CLI 壳
-│                         - repl.tie → repl.exe：REPL
-|
-├── prep                  预处理器核心模块（tie 语言自写：头部提取/角色判定/正文重建，编译期内嵌）
-├── std/                  标准库（library-v2 三层之一）：
-│                         - 文本/编码：string、utf、ascii、bytes、encoding、base48、regex、json、csv
-│                         - 数据结构/算法：sort、collection、set、deque、bigint、graph、linalg、
-│                           exmath、math、radix、optsearch
-│                         - IO/系统：fs、path、args、process、intern、version、format、time、random、db
-│                         - 网络/服务：net、http、http_server
-│                         - 数据互联：tink（帧协议）/ zd v2 序列化
-│                         - 哈希/密码：sha1/256/512/3、blake2/3、shake、md5、hmac、pbkdf2、hkdf、
-│                           poly1305、ascon_mac、siphash、xxh3、ed25519、x25519、tsha1 家族
-├── ext/                  扩展库（codec：brotli/lz4/jpeg/zstd；vecsearch；aes/chacha20/ascon_aead/
-│                         scrypt/argon2/ecdsa；ml；log；pretty；tui；test；bench；config；registry；cache）
-├── rdu/                  嵌入式基础层（无栈纪律：ascii/bits/crc/fixed/math/rdb/rnd/mac）
-├── repl/repl.tie         REPL 外壳
-├── tieDB/                tieDB（内存数据库（含 zd 持久化副本））
-├── pkg/                  包管理器（tie 语言自写）
-├── scripts/              构建与测试脚本（含 tie 自写打包器 package.tie）
-├── tests/                探针与测试（probe_*/language/errors）
-├── skills/tie-dev/       tie-dev AI 开发技能（随发行包分发）
-├── docs/                 文档（中英双语）
-└── examples/             示例程序
+tie-main/              聚合/发行仓（aggregation/release repo）
+├── dist/              发行产物（zip 出仓不进 git；发行包内源码收拢于 src/）
+├── docs/              当前版本文档（language/ai-guide/release/cli/tiec/designs/plans…）
+├── README.md  NEW.md  CHANGELOG.md  LICENSE  CONTRIBUTING.md  ROAD.md  AGENTS.md
+├── assets/ .github/   宣传资源 / CI
+├── scripts/           构建与测试脚本（自举打包 package.tie、聚合校验 agg-check.tie 等）
+└── 源码（迁移中，见组件索引）：
+    compiler/  std/  ext/  rdu/  repl/  pkg/  prep/  tieDB/
+    examples/  skills/  editor/  sys/  tools/  tests/
 ```
+
+## 组件索引
+*EN: Component index*
+
+| 组件 / Component | 职责 / Role | 独立仓 / Repo | 状态 / Status |
+|---|---|---|---|
+| 编译器 tiec | 自举编译器 + Keel 架构 + 标准/扩展/精简库 + REPL | `tie-lang/tiec` | 本仓内（迁移中）|
+| 数据互联 tink | zd v2 帧协议 + 管道编排器（语言无关） | `tie-lang/tink` | 本仓内（std/tink 起步）|
+| LSP 服务 tsp | language server（`tie --lsp`） | `tie-lang/tsp` | 本仓内（compiler/lsp）|
+| 运行时 trm | 可选 JVM 式 VM（不捆绑编译器） | `tie-lang/trm` | 规划中（p.7.3）|
+| UI 框架 tiu | 独立自研 UI（不依赖 trm） | `tie-lang/tiu` | 规划中（p.9.3）|
+| 数据库 tiedb | 列式持久化 + 向量检索（zd 底座） | `tie-lang/tiedb` | 本仓内（tieDB/）|
+| 安装器 tiwi | tie 自研安装程序制作器 | `tie-lang/tiwi` | 规划中（p.9.7）|
+| 包管理器 pkg | 依赖解析 + tie.lock + registry 交互 | `tie-lang/tie-pkg` | 本仓内（pkg/）|
+| 编辑器扩展 | VSCode 语法高亮 + LSP 诊断 | `tie-lang/vscode-tie` | 本仓内（editor/）|
+| 开发技能 | tie-dev AI 开发技能 | `tie-lang/tie-dev` | 本仓内（skills/）|
+| 历史归档 | 过时文档与历史版本 | `tie-lang/old_docs` | 已独立 |
+
+EN: tie-main is the aggregation/release repository (dist artifacts + current
+docs + repo-level files); the source directories above are mid-migration to the
+per-component repos listed in the index (per the p.7.2.1 split plan).
 
 ## CLI 用法
 *EN: CLI usage*
