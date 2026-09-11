@@ -30,6 +30,12 @@ import "./middle/tieir_ser.tie"
 import "./tdzd.tie"
 // p.6.9.15 诊断标号：error[E#####]/warning[W#####] 渲染（driver 打印入口）
 import "./frontend/diagcode.tie"
+// p.7.1.1 Keel 骨架接线：driver 真实 pass 登记为注册项，经 Keel 注册表驱动
+// 执行管线（import 文本内联；顺序 registry → boot → executor，各文件内部
+// 互不 import，依赖经入口 import 链内联可达）。
+import "./keel/keel_registry.tie"
+import "./keel/keel_boot.tie"
+import "./keel/keel_executor.tie"
 
 // 阶段计时探针（性能诊断）：CRT clock()，毫秒精度。
 // 环境变量 TIEC_TIME=1 时输出各阶段耗时（不设则零开销静默）。
@@ -1115,24 +1121,33 @@ func main() -> i64 {
     return compile_program(clean)
 }
 
+// p.7.1.1 Keel 接线：真实 pass 间传参载体（front 段输入；原 compile_program
+// 的 src/base_dir 局部改用独立命名的全局，使 kpass_* 无参签名可与骨架 pass
+// 槽一致）。注意不可复用前端的 g_src（lex_state，词法切片用）以免误改其语义。
+var k_g_src: string = "";
+var k_g_base_dir: string = "";
 // 编译工具链（logic / library）：前端 → 中端 → 后端。
 // 阶段计时（TIEC_TIME=1）：irgen / emit / 写盘分开计量。
 var g_t_irgen: i64 = 0;   // irgen.tig_ast 耗时（ms）
 var g_t_emit: i64 = 0;    // llvmgen.emit 耗时（ms）
 var g_t_write: i64 = 0;   // file_write 耗时（ms）
-func compile_program(src: string) -> i64 {
-    // base_dir：输入路径的目录（import 展开需要）；\\ 归一化为 /
-    var base_dir = dir_of(str.clone(g_input))
-    // 前端
-    if frontend(src, base_dir) < 0 {
+
+// ==================== Keel 真实 pass 实现（kpass_*） ====================
+// 签名统一 fn() -> i64，0 成功 / 非 0 失败；内部即原 compile_program 各
+// 段逻辑（行为逐字节等价）。经 keelreg 登记（impl_name = "kpass_*"），由
+// driver 侧 keel 分派驱动（见 keel_dispatch / keel_run_pipeline）。
+
+// 段 1 前端：词法 + 语法 + 语义（含 import）。失败返回 1（frontend 内部已
+// 打印诊断，wrapper 不重复打印）。
+func kpass_front() -> i64 {
+    if frontend(k_g_src, k_g_base_dir) < 0 {
         return 1
     }
-    // 中端：AST → tie-IR → .ll 文本
-    // frontend() 已执行完整前端（parse_ast + check_ast），sstate 全局表/
-    // g_extra_tops/node_types 均已就绪——直接 tig_ast() 复用，避免前端重复
-    // 执行（tig_src 内部会再 parse + check_impl 一遍，行为等价但浪费一倍）
-    // 任务17：asm! 平台条件编译注入编译目标（CLI --target > 配置 target >
-    // 本机默认 x86_64-pc-windows-msvc）。
+    return 0
+}
+
+// 段 2 中端：AST → tie-IR（tig_ast 复用 frontend 产物）。含 asm! 目标注入。
+func kpass_irgen() -> i64 {
     var asm_target = normalize_target(g_target)
     if str_len(asm_target) == 0 && g_cfg_root >= 0 {
         var cfg_target = config.get_str(g_cfg_root, "target")
@@ -1160,8 +1175,11 @@ func compile_program(src: string) -> i64 {
         println("IR 生成失败: " + msg)
         return 1
     }
-    // S3.2：--tieir-out 序列化分发单元（IR 主体 + 元信息侧表；与 .ll 生成
-    // 并行路径，不影响既有编译流程）
+    return 0
+}
+
+// 段 3 中端旁路：--tieir-out 序列化（无 g_tieir_out 直接返回 0 通过）。
+func kpass_tieir() -> i64 {
     if str_len(g_tieir_out) > 0 {
         if !tieir.write(g_tieir_out) {
             println("tieir 序列化失败: " + tieir.err_msg())
@@ -1169,6 +1187,12 @@ func compile_program(src: string) -> i64 {
         }
         println("已生成 tieir: " + g_tieir_out)
     }
+    return 0
+}
+
+// 段 4 后端：tie-IR → .ll 文本 + 写盘。g_emit_ir 时打印阶段计时并返回 0
+//（成功停，link 段由驱动侧 max_steps 截断跳过）。
+func kpass_emit() -> i64 {
     unsafe {
         var t3 = clock()
     }
@@ -1208,7 +1232,16 @@ func compile_program(src: string) -> i64 {
         println("已生成 LLVM IR: " + ir_path)
         return 0
     }
-    // 后端：opt → 链接/归档
+    return 0
+}
+
+// 段 5 后端：opt → 链接/归档（lib→compile_library/compile_shared，其余→
+// compile_logic 三路 link 分支）。
+func kpass_link() -> i64 {
+    var ir_path = replace_ext(g_input, "ll")
+    if str_len(g_output) > 0 {
+        ir_path = replace_ext(g_output, "ll")
+    }
     var opt_path = replace_ext(str.clone(ir_path), "opt.ll")
     // S3.1：opt 优先级 CLI 显式 -O > 配置（含 profile 激活）> 默认 2
     var level = g_opt_level
@@ -1241,6 +1274,112 @@ func compile_program(src: string) -> i64 {
     }
     // lib 之外（check/pass 已提前 return）：exe / 空 = 可执行管线
     return compile_logic(ir_path, opt_path, target)
+}
+
+// ==================== Keel driver 引导 + 分派 + 执行 ====================
+// Keel 原则「一切行为皆为注册项」：driver 真实组件登记为注册项（新增
+// tiec::pass_*_real / tiec::pipeline_real），执行顺序从 keelreg 注册表读取。
+// 注：pass 实现驻留 driver，而 keel_executor 需被 tests/_p711_probe/
+// keel_probe.tie 独立编译（只 import 三个 keel 文件、不含 driver），故调度
+// switch（C1 分派到 driver 真实函数）只能落位在 driver 侧——这是 tie「未
+// 定义函数 = E00413 编译错」约束下的唯一等价接法；Keel 注册表仍为管线形态
+// 的唯一数据源（executor 的 run_pipeline_prefix 即本接线在骨架层的对应扩展）。
+
+// driver 次引导：登记 5 个真实 pass + 1 条真实 pipeline（幂等，返回真实
+// pipeline 注册项 id）。真实 pass 的 impl_name = "kpass_*"。
+func keel_driver_boot() -> i64 {
+    var fd: table<i64> = table_new_i64()
+    var pf = keelreg.register("tiec::pass_front_real", "pass", "kpass_front", fd)
+    var idd: table<i64> = table_new_i64()
+    table_push(idd, pf)
+    var pi = keelreg.register("tiec::pass_irgen_real", "pass", "kpass_irgen", idd)
+    var itd: table<i64> = table_new_i64()
+    table_push(itd, pi)
+    var pt = keelreg.register("tiec::pass_tieir_real", "pass", "kpass_tieir", itd)
+    var etd: table<i64> = table_new_i64()
+    table_push(etd, pt)
+    var pe = keelreg.register("tiec::pass_emit_real", "pass", "kpass_emit", etd)
+    var ltd: table<i64> = table_new_i64()
+    table_push(ltd, pe)
+    var pl = keelreg.register("tiec::pass_link_real", "pass", "kpass_link", ltd)
+    var pdd: table<i64> = table_new_i64()
+    table_push(pdd, pf)
+    table_push(pdd, pi)
+    table_push(pdd, pt)
+    table_push(pdd, pe)
+    table_push(pdd, pl)
+    return keelreg.register("tiec::pipeline_real", "pipeline", "", pdd)
+}
+
+// C1 分派（impl_name "kpass_*" → 整数选择子 → driver 真实 pass）。
+func keel_dispatch(nm: string) -> i64 {
+    var sel: i64 = -1
+    if nm == "kpass_front" {
+        sel = 0
+    } else if nm == "kpass_irgen" {
+        sel = 1
+    } else if nm == "kpass_tieir" {
+        sel = 2
+    } else if nm == "kpass_emit" {
+        sel = 3
+    } else if nm == "kpass_link" {
+        sel = 4
+    }
+    switch sel {
+        case 0:
+            return kpass_front()
+        case 1:
+            return kpass_irgen()
+        case 2:
+            return kpass_tieir()
+        case 3:
+            return kpass_emit()
+        case 4:
+            return kpass_link()
+        default:
+            return -1
+    }
+}
+
+// 驱动注册表管线：读 pipeline:real 的「有序 pass 引用列表」，逐个按
+// impl_name 分派执行；任一非 0 立即中止返回（等价 executor.run_pipeline）。
+// max_steps 截断前缀（--emit-ir 场景断在 emit 后，跳过 opt/link）。
+func keel_run_pipeline(pid: i64, max_steps: i64) -> i64 {
+    var n = keelreg.deps_count(pid)
+    if max_steps > 0 && max_steps < n {
+        n = max_steps
+    }
+    var i: i64 = 0
+    while i < n {
+        var ref_id = keelreg.deps_at(pid, i)
+        var iname = keelreg.impl_name_of(ref_id)
+        if iname == "" {
+            return -1
+        }
+        var rc = keel_dispatch(iname)
+        if rc != 0 {
+            return rc
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+func compile_program(src: string) -> i64 {
+    // base_dir：输入路径的目录（import 展开需要）；\\ 归一化为 /
+    k_g_base_dir = dir_of(str.clone(g_input))
+    k_g_src = src
+    // Keel 骨架引导：boot（内建默认注册项）→ driver 次引导（真实注册项）。
+    // 幂等：重复调用不重复登记（register 重名返回原 id）。
+    keelboot.boot()
+    var real_pid = keel_driver_boot()
+    // --emit-ir：只跑 front→irgen→tieir→emit 前缀（emit 内成功停），跳过
+    // opt/link；否则全 5 段。keel 骨架按注册表引用前缀驱动。
+    var steps: i64 = 5
+    if g_emit_ir {
+        steps = 4
+    }
+    return keel_run_pipeline(real_pid, steps)
 }
 
 // logic：clang 链接可执行文件；清理中间文件（除非 --keep-ir）。

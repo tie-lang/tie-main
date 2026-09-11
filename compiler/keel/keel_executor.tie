@@ -63,12 +63,17 @@ func dispatch_impl(nm: string) -> i64 {
     }
 }
 
-// 按注册项 id 执行管线：读 pipeline 的「有序 pass 引用列表（deps 扁平
-// 段）」，逐个查 pass 的 impl_name → 分派执行；任一失败立即中止并返回
-// 该 pass 错误码（unknown impl_name 返回 -1 且置内部错误标记）。
-// 全绿返回 0。
-pub func run_pipeline(pipeline_id: i64) -> i64 {
+// 按注册项 id 执行管线（受限前缀版）：读 pipeline 的「有序 pass 引用列表
+// （deps 扁平段）」，至多执行前 max_steps 个 pass，逐个查 pass 的 impl_name
+// → 分派执行；任一失败立即中止并返回该 pass 错误码（unknown impl_name 返回
+// -1 且置内部错误标记）。max_steps<=0 或 > 实际段数 = 执行全段。全绿返回 0。
+// --emit-ir 等「只跑管线前缀」的驱动场景经此入口接入（例如 max_steps=4 只
+// 跑 front→irgen→tieir→emit，跳过 opt/link）。
+pub func run_pipeline_prefix(pipeline_id: i64, max_steps: i64) -> i64 {
     var n = keelreg.deps_count(pipeline_id)
+    if max_steps > 0 && max_steps < n {
+        n = max_steps
+    }
     var i: i64 = 0
     while i < n {
         var pid = keelreg.deps_at(pipeline_id, i)
@@ -84,6 +89,15 @@ pub func run_pipeline(pipeline_id: i64) -> i64 {
         i = i + 1
     }
     return 0
+}
+
+// 按注册项 id 执行管线全段：等价 run_pipeline_prefix(pipeline_id, 全段)。
+// 读 pipeline 的「有序 pass 引用列表（deps 扁平段）」，逐个查 pass 的
+// impl_name → 分派执行；任一失败立即中止并返回该 pass 错误码（unknown
+// impl_name 返回 -1 且置内部错误标记）。全绿返回 0。
+pub func run_pipeline(pipeline_id: i64) -> i64 {
+    var n = keelreg.deps_count(pipeline_id)
+    return run_pipeline_prefix(pipeline_id, n)
 }
 
 // 便捷入口：按 pipeline 注册项 id 名字执行（find → run_pipeline）。
