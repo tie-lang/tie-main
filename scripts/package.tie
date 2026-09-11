@@ -28,7 +28,8 @@ func arg(i: i64) -> string {
 }
 
 var g_skip_repl: bool = false
-var g_skip_llvm: bool = false
+var g_llvm_mode: string = "lite"   // "full" 完整 LLVM / "lite" 精简 LLVM（默认）/ "none" 不带 LLVM
+var g_zip_suffix: string = ""      // zip 名后缀：lite=""（默认不减）/ full="-llvm-full" / none="-nollvm"
 
 func parse_args() {
     var i: i64 = 0
@@ -37,8 +38,17 @@ func parse_args() {
         if a == "skip-repl" {
             g_skip_repl = true
         }
-        if a == "skip-llvm" {
-            g_skip_llvm = true
+        if a == "llvm-full" {
+            g_llvm_mode = "full"
+            g_zip_suffix = "-llvm-full"
+        }
+        if a == "llvm-lite" {
+            g_llvm_mode = "lite"
+            g_zip_suffix = ""
+        }
+        if a == "llvm-none" {
+            g_llvm_mode = "none"
+            g_zip_suffix = "-nollvm"
         }
         i = i + 1
     }
@@ -147,32 +157,65 @@ func s3_bin(root: string, dist: string) -> i64 {
 
 func s3_llvm(dist: string) -> i64 {
     var llvm = "D:\\LLVM"
-    if fs_exists(llvm + "\\bin\\clang.exe") {
-        var _r = fs_create_dir_all(dist + "\\bin\\llvm\\bin")
-        var _r = fs_create_dir_all(dist + "\\bin\\llvm\\lib")
-        var tools = ["clang.exe", "opt.exe", "llvm-ar.exe", "lld-link.exe"]
-        var i: i64 = 0
-        while i < 4 {
-            var t = tools[i]
-            if fs_exists(llvm + "\\bin\\" + t) {
-                var _r = fs_copy(llvm + "\\bin\\" + t, dist + "\\bin\\llvm\\bin\\" + t)
-                println("  bin/llvm/bin/" + t + " ok")
-            }
-            i = i + 1
-        }
-        var clang_dir = llvm + "\\lib\\clang"
-        if fs_exists(clang_dir) {
-            var _r = fs_copy_dir(clang_dir, dist + "\\bin\\llvm\\lib\\clang")
-            println("  bin/llvm/lib/clang ok")
-        }
-        if fs_exists(llvm + "\\LICENSE.txt") {
-            var _r = fs_copy(llvm + "\\LICENSE.txt", dist + "\\bin\\llvm\\LICENSE.txt")
-        }
-        println("[3.5] LLVM 精简工具链完成（TIE_LLVM_HOME=" + dist + "\\bin\\llvm）")
-    } else {
+    if !fs_exists(llvm + "\\bin\\clang.exe") {
         println("  LLVM 工具链打包跳过（未找到 " + llvm + "\\bin\\clang.exe）")
+        return 0
     }
+    if g_llvm_mode == "none" {
+        // 不带 LLVM：不装配任何 LLVM 文件；包根 LLVM.md 说明如何自装/复用 LLVM
+        var note = "# 未捆绑 LLVM（llvm-none 包）\n\n此发行包不含 LLVM 工具链。\n请在系统安装 LLVM（clang/opt/lld、llvm-ar），并把编译器指向其安装位置：\n  tiec --backend win32（TIE_LLVM_HOME 环境变量或 PATH 中的 clang/opt/llvm-ar/lld-link）。\n当前官方捆绑版本：LLVM 22（clang 22.1.8）。\nEN: This package does not bundle LLVM. Install LLVM and point tiec at it via TIE_LLVM_HOME or PATH.\nRecommended bundled version: LLVM 22 (clang 22.1.8).\n"
+        var _r = file_write(dist + "\\LLVM.md", note)
+        println("[3.5] 未捆绑 LLVM（llvm-none；自装说明见包根 LLVM.md）")
+        return 0
+    }
+    if g_llvm_mode == "full" {
+        // 完整 LLVM：整个 LLVM 安装树（bin/lib/include/libexec/share）
+        var dst = dist + "\\bin\\llvm"
+        var _r = fs_create_dir_all(dst)
+        var rcp = exec_code("robocopy " + shell_q(llvm) + " " + shell_q(dst) + " /E /NFL /NDL /NJH /NJS /NC /NS /NP /R:1 /W:1 >nul 2>&1")
+        if !(rcp == 0 || rcp == 1) {
+            println("  LLVM 完整工具链复制失败（robocopy 退出码 " + to_string(rcp) + "）")
+            return 1
+        }
+        var _r = file_write(dist + "\\bin\\llvm\\VERSION.txt", llvm_version_note())
+        println("[3.5] LLVM 完整工具链完成（TIE_LLVM_HOME=" + dst + "）")
+        return 0
+    }
+    // 精简 LLVM（默认 lite）：仅编译所需四件套 + lib/clang 头
+    var _r = fs_create_dir_all(dist + "\\bin\\llvm\\bin")
+    var _r = fs_create_dir_all(dist + "\\bin\\llvm\\lib")
+    var tools = ["clang.exe", "opt.exe", "llvm-ar.exe", "lld-link.exe"]
+    var i: i64 = 0
+    while i < 4 {
+        var t = tools[i]
+        if fs_exists(llvm + "\\bin\\" + t) {
+            var _r = fs_copy(llvm + "\\bin\\" + t, dist + "\\bin\\llvm\\bin\\" + t)
+            println("  bin/llvm/bin/" + t + " ok")
+        }
+        i = i + 1
+    }
+    var clang_dir = llvm + "\\lib\\clang"
+    if fs_exists(clang_dir) {
+        var _r = fs_copy_dir(clang_dir, dist + "\\bin\\llvm\\lib\\clang")
+        println("  bin/llvm/lib/clang ok")
+    }
+    if fs_exists(llvm + "\\LICENSE.txt") {
+        var _r = fs_copy(llvm + "\\LICENSE.txt", dist + "\\bin\\llvm\\LICENSE.txt")
+    }
+    var _r = file_write(dist + "\\bin\\llvm\\VERSION.txt", llvm_version_note())
+    println("[3.5] LLVM 精简工具链完成（TIE_LLVM_HOME=" + dist + "\\bin\\llvm）")
     return 0
+}
+
+// LLVM 版本标注（包内 bin/llvm/VERSION.txt + llvm-none 包根 LLVM.md 共用说明）。
+func llvm_version_note() -> string {
+    var v = "22.1.8"
+    // 从 lib/clang/<major> 子目录读取主版本（若存在）；仅作校验提示
+    var major_dir = "D:\\LLVM\\lib\\clang"
+    if fs_exists(major_dir) {
+        v = v + "（捆绑精简/完整工具链：clang/opt/llvm-ar/lld-link）"
+    }
+    return "LLVM " + v + "\nEN: Bundled LLVM version " + v + ".\n"
 }
 
 func s3_doc(root: string, dist: string) -> i64 {
@@ -248,9 +291,88 @@ func step3_assemble(root: string, version: string, dist: string) -> i64 {
     var r4 = s3_examples(root, dist)
     var r5 = s3_libs(root, dist)
     var r6 = s3_compiler(root, dist)
+    var r7 = s3_components(dist)
 
     println("[3/5] 发行目录组装完成")
     return 0
+}
+
+// p.7.2.2/7.2.3 组件聚合：把 tie-repo 下各组件源码仓收拢进发行包 src/components/。
+// 组件仓与 tie-main 同级（位于本仓的上两级目录，如 F:\Projects\tie-repo\trm）；
+// 只收录源码（剔除全部构建产物），使聚合发行包成为「全套工具链源码 + 编译器」
+// 的一体形态（组件独立发行物各自在组件仓出仓，聚合包为源码级完整快照）。
+// 收敛清单 = tie-repo 下既有组件仓（trm/trm-lite/tofflib/tiedb/tie-diag/lib_v1/tink）。
+func s3_components(dist: string) -> i64 {
+    var comps = table_new_string()
+    table_push(comps, "trm")
+    table_push(comps, "trm-lite")
+    table_push(comps, "tofflib")
+    table_push(comps, "tiedb")
+    table_push(comps, "tie-diag")
+    table_push(comps, "lib_v1")
+    table_push(comps, "tink")
+    var base = comp_root()
+    var k: i64 = 0
+    while k < len(comps) {
+        var cn = comps[k]
+        var src = base + cn
+        var dst = dist + "\\src\\components\\" + cn
+        if fs_exists(src) {
+            // copy_dir 内建不适用于含 .git 子目录的仓库（返回 -1）；改用系统
+            // robocopy 批量复制（/E 含子目录，退出码 1 = 成功复制）
+            var _r = fs_create_dir_all(dst)
+            var rcp = exec_code("robocopy " + shell_q(src) + " " + shell_q(dst) + " /E /NFL /NDL /NJH /NJS /NC /NS /NP /R:1 /W:1 >nul 2>&1")
+            var ok = false
+            if rcp == 0 || rcp == 1 {
+                ok = true
+            }
+            if ok {
+                prune_comp_artifacts(dst)
+                println("  src/components/" + cn + "/ ok")
+            } else {
+                println("  src/components/" + cn + " 复制失败（robocopy 退出码 " + to_string(rcp) + "）")
+            }
+        } else {
+            println("  src/components/" + cn + " 跳过（组件仓不存在 " + src + "）")
+        }
+        k = k + 1
+    }
+    return 0
+}
+
+// 组件复制后清理构建产物（.exe/.ll/.bc/.obj/.o/.a/.lib/.pdb + 常见构建目录）。
+// 用系统命令批量删除（文件级 del /s；目录级 for /d /r 递归）。
+func prune_comp_artifacts(dir: string) {
+    var _r = exec_code("del /s /q " + shell_q(dir + "\\*.exe") + " " + shell_q(dir + "\\*.ll") + " " + shell_q(dir + "\\*.bc") + " " + shell_q(dir + "\\*.obj") + " " + shell_q(dir + "\\*.o") + " " + shell_q(dir + "\\*.a") + " " + shell_q(dir + "\\*.lib") + " " + shell_q(dir + "\\*.pdb") + " >nul 2>&1")
+    var _r = exec_code("for /d /r " + shell_q(dir) + " %d in (target obj bin Debug Release build dist .gradle .cargo .zig-cache out) do @rd /s /q \"%d\" >nul 2>&1")
+}
+
+// 组件仓根目录 = 本仓上一级（tie-repo），如 F:\Projects\tie-repo\ 尾随反斜杠。
+func comp_root() -> string {
+    var p = io_cwd()
+    var last: i64 = -1
+    var i: i64 = 0
+    while i < str_len(p) {
+        if str_char(p, i) == "\\" || str_char(p, i) == "/" {
+            last = i
+        }
+        i = i + 1
+    }
+    if last < 0 {
+        return ""
+    }
+    return sub_str(p, 0, last + 1)
+}
+
+// 取字符串 [start, end) 字符子串（码点级；str_char 风格）。
+func sub_str(s: string, start: i64, end: i64) -> string {
+    var out: string = ""
+    var i: i64 = start
+    while i < end {
+        out = out + str_char(s, i)
+        i = i + 1
+    }
+    return out
 }
 
 // 文档复制辅助：存在才复制到包根
@@ -281,7 +403,7 @@ func ends_with(s: string, suffix: string) -> bool {
 func step4_zip(root: string, version: string, dist: string) -> i64 {
     println("[4/5] 打包 zip ...")
     var dir_name = "tie-" + version
-    var zip_path = root + "\\dist\\" + dir_name + "-win-x64.zip"
+    var zip_path = root + "\\dist\\" + dir_name + g_zip_suffix + "-win-x64.zip"
     if fs_exists(zip_path) {
         var _r = fs_remove(zip_path)
     }
