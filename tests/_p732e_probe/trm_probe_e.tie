@@ -1,0 +1,148 @@
+type tie<logic>
+// tests/_p732e_probe/trm_probe_e.tie —— trm 引擎 p.7.3.2-e 探针：反射/内省 + 动态 invoke + 诊断
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.3.2-e「反射/内省 + 动态加载/热更 + 沙箱/校验强化 + 诊断」。
+// 验收：动态加载 tieir + 类型内省（模块/函数签名面）+ 诊断（describe/info）——
+// 内省出的函数名可直接动态 invoke 并得正确结果。
+// 全过打印「trm 引擎 p.7.3.2-e 自检通过」exit 0；任一失败 exit 1。
+
+import "../../compiler/trm/trm.tie"
+import "../../compiler/middle/types.tie"
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg + "（" + trm.err_msg() + "）")
+        fails = fails + 1
+    }
+}
+
+// 子串包含判断（字符级自实现，不依赖 str 库面）。
+func contains(hay: string, needle: string) -> bool {
+    var hn = str_len(hay)
+    var nn = str_len(needle)
+    if nn == 0 {
+        return true
+    }
+    if nn > hn {
+        return false
+    }
+    var si: i64 = 0
+    while si + nn <= hn {
+        var j: i64 = 0
+        var m: i64 = 1
+        while j < nn {
+            if str_char(hay, si + j) != str_char(needle, j) {
+                m = 0
+            }
+            j = j + 1
+        }
+        if m == 1 {
+            return true
+        }
+        si = si + 1
+    }
+    return false
+}
+
+func main() {
+    var e0 = trm.init()
+    check(e0 == 0, "trm.init 返回 0")
+
+    // ---------- 1) 构建样本模块（add / neg1） ----------
+    ir.new_module()
+    ir_meta.reset_meta()
+    var T64 = types.named(TK_I64)
+    ir_meta.set_pkg_name(interner.intern("refl.demo"))
+    ir_meta.set_pkg_version(interner.intern("0.2.0"))
+    ir_meta.set_ir_version(1)
+    var p2: table<i64> = table_new_i64()
+    table_push(p2, T64)
+    table_push(p2, T64)
+    var p1: table<i64> = table_new_i64()
+    table_push(p1, T64)
+    var fid_add = ir.new_func(interner.intern("add"), T64, p2)
+    var fid_neg = ir.new_func(interner.intern("neg1"), T64, p1)
+    ir.func_export_set(fid_add, 1)
+    ir.func_export_set(fid_neg, 1)
+    var bi = ir.new_block(fid_add, -1)
+    var ai = ir.new_inst(bi, 0, T64)
+    ir.add_operand(ai, ir.param_val(fid_add, 0), 0)
+    ir.add_operand(ai, ir.param_val(fid_add, 1), 0)
+    var ri = ir.new_inst(bi, 32, -1)
+    ir.add_operand(ri, ir.ins_val(ai), 0)
+    var bn = ir.new_block(fid_neg, -1)
+    var ni = ir.new_inst(bn, 5, T64)
+    ir.add_operand(ni, ir.param_val(fid_neg, 0), 0)
+    var rn = ir.new_inst(bn, 32, -1)
+    ir.add_operand(rn, ir.ins_val(ni), 0)
+    // 侧表：符号 + 导出
+    ir_meta.set_sym(interner.intern("add"), interner.intern("(i64,i64)->i64"), 0, 1, 1, 1)
+    ir_meta.export_add(interner.intern("add"), interner.intern("(i64,i64)->i64"), 1, 1)
+    ir_meta.set_sym(interner.intern("neg1"), interner.intern("(i64)->i64"), 0, 1, 1, 1)
+    ir_meta.export_add(interner.intern("neg1"), interner.intern("(i64)->i64"), 1, 1)
+    var sample = "tests/_p732e_probe/refl_demo.tieir"
+    var wok = tieir.write(sample)
+    check(wok, "tieir.write 产出 refl_demo.tieir")
+    var m0 = trm.load(sample)
+    check(m0 == 0, "trm.load 动态加载 refl.demo 模块 id=0")
+
+    // ---------- 2) 模块内省 ----------
+    check(trm.refl_module_name(0) == "refl.demo", "模块名内省 refl.demo")
+    check(trm.refl_module_version(0) == "0.2.0", "模块版本内省 0.2.0")
+    check(trm.refl_module_hash(0) > 0, "模块内容哈希 > 0（篡改检测载体）")
+    check(trm.refl_module_fcnt(0) == 2, "模块函数数=2")
+    check(trm.refl_module_icnt(0) == 4, "模块指令数=4（add: add+ret, neg1: neg+ret）")
+
+    // ---------- 3) 函数内省（签名面） ----------
+    check(trm.refl_func_count() == 2, "当前模块函数数=2")
+    var fn0 = trm.refl_func_name(0)
+    var fn1 = trm.refl_func_name(1)
+    check(fn0 == "add" && fn1 == "neg1", "函数名 add / neg1（实际 " + fn0 + "/" + fn1 + "）")
+    check(trm.refl_func_ret(0) == T64 && trm.refl_func_ret(1) == T64, "返回类型 i64")
+    check(trm.refl_func_params(0) == 2 && trm.refl_func_params(1) == 1, "参数个数 2 / 1")
+    check(trm.refl_func_insts(0) == 2 && trm.refl_func_insts(1) == 2, "指令数 2 / 2")
+    check(trm.refl_func_exported(0) == 1 && trm.refl_func_exported(1) == 1, "导出标记 1 / 1")
+
+    // ---------- 4) 类型码/指令名 ----------
+    check(trm.refl_ty_name(T64) == "i64", "类型码 3 → i64")
+    check(trm.refl_ty_name(9) == "f64", "类型码 9 → f64")
+    check(trm.refl_ty_name(10) == "i1", "类型码 10 → i1")
+    check(trm.refl_ty_name(14) == "void", "类型码 14 → void")
+    check(trm.refl_op_name(0) == "add" && trm.refl_op_name(32) == "ret" && trm.refl_op_name(58) == "const_i", "opcode 0/32/58 → add/ret/const_i")
+    check(trm.refl_op_name(9999) == "op?9999", "未知 opcode → op?9999")
+
+    // ---------- 5) 动态 invoke：内省出的函数名 → 执行 ----------
+    var args1: table<i64> = table_new_i64()
+    table_push(args1, 20)
+    table_push(args1, 22)
+    var frc = trm.run_by_name(fn0, args1)
+    check(frc == 0 && trm.has_result() && trm.result_i64() == 42, "内省名 add 动态 invoke add(20,22) = 42")
+    var args2: table<i64> = table_new_i64()
+    table_push(args2, 7)
+    var frc2 = trm.run_by_name(fn1, args2)
+    check(frc2 == 0 && trm.has_result() && trm.result_i64() == -7, "内省名 neg1 动态 invoke neg1(7) = -7")
+
+    // ---------- 6) 诊断 ----------
+    var dsc = trm.refl_describe()
+    check(contains(dsc, "pkg=refl.demo") && contains(dsc, "ver=0.2.0") && contains(dsc, "func=2"), "describe 含 pkg/ver/func")
+    var info = trm.refl_module_info(0)
+    check(contains(info, "module[0]=refl.demo@0.2.0"), "module info 行含 module[0]=refl.demo@0.2.0")
+
+    // ---------- 7) 负例 ----------
+    check(trm.refl_func_name(9) == "", "越界函数名 → 空串")
+    check(trm.refl_module_name(5) == "", "越界模块名 → 空串")
+    check(trm.refl_func_insts(9) == -1, "越界函数指令数 → -1")
+
+    if file_exists(sample) {
+        var f1 = file_delete(sample)
+    }
+    if fails > 0 {
+        println("trm 引擎 p.7.3.2-e 自检失败 total=" + to_string(fails))
+        exit(1)
+    }
+    println("trm 引擎 p.7.3.2-e 自检通过（模块/函数内省 + 动态 invoke + 类型/指令名 + 诊断）")
+}

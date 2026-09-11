@@ -31,6 +31,7 @@ import "./trm_interp.tie"
 import "./trm_sys.tie"
 import "./trm_gc.tie"
 import "./trm_backend.tie"
+import "./trm_reflect.tie"
 
 // ---------- 引擎级常量（模块级全局；数值对齐 ir.op_keys 权威表） ----------
 const TRM_MAX_STEPS: i64 = 200000;  // 单函数执行步数上限（防死循环）
@@ -50,7 +51,8 @@ const TRM_OP_ICMP: i64 = 12;
 const TRM_OP_BR: i64 = 30;
 const TRM_OP_CONDBR: i64 = 31;
 const TRM_OP_RET: i64 = 32;
-const TRM_OP_CONST_I: i64 = 60;
+const TRM_OP_CONST_I: i64 = 58;  // 整数常量（ir.op_keys 权威：58=const_i）
+const TRM_OP_CONST_F: i64 = 60;  // 浮点常量（interp 子集未支持，登记即拒绝）
 const TRM_CMP_EQ: i64 = 0;
 const TRM_CMP_NE: i64 = 1;
 const TRM_CMP_LT: i64 = 2;
