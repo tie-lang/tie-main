@@ -74,8 +74,8 @@ development happens on branch p.7.
 > (trm-lite); engine-level GC kept; coroutines move to trm-lite.
 
 - [x] p.7.3.1 trm 定稿修订：对齐新分工（无语言层多线程/无表内存 GC、引擎级 GC 保留、协程移交 trm-lite）——修订 docs/designs/trm-final-design.md——**已落地 2026-09-11**：定稿对齐 ROAD 分工 + release.md §3.3/§3.4/§3.5 发行衔接（独立仓 tie-lang/trm + artifact tie-trm-<版本>-<平台>-<arch>.zip）+ 里程碑按 p.7.3.x 落地 + 内部阶段编号清理，双语文档
-- [ ] p.7.3.2 tieir 字节码 + interp 前端 + 可替换后端（LLVM ORC JIT | wasm/AOT）+ 类加载器 + 反射 + 引擎级 GC（路线 B 实现）
-- [ ] p.7.3.3 编译器侧 trm 目标接线：trm 字节码后端作可插拔后端接入 tiec（默认不启用，不捆绑）
+- [x] p.7.3.2 tieir 字节码 + interp 前端 + 可替换后端（LLVM ORC JIT | wasm/AOT）+ 类加载器 + 反射 + 引擎级 GC（路线 B 实现）——**已落地 2026-09-11**：分期 p.7.3.2-a..f 全部完成（a tieir 加载/校验 + InterpBackend 纯函数执行；b 库层 min 域 + C1 环平台桥（fs/env）；c 引擎级 GC（精确根扫描 + mark-sweep + 周期回收负例）；d Backend 三接口 + 热点提升跟踪 + JIT 未接入确定性回退；e 反射/内省 + 动态 invoke + 诊断；f 四端平台表 + 域/契约矩阵 + wasm/aot 登记），6 期探针 ALL PASS
+- [x] p.7.3.3 编译器侧 trm 目标接线：trm 字节码后端作可插拔后端接入 tiec（默认不启用，不捆绑）——**已落地 2026-09-11**：driver 新增 `--target trm` / `--backend trm` 走独立 pipeline_trm（front→irgen→trmemit 产出 .tieir 字节码）；默认 pipeline_real 全程不动，自举不动点 tiecA==tiecB + 回归 104 PASS/0 FAIL/2 SKIP + .ll 逐字节等价；探针验证 --target=trm 产物可被 trm 引擎加载校验 + 函数按名可查
 
 ### p.8 档（语言）
 
