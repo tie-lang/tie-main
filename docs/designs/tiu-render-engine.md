@@ -4,7 +4,7 @@
 **日期** / Date: 2026-09-12 · **类型** / Type: 架构设计（文档；本期只落到设计，不进入实现）
 **依据** / Basis: `ROAD.md` p.9.3（tiu 独立自研 UI 框架）· `docs/release.md` §3.4（tiu 组件仓定位）· 对 Skia 的根因分析（§1）
 **关联** / Related: `docs/designs/keel-architecture.md`（可复用的注册/审计机制层）· `docs/plans/2026-09-11-p721-repo-split.md`（tiu 独立仓 tie-lang/tiu 规划）
-**版本** / Version: v0.2（2026-09-12 增补 OpenGL 兼容后端定位）· v0.1 初稿
+**版本** / Version: v0.3（2026-09-12 实施闭环修订：后端排期落实施计划、范围职责归属、契约冻结引用）· v0.2（增补 OpenGL 兼容后端定位）· v0.1 初稿
 
 > EXEC BRIEF: Defines the architecture for tiu's render engine — the bottom
 > layer of the three-layer tiu framework (Engine / Drawing API / UI widgets).
@@ -42,7 +42,7 @@ tiu 的渲染引擎不建立在 Skia 之上，而是自研。取舍依据是下�
 **非目标** / Non-goals（本期明示不做）：
 * 不做 UI 层（组件树/布局/主题）——属于 tiu 上层，不在本文范围
 * 不牺牲无 GPU 环境：软件回退是**第一优先实现**（见模块路线），不是事后补丁
-* 不追求与 Skia API 兼容；面向 tie 自身的绘制 API 形态（见 tiu API 库设计，另行文档）
+* 不追求与 Skia API 兼容；绘制 API 形态见 `docs/designs/tiu-drawing-api.md`（已定稿）
 
 ---
 
@@ -173,7 +173,7 @@ tiu 的渲染引擎不建立在 Skia 之上，而是自研。取舍依据是下�
 * **离线预编译**：发布期把全集编译为各后端目标（按设备特性生成变体），写持久化缓存（hash key + 设备指纹）
 * **运行期命中即用**：lookup 命中 → 直接绑定；未命中 → 走**降级组合**（拆成多个标准 pass），而不是即时编译
 * **SPIR-V 单源**：tie 内嵌着色器 DSL → SPIR-V → 转 Vulkan / Metal(MSL) / D3D12(DXIL)；后端间行为零漂移
-  * **GL（GLES）转译**：SPIR-V → GLSL 转译列为**可选第三目标**（GL 兼容后端用，GL 不原生消费 SPIR-V）；驱动对 `ARB_gl_spirv` 支持差，故采用转译而非原生路径。**不阻塞首期**（模块四首期只做 Vulkan），排在 D3D12 之后
+  * **GL（GLES）转译**：SPIR-V → GLSL 转译为 GL 兼容后端着色目标（GL 不原生消费 SPIR-V；驱动对 `ARB_gl_spirv` 支持差，故采用转译而非原生路径）；后端落地顺序（Vulkan → Metal → D3D12 → GL 转译）与各自独立验收见 `docs/plans/2026-09-12-tiu-render-impl.md` §1
 * **软件内核同位素**：同一 DSL 模板同时生成 SIMD 软件内核（层 6 的软件执行体），一份语义两处落地
 
 **预期结果**：首帧无编译；帧时间不随「第一次遇到某 paint」波动。
@@ -221,7 +221,7 @@ tiu 的渲染引擎不建立在 Skia 之上，而是自研。取舍依据是下�
   * **macOS 不提供 GL 后端**（GL 4.1 无 compute + Apple 弃 GL；macOS 走 Metal）
   * 线程模型受限：GL 单上下文单线程、「make current」切换昂贵 → GL 后端不承担后台提交/多线程记录优化
 * **软回退**：SIMD 统一内核（同上）；无 GPU（VM / 服务器 / 老设备）自动回落
-* **第一期打通**：软件内核 + 一个 GPU 后端（Vulkan）验证全链路；Metal / D3D12 由层 5 单源 shader 平移，属增量验证；GL(转译) 亦属增量，非首期
+* **落地顺序**（见 `docs/plans/2026-09-12-tiu-render-impl.md` §1）：软件内核 + Vulkan 先行，验证全链路；其后按序 Metal / D3D12（单源 shader 平移）、GL 转译（兼容后端），各自独立验收
 * **窗口 / 输入**：最小平台抽象层由 p.9.3.1 运行时底座窗口部分负责，引擎不绑定任何具体平台壳
 
 ---
@@ -255,7 +255,7 @@ tiu 的渲染引擎不建立在 Skia 之上，而是自研。取舍依据是下�
 * **模块六：资源管理收口** —— atlas、预算、LRU、持久化缓存
 * **模块七：差分/骨架缓存正式契约** —— 场景树 dirty-rect 与绘制表段的增量协议定稿（对接 API/UI 层）
 
-依赖：tie 语言（自举后的生产工具链）；复用 tie 安全底座（TSHA 指纹、密钥体系）于 key/缓存校验；zd 底座可选用于绘制表序列化。
+依赖：tie 语言（自举后的生产工具链）；复用 tie 安全底座（TSHA 指纹、密钥体系）于 key/缓存校验；zd 底座可选用于绘制表序列化。跨层契约在实施计划中**当场冻结**（IR/wire 与 API 库实施计划 T2.1 同源、增量段协议消费 API 库 T2.3 冻结件、资源句柄接口与 API 库 T5.2 同源）；后端着色目标按实施计划 §1 顺序落地。
 
 ---
 
@@ -265,7 +265,10 @@ tiu 的渲染引擎不建立在 Skia 之上，而是自研。取舍依据是下�
 * **全自研 shader DSL 工作量大** → 缓解：先覆盖 P90 组合集，稀疏命中外组合走降级拆分（不即时编译）
 * **文本 GPU 化的渲染质量风险** → 缓解：gold 阈值 + 极复杂字形可回退软件位图模式（仅提示性，不引入 strike 常驻）
 * **GL 驱动差异** → 缓解：GL（尤其 Windows Intel/AMD）驱动行为差异大，gold 一致性验证按 GL 档放宽阈值；GL 定位兼容件，不作字节级一致承诺（见 §12）
-* **本期不做**：UI 组件树/布局/主题、窗口与输入封装、tie 绘制 API 语法定义（分属 API 库文档、p.9.3.2）
+* **不在本引擎范围（职责归属，非挂起项）**：
+  * UI 组件树/布局/主题/差分 → `docs/designs/tiu-ui-widgets.md` 已定稿（本引擎不感知控件语义）
+  * 绘制 API 语法与对象模型 → `docs/designs/tiu-drawing-api.md` 已定稿（增量段协议已冻结于其实施计划 T2.3，本引擎按冻结件消费，不"对接时再定"）
+  * 窗口与输入封装 → p.9.3.1 运行时底座（ROAD 已登记）· 事件通道 → `docs/designs/tiu-event-system.md` 已定稿（不进入绘制通道）
 
 ---
 
