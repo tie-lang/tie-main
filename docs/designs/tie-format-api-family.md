@@ -4,7 +4,7 @@
 **日期** / Date: 2026-09-12 · **类型** / Type: 生态规范（跨领域；统一格式谱系与 API 契约）
 **依据** / Basis: 用户梳理（2026-09-12 定）：tie 生态 API 家族——tieapi（库）· td（人类可读，语法属 tie）· zd（人类不可读）…… · tieapi = **统一 API 规范层**（2026-09-12 定）
 **关联** / Related: zd v2 规范（已定稿）· tink 帧协议 · tieir 格式 · 各组件资产格式 · tedit 模组协议 · ROAD p.9.x 各组件
-**版本** / Version: v0.3（2026-09-12 落盘 tink-xxx 绑定库自动生成策略）· v0.2 对外互操作 · v0.1 谱系与契约
+**版本** / Version: v0.4（2026-09-12 落盘 tac 生成器实现细节）· v0.3 绑定生成策略 · v0.2 对外互操作 · v0.1 谱系与契约
 
 > EXEC BRIEF: Defines the unified format & API family of the tie ecosystem —
 > one coherent lineage instead of per-component formats. **tieapi** is the
@@ -142,6 +142,39 @@ api = [
 * tieapi 定义变更 → 重新生成生成层（版本化）；运行时层不动
 * 绑定库随组件版本发布（pkg 分发）
 
+### 3.6 tac 生成器实现细节 / tac Generator Internals（2026-09-12 定）
+
+> **tac = tie api compiler**（组件仓 `tie-lang/tac`）：tie 编译器家族新成员——读 tieapi td 定义 → API IR → 各语言 codegen backend → tink-xxx 绑定库。
+
+#### 3.6.1 内部流水线 / Pipeline
+`解析器（td → 表结构）→ 校验器（诊断码 W/E）→ API IR → backend 分派（按语言注册）→ 每语言产物（生成层 + 运行时层）`
+
+#### 3.6.2 API IR（tie 表数据，值语义）
+* `module` 表（id/version）· `types` 类型表（name/kind: record|table|scalar / fields / elem）· `funcs` 签名表（name/in/out）
+* IR 本身可序列化（zd）——缓存/调试/跨工具
+
+#### 3.6.3 解析与校验 / Parse & Validate
+* 解析器：读 `type tie<data>` 定义 → 表结构 → API IR
+* 校验器（诊断码 W/E）：类型引用完整性 · 签名唯一性 · 版本合法性 · 未知字段拒绝（Keel 审计同思路）——**API 定义错误尽早报，含修正动作**
+
+#### 3.6.4 codegen 架构（后端可插拔）/ Backend Architecture
+* **backend 接口**（统一）：`generate(api_ir, lang_config) → files[]`——每语言一个 backend，Keel 式注册
+* **每语言 backend = 映射表 + 模板**：
+  * 映射表：tie 类型 → 目标语言类型（f64→double · record→struct/dict · table→list/vec…）
+  * 模板：文件骨架 / 函数封装 / zd 编解码
+* **模板机制用 tie 准引用宏**（`` `{...} `` + `$x` 插值）——tac 用 tie 写，模板即 tie 代码，天然自举
+
+#### 3.6.5 zd 编解码生成（类型驱动）/ zd Codec Codegen
+* 从类型表生成每语言 read/write（protobuf 式）——**类型即编解码规格**
+* 基础类型直映 · record 递归字段 · table 长度前缀 + 元素循环
+* 与运行时层分离：编解码在生成层，帧组装在运行时层
+
+#### 3.6.6 首期语言集 / Initial Language Set
+* **Python / Rust / C** 三语言先行（覆盖脚本 / 系统 / FFI 三类生态）→ 验证后铺 20+
+
+#### 3.6.7 验证 / Verification
+* 生成即测：往返字节一致 · gold 签名 · 跨语言互调（tie↔Python↔Rust↔C）——对齐 §3.5.5
+
 ## 4. 边界 / Boundary
 
 * 本规范约束**跨组件接口与数据形态**；各组件内部实现不受限
@@ -149,7 +182,7 @@ api = [
 
 ## 5. 未讨论项（不落为结论） / Not Yet Concluded
 
-* tieapi 规范的具体**接口形态**（错误类型/结果类型/td-zd 助手的标准签名）· 诊断码在 API 层的统一编号段分配 · 组件资产的 td 语法模板（各组件资产 td 示例）· **tieapi 生成器的实现细节**（API IR 定义 / codegen backend 模板引擎形态 / 首期支持语言集）· trm 嵌入的 C ABI 细节——**均未推演**，推演完成后在本文档补章
+* tieapi 规范的具体**接口形态**（错误类型/结果类型/td-zd 助手的标准签名）· 诊断码在 API 层的统一编号段分配 · 组件资产的 td 语法模板（各组件资产 td 示例）· **tac 实现细节**（API IR 精确字段定义 / 模板引擎形态 / backend 注册协议 / 首期语言集的模板骨架）· trm 嵌入的 C ABI 细节——**均未推演**，推演完成后在本文档补章
 
 ---
 
