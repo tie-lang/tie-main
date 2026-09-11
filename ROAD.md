@@ -119,6 +119,19 @@ development happens on branch p.7.
 >
 > EN: Tier p.9 — the rest: libraries, toolchain, UI, ecosystem, platforms. All within 2026.2.
 
+**命名迁移（p.9.0，最先做）**
+
+> 尽早（趁组件未发行改名零成本）+ 彻底（不留旧名兼容期）。依据 tie-naming-convention.md v0.2。
+>
+> EN: p.9.0 naming migration — early (zero cost pre-release) + thorough (no legacy-name grace period).
+
+- [ ] p.9.0.1 tie-diag → **tdiag**（诊断配套，文档为主，影响面最小）
+- [ ] p.9.0.2 tie-pkg → **tpkg**（包管理器，未建仓）
+- [ ] p.9.0.3 tiwi → **twi**（安装器，未完成）
+- [ ] p.9.0.4 tiedb → **tdb**（数据库，引用面最大，最后做）
+  - 执行计划（2026-09-12）：`docs/plans/2026-09-12-naming-migration.md`（每仓迁移内容/顺序/彻底性验收/执行记录）
+  - 状态：**待执行**；每仓一提交、grep 旧名=0 验收
+
 **内置库补全 + 编译体验（p.9.1）**
 
 - [ ] p.9.1.1 更多内置库（一库一子项，清单与优先级在库补全设计中定；候选含多媒体编解码 WebP/AVIF/音频/视频）
