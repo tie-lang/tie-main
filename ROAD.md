@@ -62,6 +62,7 @@ development happens on branch p.7.
 - [x] p.7.2.4 发行目录 2026.2 改造：发行下设 `src/` 收拢全部源码 + 另出 `tie-{版本}-src.zip`——**已落地 2026-09-11**：package.tie 5 步改造，实测打包 dist/tie-2026.2（bin/docs/src + 包根文档）+ 两个 zip，解包跑通 hello
 - [x] p.7.2.5 包注册中心 registry 起步（为独立发行/聚合发行提供存储端）——**已落地 2026-09-11**：keel_registry_cli.tie（keelpkg publish/info/versions）+ 探针 10 断言 ALL PASS + `tie pkg` 按注册表分派；格式文档 release.md §4.6
 - [x] p.7.2.6 更新 README：仓库分离后主仓定位（聚合/发行仓 + 组件独立仓导航）、发行模型、组件索引对齐新仓储结构——**已落地 2026-09-11**：README 双路径快速开始 + 发行模型 + 结构/组件索引；tiecA==tiecB 自举不动点 + 回归 104 PASS/0 FAIL/2 SKIP + .ll 逐字节等价
+- [x] p.7.2.7 多仓拆分执行落地：compiler/lsp → `tie-lang/tsp`、pkg → `tie-lang/tpkg`、tieDB → `tie-lang/tdb`、skills/tie-dev → `tie-lang/tie-dev`、editor/vscode-tie → `tie-lang/vscode-tie`、compiler 其余 + prep/std/ext/rdu/repl/scripts/tests/examples/diagdocs/sys/archive → `tie-lang/tiec`——**已落地 2026-09-12**：六仓全部 `git subtree split` 保留完整历史建仓推送（README 组件索引已指向新仓），tie-main 删除对应目录并同步文档引用/聚合脚本收敛清单
 
 **trm 重定位（p.7.3，JVM 式可选 VM）**
 

@@ -120,28 +120,28 @@ EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is c
 ### 3.4 仓库组织与发行版位置（2026.2 多仓拆分）
 *EN: Repository organization and release-artifact location (multi-repo split in 2026.2)*
 
-2026.2 起 tie-lang org 下按组件拆为独立仓库（清单与迁移清单见
-`docs/plans/2026-09-11-p721-repo-split.md`）：
+2026.2 起 tie-lang org 下按组件拆为独立仓库（迁移清单见
+`docs/plans/2026-09-11-p721-repo-split.md`，执行落地 p.7.2.7 / 2026-09-12）：
 
 - **tie-main**：聚合/发行仓——保留 `dist/` 发行产物与**当前版本文档** + 仓库级文件
-  （README / CHANGELOG / LICENSE / NEW / CONTRIBUTING / ROAD 等）；其余内容按
-  迁移清单移往组件仓
+  （README / CHANGELOG / LICENSE / NEW / CONTRIBUTING / ROAD 等）+ 聚合发行脚本；
+  其余内容已按迁移清单迁往组件仓
 - **组件仓库**：各组件（编译器 tiec、数据互联 tink、LSP 服务 tsp、运行时 trm、
-  UI 框架 tiu、数据库 tiedb、安装器 tiwi、包管理器 pkg、编辑器扩展 vscode-tie、
+  UI 框架 tiu、数据库 tdb、安装器 tiwi、包管理器 tpkg、编辑器扩展 vscode-tie、
   tie-dev 技能等）各自独立仓，独立演进与发布
 
-组件仓库清单（2026-09-11 定稿）：
+组件仓库清单（2026-09-11 定稿；p.7.2.7 / 2026-09-12 已落地建仓）：
 
-| 组件 / Component | 独立仓建议名 / Suggested repo | 职责边界 / Responsibility |
+| 组件 / Component | 独立仓 / Repo | 职责边界 / Responsibility |
 |---|---|---|
 | 编译器（源码 + driver + keel + std/ext/rdu + repl + scripts） | `tie-lang/tiec` | 自举编译器全源码、Keel 架构、语言标准/扩展/精简库、REPL、构建回归脚本；发行 `tiec` 组件 |
 | 数据互联 tink | `tie-lang/tink` | 通用数据流互联服务（语言无关）：zd v2 帧协议、模块.函数(字节进→字节出) ABI、管道编排器 `tink pipe` |
 | LSP 服务器 tsp | `tie-lang/tsp` | language server（`tie --lsp`），编辑扩展的后端 |
 | 运行时 trm | `tie-lang/trm` | JVM 式可选 VM（字节码 + 运行时 VM + 引擎级 GC），可插拔后端，不捆绑编译器 |
 | UI 框架 tiu | `tie-lang/tiu` | 独立自研 UI（窗口/绘制/事件 + 组件树/布局），高性能跨平台、不依赖 trm |
-| 数据库 tiedb | `tie-lang/tiedb` | tieDB 完整形态（列式持久化 + 向量检索 vecsearch，zd 底座） |
+| 数据库 tdb | `tie-lang/tdb` | tieDB 完整形态（列式持久化 + 向量检索 vecsearch，zd 底座；原 tiedb） |
 | 安装器 tiwi | `tie-lang/tiwi` | tie 安装程序制作器（完全 tie 自研：GUI 用 tiu、逻辑全 tie、自解压 setup） |
-| 包管理器 pkg | `tie-lang/tie-pkg`（或并入 tink/聚合工具） | 依赖解析 + tie.lock + registry 交互（p.9.2.2 正式落地） |
+| 包管理器 tpkg | `tie-lang/tpkg` | 依赖解析 + tie.lock + registry 交互（p.9.2.2 正式落地；原 tie-pkg） |
 | 编辑器扩展 | `tie-lang/vscode-tie` | VSCode 扩展（语法高亮 + LSP 诊断） |
 | 开发技能 | `tie-lang/tie-dev` | tie-dev AI 开发技能（SKILL.md） |
 | 历史文档归档 | `tie-lang/old_docs` | 过时文档与历史版本归档（已存在） |
@@ -161,16 +161,17 @@ EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is c
 
 - `dist/` 仍为发行产物目录（package.tie 产出），但**发行物出仓**——zip 等产物不再进 git 跟踪，经 GitHub / GitCode Release 附件分发
 - tie-main 保留当前版本的发行物与文档；历史版本由 Release 历史承担
-- 过渡期（迁移未完成前）：tie-main 仍物理保留组件源码目录，随迁移清单逐项搬出；
-  期间 README/ROAD 保持「聚合/发行仓定位 + 组件索引」以对齐目标态
+- 组件源码已迁往各独立组件仓（p.7.2.7 / 2026-09-12 落地）；聚合打包由
+  `scripts/package.tie` 从各组件仓按 `tie-versions` 约束收拢源码（`src/components/`）
 
 EN: Release artifacts: `dist/` remains the artifact directory (produced by
 package.tie), but artifacts **leave the git tree** — zips are distributed as
 GitHub/GitCode Release assets instead of being tracked. tie-main keeps the
 current release artifacts and docs; historical versions are carried by the
-Release history. During the transition, tie-main still physically holds the
-component source directories while README/ROAD already reflect the target
-aggregation-repo positioning.
+Release history. Component sources have moved to their per-component repos
+(p.7.2.7, landed 2026-09-12); the aggregate package is assembled by
+`scripts/package.tie` from each component repo under the `tie-versions`
+constraints (into `src/components/`).
 
 ### 3.5 组件独立发行（2026.2）
 *EN: Component-independent releases (2026.2)*

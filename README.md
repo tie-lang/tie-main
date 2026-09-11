@@ -46,9 +46,13 @@ and run an example with the bundled self-hosted compiler (sources live under
 **路径 B：从源码构建整套工具链（0-Rust 自举）**
 *Path B: build the whole toolchain from source (0-Rust self-hosted)*
 
+编译器等组件源码已迁往独立组件仓（见下「组件索引」）。编译器（含 std/ext/rdu、
+REPL、示例与回归脚本）在 [tie-lang/tiec](https://github.com/tie-lang/tiec)
+仓构建：
+
 ```bash
-# 编译并运行示例 / compile and run an example (tiec self-hosted compiler)
-compiler\tiec.exe examples\hello.tie
+git clone https://github.com/tie-lang/tiec.git && cd tiec
+compiler\tiec.exe examples\hello.tie   # 编译并运行示例
 examples\hello.exe
 
 # 自举验证 + 回归门禁 / bootstrap verification + regression gate
@@ -104,8 +108,8 @@ repo (artifacts stay out of git).
 *EN: Repository structure*
 
 tie-main 是**聚合/发行仓**：保留 `dist/` 发行产物、当前版本文档与仓库级文件；
-源码目录处于**迁移中**（按 [docs/plans/2026-09-11-p721-repo-split.md](docs/plans/2026-09-11-p721-repo-split.md) 迁移清单
-逐项迁往组件仓）。
+组件源码已按 [docs/plans/2026-09-11-p721-repo-split.md](docs/plans/2026-09-11-p721-repo-split.md)
+迁移清单迁往各独立组件仓（见「组件索引」）。
 
 ```text
 tie-main/              聚合/发行仓（aggregation/release repo）
@@ -113,10 +117,8 @@ tie-main/              聚合/发行仓（aggregation/release repo）
 ├── docs/              当前版本文档（language/ai-guide/release/cli/tiec/designs/plans…）
 ├── README.md  NEW.md  CHANGELOG.md  LICENSE  CONTRIBUTING.md  ROAD.md  AGENTS.md
 ├── assets/ .github/   宣传资源 / CI
-├── scripts/           构建与测试脚本（自举打包 package.tie、聚合校验 agg-check.tie 等）
-└── 源码（迁移中，见组件索引）：
-    compiler/  std/  ext/  rdu/  repl/  pkg/  prep/  tieDB/
-    examples/  skills/  editor/  sys/  tools/  tests/
+└── scripts/           聚合发行脚本（package.tie 聚合打包、agg-check.tie 聚合校验、
+                       tie-versions.data.tie 版本约束）
 ```
 
 ## 组件索引
@@ -124,21 +126,21 @@ tie-main/              聚合/发行仓（aggregation/release repo）
 
 | 组件 / Component | 职责 / Role | 独立仓 / Repo | 状态 / Status |
 |---|---|---|---|
-| 编译器 tiec | 自举编译器 + Keel 架构 + 标准/扩展/精简库 + REPL | `tie-lang/tiec` | 本仓内（迁移中）|
-| 数据互联 tink | zd v2 帧协议 + 管道编排器（语言无关） | `tie-lang/tink` | 本仓内（std/tink 起步）|
-| LSP 服务 tsp | language server（`tie --lsp`） | `tie-lang/tsp` | 本仓内（compiler/lsp）|
-| 运行时 trm | 可选 JVM 式 VM（不捆绑编译器） | `tie-lang/trm` | 规划中（p.7.3）|
+| 编译器 tiec | 自举编译器 + Keel 架构 + 标准/扩展/精简库 + REPL | [tie-lang/tiec](https://github.com/tie-lang/tiec) | 已独立 |
+| 数据互联 tink | zd v2 帧协议 + 管道编排器（语言无关） | [tie-lang/tink](https://github.com/tie-lang/tink) | 已独立 |
+| LSP 服务 tsp | language server（`tie --lsp`） | [tie-lang/tsp](https://github.com/tie-lang/tsp) | 已独立 |
+| 运行时 trm | 可选 JVM 式 VM（不捆绑编译器） | [tie-lang/trm](https://github.com/tie-lang/trm) | 已独立 |
 | UI 框架 tiu | 独立自研 UI（不依赖 trm） | `tie-lang/tiu` | 规划中（p.9.3）|
-| 数据库 tiedb | 列式持久化 + 向量检索（zd 底座） | `tie-lang/tiedb` | 本仓内（tieDB/）|
-| 安装器 tiwi | tie 自研安装程序制作器 | `tie-lang/tiwi` | 规划中（p.9.7）|
-| 包管理器 pkg | 依赖解析 + tie.lock + registry 交互 | `tie-lang/tie-pkg` | 本仓内（pkg/）|
-| 编辑器扩展 | VSCode 语法高亮 + LSP 诊断 | `tie-lang/vscode-tie` | 本仓内（editor/）|
-| 开发技能 | tie-dev AI 开发技能 | `tie-lang/tie-dev` | 本仓内（skills/）|
-| 历史归档 | 过时文档与历史版本 | `tie-lang/old_docs` | 已独立 |
+| 数据库 tdb | 列式持久化 + 向量检索（zd 底座） | [tie-lang/tdb](https://github.com/tie-lang/tdb) | 已独立 |
+| 安装器 tiwi | tie 自研安装程序制作器 | [tie-lang/tiwi](https://github.com/tie-lang/tiwi) | 已独立 |
+| 包管理器 tpkg | 依赖解析 + tie.lock + registry 交互 | [tie-lang/tpkg](https://github.com/tie-lang/tpkg) | 已独立 |
+| 编辑器扩展 | VSCode 语法高亮 + LSP 诊断 | [tie-lang/vscode-tie](https://github.com/tie-lang/vscode-tie) | 已独立 |
+| 开发技能 | tie-dev AI 开发技能 | [tie-lang/tie-dev](https://github.com/tie-lang/tie-dev) | 已独立 |
+| 历史归档 | 过时文档与历史版本 | [tie-lang/old_docs](https://github.com/tie-lang/old_docs) | 已独立 |
 
 EN: tie-main is the aggregation/release repository (dist artifacts + current
-docs + repo-level files); the source directories above are mid-migration to the
-per-component repos listed in the index (per the p.7.2.1 split plan).
+docs + repo-level files); each component has been migrated to its own
+per-component repo listed in the index (per the p.7.2.1 split plan).
 
 ## CLI 用法
 *EN: CLI usage*
