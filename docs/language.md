@@ -1960,12 +1960,12 @@ func main() {
 
 **诊断标号（p.6.9.15）**：`tiec` 的全部错误/警告带 **C# 式五位数标号**——
 `error[E#####]` / `warning[W#####]`（E00001 起全局连续；兜底 E00000 / W00000）。
-成因与常见解决方案见 [tie-diag](https://github.com/tie-lang/tie-diag) 仓库（双语文档）；
+成因与常见解决方案见 [tdiag](https://github.com/tie-lang/tdiag) 仓库（双语文档）；
 语义 OK 附带的警告段形如 `;W:l c core|警告标号|正文`。
 
 **Diagnostic codes (p.6.9.15)**: all `tiec` errors/warnings carry **C#-style five-digit codes** —
 `error[E#####]` / `warning[W#####]` (globally consecutive from E00001; fallback E00000 / W00000).
-Causes and common solutions live in the [tie-diag](https://github.com/tie-lang/tie-diag) repo
+Causes and common solutions live in the [tdiag](https://github.com/tie-lang/tdiag) repo
 (bilingual docs); a semantic-OK result may carry a warning segment like `;W:l c core|code|message`.
 
 ## 12. 宏与元编程（S3.3 已实现；过程/语句级/跨文件三大方向 dev33 批次8-10 落地）
