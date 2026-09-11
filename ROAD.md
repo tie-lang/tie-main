@@ -209,6 +209,7 @@ development happens on branch p.7.
 - [ ] p.9.9.8 tplot 统计可视化（图表/数据可视化；依赖 tiu+timg，产出物链路关键；组件仓 `tie-lang/tplot`）
   - 布局文档（2026-09-12）：`docs/plans/2026-09-12-p99-sci-media-domains.md`（领域清单/依赖链/库生态与产出物/R·Matlab·Julia 设计参考）
   - 状态：**规划中，未建仓**；依赖 2026.2 基本闭环后择期启动
+  - 生态格式与 API 家族规范（2026-09-12）：`docs/designs/tie-format-api-family.md`（tieapi 统一 API 规范层 + td/zd 同源双态 + 专项格式谱系 + 家族纪律）
 
 ### 关联定稿（修订项）
 
