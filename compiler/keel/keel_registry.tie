@@ -1,0 +1,198 @@
+type tie<class>
+// compiler/keel/keel_registry.tie —— Keel 龙骨架构 核心微内核化第一步（p.7.1.1 骨架层）
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.1.1「Keel 龙骨架构核心微内核化第一步」骨架层。
+// 目标（docs/superpowers/specs/2026-08-29-plugin-kernel-design.md +
+// docs/designs/keel-architecture.md）：核心只余机制层——boot 引导加载器 /
+// registry 通用注册表 / auditor 安全审计器 / executor 管线执行骨架，
+// 一切行为皆为注册项。本模块 = 通用注册表（registry）。
+//
+// # 注册项 schema（每行 = 一个注册项；行号 = 注册顺序 = id）
+//   id         string  全局唯一键（如 "tiec::pass_front"）
+//   kind       string  类别：pass | pipeline | builtin | role | cli | lib
+//                       （本任务先用 pass / pipeline）
+//   impl       string  实现函数名（impl_name，C1 分派键；无实现/pipeline 为 ""）
+//   deps       table<i64>  依赖注册项 id（只读拷贝进扁平段）
+//   嵌套段布局与 ir.tie 操作数段同款：行存 off/cnt，内容进扁平段。
+// **对 pipeline 注册项**，deps 扁平段复用为「有序 pass 引用列表」（执行序列）。
+//
+// # 名字查找映射（升序表 + 二分，O(log n)）
+//   keelreg_lookup_keys（名字升序）+ keelreg_lookup_vals（并行注册项 id）。
+//   **id 稳定不变量**：id = 注册顺序（0 起），注册完成后永不改变。
+//   后续注册只追加，不移动既有行（与 lib/dispatch.tie 序号语义一致）。
+//
+// # C1 分派说明
+//   tie 无函数指针，impl_name 参照 compiler/lib/dispatch.tie 模式：
+//   存「实现函数名字符串」，执行时按名分派（升序字符串表 + 二分 +
+//   整数 switch，见 keel_executor.tie 的 dispatch_impl）。
+//
+// # 语言边界（实测同 pass_registry.tie，关键约束）
+//   - 本模块**零依赖**（不 import 任何库），字符串键二分/有序插入自持
+//     实现（同 lib/dispatch.tie d_keys/d_vals 模式）；
+//   - 全局标量初始化只能用字面量；表格用 table_new_i64()/table_new_string()
+//     惰性初始化（首次 register 时建表，同 dispatch.tie 模式）；
+//   - table<i64> 可作函数参数（只读拷贝进扁平段），table<string> 不行；
+//   - import 文本内联不查重：与 pass_registry 一致，本模块不 import 任何
+//     文件；keel_boot.tie / keel_executor.tie 也不 import 本文件（依赖经
+//     入口文件 import 链内联可达，避免重复定义，同 compiler 内部约定）。
+//   - 顶层常量/全局变量加 keelreg_ 前缀：import 内联后顶层同作用域，
+//     防跨文件重名。
+//
+// 命名规范：命名空间内函数不加 keelreg_ 前缀；内部工具私有（非 pub）。
+
+// ---------- 全局并行表（行号 = id = 注册顺序；显式分号）----------
+var keelreg_ids: table<string>;    // 注册项 id（按注册序，id 行）
+var keelreg_kind: table<string>;   // 类别（"pass" / "pipeline" / ...）
+var keelreg_impl: table<string>;   // 实现函数名（impl_name；无实现为 ""）
+var keelreg_deps_off: table<i64>;  // 依赖段偏移（deps 扁平段内）
+var keelreg_deps_cnt: table<i64>;  // 依赖个数（0 = 无依赖 / 空 pipeline）
+var keelreg_deps_flat: table<i64>; // 依赖扁平段（全部注册项共享，追加式）
+// 名字查找映射（升序 + 二分；与行表并列的独立结构）
+var keelreg_lookup_keys: table<string>;  // id 名字（升序，strcmp 码点序）
+var keelreg_lookup_vals: table<i64>;     // 并行注册项 id
+
+namespace keelreg {
+
+// ---------- 表格惰性建表（首次 register 时一次性初始化全部表）----------
+func ensure_tables() {
+    if len(keelreg_ids) == 0 {
+        keelreg_ids = table_new_string()
+        keelreg_kind = table_new_string()
+        keelreg_impl = table_new_string()
+        keelreg_deps_off = table_new_i64()
+        keelreg_deps_cnt = table_new_i64()
+        keelreg_deps_flat = table_new_i64()
+        keelreg_lookup_keys = table_new_string()
+        keelreg_lookup_vals = table_new_i64()
+    }
+}
+
+// ---------- 名字键二分（自持，同 lib/dispatch.tie bs_find 模式）----------
+// keelreg_lookup_keys 恒升序（register 有序插入维护），字符串比较用
+// < / > / == 运算符（IR 走 strcmp，按码点序）。
+
+func bs_find_id(nm: string) -> i64 {
+    var lo: i64 = 0
+    var hi: i64 = len(keelreg_lookup_keys) - 1
+    while lo <= hi {
+        var mid = (lo + hi) / 2
+        if keelreg_lookup_keys[mid] == nm {
+            return mid
+        }
+        if keelreg_lookup_keys[mid] < nm {
+            lo = mid + 1
+        } else {
+            hi = mid - 1
+        }
+    }
+    return -1
+}
+
+// 映射表有序插入（尾部追加 + 向前冒泡，两表同步交换；同
+// lib/dispatch.tie register 的插入流程）。
+
+func map_insert(nm: string, id: i64) {
+    table_push(keelreg_lookup_keys, nm)
+    table_push(keelreg_lookup_vals, id)
+    var i: i64 = len(keelreg_lookup_keys) - 1
+    var moving: bool = true
+    while moving {
+        if i == 0 {
+            moving = false
+        } else if keelreg_lookup_keys[i] < keelreg_lookup_keys[i - 1] {
+            var tmpk = keelreg_lookup_keys[i]
+            keelreg_lookup_keys[i] = keelreg_lookup_keys[i - 1]
+            keelreg_lookup_keys[i - 1] = tmpk
+            var tmpv: i64 = keelreg_lookup_vals[i]
+            keelreg_lookup_vals[i] = keelreg_lookup_vals[i - 1]
+            keelreg_lookup_vals[i - 1] = tmpv
+            i = i - 1
+        } else {
+            moving = false
+        }
+    }
+}
+
+// ---------- 注册 ----------
+
+// 登记一个注册项：id 全局唯一键、kind 类别、impl_name 实现函数名
+// （无实现传 ""，如 pipeline）、deps 依赖注册项 id（只读拷贝进扁平段；
+// 对 pipeline 为「有序 pass 引用列表」）。返回注册项 id（= 注册顺序，
+// **恒稳定**）。重复登记同名返回原 id（幂等，不覆盖——同
+// dispatch.register / passreg.reg_pass 约定）。
+pub func register(id: string, kind: string, impl_name: string, deps: table<i64>) -> i64 {
+    ensure_tables()
+    var idx = bs_find_id(id)
+    if idx >= 0 {
+        return keelreg_lookup_vals[idx]
+    }
+    var rid = len(keelreg_ids)
+    // 行表尾部追加（id = 行号，无需位移——既有行永不移动）
+    table_push(keelreg_ids, id)
+    table_push(keelreg_kind, kind)
+    table_push(keelreg_impl, impl_name)
+    table_push(keelreg_deps_off, len(keelreg_deps_flat))
+    table_push(keelreg_deps_cnt, len(deps))
+    // 依赖内容追加进扁平段
+    var i: i64 = 0
+    while i < len(deps) {
+        table_push(keelreg_deps_flat, deps[i])
+        i = i + 1
+    }
+    // 名字 → id 映射（升序维护）
+    map_insert(id, rid)
+    return rid
+}
+
+// 按 id 名字查注册项 id（二分 O(log n)）；未登记返回 -1。
+pub func find(id: string) -> i64 {
+    var idx = bs_find_id(id)
+    if idx < 0 {
+        return -1
+    }
+    return keelreg_lookup_vals[idx]
+}
+
+// 已登记注册项总数。
+pub func count() -> i64 {
+    return len(keelreg_ids)
+}
+
+// 访问器：注册项 id -> 类别（"pass"/"pipeline"/...；越界返回空串）。
+pub func kind_of(rid: i64) -> string {
+    if rid < 0 || rid >= len(keelreg_kind) {
+        return ""
+    }
+    return keelreg_kind[rid]
+}
+
+// 访问器：注册项 id -> 实现函数名 impl_name（越界返回空串；无实现亦空串）。
+pub func impl_name_of(rid: i64) -> string {
+    if rid < 0 || rid >= len(keelreg_impl) {
+        return ""
+    }
+    return keelreg_impl[rid]
+}
+
+// 访问器：注册项 id -> 依赖（或 pipeline 有序 pass 引用）个数。
+pub func deps_count(rid: i64) -> i64 {
+    if rid < 0 || rid >= len(keelreg_deps_cnt) {
+        return 0
+    }
+    return keelreg_deps_cnt[rid]
+}
+
+// 访问器：注册项 id -> 第 k 个依赖/pass 引用 id（越界 -1）。
+pub func deps_at(rid: i64, k: i64) -> i64 {
+    if rid < 0 || rid >= len(keelreg_deps_off) {
+        return -1
+    }
+    var off = keelreg_deps_off[rid]
+    var cnt = keelreg_deps_cnt[rid]
+    if k < 0 || k >= cnt {
+        return -1
+    }
+    return keelreg_deps_flat[off + k]
+}
+
+}   // namespace keelreg
