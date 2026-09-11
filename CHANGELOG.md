@@ -20,6 +20,81 @@
 > 5. Major-version archive: on stable release, copy this file to `<version>.CHANGELOG` at the repo root, then start a fresh one.
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Shipyard-2026.2-preview.1（2026-09-11）
+
+> **2026.2 预发布 1 = 架构先行档（p.7）全量**：Keel 龙骨架构（注册表/审计器/加载器/执行骨架）+
+> 仓库分离与发行模型（聚合发行 + src/ 收拢 + registry 起步）+ trm 重定位（tieir 字节码 +
+> Interp 前端 + 引擎级 GC + 可插拔 trm 目标）。编译器默认链路线 A 逐字节不变（自举不动点
+> SHA `7967DB0E…`，回归 104 PASS）。
+>
+> EN: Shipyard 2026.2 preview 1 = full architecture-first tier (p.7): Keel skeleton architecture,
+> repo-split & release model, trm relocation (tieir bytecode + interp front-end + engine-level
+> GC + pluggable trm target). Route-A compiler unchanged byte-for-byte (bootstrap fixed point
+> SHA `7967DB0E…`, regression 104 PASS).
+
+## [feat] p.7.3 trm 重定位：tieir 字节码 + Interp 前端 + 引擎级 GC + 可插拔 trm 目标（2026-09-11）
+
+* **定稿对齐（p.7.3.1）**：docs/designs/trm-final-design.md 对齐新分工——无语言层多线程/无
+  表内存 GC（归 trm-lite）、**保留引擎级 GC**（管 tieir 运行时 Object/Value 生命期）、协程
+  移交 trm-lite；发行模型衔接独立仓 tie-lang/trm，artifact 命名 `tie-trm-<版本>-<平台>-<arch>.zip`。
+  EN: final design aligned (no language-level threading / no table GC — moves to trm-lite;
+  engine-level GC kept; coroutines → trm-lite; component repo tie-lang/trm).
+* **引擎六期（p.7.3.2-a..f，各期独立探针 ALL PASS）**：① tieir 类加载器（反序列化 + 校验 +
+  登记 + 篡改哈希）；② InterpBackend 纯函数执行（i64 子集：算术/控制流/const/比较 + 步数上限）+
+  C1 平台桥（fs/env 最小域，四端表）；③ 引擎级 GC（精确根扫描 + mark-sweep + 周期引用/生命周期
+  负例）；④ Backend 三接口 + 热点提升跟踪 + JIT 未接入确定性回退；⑤ 反射/内省 + 动态 invoke +
+  诊断；⑥ wasm/aot 后端登记 + 域/契约矩阵。
+  EN: six engine milestones, each with a probe (loader+validate, interp subset + platform bridge,
+  engine GC mark-sweep with cycle negatives, backend interface + NA fallback, reflection + dynamic
+  invoke, wasm/aot registration + contract matrix).
+* **编译器接线（p.7.3.3）**：tiec 新增 `--target trm` / `--backend trm` 独立 pipeline_trm
+  （front→irgen→trmemit 产 .tieir 字节码）——可插拔后端、默认不启用；默认 pipeline_real 全程
+  不动，自举不动点 + 回归基线保持 + `.ll` 逐字节等价；探针验证真实编译器产物可被 trm 引擎加载
+  校验 + 函数按名可查。
+  EN: tiec gains `--target trm`/`--backend trm` via a separate pipeline_trm (bytecode emit only);
+  default pipeline untouched — bootstrap fixed point, regression baseline, byte-identical .ll.
+
+## [feat] p.7.2 仓库分离 + 发行模型：聚合发行、src/ 收拢、registry 起步（2026-09-11）
+
+* **多仓拆分规划（p.7.2.1）**：tie-main 变聚合/发行仓，compiler/tink/tsp/trm/tiu/tiedb/tiwi
+  等组件独立仓；本轮先规划不移动。EN: multi-repo split planned; main = aggregation/release repo.
+* **组件独立发行（p.7.2.2/7.2.3）**：各仓独立版本 + Release 附件；主仓聚合发行——scripts/
+  tie-versions.data.tie（td 版本约束）+ scripts/agg-check.tie（聚合校验，--self-test 三断言全过）。
+  EN: per-component releases + aggregate release with version constraints and agg-check verification.
+* **发行目录 2026.2 化（p.7.2.4）**：package.tie 5 步改造，源码收拢 `dist/tie-{版本}/src/` +
+  另出 `-src.zip`；实测打包跑通 hello。EN: release dir gathers sources under src/ + separate -src.zip.
+* **registry 客户端起步（p.7.2.5）**：keel_registry_cli.tie（keelpkg publish/info/versions）+
+  探针 10 断言 ALL PASS + `tie pkg` 按注册表分派（格式文档 release.md §4.6）。
+  EN: registry client bootstrap — keelpkg publish/info/versions + `tie pkg` dispatch.
+* **README 聚合/发行定位（p.7.2.6）**：仓库分离后主仓双路径快速开始 + 发行模型 + 组件索引。
+  EN: README repositioned as main-repo navigation for the split repo model.
+
+## [feat] p.7.1 Keel 龙骨架构：注册表/审计器/加载器/执行骨架（2026-09-11）
+
+* **骨架层（p.7.1.1）**：keel_registry/cli/boot/executor 四件套 + driver 真实 pass 登记为
+  注册项并经 Keel 注册表驱动（行为逐字节等价）。EN: Keel skeleton — registry/cli/boot/executor
+  + driver passes registered & dispatched via registry.
+* **id+版本登记（p.7.1.2）+ tieir 消费入口（p.7.1.3）+ data→zd 发布（p.7.1.4）**：冲突仲裁、
+  免前端反序列化还原 IR 进后端、tsha1f 指纹发布，各带探针。
+  EN: id+version registration with arbitration; frontend-free tieir consumption; data→zd publish
+  with tsha1f fingerprint.
+* **安全审计链（p.7.1.5）+ CLI 子命令注册化（p.7.1.6）+ 安全算法基座盘点（p.7.1.7）+ tsha1
+  家族 KAT（p.7.1.8）**：tsha1 树指纹 + ed25519 签名 + TOFU 信任锚（篡改/冒名/换钥全拦截）；
+  `tie <子命令>` 按注册表分派；f/b/x/r 家族 KAT 109 PASS。
+  EN: security audit chain (tree fingerprint + ed25519 + TOFU anchor); CLI subcommand registration;
+  TSHA f/b/x/r KAT all green.
+
+## [feat] p.7 路线图：2026.2 多档预发布计划（架构先行 p.7 → 语言 p.8 → 其余 p.9 → r.2）（2026-09-11）
+
+* **2026.2 完整路线图（p.7 档）**：Keel 编译器重构 + 语言特性/语法糖 + trm VM + tiu UI +
+  工具链与生态 + 仓库分离；全路标 p.x.y.z 编号（禁止 S1/S2 之类内部阶段编号）。
+  EN: full 2026.2 roadmap in p.x.y.z tiers (p.7 arch → p.8 language → p.9 rest → r.2);
+  no S1/S2-style stage labels anywhere.
+* **tiwi 用 tie 自身技术栈重建**：弃 FLTK，tiu GUI + 纯 tie 逻辑。EN: tiwi rebuilt on tie's own
+  stack (tiu GUI + pure tie logic), FLTK dropped.
+* **trm 定稿预对齐 + Keel 插件内核设计**：docs/designs 双稿与 2026.2 路线图对齐。
+  EN: trm final design + Keel plugin-kernel design aligned with the 2026.2 roadmap.
+
 ## 2026.1（正式版，开发中）
 
 ## [feat] r.1.6.16-18 Linux 收尾：is_libc 统一登记 + 网络四探针变绿 + 打包收官（2026-09-11）
