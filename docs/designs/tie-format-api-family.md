@@ -4,7 +4,7 @@
 **日期** / Date: 2026-09-12 · **类型** / Type: 生态规范（跨领域；统一格式谱系与 API 契约）
 **依据** / Basis: 用户梳理（2026-09-12 定）：tie 生态 API 家族——tieapi（库）· td（人类可读，语法属 tie）· zd（人类不可读）…… · tieapi = **统一 API 规范层**（2026-09-12 定）
 **关联** / Related: zd v2 规范（已定稿）· tink 帧协议 · tieir 格式 · 各组件资产格式 · tedit 模组协议 · ROAD p.9.x 各组件
-**版本** / Version: v0.2（2026-09-12 增补对外互操作：语言无关三件套 + 四通道）· v0.1 谱系与契约
+**版本** / Version: v0.3（2026-09-12 落盘 tink-xxx 绑定库自动生成策略）· v0.2 对外互操作 · v0.1 谱系与契约
 
 > EXEC BRIEF: Defines the unified format & API family of the tie ecosystem —
 > one coherent lineage instead of per-component formats. **tieapi** is the
@@ -87,6 +87,61 @@
 * **契约中立**：tieapi 是语言无关 API，绑定库只是适配层
 * **通道自选**：集成深度 vs 接入成本由开发者选（函数级 → 子进程 → WASM → 嵌入）
 
+### 3.5 tink-xxx 绑定库自动生成策略 / Binding Codegen（2026-09-12 定）
+
+> 核心：**组件作者只写一份 tieapi 定义（真实 td），生成器产出 20+ 语言绑定库**——"一次定义，多语言落地"（同源双态哲学在 API 层的延伸）。
+
+#### 3.5.1 流程 / Pipeline
+`tieapi 定义（td）→ API IR（类型表+签名表）→ tieapi 生成器（tie 写，codegen backend 每语言一个）→ tink-xxx 绑定库`
+
+#### 3.5.2 tieapi 定义（真实 td 语法，依据现存 td 文件形态）
+```td
+// tieapi 定义 —— tsci.linalg
+type tie<data>
+api = [
+    [ "id": "tsci.linalg", "version": "0.1.0",
+      "types": [
+          [ "name": "mat", "kind": "record",
+            "fields": [
+                [ "name": "rows", "type": "i64" ],
+                [ "name": "cols", "type": "i64" ],
+                [ "name": "data", "type": "table<f64>" ],
+            ],
+          ],
+      ],
+      "funcs": [
+          [ "name": "mat_mul",
+            "in":  [ [ "name": "a", "type": "mat" ], [ "name": "b", "type": "mat" ] ],
+            "out": [ "type": "mat" ],
+          ],
+      ],
+    ],
+]
+```
+* 语法对齐真实 td：`type tie<data>` 头 · 命名表 `api = [...]`（无 var）· 记录 = 字符串 id 表 · 嵌套表为值内 `[...]` · `//` 注释
+* 类型集：基础（i64/f64/string/bool/表/记录）+ 组件自定义类型（值语义描述）
+
+#### 3.5.3 类型映射 / Type Mapping（值语义 → 各语言习惯）
+* `f64 → double` · `i64 → int64/long` · `string → str/String` · `table<T> → list/vector/数组` · `record → struct/class/dict`（Python dict、C struct、Rust struct）
+* 映射规则 = 每语言 codegen 的一张映射表（可配）
+
+#### 3.5.4 生成器架构 / Generator Architecture（两层分离）
+* **tieapi 生成器**（tie 写，tie 编译器家族）：读 td → API IR → codegen backend（每语言一个，插拔注册）
+* **生成产物两层**：
+  * **生成层**（从 tieapi 生成）：API 封装（模块.函数）+ **zd 编解码**（类型驱动，从类型表生成——protobuf 式 codegen）
+  * **运行时层**（每语言写一次，稳定）：tink 帧协议（zd 帧 + CRC）、连接/管道、内存管理
+* **变更只影响生成层**；运行时层稳定复用
+* codegen backend = **模板 + 映射表**（每语言量小且可测）
+
+#### 3.5.5 验证矩阵 / Verification Matrix
+* **往返测试**：tie 服务端 ↔ 各语言绑定，同一 zd 帧编解码**字节一致**（gold）
+* **gold 签名**：tieapi 定义 → 各语言 API 签名与基准一致（跨语言同一契约）
+* **跨语言互调矩阵**：tie ↔ Python ↔ Rust ↔ C# 互相调用（协议中立证明）
+
+#### 3.5.6 增量与版本 / Increment & Versioning
+* tieapi 定义变更 → 重新生成生成层（版本化）；运行时层不动
+* 绑定库随组件版本发布（pkg 分发）
+
 ## 4. 边界 / Boundary
 
 * 本规范约束**跨组件接口与数据形态**；各组件内部实现不受限
@@ -94,7 +149,7 @@
 
 ## 5. 未讨论项（不落为结论） / Not Yet Concluded
 
-* tieapi 规范的具体**接口形态**（错误类型/结果类型/td-zd 助手的标准签名）· 诊断码在 API 层的统一编号段分配 · 组件资产的 td 语法模板（各组件资产 td 示例）· **tink-xxx 绑定库的生成策略**（手写 vs 从 tieapi 定义生成，对齐 Keel 表驱动思路）· trm 嵌入的 C ABI 细节——**均未推演**，推演完成后在本文档补章
+* tieapi 规范的具体**接口形态**（错误类型/结果类型/td-zd 助手的标准签名）· 诊断码在 API 层的统一编号段分配 · 组件资产的 td 语法模板（各组件资产 td 示例）· **tieapi 生成器的实现细节**（API IR 定义 / codegen backend 模板引擎形态 / 首期支持语言集）· trm 嵌入的 C ABI 细节——**均未推演**，推演完成后在本文档补章
 
 ---
 
