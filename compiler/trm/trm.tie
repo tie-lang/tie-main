@@ -28,6 +28,7 @@ type tie<class>
 
 import "./trm_loader.tie"
 import "./trm_interp.tie"
+import "./trm_sys.tie"
 
 // ---------- 引擎级常量（模块级全局；数值对齐 ir.op_keys 权威表） ----------
 const TRM_MAX_STEPS: i64 = 200000;  // 单函数执行步数上限（防死循环）
@@ -75,10 +76,15 @@ pub func err_msg() -> string {
     return trm_err
 }
 
-// 引擎初始化（幂等）。仅登记状态；类加载器/执行器惰性自建。
+// 引擎初始化（幂等）。登记状态 + 库层/平台桥接线（sys_boot）。
 pub func init() -> i64 {
     if trm_init_done == 1 {
         return 0
+    }
+    var s0 = sys_boot()
+    if s0 != 0 {
+        trm_set_err("trm 库层/平台桥接线失败")
+        return -1
     }
     trm_init_done = 1
     trm_set_err("")

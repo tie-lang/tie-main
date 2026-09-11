@@ -1,0 +1,207 @@
+type tie<class>
+// compiler/trm/trm_sys.tie —— 库层起步 + 平台桥（p.7.3.2-b）
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.3.2-b「库层起步（terminal/process/fs/env/session）
+// + 平台桥（扩展链面）+ 动态库集成」。
+// 定位（trm-final-design §4 库层 / §6 平台桥）：库层 = 业务能力面（全 tie 写；
+// 系统域 trm.fs / trm.env 起步），平台桥 = 域函数 → 平台实现选择器（C1，与
+// keel/驱动同款：字符串名 + 整数选择子 + switch）。本阶段落地 **桥契约**：
+//   * 平台亲缘表：win32 / posix（§6.1 impl-win32 / impl-posix 的桥面）；
+//   * 桥注册表：(域, 函数名) → 实现选择器；find/bind 校验；未知 → -1；
+//   * 域实现直连 tie 原语（file_exists / file_is_dir / file_delete / get_env），
+//     语义 = trm.fs / trm.env 的平台无关契约（§7.4 契约矩阵基准）。
+//   动态库装载（trm_platform.dll/.so）为后续连接 gate（§12 未决项；本阶段
+//   桥面以注册 + 亲缘切换 + 契约探针收敛，不假装已装载）。
+//
+// # 库层接口（探针/宿主直调；i64 出入 + string 侧信道）
+//   lib_fs_exists(p) / lib_fs_is_dir(p) / lib_fs_delete(p) -> i64（0/1/…）
+//   lib_env_get(v) -> i64（0 命中 / -1 未命中）+ env_last() -> string（值）
+//   bridge_find(domain, fn) -> i64（选择器，-1 未注册）
+//   bridge_call(sel, a0, s) -> i64（经桥调用实现；字符串实参走 s）
+//   bridge_platform() / bridge_set_platform(p) / bridge_platform_at(i)
+//
+// # 语言边界
+//   无递归；无 continue/break；&& 非短路（查表用嵌套 if）；顶层符号 trmsys_
+//   前缀；与 trm/trm_loader/trm_interp 同 namespace trm 跨文件闭合并集。
+
+// ---------- 平台桥状态（模块级全局，前缀 trmsys_；namespace 体外） ----------
+var trmsys_plat: string = "win32";     // 当前平台亲缘（§6.1 默认 win32）
+var trmsys_plats: table<string>;       // 平台表（win32 / posix）
+var trmsys_doms: table<string>;        // 桥项：域（如 "fs" / "env"）
+var trmsys_fns: table<string>;         // 桥项：函数名
+var trmsys_sels: table<i64>;           // 桥项：实现选择器（C1）
+var trmsys_count: i64 = 0;             // 桥项数
+var trmsys_last: string = "";          // 最近 string 结果（env 值侧信道）
+var trmsys_booted: i64 = 0;            // 幂等标记
+
+namespace trm {
+
+func sys_set_plat(p: string) {
+    trmsys_plat = p
+}
+
+// 桥注册（内部）：追加 (域, 函数名, 选择器)。返回桥项 id / -1（域已存在同函数）。
+func bridge_reg(domain: string, fn: string, sel: i64) -> i64 {
+    var i: i64 = 0
+    var dup: i64 = 0
+    while i < trmsys_count {
+        if trmsys_doms[i] == domain && trmsys_fns[i] == fn {
+            dup = 1
+        }
+        i = i + 1
+    }
+    if dup == 1 {
+        return -1
+    }
+    table_push(trmsys_doms, domain)
+    table_push(trmsys_fns, fn)
+    table_push(trmsys_sels, sel)
+    var id0 = trmsys_count
+    trmsys_count = trmsys_count + 1
+    return id0
+}
+
+// ---------- 平台桥 ----------
+
+// 桥接线（幂等）：建平台表（win32/posix）+ 注册 fs/env 域桥项。
+pub func sys_boot() -> i64 {
+    if trmsys_booted == 1 {
+        return 0
+    }
+    if len(trmsys_plats) == 0 {
+        trmsys_plats = table_new_string()
+        table_push(trmsys_plats, "posix")
+        table_push(trmsys_plats, "win32")   // 升序（posix < win32）
+        trmsys_doms = table_new_string()
+        trmsys_fns = table_new_string()
+        trmsys_sels = table_new_i64()
+    }
+    var r0 = bridge_reg("fs", "exists", 0)
+    var r1 = bridge_reg("fs", "is_dir", 1)
+    var r2 = bridge_reg("fs", "delete", 2)
+    var r3 = bridge_reg("env", "get", 3)
+    if r0 < 0 || r1 < 0 || r2 < 0 || r3 < 0 {
+        return -1
+    }
+    trmsys_booted = 1
+    return 0
+}
+
+// 桥项数（注册表规模）。
+pub func bridge_count() -> i64 {
+    return trmsys_count
+}
+
+// 桥绑定：查 (域, 函数名) → 实现选择器（-1 未注册）。
+pub func bridge_find(domain: string, fn: string) -> i64 {
+    var i: i64 = 0
+    while i < trmsys_count {
+        if trmsys_doms[i] == domain && trmsys_fns[i] == fn {
+            return trmsys_sels[i]
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// 平台表规模 / 第 i 个平台名。
+pub func bridge_platforms() -> i64 {
+    return len(trmsys_plats)
+}
+pub func bridge_platform_at(i: i64) -> string {
+    if i >= 0 && i < len(trmsys_plats) {
+        return trmsys_plats[i]
+    }
+    return ""
+}
+
+// 当前平台亲缘名。
+pub func bridge_platform() -> string {
+    return trmsys_plat
+}
+
+// 切换平台亲缘（仅接受平台表内名；未知 → -1）。
+pub func bridge_set_platform(p: string) -> i64 {
+    var i: i64 = 0
+    var ok: i64 = 0
+    while i < len(trmsys_plats) {
+        if trmsys_plats[i] == p {
+            ok = 1
+        }
+        i = i + 1
+    }
+    if ok == 1 {
+        sys_set_plat(p)
+        return 0
+    }
+    return -1
+}
+
+// 最近 string 结果（env 值侧信道；env.get 后读取）。
+pub func env_last() -> string {
+    return trmsys_last
+}
+
+// ---------- 域实现（平台无关语义 = 契约；用选平台无差别的原语直连） ----------
+
+// 经桥调用实现：sel → 整数选择子 switch。a0 为 i64 硬参、s 为 string 实参；
+// 返回 i64（0/1/…；env.get 返回 0 命中 / -1 未命中）。未支持选择子 → -2。
+func bridge_impl(sel: i64, a0: i64, s: string) -> i64 {
+    if sel == 0 {
+        if file_exists(s) {
+            return 1
+        }
+        return 0
+    }
+    if sel == 1 {
+        if file_is_dir(s) {
+            return 1
+        }
+        return 0
+    }
+    if sel == 2 {
+        if file_delete(s) {
+            return 1
+        }
+        return 0
+    }
+    if sel == 3 {
+        var v = get_env(s)
+        trmsys_last = v
+        if str_len(v) > 0 {
+            return 0
+        }
+        return -1
+    }
+    trmsys_last = ""
+    return -2
+}
+
+// 经桥调用（宿主/探针面）：sel 选择器 + a0 硬参 + s 字符串实参。
+pub func bridge_call(sel: i64, a0: i64, s: string) -> i64 {
+    return bridge_impl(sel, a0, s)
+}
+
+// ---------- 库层接口（trm.fs / trm.env，对探针/宿主直调） ----------
+
+// trm.fs.exists：文件存在？
+pub func lib_fs_exists(p: string) -> i64 {
+    return bridge_impl(0, 0, p)
+}
+
+// trm.fs.is_dir：路径是目录？
+pub func lib_fs_is_dir(p: string) -> i64 {
+    return bridge_impl(1, 0, p)
+}
+
+// trm.fs.delete：删除文件（成功 true）。
+pub func lib_fs_delete(p: string) -> i64 {
+    return bridge_impl(2, 0, p)
+}
+
+// trm.env.get：按名取环境变量（0 命中 / -1 未命中；值经 env_last()）。
+pub func lib_env_get(v: string) -> i64 {
+    return bridge_impl(3, 0, v)
+}
+
+}   // namespace trm
