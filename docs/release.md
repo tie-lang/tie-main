@@ -111,11 +111,11 @@ EN: The repo root of the package carries `README.md`, `NEW.md`, `CHANGELOG.md` a
 2026.2 除 Keel 架构重构后的编译器外，工具链补齐下列组件，随发行版一体交付：
 
 - **trm**（运行时）：动态库延迟绑定 + system 域（terminal/process/fs/env/session/clock/net/data）
-- **UI 框架**：trm.ui 窗口/绘制/事件基础 + tieui 组件树/布局组合式框架
+- **UI 框架**：tiu 独立自研 UI（窗口/绘制/事件 + 组件树/布局组合式框架；不依赖 trm，可与 trm 同用）
 - **tiedb**（数据库）：tieDB 完整形态（列式持久化 + 向量检索 vecsearch，zd 格式底座）
-- **tiwi**（安装器）：tie 安装程序制作器（FLTK GUI + 自解压 setup，六边形架构）
+- **tiwi**（安装器）：tie 安装程序制作器（**完全 tie 自研重构**——GUI 用 tiu、逻辑全 tie 语言、自解压 setup，六边形架构）
 
-EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is completed with: **trm** (runtime: dynamic-library lazy binding + the system domain terminal/process/fs/env/session/clock/net/data); the **UI framework** (trm.ui window/drawing/events + the tieui composable component tree/layout); **tiedb** (the database in full form: columnar persistence + vecsearch over the zd format); and **tiwi** (the tie installer builder: FLTK GUI + self-extracting setup, hexagonal architecture).
+EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is completed with: **trm** (runtime: dynamic-library lazy binding + the system domain terminal/process/fs/env/session/clock/net/data); the **UI framework** **tiu**, an independent in-house UI (window/drawing/events + composable component tree/layout; not depending on trm, usable together with trm); **tiedb** (the database in full form: columnar persistence + vecsearch over the zd format); and **tiwi** (the tie installer builder, fully rebuilt with tie's own stack — GUI via tiu, logic entirely in tie, self-extracting setup, hexagonal architecture).
 
 ### 3.4 仓库组织与发行版位置（2026.2 多仓拆分）
 *EN: Repository organization and release-artifact location (multi-repo split in 2026.2)*

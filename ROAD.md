@@ -168,7 +168,7 @@ development happens on branch p.7.
 
 **安装器（p.9.7，最后做）**
 
-- [ ] p.9.7.1 tiwi 安装器：FLTK GUI + 自解压 setup，六边形架构（2026.2 收尾点，最后落地）
+- [ ] p.9.7.1 tiwi 安装器：**完全 tie 自研重构**——GUI 用 tiu（自定义）、逻辑全 tie 语言、自解压 setup（六边形架构；2026.2 收尾点，最后落地）
 
 ### 关联定稿（修订项）
 
