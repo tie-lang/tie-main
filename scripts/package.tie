@@ -246,6 +246,14 @@ func s3_libs(root: string, dist: string) -> i64 {
         var l = libs[j]
         if fs_exists(root + "\\" + l) {
             var _r = fs_copy_dir(root + "\\" + l, dist + "\\src\\" + l)
+            // 源码收拢后清理构建产物（过去 std/ext/rdu 未清理，Skia 树 480MB 进包）
+            if l != "ext" {
+                prune_artifacts(dist + "\\src\\" + l)
+            } else {
+                prune_artifacts(dist + "\\src\\ext")
+                prune_skia(dist + "\\src\\ext\\gfx\\skia")
+                prune_artifacts(dist + "\\src\\ext\\gfx\\demo")
+            }
             println("  src/" + l + "/ ok")
         }
         j = j + 1
@@ -270,10 +278,25 @@ func s3_compiler(root: string, dist: string) -> i64 {
     return 0
 }
 
-// 清理目录下的编译产物（.exe/.ll/.bc），递归；用系统命令避免 tie 表遍历。
+// 清理目录下的编译产物（.exe/.ll/.bc/.obj/.o/.pdb/.wasm 与常见构建目录），
+// 递归；用系统命令避免 tie 表遍历。静态库 .a/.lib 为编译链接所需交付物——
+// 通用清理不删（skia 段落另行处理其本地产物）。
 func prune_artifacts(dir: string) {
-    var _r = exec_code("del /s /q " + shell_q(dir + "\\*.exe") + " " + shell_q(dir + "\\*.ll") + " " + shell_q(dir + "\\*.bc") + " >nul 2>&1")
-    var _r = exec_code("for /d /r " + shell_q(dir) + " %d in (*) do @del /s /q \"%d\\*.exe\" \"%d\\*.ll\" \"%d\\*.bc\" >nul 2>&1")
+    var _r = exec_code("del /s /q " + shell_q(dir + "\\*.exe") + " " + shell_q(dir + "\\*.ll") + " " + shell_q(dir + "\\*.bc") + " " + shell_q(dir + "\\*.obj") + " " + shell_q(dir + "\\*.o") + " " + shell_q(dir + "\\*.pdb") + " " + shell_q(dir + "\\*.wasm") + " >nul 2>&1")
+    var _r = exec_code("for /d /r " + shell_q(dir) + " %d in (*) do @del /s /q \"%d\\*.exe\" \"%d\\*.ll\" \"%d\\*.bc\" \"%d\\*.obj\" \"%d\\*.o\" \"%d\\*.pdb\" \"%d\\*.wasm\" >nul 2>&1")
+    // 常见构建目录整体删除（rt 复制后的 out/、.tools/、target/、obj/ 等）
+    var _r = exec_code("for /d /r " + shell_q(dir) + " %d in (out .tools target obj Debug Release build dist .gradle .cargo .zig-cache TestResults) do @rd /s /q \"%d\" >nul 2>&1")
+}
+
+// ext/gfx/skia 特例清理：skia.lib 静态库是编译链接所需交付物（保留 ext/gfx/lib/skia.lib 连同
+// modules.txt），但 Skia 源码树内的本地产物（out/ 构建树、.tools/gn.exe、smoke 冒烟 exe、
+// 外部源码 externals/ 等）不入源码包——README 明示这些不入库。
+func prune_skia(dir: string) {
+    var _r = exec_code("if exist " + shell_q(dir + "\\out") + " rd /s /q " + shell_q(dir + "\\out"))
+    var _r = exec_code("if exist " + shell_q(dir + "\\.tools") + " rd /s /q " + shell_q(dir + "\\.tools"))
+    var _r = exec_code("if exist " + shell_q(dir + "\\smoke") + " rd /s /q " + shell_q(dir + "\\smoke"))
+    var _r = exec_code("if exist " + shell_q(dir + "\\externals") + " rd /s /q " + shell_q(dir + "\\externals"))
+    var _r = exec_code("if exist " + shell_q(dir + "\\bin") + " rd /s /q " + shell_q(dir + "\\bin"))
 }
 
 func step3_assemble(root: string, version: string, dist: string) -> i64 {
