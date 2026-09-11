@@ -52,7 +52,7 @@
 
 | 仓 | 状态 | 日期 | 提交 |
 |---|---|---|---|
-| tdiag | 待执行 | 2026-09-12 | — |
+| tdiag | ✅ 已完成 | 2026-09-12 | GitHub 改名 tie-lang/tdiag · 本地目录 tie-repo/tdiag · 仓内 README/gen-docs.ps1（tdiag d144931）· tie-main 引用（language.md/SKILL.md/package.tie，0f4b07d）· grep 旧名=0（豁免：历史 CHANGELOG + 映射描述）|
 | tpkg | 待执行 | — | — |
 | twi | 待执行 | — | — |
 | tdb | 待执行 | — | — |
