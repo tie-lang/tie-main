@@ -4,7 +4,7 @@
 **日期** / Date: 2026-09-12 · **类型** / Type: 生态规范（跨领域；统一命名，解决 tiec/tiedb 与 tiu/t3d 等混乱）
 **依据** / Basis: 用户统一命名要求（2026-09-12 定）· 全量改名 + 语义缩写/造词 + **tie-dev（skill）保留 tie- 前缀**（用户否决 tdev）
 **关联** / Related: ROAD p.9.x 各组件仓 · tie-format-api-family.md（生态格式家族）· tie-main/tie-lang
-**版本** / Version: v0.1（初稿）
+**版本** / Version: v0.2（2026-09-12 tie-diag→tdiag 定案归组件仓）· v0.1 初稿
 
 > EXEC BRIEF: Unifies tie ecosystem naming by **entity type**, ending the
 > tiec/tiedb-vs-tiu/t3d inconsistency. Rule: `tie` = the language itself and
@@ -43,19 +43,19 @@
 
 ## 4. 改名执行 / Rename Execution
 
-* **本轮改名的组件仓**（不一致项 → t 前缀）：tiedb→tdb · tiwi→twi · tie-pkg→tpkg · tie-diag→tdiag
+* **本轮改名的组件仓**（不一致项 → t 前缀）：tiedb→tdb · tiwi→twi · tie-pkg→tpkg · **tie-diag→tdiag**（2026-09-12 定案：归组件仓）
 * 已符合的组件仓（不动）：tiu/tink/trm/tsp/trm-lite/t3d/tge/trg/taud/tanim/tphy/tedit/tac/tsci/tstat/tsim/tgeo/timg/tvid/tvfx/tplot
-* 保留（不套组件规则）：tie / tiec / tie-dev / tie-lang / tie-main / tie-diag?（见 §5）
+* 保留（不套组件规则）：tie / tiec / tie-dev / tie-lang / tie-main
 * 改名影响：仓库名 · 文档 · 发行 artifact · 依赖声明——**逐仓迁移，一次性改名不并行新旧**
 
 ## 5. 边界说明 / Boundary Notes
 
-* **tie-diag 的归类**：tie-diag 是诊断配套（文档+生成工具，非库/引擎/框架）——按分类属"文档配套"，**保留 tie- 前缀**（不套组件仓规则）；若未来升级为组件仓则按规则改名 tdiag（待用户定）
+* **tie-diag → tdiag 已定案**（2026-09-12）：诊断配套归**组件仓**（含生成工具，可独立发行），按规则改名 tdiag
 * skill（tie-dev）：技能包，**永不套组件规则**（用户明确否决 tdev）
 
 ## 6. 未讨论项（不落为结论） / Not Yet Concluded
 
-* 改名**迁移计划**（逐仓时序/兼容处理）· tie-diag 最终归类（文档保留 vs 组件 tdiag）· 旧名兼容期（文档是否标注旧名）· 发行 artifact 命名随之变更的细节——**均未推演**，推演完成后补章
+* 改名**迁移计划**（逐仓时序/兼容处理）· 旧名兼容期（文档是否标注旧名）· 发行 artifact 命名随之变更的细节——**均未推演**，推演完成后补章
 
 ---
 
