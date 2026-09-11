@@ -1,0 +1,109 @@
+type tie<logic>
+// tests/_p732c_probe/trm_probe_c.tie —— trm 引擎 p.7.3.2-c 探针：引擎级 GC
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.3.2-c「引擎级 GC（精确根扫描 + mark-sweep + 周期引用 + 生命周期负例探针）」。
+// 验收：可达性断言——根内保持活、去根后回收（生命周期负例）、循环引用整体回收、
+// 根外环不误清、越界分配/链接/根操作拒绝。
+// 全过打印「trm 引擎 p.7.3.2-c 自检通过」exit 0；任一失败 exit 1。
+
+import "../../compiler/trm/trm.tie"
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg + "（" + trm.gc_err() + "）")
+        fails = fails + 1
+    }
+}
+
+func main() {
+    var e0 = trm.init()
+    check(e0 == 0, "trm.init 含 GC 初始化返回 0")
+
+    // ---------- 0) 分配边界 ----------
+    check(trm.gc_heap_size() == 0, "初始堆空")
+    var refs_bad: table<i64> = table_new_i64()
+    table_push(refs_bad, 99)
+    check(trm.gc_alloc(1, refs_bad) == -1, "分配引用越界对象 → -1")
+    check(trm.gc_heap_size() == 0, "越界分配失败不增长堆")
+
+    // ---------- 1) 根内保持活（生命周期正例） ----------
+    var r0: table<i64> = table_new_i64()
+    var a = trm.gc_alloc(1, r0)
+    check(a == 0, "首次分配 id=0；堆=1")
+    check(trm.gc_heap_size() == 1, "堆=1")
+    check(trm.gc_add_root(a) == 0, "登记根 a")
+    check(trm.gc_nroots() == 1, "根数=1")
+    var la = trm.gc_collect()
+    check(la == 1, "collect：根内 a 存活 live=1")
+    check(trm.gc_live() == 1 && trm.gc_freed() == 0, "live=1 freed=0")
+    check(trm.gc_is_live(a) == 1, "根内 a 可达 is_live=1")
+
+    // ---------- 2) 去根回收（生命周期负例） ----------
+    var rr = trm.gc_rm_root(a)
+    check(rr == 0 && trm.gc_nroots() == 0, "移除根 a；根数=0")
+    trm.gc_collect()
+    check(trm.gc_live() == 0, "去根后 collect live=0")
+    check(trm.gc_freed() == 1 && trm.gc_is_live(a) == 0, "a 已回收（freed=1, is_live=0）")
+
+    // ---------- 3) 循环引用：o1↔o2 无外部根 → 整体回收 ----------
+    var o1 = trm.gc_alloc(1, r0)
+    var o2 = trm.gc_alloc(2, r0)
+    check(o1 == 1 && o2 == 2, "o1=1 o2=2（单调递增）")
+    check(trm.gc_link(o1, o2) == 0 && trm.gc_link(o2, o1) == 0, "建环 o1→o2→o1")
+    check(trm.gc_heap_size() == 3, "堆=3（a + o1 + o2）")
+    var lc = trm.gc_collect()
+    check(lc == 0, "环无外部根 → 整体不可达 live=0（不泄漏）")
+    check(trm.gc_freed() == 3 && trm.gc_is_live(o1) == 0 && trm.gc_is_live(o2) == 0, "环整体回收（freed=3）")
+
+    // ---------- 4) 循环引用带根：根→r1↔r2 全活（根外环不误清） ----------
+    var r1 = trm.gc_alloc(1, r0)
+    var refs_r2: table<i64> = table_new_i64()
+    table_push(refs_r2, r1)
+    var r2 = trm.gc_alloc(2, refs_r2)
+    var lk = trm.gc_link(r1, r2)
+    check(lk == 0, "建环 r1↔r2")
+    trm.gc_add_root(r1)
+    trm.gc_collect()
+    check(trm.gc_live() == 2, "环带根 → r1+r2 全活 live=2（根外环不误清）")
+    check(trm.gc_is_live(r1) == 1 && trm.gc_is_live(r2) == 1, "r1/r2 均可达")
+
+    // ---------- 5) 断根即回收（环生命周期负例） ----------
+    trm.gc_rm_root(r1)
+    trm.gc_collect()
+    check(trm.gc_live() == 0 && trm.gc_freed() == 5, "断根后环整体回收（freed=5）")
+    check(trm.gc_is_live(r1) == 0 && trm.gc_is_live(r2) == 0, "r1/r2 均不可达")
+
+    // ---------- 6) 根→a3→b2→c2 链全活（沿引用遍历正确） ----------
+    var c2 = trm.gc_alloc(1, r0)
+    var refs_b2: table<i64> = table_new_i64()
+    table_push(refs_b2, c2)
+    var b2 = trm.gc_alloc(2, refs_b2)
+    var refs_a3: table<i64> = table_new_i64()
+    table_push(refs_a3, b2)
+    var a3 = trm.gc_alloc(2, refs_a3)
+    trm.gc_add_root(a3)
+    trm.gc_collect()
+    check(trm.gc_live() == 3, "根→a3→b2→c2 全活 live=3")
+    check(trm.gc_is_live(a3) == 1 && trm.gc_is_live(b2) == 1 && trm.gc_is_live(c2) == 1, "链上 a3/b2/c2 均活")
+
+    // ---------- 7) 负例边界 ----------
+    check(trm.gc_add_root(99) == -1, "根越界 add_root → -1")
+    check(trm.gc_add_root(-1) == -1, "根负数 add_root → -1")
+    check(trm.gc_rm_root(99) == -1, "未登记根 rm_root → -1")
+    check(trm.gc_link(99, 0) == -1, "链接 from 越界 → -1")
+    check(trm.gc_link(0, 99) == -1, "链接 to 越界 → -1")
+    check(trm.gc_rm_root(a3) == 0, "移除链根 a3 → 0")
+    var dup2 = trm.gc_add_root(a)
+    check(dup2 == 0 && trm.gc_nroots() == 1, "重复登记同根幂等返回 0（去重）")
+    trm.gc_rm_root(a)
+
+    if fails > 0 {
+        println("trm 引擎 p.7.3.2-c 自检失败 total=" + to_string(fails))
+        exit(1)
+    }
+    println("trm 引擎 p.7.3.2-c 自检通过（精确根扫描 + mark-sweep + 周期引用 + 生命周期负例）")
+}

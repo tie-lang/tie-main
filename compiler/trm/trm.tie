@@ -29,6 +29,7 @@ type tie<class>
 import "./trm_loader.tie"
 import "./trm_interp.tie"
 import "./trm_sys.tie"
+import "./trm_gc.tie"
 
 // ---------- 引擎级常量（模块级全局；数值对齐 ir.op_keys 权威表） ----------
 const TRM_MAX_STEPS: i64 = 200000;  // 单函数执行步数上限（防死循环）
