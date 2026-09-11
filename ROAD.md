@@ -8,7 +8,7 @@
 > 第一档（p.7）**，后续档在其上叠加。档位只代表先后顺序，全部在 2026.2 内完成。
 >
 > - **预发布段（p.7/p.8/p.9/…）**：全部新功能按档完成，开发号 **P.x.y.z**
->   （即 CHANGELOG 中的 p.x.y.z；x 即档号，如 p.7.x 属 p.7 档）。
+>   （即 CHANGELOG 中的 p.x.y.z；x=档号，y=模块，z=子项）。
 > - **正式版段（r.2）**：最后一个预发布档发布后启动，**基于预发布段**开发——
 >   **不引入任何新功能**，只做优化与稳定性；开发号 **R.x.y.z**。两轨独立编号、
 >   不互相延续。
@@ -24,12 +24,12 @@ scheme of 2026.1, but ships **multiple preview tiers**: **p.7 → p.8 → p.9 �
 each tier completing some new features and releasing a preview (preview.N).
 **Architectural change always lands first (p.7)**; later tiers stack on it. Tiers
 indicate order only — everything is delivered within 2026.2. The preview stage uses
-development numbers P.x.y.z (p.x.y.z in the CHANGELOG; x = tier, e.g. p.7.x belongs to
-tier p.7). The stable stage (r.2) starts after the last preview tier, introduces NO new
-features — only optimization/stability — numbered R.x.y.z; the two tracks number
-independently. Codename: **Shipyard (2026.2)**; compiler restructure is the **Keel
-Architecture** era. The 2026.1 ROAD was archived to tie-lang/old_docs (2026.1/ROAD.md).
-All 2026.2 development happens on branch p.7.
+development numbers P.x.y.z (p.x.y.z in the CHANGELOG; x=tier, y=module, z=sub-item).
+The stable stage (r.2) starts after the last preview tier, introduces NO new features —
+only optimization/stability — numbered R.x.y.z; the two tracks number independently.
+Codename: **Shipyard (2026.2)**; compiler restructure is the **Keel Architecture** era.
+The 2026.1 ROAD was archived to tie-lang/old_docs (2026.1/ROAD.md). All 2026.2
+development happens on branch p.7.
 
 ### p.7 档（架构先行）
 
@@ -37,24 +37,44 @@ All 2026.2 development happens on branch p.7.
 >
 > EN: Tier p.7 — architecture first: the following tiers depend on these landing.
 
-**编译器彻底重构 + 插件化（Keel 龙骨架构）**
+**编译器彻底重构 + 插件化（p.7.1，Keel 龙骨架构）**
 
-- [ ] Keel 核心微内核化：核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；管线=注册项+锚点扩展
-- [ ] id+version 注册方案 + tieir 消费入口（import tieir 包，消费方免前端）+ data→zd 发布转换（publish 压缩 + 指纹）
-- [ ] 安全审计链：TSHA1 指纹（文件 tsha1f + 包树根 tsha1x）+ 凭证/指纹审计链（去中心化信任锚）；CLI 子命令注册化
-- [ ] 安全算法底座：哈希/MAC/对称/KDF/非对称/后量子分类入 std/ext/rdu + TSHA（tsha1 代）四档家族（f/b/x/r）
-  - 依据：docs/superpowers/specs/2026-08-29-plugin-kernel-design.md（定稿）+ docs/designs/keel-architecture.md；落地编号一律 p.7.x.y，设计稿原步骤编号作废
+> 依据：docs/superpowers/specs/2026-08-29-plugin-kernel-design.md（定稿）+ docs/designs/keel-architecture.md。
+> 核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；
+> 落地编号以本 ROAD 为准，设计稿原步骤编号作废。
+>
+> EN: Basis: the finalized Keel design (plugin-kernel-design.md + keel-architecture.md).
 
-**仓库分离 + 发行模型**
+- [ ] p.7.1.1 核心微内核化：pipeline 5 槽 → 注册表执行骨架 + 内建引导集（默认管线注册项）；passmanager 接入 pipeline（验收：tiec 自举 hash 不变 + 回归基线保持）
+- [ ] p.7.1.2 id+version 注册方案：注册项 schema 表驱动 + 同 id 异 version 仲裁（验收：注册冲突负例正确拦截）
+- [ ] p.7.1.3 tieir 消费入口：import tieir 包（消费方免前端）（验收：包 .tieir → 编译运行通过）
+- [ ] p.7.1.4 data→zd 发布转换：publish 压缩 + 指纹计算（验收：zd 包加载运行与 data 等价）
+- [ ] p.7.1.5 安全审计链：TSHA1 指纹（文件 tsha1f + 包树根 tsha1x）+ 凭证/指纹审计链，去中心化信任锚（验收：篡改/冒名包负例全拦截）
+- [ ] p.7.1.6 CLI 子命令注册化 + 库树收敛（std/ext/rdu ↔ lib_v1 定位）（验收：全命令行按注册项分派）
+- [ ] p.7.1.7 安全算法底座：哈希/MAC/对称/KDF/非对称/后量子分类入 std/ext/rdu，TSHA1 优先（审计链前置依赖）
+- [ ] p.7.1.8 TSHA（tsha1 代）四档家族落地：f/b/x/r，位平面 trit + 24/48 基，KAT 向量 + 交叉验证
 
-- [ ] 多仓拆分：tie-main 变聚合/发行仓（dist 发行产物 + 当前版本文档），compiler/tink/tsp/trm/tiu/tiedb/tiwi 等组件独立仓
-- [ ] 组件独立发行（各仓独立版本 + Release 附件分发）+ 主仓聚合发行整套工具链（版本集编排互恰）+ 发行物出仓（zip 不进 git）+ 发行目录 src/ 收拢源码
-- [ ] 包注册中心 registry 起步（为独立发行/聚合发行提供存储端）
+**仓库分离 + 发行模型（p.7.2）**
 
-**trm 重定位（JVM 式可选 VM）**
+- [ ] p.7.2.1 多仓拆分：tie-main 变聚合/发行仓（dist 发行产物 + 当前版本文档），compiler/tink/tsp/trm/tiu/tiedb/tiwi 等组件独立仓
+- [ ] p.7.2.2 组件独立发行：各仓独立版本 + Release 附件分发，发行物出仓（zip 不进 git）
+- [ ] p.7.2.3 主仓聚合发行：整套工具链聚合发行包（版本集编排 + 互恰校验）
+- [ ] p.7.2.4 发行目录 2026.2 改造：发行下设 `src/` 收拢全部源码 + 另出 `tie-{版本}-src.zip`
+- [ ] p.7.2.5 包注册中心 registry 起步（为独立发行/聚合发行提供存储端）
 
-- [ ] trm 定稿修订 + 实现：可用可不用、不捆绑编译器（import trm 走路线 B，编译器默认原生路线 A）
-- [ ] tieir 字节码 + interp 前端 + 可替换后端 + 类加载器 + 反射 + 引擎级 GC（语言层多线程/表内存 GC 不归 trm，协程移交 trm-lite）
+**trm 重定位（p.7.3，JVM 式可选 VM）**
+
+> 定位（2026-09-11 定）：可用可不用、不捆绑编译器（import trm 走路线 B，编译器默认原生
+> 路线 A）；不提供语言层多线程（并发归 trm-lite）与语言对象/表内存 GC（归 trm-lite
+> 引用计数）；保留**引擎级 GC**（管 tieir 运行时 Object/Value 生命期）；协程移交 trm-lite。
+>
+> EN: trm (2026-09-11): optional JVM-style VM — import trm = Route B, otherwise pure
+> compilation Route A (zero dependency); no language-level multithreading / no table GC
+> (trm-lite); engine-level GC kept; coroutines move to trm-lite.
+
+- [ ] p.7.3.1 trm 定稿修订：对齐新分工（无语言层多线程/无表内存 GC、引擎级 GC 保留、协程移交 trm-lite）——修订 docs/designs/trm-final-design.md
+- [ ] p.7.3.2 tieir 字节码 + interp 前端 + 可替换后端（LLVM ORC JIT | wasm/AOT）+ 类加载器 + 反射 + 引擎级 GC（路线 B 实现）
+- [ ] p.7.3.3 编译器侧 trm 目标接线：trm 字节码后端作可插拔后端接入 tiec（默认不启用，不捆绑）
 
 ### p.8 档（语言）
 
@@ -62,17 +82,33 @@ All 2026.2 development happens on branch p.7.
 >
 > EN: Tier p.8 — the language layer on top of the new architecture.
 
-**语言特性**
+**语言特性（p.8.1）**
 
-- [ ] const fn 编译期求值 / 错误处理统一（Option/Result + `?` 深化，无异常保持）/ 泛型增强（约束/特化）/ 模式匹配增强（payload 结构化解构/穷尽/守卫）
-- [ ] 可空类型（路线 2：增强 Option，不引入 `T?`，保「无 null」安全目标）：`?.` `?:` `a?[i]` unwrap 语法糖
+- [ ] p.8.1.1 const fn 编译期求值（编译期常量折叠更强能力，可行静态元编程）
+- [ ] p.8.1.2 错误处理统一：Option/Result 泛型增强 + `?` 解包深化，无异常保持
+- [ ] p.8.1.3 泛型增强：约束 / 特化 / 变长泛型
+- [ ] p.8.1.4 模式匹配增强：enum payload 结构化解构 / 穷尽检查 / 守卫（联动 p.8.2）
+- [ ] p.8.1.5 可空类型（路线 2：增强 Option，不引入 `T?`，保「无 null」安全目标）：`?.` 安全调用 / `?:` 默认值 / `a?[i]` 安全索引 / unwrap 语法糖
 
-**语法糖批量**
+**语法糖批量（p.8.2）**
 
-- [ ] 可空链 / for..in 解构迭代 / 级联调用 / 命名参数 / 链式比较
-- [ ] 字符串插值（`"Hello, {name}"` 模板）/ 运算符重载（struct 自定义 + - * / ==）/ 集合速写（推导式）/ 泛型糖（默认类型参数）/ 属性 getter-setter
-- [ ] 数据流箭头 `->`/`<-` 增强推广（tie 风格管道，P1 已实现基础上扩展）/ 尾随闭包 / 展开·解包调用 `f(args...)` / guard 早退
-- [ ] 宏升级：语句级宏 → 完整元编程（卫生宏/声明式宏，边界待定）
+> 现状盘点：已有元组解构 `var (a,b)`、switch 解构/区间/守卫、`for i in 0..10`、标签、
+> 默认参数、语句级宏（p.6.2.3）、`?` 解包、闭包、数据流箭头 `->`/`<-`（P1 已实现）。
+>
+> EN: Current sugar inventory and planned additions below.
+
+- [ ] p.8.2.1 可空链语法：`?.` 安全调用 / `?:` 默认值 / `a?[i]`（联动 p.8.1.5）
+- [ ] p.8.2.2 常用糖集：for..in 解构迭代 / 级联调用 / 命名参数 / 链式比较
+- [ ] p.8.2.3 字符串插值：`"Hello, {name}"` 模板（现仅宏/准引用插值）
+- [ ] p.8.2.4 运算符重载：struct 自定义 `+ - * / ==` 等（向量/矩阵/复数/日期运算钥匙）
+- [ ] p.8.2.5 集合速写：表/映射推导式 `[x * 2 for x in arr if cond]`
+- [ ] p.8.2.6 泛型糖：泛型默认类型参数 / 泛型约束简化
+- [ ] p.8.2.7 属性 getter/setter：struct 计算属性（UI/领域建模）
+- [ ] p.8.2.8 数据流箭头 `->`/`<-` 增强与推广（tie 风格管道，P1 已实现基础上扩展）
+- [ ] p.8.2.9 尾随闭包：`arr.map { ... }` 免括号
+- [ ] p.8.2.10 展开/解包调用：`f(args...)`
+- [ ] p.8.2.11 guard 早退：`guard cond else { return }` 前置条件
+- [ ] p.8.2.12 宏升级：语句级宏 → 完整元编程（卫生宏/声明式宏，边界待定）
 
 ### p.9 档（其余全部）
 
@@ -80,42 +116,66 @@ All 2026.2 development happens on branch p.7.
 >
 > EN: Tier p.9 — the rest: libraries, toolchain, UI, ecosystem, platforms. All within 2026.2.
 
-**内置库补全 + 编译体验**
+**内置库补全 + 编译体验（p.9.1）**
 
-- [ ] 更多内置库（一库一子项，清单与优先级在库补全设计中定；候选含多媒体编解码 WebP/AVIF/音频/视频）
-- [ ] 编译资源可调（内存/并发/优化档位可配置，利好老电脑）+ 编译速度提升（增量/并行/缓存）
+- [ ] p.9.1.1 更多内置库（一库一子项，清单与优先级在库补全设计中定；候选含多媒体编解码 WebP/AVIF/音频/视频）
+- [ ] p.9.1.2 编译资源可调：内存上限 / 并发度 / 优化档位可配置（利好老电脑）
+- [ ] p.9.1.3 编译速度提升：增量编译 / 并行编译 / 编译缓存
 
-**工具链**
+**工具链（p.9.2）**
 
-- [ ] tie 命令行（基于 tink 管道编排器，形态 A tink pipe）+ 包管理器正式落地（s3.2 转正）
-- [ ] DAP 调试器（断点/单步/变量/调用栈 + VS Code 客户端）/ 剖析器 profiler（CPU/内存 + 火焰图）/ 脚手架 tie new / 崩溃诊断（backtrace + 符号化）
+- [ ] p.9.2.1 tie 命令行：基于 tink 管道编排器（形态 A tink pipe）
+- [ ] p.9.2.2 包管理器正式落地（s3.2-package 转正）：依赖解析 / 版本约束 / 上传拉取
+- [ ] p.9.2.3 DAP 调试器：断点 / 单步 / 变量 / 调用栈 + VS Code 客户端
+- [ ] p.9.2.4 剖析器 profiler：CPU / 内存剖析 + 火焰图
+- [ ] p.9.2.5 脚手架 tie new：项目模板 + 初始化
+- [ ] p.9.2.6 崩溃诊断：backtrace + 符号化 + 崩溃日志（配合诊断标号体系）
 
-**tiu UI 框架**
+**tiu UI 框架（p.9.3）**
 
-- [ ] tiu 独立自研框架落地：高性能、跨平台、不依赖 trm（可与 trm 同用）；窗口/绘制/事件基础 + 组件树/布局组合式框架
+> 定位（2026-09-11 定）：独立自研、高性能、跨平台、**不依赖 trm**；可与 trm 同用。
+>
+> EN: tiu (2026-09-11): independent in-house UI framework — high-performance,
+> cross-platform, NOT depending on trm; usable alone or with trm.
 
-**trm-lite 协程**
+- [ ] p.9.3.1 tiu 运行时底座：窗口/绘制/事件/资源管理（独立于 trm）
+- [ ] p.9.3.2 组件树与组合式布局框架
+- [ ] p.9.3.3 release.md 修订：tieui/trm.ui 关系对齐 tiu 独立定位
 
-- [ ] 生成器式协程（`yield 值` + 惰性迭代/流）+ 与既有调度整合（可迁移/可窃取，复用 P-段双端队列）
+**trm-lite 协程（p.9.4）**
 
-**生态应用**
+> 定位（2026-09-11 定）：部分协程加入 trm-lite（生成器式）；trm 不保留协程。
+>
+> EN: (2026-09-11) partial coroutines join trm-lite (generator-style); trm keeps none.
 
-- [ ] tieDB 完整实现（列式持久化 + 向量检索 vecsearch，zd 底座）/ 去中心化网络（DHT + 打洞 + 志愿 relay）/ 嵌入式脚本（宿主嵌入 tie）
+- [ ] p.9.4.1 生成器式协程：`yield 值` 产出 + 惰性迭代/流（惰性序列、管道、无限流）
+- [ ] p.9.4.2 与既有调度整合：生成器任务可迁移/可窃取，复用 P-段双端队列（p.6.5/p.6.7 底座）
 
-**平台**
+**生态应用（p.9.5）**
 
-- [ ] macOS 平台移植 / WASM 目标后端 / GPU·X11·SkParagraph 图形收尾 / PQC 后量子 / hw-accel 硬件加速
+- [ ] p.9.5.1 tieDB 完整实现：列式持久化 + 向量检索 vecsearch（zd 底座，Shipyard 四件套之一）
+- [ ] p.9.5.2 去中心化网络：DHT + 打洞直连 + 志愿 relay（网络去中心化总原则，tink v2 语义层）
+- [ ] p.9.5.3 嵌入式脚本：宿主程序/游戏嵌入 tie（对接 Subterra 类项目）
+- [ ] p.9.5.4 在线 Playground：网页写 tie 即时跑（WASM 后端落地后延伸，双语推广）
 
-**安装器（最后做）**
+**平台（p.9.6）**
 
-- [ ] tiwi 安装器（FLTK GUI + 自解压 setup，六边形架构）——2026.2 收尾点，最后落地
+- [ ] p.9.6.1 macOS 平台移植（Linux 已在 r.1.6 闭环，补齐三大桌面平台）
+- [ ] p.9.6.2 WASM 目标后端：tie 代码编译到 wasm，浏览器/嵌入式可跑
+- [ ] p.9.6.3 GPU / X11 / SkParagraph 图形收尾（p.6.8 后置项）
+- [ ] p.9.6.4 PQC 后量子密码（docs/plans/pqc-roadmap.md 已有规划）
+- [ ] p.9.6.5 hw-accel 硬件加速（docs/plans/hw-accel.md 已有规划）
+
+**安装器（p.9.7，最后做）**
+
+- [ ] p.9.7.1 tiwi 安装器：FLTK GUI + 自解压 setup，六边形架构（2026.2 收尾点，最后落地）
 
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
-> - docs/designs/trm-final-design.md（对齐 trm 重定位：无语言层多线程/无表内存 GC、引擎级 GC 保留、协程移交 trm-lite）
-> - docs/release.md（tiu 独立定位、多仓拆分与聚合发行、发行物出仓）
-> - docs/superpowers/specs/2026-08-29-plugin-kernel-design.md（落地编号对齐 p.7.x.y）
+> - docs/designs/trm-final-design.md（对齐 p.7.3 trm 重定位）
+> - docs/release.md（对齐 p.7.2 多仓拆分与聚合发行、p.9.3 tiu 独立定位、发行物出仓）
+> - docs/superpowers/specs/2026-08-29-plugin-kernel-design.md（落地编号对齐本 ROAD p.7.1.x）
 
 EN: Existing finalized docs to be aligned during 2026.2 (revised in place, no separate
 tier): trm-final-design.md, release.md, plugin-kernel-design.md.
