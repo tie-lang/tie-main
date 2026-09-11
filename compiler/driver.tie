@@ -73,6 +73,9 @@ var g_backend_cli: string = "";   // --backend <b> 指定（空 = 配置 tiec.ba
 // S3.2：tieir 分发（--tieir-out <f> 编译后序列化 .tieir；--dump-irt <f> 只读 dump）
 var g_tieir_out: string = "";     // --tieir-out 指定（空 = 不输出 .tieir）
 var g_dump_irt: string = "";      // --dump-irt <f> 指定（空 = 不 dump）
+// p.7.3.3：trm 目标（路线 B 可插拔后端）——--target=trm / --backend trm
+var g_trm_mode: bool = false;     // 已请求 trm 字节码目标（默认关闭，不捆绑）
+var g_trm_pipeline: i64 = 0;      // trm 管线注册项 id（keel_driver_boot 填充）
 
 // ==================== 参数解析 ====================
 
@@ -89,7 +92,7 @@ func usage() -> i64 {
     println("  --prep-only      只做头部识别并打印结果")
     println("  --config <f>     构建配置文件（默认查当前目录 config.data.tie）")
     println("  --profile <p>    构建 profile（dev/release，覆盖配置顶层 profile 键）")
-    println("  --backend <b>    后端实现选择（win32；其他 port 尚未接入）")
+    println("  --backend <b>    后端实现选择（win32；trm 为路线 B 字节码目标，可插拔；其他 port 未接入）")
     println("  --tieir-out <f>  编译后序列化 tieir 分发单元（S3.2；.tieir 二进制）")
     println("  --dump-irt <f>   只读 .tieir 并输出可读摘要（S3.2；不编译）")
     println("  --help           显示本帮助")
@@ -141,6 +144,9 @@ func parse_args() -> i64 {
                 return -1
             }
             g_target = arg_string(i + 1)
+            if g_target == "trm" {
+                g_trm_mode = true
+            }
             i = i + 1
         } else if a == "--config" {
             if i + 1 >= n {
@@ -159,6 +165,9 @@ func parse_args() -> i64 {
                 return -1
             }
             g_backend_cli = arg_string(i + 1)
+            if g_backend_cli == "trm" {
+                g_trm_mode = true
+            }
             i = i + 1
         } else if a == "--tieir-out" {
             if i + 1 >= n {
@@ -1249,8 +1258,8 @@ func main() -> i64 {
     if str_len(backend) == 0 {
         backend = config.get_str(g_cfg_root, "tiec.backend")
     }
-    if str_len(backend) > 0 && backend != "win32" {
-        println(diagcode.render_error(-1, -1, "后端实现未接入: tiec.backend=" + backend + "（win32/LLVM 工具链为当前唯一后端）"))
+    if str_len(backend) > 0 && backend != "win32" && backend != "trm" {
+        println(diagcode.render_error(-1, -1, "后端实现未接入: tiec.backend=" + backend + "（win32/LLVM 工具链为当前默认；trm 为路线 B 字节码目标）"))
         return 1
     }
     return compile_program(clean)
@@ -1284,6 +1293,11 @@ func kpass_front() -> i64 {
 // 段 2 中端：AST → tie-IR（tig_ast 复用 frontend 产物）。含 asm! 目标注入。
 func kpass_irgen() -> i64 {
     var asm_target = normalize_target(g_target)
+    if asm_target == "trm" {
+        // p.7.3.3 路线 B：trm 字节码目标不带 CPU 三元组——IR 生成用本机默认
+        // （字节码产物与平台无关）
+        asm_target = ""
+    }
     if str_len(asm_target) == 0 && g_cfg_root >= 0 {
         var cfg_target = config.get_str(g_cfg_root, "target")
         if str_len(cfg_target) > 0 {
@@ -1322,6 +1336,25 @@ func kpass_tieir() -> i64 {
         }
         println("已生成 tieir: " + g_tieir_out)
     }
+    return 0
+}
+
+// 段 3b（p.7.3.3 路线 B）：trm 字节码目标——写出 .tieir 分发单元并终止
+// （不 llvm emit/link；可插拔后端，默认不启用）。输出路径优先级：
+// --tieir-out > -o > 输入同名 .tieir。
+func kpass_trmemit() -> i64 {
+    var out = g_tieir_out
+    if str_len(out) == 0 {
+        out = g_output
+    }
+    if str_len(out) == 0 {
+        out = replace_ext(g_input, "tieir")
+    }
+    if !tieir.write(out) {
+        println(diagcode.render_error(-1, -1, "trm 目标后端失败: " + tieir.err_msg()))
+        return 1
+    }
+    println("trm 目标产物: " + out + "（tieir 字节码，供 trm 引擎加载执行）")
     return 0
 }
 
@@ -1437,6 +1470,16 @@ func keel_driver_boot() -> i64 {
     var ltd: table<i64> = table_new_i64()
     table_push(ltd, pe)
     var pl = keelreg.register("tiec::pass_link_real", "pass", "kpass_link", ltd)
+    // p.7.3.3 路线 B：trm 字节码目标可插拔后端（pass_trmemit + pipeline_trm；
+    // 默认不启用——pipeline_real 全程不动，默认编译链路逐字节不变）
+    var ptd: table<i64> = table_new_i64()
+    table_push(ptd, pi)
+    var ptm = keelreg.register("tiec::pass_trmemit_real", "pass", "kpass_trmemit", ptd)
+    var trmd: table<i64> = table_new_i64()
+    table_push(trmd, pf)
+    table_push(trmd, pi)
+    table_push(trmd, ptm)
+    g_trm_pipeline = keelreg.register("tiec::pipeline_trm", "pipeline", "", trmd)
     var pdd: table<i64> = table_new_i64()
     table_push(pdd, pf)
     table_push(pdd, pi)
@@ -1459,6 +1502,8 @@ func keel_dispatch(nm: string) -> i64 {
         sel = 3
     } else if nm == "kpass_link" {
         sel = 4
+    } else if nm == "kpass_trmemit" {
+        sel = 5
     }
     switch sel {
         case 0:
@@ -1471,6 +1516,8 @@ func keel_dispatch(nm: string) -> i64 {
             return kpass_emit()
         case 4:
             return kpass_link()
+        case 5:
+            return kpass_trmemit()
         default:
             return -1
     }
@@ -1508,6 +1555,12 @@ func compile_program(src: string) -> i64 {
     // 幂等：重复调用不重复登记（register 重名返回原 id）。
     keelboot.boot()
     var real_pid = keel_driver_boot()
+    // p.7.3.3 路线 B：--target=trm / --backend trm → 跑 trm 字节码管线
+    // （front→irgen→trmemit，3 步）。默认管线 pipeline_real 不动——
+    // 默认编译链路（原生路线 A）逐字节不变。
+    if g_trm_mode {
+        return keel_run_pipeline(g_trm_pipeline, 3)
+    }
     // --emit-ir：只跑 front→irgen→tieir→emit 前缀（emit 内成功停），跳过
     // opt/link；否则全 5 段。keel 骨架按注册表引用前缀驱动。
     var steps: i64 = 5
