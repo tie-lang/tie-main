@@ -6,6 +6,10 @@
 > （p.9.4 生成器式协程）；**trm 不再提供语言对象/表内存 GC**（归 trm-lite 引用计数）——
 > **引擎级 GC（tieir 运行时 Object/Value 生命期）保留**；语言层多线程归 trm-lite。
 > 本文档第 §5 节 M:N 协程与第 §10 节里程碑一并按 p.7.3.x 修订。
+> 发行模型（2026-09-11 定）：trm 为 2026.2 **独立组件仓 `tie-lang/trm`**，
+> 组件独立发行（release.md §3.3/§3.4/§3.5）：发行物出仓（zip 不进 git）、经
+> GitHub / GitCode Release 附件分发、artifact 命名遵循组件约定
+> `tie-trm-<版本>-<平台>-<arch>.zip`（如 `tie-trm-2026.2-win-x64.zip`）。
 > 本文档是 trm 的**唯一权威运行时设计**，取代 [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) 作为执行依据。
 > 定位：**双层 + 非对称**——纯编译路线 A（保留现状，零依赖）+ trm 运行时路线 B
 > （tieir 字节码 + interp 前端 + 可替换后端 + 引擎级 GC + 全 tie 平台实现）。
@@ -13,15 +17,26 @@
 > 老鸟可用 unsafe 显式接入运行时。
 > 决策依据：[trm-design-compare.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-design-compare.md)（方案对比，此处为定稿）。
 > 关联：`docs/designs/concurrency-model.md`（actor 原生语法零运行时）、
-> 2026.1 期规划文档（已随版本归档/演进实现）（M5 平台桥，本文档扩展其边界）、
+> 2026.1 期规划文档（已随版本归档/演进实现）（平台桥，本文档扩展其边界）、
 > [tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md)（tieir 字节码契据）、2026.1 期规划文档（已随版本归档/演进实现）。
 
 > EN: Status: **Design finalized** (2026-08-22 discussion alignment, 2026-08-23 finalization)
 > EN: This document is trm's **sole authoritative runtime design**, superseding [trm-arch.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-arch.md) as the basis for implementation.
+> REVISION (2026-09-11, aligned for 2026.2 p.7.3): **M:N coroutines / async scheduling /
+> migratable stacks move to trm-lite** (p.9.4 generator-style coroutines); **trm no longer
+> provides language object/table-memory GC** (moved to trm-lite reference counting) —
+> **engine-level GC (lifetimes of tieir runtime Object/Value) is kept**; language-level
+> multithreading moves to trm-lite. §5 (M:N coroutines) and the §10 milestones are
+> revised as p.7.3.x accordingly.
+> RELEASE MODEL (2026-09-11): trm is an **independent 2026.2 component repo
+> `tie-lang/trm`**, released independently (release.md §3.3/§3.4/§3.5): artifacts leave
+> the git tree (no zips in git), distributed as GitHub/GitCode Release assets, with the
+> component artifact naming `tie-trm-<version>-<platform>-<arch>.zip`
+> (e.g. `tie-trm-2026.2-win-x64.zip`).
 > EN: Positioning: **two-tier + asymmetric** — pure-compilation Route A (preserve the status quo, zero dependencies) + trm runtime Route B (tieir bytecode + interp front-end + replaceable backend + engine-level GC + all-tie platform implementation).
 > EN: Philosophy: **pure compilation is the safe default (actor / pure logic); the runtime is an capability enhancement (GC/reflection/hot reload/dynamic; M:N coroutines via trm-lite)**, and veterans can explicitly hook into the runtime with unsafe.
 > EN: Decision basis: [trm-design-compare.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/trm-design-compare.md) (option comparison; this is the finalization).
-> EN: Related: `docs/designs/concurrency-model.md` (native actor syntax with zero runtime), 2026.1 期规划文档（已随版本归档/演进实现） (M5 platform bridge, whose boundary this document extends), [tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md) (the tieir bytecode contract), 2026.1 期规划文档（已随版本归档/演进实现）.
+> EN: Related: `docs/designs/concurrency-model.md` (native actor syntax with zero runtime), 2026.1 期规划文档（已随版本归档/演进实现） (platform bridge, whose boundary this document extends), [tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md) (the tieir bytecode contract), 2026.1 期规划文档（已随版本归档/演进实现）.
 
 ## 1. 一句话总览
 *EN: 1. One-Line Overview*
@@ -250,9 +265,9 @@ impl-android/ Android（NDK：Surface/Canvas、沙盒存储）
 
 EN: `trm_platform.dll / .so / .dylib / libtrm.so` (Android) — the primary dynamic-library form.
 
-**跨库边界允许的类型（扩展 M5，见 §9 改动说明）：**
+**跨库边界允许的类型（扩展平台桥边界，见 §9 改动说明）：**
 
-EN: **Types allowed across the library boundary (extending M5; see the change notes in §9):**
+EN: **Types allowed across the library boundary (extending the platform-bridge boundary; see the change notes in §9):**
 
 | 类型 | 备注 |
 | --- | --- |
@@ -316,6 +331,35 @@ EN: `tie.pkg` declares `version / min_tiec / abi`; at compile time (when importi
 
 > EN: Consistency is guaranteed by the **interp baseline + a contract matrix**, not by relying on "each end's JIT behaving identically" — this is a first-class design decision: JIT is merely an accelerator for interp semantics, and the contract tests are the same set, greatly reducing cross-platform risk.
 
+### 7.5 发行形态（2026.2 独立组件仓 tie-lang/trm）
+*EN: 7.5 Release Form (2026.2 independent component repo tie-lang/trm)*
+
+2026.2 仓库分离后，trm 为独立组件仓 **`tie-lang/trm`**（组件清单见
+`docs/release.md` §3.4），独立演进与发行（§3.5）：
+
+* 发行物出仓：zip 等产物不进 git，经 GitHub / GitCode Release 附件分发；
+* artifact 命名遵循组件统一约定（release.md §3.5）：
+  `tie-trm-<版本>-<平台>-<arch>.zip`，如 `tie-trm-2026.2-win-x64.zip`
+  （平台/arch 位：win-x64 / linux-x64 / macos-x64 / win-arm64 等）；
+* 组件预览段：`tie-trm-<版本>-preview.N`（如 `tie-trm-2026.2-preview.1`）；
+* 与主仓聚合发行衔接：tie-main 聚合 2026.2 整套工具链时，发行快照版本校验
+  （scripts/tie-versions.data.tie + agg-check.tie）确保 trm 版本与编译器互恰。
+
+EN: After the 2026.2 repo split, trm becomes the independent component repo
+**`tie-lang/trm`** (component inventory at `docs/release.md` §3.4), evolving and
+releasing independently (§3.5):
+
+* artifacts leave the git tree — no zips in git, distributed as GitHub/GitCode
+  Release assets;
+* artifact naming follows the component convention (release.md §3.5):
+  `tie-trm-<version>-<platform>-<arch>.zip`, e.g. `tie-trm-2026.2-win-x64.zip`
+  (platform/arch bits: win-x64 / linux-x64 / macos-x64 / win-arm64, etc.);
+* preview segments: `tie-trm-<version>-preview.N` (e.g. `tie-trm-2026.2-preview.1`);
+* cohesion with the main-repo aggregate release: when tie-main aggregates the full
+  2026.2 toolchain, the snapshot version check
+  (scripts/tie-versions.data.tie + agg-check.tie) validates that the trm version
+  is mutually compatible with the compiler.
+
 ---
 
 ## 8. 双路线与 actor 衔接（决策：unsafe 可选接 trm）
@@ -344,11 +388,11 @@ EN: `tie.pkg` declares `version / min_tiec / abi`; at compile time (when importi
 | 原有文档 | 本定稿的改动 |
 | --- | --- |
 | trm-arch.md | 整体重定向：JIT 从"唯一执行"降为**可替换后端之一**；GC 提升为**引擎级独立层**；跨平台一致从"依赖每端 JIT"改为"interp 基准 + 契约矩阵" |
-| dynamic-library.md（M5） | **扩展边界**：从"仅标量+string"扩展为"标量 + string + repr(C) pod struct + 带指针 struct + slice"（含 unsafe/所有权约束）——需更新 regress-m5-dynlib 边界负例为正例 |
+| dynamic-library.md（平台桥） | **扩展边界**：从"仅标量+string"扩展为"标量 + string + repr(C) pod struct + 带指针 struct + slice"（含 unsafe/所有权约束）——需更新 regress-m5-dynlib 边界负例为正例 |
 | concurrency-model.md §6 | "actor 完全解耦"收窄为"默认解耦，unsafe 可选接入路线 B" |
 
 > EN: trm-arch.md: overall redirection — JIT downgraded from "the only execution" to **one of the replaceable backends**; GC promoted to an **engine-level independent layer**; cross-platform consistency changed from "relying on each end's JIT" to "interp baseline + contract matrix".
-> EN: dynamic-library.md (M5): **boundary extended** — from "scalars + string only" to "scalars + string + repr(C) pod struct + pointer-carrying struct + slice" (including unsafe/ownership constraints) — the regress-m5-dynlib boundary case needs updating from negative to positive.
+> EN: dynamic-library.md (platform bridge): **boundary extended** — from "scalars + string only" to "scalars + string + repr(C) pod struct + pointer-carrying struct + slice" (including unsafe/ownership constraints) — the regress-m5-dynlib boundary case needs updating from negative to positive.
 > EN: concurrency-model.md §6: "actor completely decoupled" is narrowed to "decoupled by default, optionally hooked into Route B via unsafe".
 
 ---
@@ -436,5 +480,5 @@ EN: 6. **Whether to retire trm-arch.md**: this finalization is authoritative; wh
 - EN: tieir bytecode: [tieir-format.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/tieir-format.md)
 - unsafe 凭据门禁：2026.1 期规划文档（已随版本归档/演进实现）
 - EN: unsafe credential gates: 2026.1 期规划文档（已随版本归档/演进实现）
-- 实施路线图：[roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md)（S4.1 trm）
-- EN: Implementation roadmap: [roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md) (S4.1 trm)
+- 实施路线图：[roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md)（trm 实施方案）
+- EN: Implementation roadmap: [roadmap.md](https://github.com/tie-lang/old_docs/blob/main/2026.1/docs/plans/roadmap.md) (trm implementation roadmap)
