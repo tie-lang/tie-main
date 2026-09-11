@@ -4,7 +4,7 @@
 **日期** / Date: 2026-09-12 · **类型** / Type: 生态规范（跨领域；统一格式谱系与 API 契约）
 **依据** / Basis: 用户梳理（2026-09-12 定）：tie 生态 API 家族——tieapi（库）· td（人类可读，语法属 tie）· zd（人类不可读）…… · tieapi = **统一 API 规范层**（2026-09-12 定）
 **关联** / Related: zd v2 规范（已定稿）· tink 帧协议 · tieir 格式 · 各组件资产格式 · tedit 模组协议 · ROAD p.9.x 各组件
-**版本** / Version: v0.1（初稿）
+**版本** / Version: v0.2（2026-09-12 增补对外互操作：语言无关三件套 + 四通道）· v0.1 谱系与契约
 
 > EXEC BRIEF: Defines the unified format & API family of the tie ecosystem —
 > one coherent lineage instead of per-component formats. **tieapi** is the
@@ -59,14 +59,42 @@
 3. **专项格式不外造**：帧/IR/资产/协议一律以 td/zd 为底座，不发明独立格式
 4. **可读优先**：开发态 td（可 diff/审阅），运行态 zd（性能/内存）——人类与机器各得其所
 
-## 3. 边界 / Boundary
+## 3. 对外互操作 / Foreign-language Interop（2026-09-12 定）
+
+> 问题：其他语言（Python/R/C++/C#/JS/Rust/Go/Java…）怎么使用 tie 生态？——**语言无关边界三件套 + 四通道**。
+
+### 3.1 语言无关边界三件套 / Language-agnostic Trio
+* **zd 数据**：语言无关的二进制序列化格式（任何语言可独立实现 zd 编解码）
+* **tink ABI**：模块.函数（字节进 → 字节出），组件以 zd 帧提供服务（长度前缀 + CRC + tsha1f 强校验）
+* **tieapi 契约**：值语义 + 诊断码（统一 API 规范，§1.1）——各语言绑定库按其习惯适配
+
+### 3.2 对外四通道 / Four Interop Channels
+| 通道 | 形态 | 适用 |
+|---|---|---|
+| **tink 多语言库**（tink-xxx，已存在 20+ 语言） | 函数级调用 tie 组件（zd 帧协议） | 深度集成 · 高频调用 |
+| **CLI / tink pipe** | 子进程调用 tie 命令行（tiec/tie 等）· 管道编排 | 任意语言零依赖接入 |
+| **WASM 模块**（p.9.6.2 规划） | tie 编译 wasm，宿主/浏览器加载调用 | 跨语言最强通用面 · 浏览器 |
+| **trm 嵌入**（p.9.5.3 规划） | C ABI 嵌入宿主程序（脚本化） | 宿主集成 · 嵌入式 |
+
+* **tink-xxx 绑定库** = tieapi 契约在目标语言的适配层（Python 用 dict/list、C 用结构体、Rust 用类型安全 API……）
+
+### 3.3 反向：tie 使用外部库 / Reverse Direction
+* **unsafe FFI**（C ABI）：tie 调用外部 C 库（已实现，unsafe 门禁）
+* **tink 对称调用**：tie 组件调用其他语言实现的 tink 服务（模块.函数，对称双向）
+
+### 3.4 原则 / Principles
+* **数据中立**：跨语言只交换 zd（不传对象/指针）
+* **契约中立**：tieapi 是语言无关 API，绑定库只是适配层
+* **通道自选**：集成深度 vs 接入成本由开发者选（函数级 → 子进程 → WASM → 嵌入）
+
+## 4. 边界 / Boundary
 
 * 本规范约束**跨组件接口与数据形态**；各组件内部实现不受限
 * 不替代 zd v2 规范（二进制细节）与 tieir 规范（IR 细节）——本规范是**谱系与契约层**
 
-## 4. 未讨论项（不落为结论） / Not Yet Concluded
+## 5. 未讨论项（不落为结论） / Not Yet Concluded
 
-* tieapi 规范的具体**接口形态**（错误类型/结果类型/td-zd 助手的标准签名）· 诊断码在 API 层的统一编号段分配 · 组件资产的 td 语法模板（各组件资产 td 示例）——**均未推演**，推演完成后在本文档补章
+* tieapi 规范的具体**接口形态**（错误类型/结果类型/td-zd 助手的标准签名）· 诊断码在 API 层的统一编号段分配 · 组件资产的 td 语法模板（各组件资产 td 示例）· **tink-xxx 绑定库的生成策略**（手写 vs 从 tieapi 定义生成，对齐 Keel 表驱动思路）· trm 嵌入的 C ABI 细节——**均未推演**，推演完成后在本文档补章
 
 ---
 
