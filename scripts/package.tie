@@ -251,7 +251,7 @@ func s3_libs(root: string, dist: string) -> i64 {
                 prune_artifacts(dist + "\\src\\" + l)
             } else {
                 prune_artifacts(dist + "\\src\\ext")
-                prune_skia(dist + "\\src\\ext\\gfx\\skia")
+                var sr = prune_skia(root, dist)
                 prune_artifacts(dist + "\\src\\ext\\gfx\\demo")
             }
             println("  src/" + l + "/ ok")
@@ -288,15 +288,49 @@ func prune_artifacts(dir: string) {
     var _r = exec_code("for /d /r " + shell_q(dir) + " %d in (out .tools target obj Debug Release build dist .gradle .cargo .zig-cache TestResults) do @rd /s /q \"%d\" >nul 2>&1")
 }
 
-// ext/gfx/skia 特例清理：skia.lib 静态库是编译链接所需交付物（保留 ext/gfx/lib/skia.lib 连同
-// modules.txt），但 Skia 源码树内的本地产物（out/ 构建树、.tools/gn.exe、smoke 冒烟 exe、
-// 外部源码 externals/ 等）不入源码包——README 明示这些不入库。
-func prune_skia(dir: string) {
-    var _r = exec_code("if exist " + shell_q(dir + "\\out") + " rd /s /q " + shell_q(dir + "\\out"))
-    var _r = exec_code("if exist " + shell_q(dir + "\\.tools") + " rd /s /q " + shell_q(dir + "\\.tools"))
-    var _r = exec_code("if exist " + shell_q(dir + "\\smoke") + " rd /s /q " + shell_q(dir + "\\smoke"))
-    var _r = exec_code("if exist " + shell_q(dir + "\\externals") + " rd /s /q " + shell_q(dir + "\\externals"))
-    var _r = exec_code("if exist " + shell_q(dir + "\\bin") + " rd /s /q " + shell_q(dir + "\\bin"))
+// ext/gfx/skia 特例清理：Skia 源码树是**构建期按需 fetch 的第三方源码**（manifest.txt
+// source_url tarball 固定提交；README 纪律「第三方源码与二进制不入库」），git 仅跟踪
+// 9 个构建驱动/绑定文件（build.tie/manifest/modlist.tie/smoke/thunk*）。源码包只保留
+// 这 9 个 tracked 文件（可离线重编译入口），Skia 树本体（src/include/out/third_party/
+// site/tests/... 全部）不入包。ak .lib 静态库另有 lib/skia.lib 随包。
+// 实现：删除 skia 目录中除白名单外的全部内容——先删目录，再从 git-tracked 源重建
+// 9 文件（复制自仓内当前工作树，路径即 tracked 清单）。
+func prune_skia(root: string, dist: string) -> i64 {
+    var skia = dist + "\\src\\ext\\gfx\\skia"
+    if !fs_exists(skia) {
+        return 0
+    }
+    // 1) 整体删除 Skia 树（含 out/ 构建产物、.tools、第三方源码等全部）
+    var _r = fs_remove_all(skia)
+    var _r = fs_create_dir_all(skia)
+    // 2) 复制 git-tracked 的 9 个构建驱动/绑定文件
+    var files = ["build.tie", "manifest.txt", "modlist.tie",
+        "smoke\\smoke.cpp",
+        "thunk\\build_p687.tie", "thunk\\build_thunk.tie", "thunk\\gen_thunk.tie", "thunk\\thunk.cpp", "thunk\\thunk.h"]
+    var k: i64 = 0
+    while k < 9 {
+        var rel = files[k]
+        var src = root + "\\ext\\gfx\\skia\\" + rel
+        var dst = skia + "\\" + rel
+        if fs_exists(src) {
+            var dir = dst
+            // 目标子目录（thunk/ 等）先行创建
+            var slash: i64 = -1
+            var i2: i64 = 0
+            while i2 < str_len(dst) {
+                if str_char(dst, i2) == "\\" {
+                    slash = i2
+                }
+                i2 = i2 + 1
+            }
+            if slash >= 0 {
+                var _r = fs_create_dir_all(sub_str(dst, 0, slash))
+            }
+            var _r = fs_copy(src, dst)
+        }
+        k = k + 1
+    }
+    return 0
 }
 
 func step3_assemble(root: string, version: string, dist: string) -> i64 {
