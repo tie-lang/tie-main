@@ -1,0 +1,14 @@
+// 聚合发行版本约束（td）—— p.7.2.3 主仓聚合发行
+// 组件 = 版本约束；聚合发行前按各组件实测版本更新。
+// 校验：scripts/agg-check.tie（scripts/tie-versions.data.tie 为本清单）
+type tie<data>
+[
+    "compiler": "0.4.0",
+    "tink": "0.3.1",
+    "tsp": "0.2.0",
+    "trm": "0.1.0",
+    "tiu": "0.1.0",
+    "tiedb": "0.1.0",
+    "tiwi": "0.1.0",
+    "pkg": "0.2.0",
+]

@@ -282,6 +282,81 @@ Harbor M0 里程碑 = 2026.1 正式发行版基础；Shipyard = 2026.2 完整形
 
 EN: The Harbor M0 milestone = the 2026.1 official-release foundation; Shipyard = the 2026.2 full form (Keel architecture + trm/UI/tiedb/tiwi).
 
+### 4.5 主仓聚合发行（2026.2）
+*EN: Aggregated release of the whole toolchain (2026.2)*
+
+主仓 as 聚合/发行仓，发行「整套工具链聚合发行包」：
+
+- **版本集编排**：`scripts/tie-versions.data.tie`（td 数据表，组件=版本约束，
+  `compiler="1.2.3", tink="0.9.1", ...`）；聚合发行前按各组件实测版本更新。
+- **聚合校验**：`scripts/agg-check.tie`（tie 语言自写，0-PowerShell）——
+  校验各组件版本满足约束（td 清单逐项）、产物齐全（`dist/tie-{组件}-{版本}-win-x64.zip`）、
+  指纹一致（产物旁 `.fp` 清单 tsha1f 比对，复用 std/tsha1）；`--self-test`
+  内置自检断言「良性通过/篡改拦截/缺失检出」。
+- **聚合发行目录布局**（`dist/tie-2026.2/`）：
+
+```
+dist/tie-2026.2/         聚合发行根
+├── bin/                各组件可执行（tiec/repl/pkg/… + bin/llvm/ 捆绑精简 LLVM）
+├── docs/               当前版本文档
+├── examples/           示例源码
+├── src/                全部源码（compiler/std/ext/rdu/examples/skills/editor，p.7.2.4 收拢）
+├── README.md  NEW.md  CHANGELOG.md  LICENSE      包根发行文档 + 许可证
+└── registry/           包注册中心（p.7.2.5 接口预留；聚合编排元数据落位处）
+```
+
+- **身份约束**：聚合包内组件按 `tie-versions` 约束互恰；校验不通过不得出包。
+- **registry 对接**（p.7.2.5）：聚合发行元数据（组件=版本=指纹）可发布到 registry，
+  `tie pkg publish/info/versions` 供客户端查询——本 §4.5 只预留接口，落地见 §4.6。
+
+EN: The main repo ships a **full-toolchain aggregate release**: the version-set
+orchestration lives in `scripts/tie-versions.data.tie` (td table of
+component=version constraints); `scripts/agg-check.tie` (tie-written, 0-PowerShell)
+verifies every listed component version satisfies the constraint, its artifact
+`dist/tie-{component}-{version}-win-x64.zip` exists, and its fingerprint matches
+the paired `.fp` manifest (tsha1f); a `--self-test` mode asserts the
+benign/tamper/missing scenarios. The aggregate directory layout
+`dist/tie-2026.2/` = bin (binaries + bundled LLVM) / docs / examples / src
+(gathered sources, p.7.2.4) / package-root release docs / a `registry/` slot
+(pre-reserved for p.7.2.5 metadata publication).
+
+### 4.6 包注册中心 registry（2026.2，p.7.2.5 起步）
+*EN: Package registry (2026.2, p.7.2.5 bootstrap)*
+
+面向独立发行与聚合发行的存储端骨架（服务端不做，文件系统目录即最小存储端）：
+
+- **registry 包格式**：复用 zdpub/keelaud 既有产物——发布单元 = `.zd`（zd v2 压缩）
+  + `.zd.fp`（tsha1f 单文件指纹清单）+ 清单元数据（info.td，name/version/desc/
+  fingerprint 等）。
+- **客户端三操作**（新模块 `compiler/keel/keel_registry_cli.tie`，namespace
+  `keelpkg`）：`publish <name> <version> <src.td>`（压缩 .zd + 指纹 + 元数据 +
+  版本索引）、`info <name>`（查询元数据）、`versions <name>`（列出版本）。
+- **存储布局**（默认注册根 `./.tie-registry`，可经 `--registry` 覆盖）：
+
+```
+.tie-registry/
+└── <pkg>/
+    ├── index.td           版本索引（td 表：版本串列表）
+    └── <version>/
+        ├── pkg.zd         发布单元（zd v2）
+        ├── pkg.zd.fp      单文件指纹（tsha1f:<值>）
+        └── info.td        元数据（name/version/desc/fingerprint）
+```
+
+- **CLI 整合**：`tie pkg publish|info|versions` 经 keel_cli 注册表分派（p.7.1.6
+  机制），driver 侧 `keelcli_handle` 路由 pkg 子命令；真实三操作由 keelpkg 模块
+  提供（探针验证），服务端/协议其余部分随 p.9.2.2 包管理器正式落地。
+- **格式/协议文档**：存储在 `docs/designs/`（registry 条目，随 p.7.2.5 提交）。
+
+EN: The registry bootstrap (p.7.2.5) provides a storage skeleton for independent
+and aggregate releases: the package format reuses existing zdpub/keelaud
+artifacts (`.zd` + `.zd.fp` fingerprint + metadata manifest `info.td`); a
+minimal client (`compiler/keel/keel_registry_cli.tie`, namespace `keelpkg`)
+implements publish / info / versions over a filesystem-directory registry
+(root `.tie-registry` by default, overridable); `tie pkg publish|info|versions`
+dispatch through the keel_cli registry; the server side is out of scope this
+round (formalized with the package manager in p.9.2.2).
+
 ## 5. 发布流程
 *EN: Release Process*
 
