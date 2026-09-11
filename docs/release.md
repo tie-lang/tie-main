@@ -172,6 +172,67 @@ Release history. During the transition, tie-main still physically holds the
 component source directories while README/ROAD already reflect the target
 aggregation-repo positioning.
 
+### 3.5 组件独立发行（2026.2）
+*EN: Component-independent releases (2026.2)*
+
+组件仓独立演进与发布，遵循统一机制：
+
+**版本号策略**：组件与主仓共享双轨——开发号 `p.x.y.z` / `r.x.y.z`，正式号
+`年份.修订号`（如 `1.2.3` 组件内版本号 × `2026.2` 聚合版本号；组件内部维护
+自己的 semver 或年份.修订号，随组件的发布节奏独立推进）。组件可各自发
+preview：`tie-<component>-<版本>-preview.N` 标识预览段。
+
+**发行物出仓**：zip 等产物**不进 git**，经 GitHub / GitCode Release 附件分发；
+仓库内只保留打包入口（脚本）与产物清单（指纹）。
+
+**artifact 命名约定**：
+
+```
+tie-<component>-<version>-<platform>-<arch>.zip
+    组件名      版本        win-x64 等
+```
+
+**组件发行清单模板**（每组件仓一份，随组件 Release 附上；release-notes 双语，
+无内部回归内容、无内部版本号）：
+
+```markdown
+# tie-<component> <version>  发行说明 / Release Notes
+
+## 本版变化 / Changes
+* 列出新增（EN 对应描述 / Feature + EN line）
+* 修复 / Fixes
+
+## 安装 / Install
+* 解压 zip 并将 bin/ 加入 PATH；TIE_LLVM_HOME 指向捆绑 LLVM（如需要）
+
+## 校验 / Verify
+* 解压后运行 bin/ 下组件可执行并检查版本输出
+* 指纹清单 .zd.fp（如分发 zd 数据）用 tiepkg/keelaud 校验
+```
+
+**打包脚本约定**（scripts/package.tie 单组件打包评估，2026-09-11 结论）：
+主仓 `scripts/package.tie` 为**整套工具链聚合打包器**（自举验证 + 全组件组装 +
+zip，p.7.2.4 起增设 `src/` 收拢与 `-src.zip`）。为其增加「单组件打包」子模式
+成本评估：打包器目前以**仓库整树路径**为源（compiler/repl/pkg/std/ext/rdu 等
+按固定根路径复制）；组件分离后各组件源码位于**独立仓**，聚合打包器需改为
+「按 `tie-versions` 约束拉取各组件产物 + 校验指纹」的聚合流程（p.7.2.3），
+单组件打包职责转交**组件仓自身**打包入口（组件仓维护自己的 package 脚本 /
+CI 步骤，产物命名遵循上表）。据此，`scripts/package.tie` 本轮**不新增单组件
+模式**——组件打包约定按本文档施行，聚合改造随 p.7.2.3 落地。
+
+EN: Component repositories evolve and release independently under one scheme:
+**versioning** follows the dual track (dev numbers p.x.y.z / r.x.y.z; official
+year.revision) — components may ship their own previews
+(`tie-<component>-<version>-preview.N`); **artifacts leave the git tree** and
+are distributed as release assets; **artifact naming**
+`tie-<component>-<version>-<platform>-<arch>.zip`; a release-notes template and
+verify steps are shipped with each component release. On the packager: the
+repo-level `scripts/package.tie` stays the **full-toolchain aggregate packager**
+(no single-component mode this round) — after the repo split, single-component
+packaging moves into each component repo's own build/release entry, and the
+aggregate packager is reworked along p.7.2.3 to consume per-component artifacts
+plus fingerprints instead of repo tree paths.
+
 ## 4. 工程改造点
 *EN: Engineering Modifications*
 
@@ -246,6 +307,7 @@ EN: 1. Infer the version number (year.revision, confirm with the user); 2. updat
 - 目标平台：**仅 win-x64**（本机可验证；跨平台后续版本）
 - LLVM：**捆绑精简工具链**（bin/llvm/，无需用户另装）
 - 打包器：**tie 语言自写**（scripts/package.tie，0-PowerShell）
+- 组件发行（2026.2）：组件仓独立打包/发布，artifact 命名 `tie-<component>-<version>-<platform>-<arch>.zip`，发行物出仓、进 Release 附件
 - 仓库组织：**多仓拆分**——tie-main 聚合/发行仓（发行物 + 当前版本文档），其余组件独立仓
 - 发行物：**出仓**——zip 经 GitHub / GitCode Release 附件分发，不进 git 跟踪
 - 源码包（2026.2）：发行目录设 `src/` 收拢全部源码，另出只含 `src/` 的 `tie-{版本}-src.zip`
