@@ -1,7 +1,0 @@
-struct Point {
-    var x: i64 = 0
-}
-enum Foo {
-    A(Point)
-}
-func main() {}

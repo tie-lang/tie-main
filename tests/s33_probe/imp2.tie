@@ -1,3 +1,0 @@
-type tie<class>
-import "./../../std/string.tie"
-

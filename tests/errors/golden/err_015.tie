@@ -1,5 +1,0 @@
-
-            func main() {
-                var x: i64 = "hello"
-            }
-            

@@ -1,2 +1,0 @@
-const g: table<i64>;
-func main() {}

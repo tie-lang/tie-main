@@ -1,4 +1,0 @@
-// 依赖包定制角色（.tie/deps/<pkg>/roles.data.tie，由 tie add 安装，插件化）
-[
-    "pkgrole": [ "kind": "base", "output": "lib" ],
-]

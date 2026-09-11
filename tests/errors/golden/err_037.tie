@@ -1,5 +1,0 @@
-
-            func main() {
-                var t = table_new_i64(5)
-            }
-            

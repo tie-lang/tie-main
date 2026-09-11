@@ -1,6 +1,0 @@
-
-            func g(t: ref table<i64>) {}
-            func main() {
-                g([1, 2])
-            }
-            

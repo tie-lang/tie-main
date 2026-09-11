@@ -1,6 +1,0 @@
-
-            func main() {
-                var s: string = "a"
-                s -= "b"
-            }
-            

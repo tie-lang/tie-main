@@ -1,9 +1,0 @@
-// 样例数据：registry 探针 v2（p.7.2.5）
-type tie<data>
-[
-    "greeting": "hello registry v2",
-    "count": 9,
-    "tags": [
-        "meta": "p725",
-    ],
-]

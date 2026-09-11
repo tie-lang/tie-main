@@ -1,4 +1,0 @@
-extern fn foo(a: i64) -> i64;
-func main() {
-    foo("x")
-}

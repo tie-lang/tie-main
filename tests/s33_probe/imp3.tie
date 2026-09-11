@@ -1,7 +1,0 @@
-type tie<class>
-namespace ns1 {
-func f() -> i64 {
-    return 1
-}
-}
-

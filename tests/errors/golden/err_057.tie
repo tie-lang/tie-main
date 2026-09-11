@@ -1,2 +1,0 @@
-extern fn foo(m: map<string>) -> i64;
-func main() {}

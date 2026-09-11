@@ -1,3 +1,0 @@
-extern fn foo(a: i64) -> i64;
-func foo() {}
-func main() {}

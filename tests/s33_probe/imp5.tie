@@ -1,3 +1,0 @@
-type tie<class>
-import "../../compiler/lib/interner.tie"
-

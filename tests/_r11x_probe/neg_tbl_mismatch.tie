@@ -1,5 +1,0 @@
-type tie<logic>
-// 负例：全局表字面量初始化类型不匹配 → 编译期报错。
-var g: table<i64> = [1, "a"]
-
-func main() {}

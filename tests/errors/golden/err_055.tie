@@ -1,2 +1,0 @@
-var g: table<i64> = table_new_i64()
-func main() {}

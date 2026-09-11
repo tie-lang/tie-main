@@ -1,3 +1,0 @@
-func foo() {
-    var x: i64 = "str"
-}

@@ -1,2 +1,0 @@
-import "./imp_bad_semantic.tie";
-func main() { print("ok"); }

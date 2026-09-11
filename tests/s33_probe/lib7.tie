@@ -1,5 +1,0 @@
-type tie<class>
-pub func seven() -> i64 {
-    return 7
-}
-

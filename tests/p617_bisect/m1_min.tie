@@ -1,4 +1,0 @@
-type tie<logic>
-func main() {
-    println("a")
-}

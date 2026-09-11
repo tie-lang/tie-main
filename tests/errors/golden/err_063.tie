@@ -1,5 +1,0 @@
-enum Color {
-    Red
-    Red
-}
-func main() {}

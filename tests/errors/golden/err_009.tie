@@ -1,5 +1,0 @@
-
-            func main() {
-                var x = read_line("hi")
-            }
-            

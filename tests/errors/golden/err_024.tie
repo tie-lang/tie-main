@@ -1,8 +1,0 @@
-
-            func f(a: i64) {
-                println(a)
-            }
-            func main() {
-                f(1, 2)
-            }
-            

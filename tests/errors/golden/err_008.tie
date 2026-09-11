@@ -1,8 +1,0 @@
-namespace tcmsg {
-    func dup() -> string {
-        return "a"
-    }
-    func dup() -> string {
-        return "b"
-    }
-}

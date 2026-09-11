@@ -1,9 +1,0 @@
-type tie<logic>
-func main() {
-    var i: i64 = 0
-    while i < 10 {
-        var j = i * 3
-        println("j=" + to_string(j))
-        i = i + 1
-    }
-}
