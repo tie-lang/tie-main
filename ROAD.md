@@ -142,6 +142,7 @@ development happens on branch p.7.
 - [ ] p.9.3.1 tiu 运行时底座：窗口/绘制/事件/资源管理（独立于 trm）
   - 设计文档已落盘（2026-09-12）：`docs/designs/tiu-render-engine.md`（渲染引擎七层）· `docs/designs/tiu-drawing-api.md`（绘制 API 库）· `docs/designs/tiu-event-system.md`（事件轴）；上层 `docs/designs/tiu-ui-widgets.md`（UI 库，p.9.3.2 输入）
   - API 库实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-api-impl.md`（任务分解 + 契约冻结 + 无遗留闭环）
+  - 渲染引擎实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-render-impl.md`（任务分解 + 契约冻结 + 后端落地顺序 + 无遗留闭环）
 - [ ] p.9.3.2 组件树与组合式布局框架
 - [ ] p.9.3.3 release.md 修订：tieui/trm.ui 关系对齐 tiu 独立定位
 
