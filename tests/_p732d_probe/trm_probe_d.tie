@@ -1,0 +1,133 @@
+type tie<logic>
+// tests/_p732d_probe/trm_probe_d.tie —— trm 引擎 p.7.3.2-d 探针：Backend 接口 + 热点提升 + 确定性回退
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.3.2-d「ORC JIT 后端（热点逐函数，对标 HotSpot tiered）」。
+// 验收：Backend 三接口（compile/execute/invoke）经 interp 命中；注册未接入后端
+// （orc_jit/wasm/aot）→ 确定性哨兵 -66 回退；热点逐函数计数达阈值触发提升请求、
+// 未接入时回退 interp 且**结果不变**（契约测试与 interp 一致——设计 §7.4）。
+// 全过打印「trm 引擎 p.7.3.2-d 自检通过」exit 0；任一失败 exit 1。
+
+import "../../compiler/trm/trm.tie"
+import "../../compiler/middle/types.tie"
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg + "（" + trm.be_err() + "）")
+        fails = fails + 1
+    }
+}
+
+func main() {
+    var e0 = trm.init()
+    check(e0 == 0, "trm.init 含 be_boot 返回 0")
+
+    // ---------- 1) Backend 注册表 ----------
+    check(trm.be_count() == 4, "后端注册 4 项（interp/orc_jit/wasm/aot）")
+    check(trm.be_name(0) == "interp" && trm.be_name(1) == "orc_jit" && trm.be_name(3) == "aot", "后端表登记序 interp/orc_jit/wasm/aot")
+    check(trm.be_avail("interp") == 1, "interp 可用（语义基准）")
+    check(trm.be_avail("orc_jit") == 0, "orc_jit 登记未接入")
+    check(trm.be_avail("wasm") == 0, "wasm 登记未接入")
+    check(trm.be_avail("aot") == 0, "aot 登记未接入")
+
+    // ---------- 2) 构建样本 + 加载 ----------
+    ir.new_module()
+    ir_meta.reset_meta()
+    var T64 = types.named(TK_I64)
+    ir_meta.set_pkg_name(interner.intern("sample.d"))
+    ir_meta.set_pkg_version(interner.intern("0.1.0"))
+    ir_meta.set_ir_version(1)
+    var p2: table<i64> = table_new_i64()
+    table_push(p2, T64)
+    table_push(p2, T64)
+    var fid_add = ir.new_func(interner.intern("add"), T64, p2)
+    var fid_mul = ir.new_func(interner.intern("mul3"), T64, p2)
+    ir.func_export_set(fid_add, 1)
+    ir.func_export_set(fid_mul, 1)
+    // add：%2 = %0 + %1
+    var b1 = ir.new_block(fid_add, -1)
+    var ai = ir.new_inst(b1, 0, T64)
+    ir.add_operand(ai, ir.param_val(fid_add, 0), 0)
+    ir.add_operand(ai, ir.param_val(fid_add, 1), 0)
+    var r1 = ir.new_inst(b1, 32, -1)
+    ir.add_operand(r1, ir.ins_val(ai), 0)
+    // mul3：%2 = %0 * %1 * %1（乘两遍验证热点函数不同路径）
+    var b2 = ir.new_block(fid_mul, -1)
+    var m1 = ir.new_inst(b2, 2, T64)
+    ir.add_operand(m1, ir.param_val(fid_mul, 0), 0)
+    ir.add_operand(m1, ir.param_val(fid_mul, 1), 0)
+    var m2 = ir.new_inst(b2, 2, T64)
+    ir.add_operand(m2, ir.ins_val(m1), 0)
+    ir.add_operand(m2, ir.param_val(fid_mul, 1), 0)
+    var r2 = ir.new_inst(b2, 32, -1)
+    ir.add_operand(r2, ir.ins_val(m2), 0)
+    var sample = "tests/_p732d_probe/sample.tieir"
+    var wok = tieir.write(sample)
+    check(wok, "tieir.write 产出样本")
+    var m0 = trm.load(sample)
+    check(m0 == 0, "trm.load 登记模块 id=0")
+
+    // ---------- 3) compile/execute/invoke（interp 命中） ----------
+    var exe = trm.be_compile("interp", m0)
+    check(exe == 0, "compile(interp, 模块0) 返回句柄 0")
+    var a1: table<i64> = table_new_i64()
+    table_push(a1, 3)
+    table_push(a1, 4)
+    var rc1 = trm.be_execute("interp", 0, "add", a1)
+    check(rc1 == 0 && trm.has_result() && trm.result_i64() == 7, "execute(interp, add(3,4)) = 7")
+    var rc2 = trm.be_invoke("interp", 0, "mul3", a1)
+    check(rc2 == 0 && trm.has_result(), "invoke(interp, mul3) 返回 0")
+    check(trm.result_i64() == 48, "mul3(3,4) = 3*4*4 = 48")
+
+    // ---------- 4) 未接入后端确定性回退 ----------
+    var cj = trm.be_compile("orc_jit", 0)
+    check(cj == -66, "compile(orc_jit) → -66（未接入哨兵）")
+    var cw = trm.be_compile("wasm", 0)
+    check(cw == -66, "compile(wasm) → -66")
+    var ej = trm.be_execute("orc_jit", 0, "add", a1)
+    check(ej == -66, "execute(orc_jit) → -66（回退不执行）")
+    var cu = trm.be_compile("nope", 0)
+    check(cu == -67, "compile(未注册后端) → -67")
+
+    // ---------- 5) 热点逐函数提升 + 确定性回退（结果不变） ----------
+    var h0 = trm.be_hot("add")
+    check(h0 == -1, "热点计数 1 次 → 未达阈值 -1")
+    check(trm.be_hot_count("add") == 1, "hot_count(add) = 1")
+    trm.be_hot("add")
+    trm.be_hot("add")
+    var h3 = trm.be_hot("add")
+    check(h3 == 0, "第 4 次达阈值 → 提升请求：orc_jit 未接入 → 回退 interp（0）")
+    check(trm.be_hot_count("add") == 4, "hot_count(add) = 4（达阈值）")
+    check(trm.be_last() == "热点提升请求: add，orc_jit 未接入 → 回退 interp（结果不变）", "be_last 指明回退 interp")
+    // 契约不变性：提升请求后仍 execute 得同结果
+    var a2: table<i64> = table_new_i64()
+    table_push(a2, 10)
+    table_push(a2, 32)
+    var rc3 = trm.be_execute("interp", 0, "add", a2)
+    check(rc3 == 0 && trm.result_i64() == 42, "热点后契约不变：add(10,32) 仍 = 42")
+
+    // ---------- 6) 冷热两函数互不干扰 ----------
+    var hx = trm.be_hot_count("mul3")
+    check(hx == 0, "mul3 未被跟踪计数（独立函数）")
+    trm.be_hot("mul3")
+    trm.be_hot("mul3")
+    var hm = trm.be_hot("mul3")
+    check(hm == -1, "mul3 计数 3 次 未达阈值 -1")
+    var a3: table<i64> = table_new_i64()
+    table_push(a3, 2)
+    table_push(a3, 4)
+    trm.be_execute("interp", 0, "mul3", a3)
+    check(trm.result_i64() == 32, "mul3(2,4) = 2*4*4 = 32")
+
+    if file_exists(sample) {
+        var f1 = file_delete(sample)
+    }
+    if fails > 0 {
+        println("trm 引擎 p.7.3.2-d 自检失败 total=" + to_string(fails))
+        exit(1)
+    }
+    println("trm 引擎 p.7.3.2-d 自检通过（Backend 三接口 + 热点提升跟踪 + 未接入确定性回退、契约不变）")
+}
