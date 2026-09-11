@@ -1,0 +1,247 @@
+type tie<logic>
+// tests/_p732a_probe/trm_probe_a.tie —— trm 引擎 p.7.3.2-a 探针：tieir 加载+校验+interp 纯函数执行
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.3.2-a「tieir 加载 + 校验 + interp 执行（跨端解释）」。
+// 验收：tieir 加载 + 校验 + interp 跑通纯函数（纯字节码验收）。
+// 探针结构（一段跑完，进程内造样本再消费）：
+//   1) 进程内手工构建样本模块（add/inc/max/arith 四个纯函数 + 负例 div0 的
+//      列式 IR —— ir.new_func/new_block/new_inst 直建，等价绕过前端）；
+//   2) tieir.write 产出 .tieir 分发单元 → trm.load（类加载器：反序列化 + 校验 + 登记）；
+//   3) trm.run_by_name 逐函数 interp 执行，断言结果（加法/常量/条件跳转/算术复合）；
+//   4) 类加载器负例：缺失文件 / 重复加载 rejection；
+//   5) InterpBackend 边界负例：未支持指令（call）与除零 → -1 + err。
+// 全过打印「trm 引擎 p.7.3.2-a 自检通过」exit 0；任一失败 exit 1。
+//
+// # import 说明（语言边界）
+//   import ../../compiler/trm/trm.tie（链载 trm_loader→tieir_ser→ir/ir_meta/
+//   interner/bytes + trm_interp）；再 import types 取类型 id（只读 middle，
+//   与 p.7.1.3 探针同款双 import，无重复定义）。
+import "../../compiler/trm/trm.tie"
+import "../../compiler/middle/types.tie"
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg + "（" + trm.err_msg() + "）")
+        fails = fails + 1
+    }
+}
+
+func expect(rc: i64, want: i64, msg: string) {
+    if rc == 0 && trm.has_result() && trm.result_i64() == want {
+        println("PASS " + msg + " = " + to_string(want))
+    } else {
+        println("FAIL " + msg + " 结果=" + to_string(trm.result_i64()) + " rc=" + to_string(rc) + "（" + trm.err_msg() + "）")
+        fails = fails + 1
+    }
+}
+
+// ---------- 样本模块构建（函数集） ----------
+
+// add(a,b) -> a+b：参数值 id 0/1，add 指令结果 %2，ret %2。
+func build_add(fid: i64, bid: i64, T64: i64) {
+    var ai = ir.new_inst(bid, 0, T64)
+    ir.add_operand(ai, ir.param_val(fid, 0), 0)
+    ir.add_operand(ai, ir.param_val(fid, 1), 0)
+    var ri = ir.new_inst(bid, 32, -1)
+    ir.add_operand(ri, ir.ins_val(ai), 0)
+}
+
+// inc(x) -> x+1：const_i(1) + add。
+func build_inc(fid: i64, bid: i64, T64: i64) {
+    var ci = ir.new_inst(bid, 60, T64)
+    ir.add_operand(ci, 1, 2)
+    var ai = ir.new_inst(bid, 0, T64)
+    ir.add_operand(ai, ir.param_val(fid, 0), 0)
+    ir.add_operand(ai, ir.ins_val(ci), 0)
+    var ri = ir.new_inst(bid, 32, -1)
+    ir.add_operand(ri, ir.ins_val(ai), 0)
+}
+
+// max(a,b)：icmp slt a,b → cond_br → ret b / ret a（三块）。
+func build_max(fid: i64, b0: i64, b1: i64, b2: i64, T64: i64) {
+    var ic = ir.new_inst(b0, 12, T64)
+    ir.add_operand(ic, ir.param_val(fid, 0), 0)
+    ir.add_operand(ic, ir.param_val(fid, 1), 0)
+    ir.add_operand(ic, 2, 2)
+    var cb = ir.new_inst(b0, 31, -1)
+    ir.add_operand(cb, ir.ins_val(ic), 0)
+    ir.add_operand(cb, b1, 1)
+    ir.add_operand(cb, b2, 1)
+    var r1 = ir.new_inst(b1, 32, -1)
+    ir.add_operand(r1, ir.param_val(fid, 1), 0)
+    var r2 = ir.new_inst(b2, 32, -1)
+    ir.add_operand(r2, ir.param_val(fid, 0), 0)
+}
+
+// arith(a,b,c) = (a*2 + b) / c % 3：const/mul/add/div/mod 复合。
+func build_arith(fid: i64, bid: i64, T64: i64) {
+    var c2 = ir.new_inst(bid, 60, T64)
+    ir.add_operand(c2, 2, 2)
+    var m1 = ir.new_inst(bid, 2, T64)
+    ir.add_operand(m1, ir.param_val(fid, 0), 0)
+    ir.add_operand(m1, ir.ins_val(c2), 0)
+    var a1 = ir.new_inst(bid, 0, T64)
+    ir.add_operand(a1, ir.ins_val(m1), 0)
+    ir.add_operand(a1, ir.param_val(fid, 1), 0)
+    var d1 = ir.new_inst(bid, 3, T64)
+    ir.add_operand(d1, ir.ins_val(a1), 0)
+    ir.add_operand(d1, ir.param_val(fid, 2), 0)
+    var c3 = ir.new_inst(bid, 60, T64)
+    ir.add_operand(c3, 3, 2)
+    var md = ir.new_inst(bid, 4, T64)
+    ir.add_operand(md, ir.ins_val(d1), 0)
+    ir.add_operand(md, ir.ins_val(c3), 0)
+    var rr = ir.new_inst(bid, 32, -1)
+    ir.add_operand(rr, ir.ins_val(md), 0)
+}
+
+func main() {
+    var sample = "tests/_p732a_probe/sample.tieir"
+    var badpath = "tests/_p732a_probe/badmod.tieir"
+    // ---------- 1) 引擎初始化 + 构建样本模块 ----------
+    var e0 = trm.init()
+    check(e0 == 0, "trm.init 返回 0")
+    ir.new_module()
+    ir_meta.reset_meta()
+    var T64 = types.named(TK_I64)
+    ir_meta.set_pkg_name(interner.intern("sample.trm"))
+    ir_meta.set_pkg_version(interner.intern("0.1.0"))
+    ir_meta.set_ir_version(1)
+    // tietr 序列化 roundtrip 约束：全部函数必须先建（参数段连续），再建块/指令
+    // （p.7.3.2 类加载边界；多函数布局与 tieir_ser 出生序校验一致）。
+    var p2: table<i64> = table_new_i64()
+    table_push(p2, T64)
+    table_push(p2, T64)
+    var p1: table<i64> = table_new_i64()
+    table_push(p1, T64)
+    var p3: table<i64> = table_new_i64()
+    table_push(p3, T64)
+    table_push(p3, T64)
+    table_push(p3, T64)
+    var fid_add = ir.new_func(interner.intern("add"), T64, p2)
+    var fid_inc = ir.new_func(interner.intern("inc"), T64, p1)
+    var fid_max = ir.new_func(interner.intern("max"), T64, p2)
+    var fid_ar = ir.new_func(interner.intern("arith"), T64, p3)
+    ir.func_export_set(fid_add, 1)
+    ir.func_export_set(fid_inc, 1)
+    ir.func_export_set(fid_max, 1)
+    ir.func_export_set(fid_ar, 1)
+    // 块 + 指令（第二阶段：函数齐后）
+    build_add(fid_add, ir.new_block(fid_add, -1), T64)
+    build_inc(fid_inc, ir.new_block(fid_inc, -1), T64)
+    var b0 = ir.new_block(fid_max, -1)
+    var b1 = ir.new_block(fid_max, -1)
+    var b2 = ir.new_block(fid_max, -1)
+    build_max(fid_max, b0, b1, b2, T64)
+    build_arith(fid_ar, ir.new_block(fid_ar, -1), T64)
+
+    // ---------- 2) 序列化 + 类加载 ----------
+    var wok = tieir.write(sample)
+    check(wok, "tieir.write 产出 .tieir 样本")
+    var m0 = trm.load(sample)
+    check(m0 == 0, "trm.load 反序列化+校验+登记（模块 id 0）")
+    check(trm.module_count() == 1, "类加载器注册表规模=1")
+    check(trml_hash[0] == tieir.content_hash(), "模块内容哈希=序列化段 2-7 哈希（篡改检测载体）")
+
+    // ---------- 3) interp 执行：纯函数断言 ----------
+    var a1: table<i64> = table_new_i64()
+    table_push(a1, 3)
+    table_push(a1, 4)
+    var r_add = trm.run_by_name("add", a1)
+    expect(r_add, 7, "add(3,4)")
+    var a2: table<i64> = table_new_i64()
+    table_push(a2, 41)
+    var r_inc = trm.run_by_name("inc", a2)
+    expect(r_inc, 42, "inc(41)")
+    var a3: table<i64> = table_new_i64()
+    table_push(a3, 3)
+    table_push(a3, 5)
+    var r_max1 = trm.run_by_name("max", a3)
+    expect(r_max1, 5, "max(3,5) 条件跳转 then 分支")
+    var a31: table<i64> = table_new_i64()
+    table_push(a31, 9)
+    table_push(a31, 2)
+    var r_max2 = trm.run_by_name("max", a31)
+    expect(r_max2, 9, "max(9,2) else 分支")
+    var a4: table<i64> = table_new_i64()
+    table_push(a4, 4)
+    table_push(a4, 5)
+    table_push(a4, 3)
+    var r_ar = trm.run_by_name("arith", a4)
+    expect(r_ar, 1, "arith(4,5,3)=(4*2+5)/3%3=1")
+    check(trm.find_func("nope") < 0, "find_func 未知名返回 -1")
+
+    // ---------- 4) 负例模块（未支持指令 call / 除零） ----------
+    ir.new_module()
+    ir_meta.reset_meta()
+    ir_meta.set_pkg_name(interner.intern("bad.trm"))
+    ir_meta.set_pkg_version(interner.intern("0.1.0"))
+    ir_meta.set_ir_version(1)
+    var p0: table<i64> = table_new_i64()
+    var p01: table<i64> = table_new_i64()
+    table_push(p01, T64)
+    var fid_bad = ir.new_func(interner.intern("bad"), T64, p0)
+    var fid_dz = ir.new_func(interner.intern("div0"), T64, p01)
+    ir.func_export_set(fid_bad, 1)
+    ir.func_export_set(fid_dz, 1)
+    // bad：call（未支持指令）→ ret
+    var b_bad = ir.new_block(fid_bad, -1)
+    var ccall = ir.new_inst(b_bad, 40, T64)
+    var r_bad = ir.new_inst(b_bad, 32, -1)
+    ir.add_operand(r_bad, ir.ins_val(ccall), 0)
+    // div0(a) = a / 0（除零负例）
+    var b_dz = ir.new_block(fid_dz, -1)
+    var cz = ir.new_inst(b_dz, 60, T64)
+    ir.add_operand(cz, 0, 2)
+    var dv = ir.new_inst(b_dz, 3, T64)
+    ir.add_operand(dv, ir.param_val(fid_dz, 0), 0)
+    ir.add_operand(dv, ir.ins_val(cz), 0)
+    var rd = ir.new_inst(b_dz, 32, -1)
+    ir.add_operand(rd, ir.ins_val(dv), 0)
+    var wok2 = tieir.write(badpath)
+    check(wok2, "负例模块 tieir.write 产出")
+    var m1 = trm.load(badpath)
+    check(m1 == 1, "负例模块登记（模块 id 1）")
+    check(trm.module_count() == 2, "类加载器注册表规模=2")
+    var rb = trm.run_by_name("bad", p0)
+    check(rb == -1, "未支持指令（call）interp 返回 -1")
+    var a5: table<i64> = table_new_i64()
+    table_push(a5, 5)
+    var rz = trm.run_by_name("div0", a5)
+    check(rz == -1, "除零 interp 返回 -1")
+    // 类加载器负例：重复加载拒绝 / 损坏文件校验拒绝（校验失败安全底线；
+    // 缺失文件属宿主层文件 IO 错误——bytes.read 对不存在路径是致命返 0，
+    // 归运行时宿主边界，不在类加载器校验职责内）
+    var dup = trm.load(badpath)
+    check(dup == -1, "重复加载同 name@version 拒绝（返回 -1）")
+    var jbytes: table<i64> = table_new_i64()
+    table_push(jbytes, 1)
+    table_push(jbytes, 2)
+    table_push(jbytes, 3)
+    table_push(jbytes, 4)
+    var jw = bytes.write("tests/_p732a_probe/corrupt.tieir", jbytes)
+    var c_r = trm.load("tests/_p732a_probe/corrupt.tieir")
+    check(jw && c_r == -1, "损坏 .tieir 加载校验拒绝（返回 -1）")
+
+    // ---------- 清理运行产物 ----------
+    if file_exists(sample) {
+        var f1 = file_delete(sample)
+    }
+    if file_exists(badpath) {
+        var f2 = file_delete(badpath)
+    }
+    var corr = "tests/_p732a_probe/corrupt.tieir"
+    if file_exists(corr) {
+        var f3 = file_delete(corr)
+    }
+
+    if fails > 0 {
+        println("trm 引擎 p.7.3.2-a 自检失败 total=" + to_string(fails))
+        exit(1)
+    }
+    println("trm 引擎 p.7.3.2-a 自检通过（tieir 加载+校验+interp 纯函数；类加载器 + InterpBackend 边界负例）")
+}

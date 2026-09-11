@@ -1,0 +1,130 @@
+type tie<class>
+// compiler/trm/trm.tie —— trm 引擎门面（p.7.3.2 路线 B 执行核心）
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.3.2「tieir 字节码 + interp 前端 + 可替换后端
+// （LLVM ORC JIT | wasm/AOT）+ 类加载器 + 反射 + 引擎级 GC（路线 B 实现）」。
+// 本文件 = 引擎门面 + 共享状态基座：
+//   * 引擎级常量：interp 支持子集的 opcode/比较码/值槽类型码具名常量
+//     （数值以 compiler/middle/ir.op_keys 权威数据表为准——见 ir.tie 头部说明）；
+//   * 门面状态：错误槽 trm_err / init 幂等标记；
+//   * 对外 API：init / err_msg / load / module_count / run_by_name /
+//     has_result / result_i64（loader 与 interp 同 namespace trm 直接并入）。
+// 定位：trm 独立组件仓 tie-lang/trm 的引擎核心（2026.2 物理位于编译器仓，
+// 仓库分离后随组件仓迁移——trm-final-design.md §7.5 + release.md §3.4）。
+// 默认后端 = InterpBackend（语义基准）；ORC-JIT / wasm / AOT 为可替换后端
+// 扩展（p.7.3.2-d/f 登记，未接入时确定性回退 interp，见 trm_backend）。
+//
+// # 语言边界（对齐 compiler/middle 系列约束）
+//   - import 文本内联不查重：入口链一次性按序 import（loader → interp，
+//     loader 已链载 tieir_ser→ir/ir_meta/interner/columnar/bytes），不得重复 import；
+//   - table<string> 不能作函数参数（table<i64> 可以）；
+//   - 全局标量初始化只能用字面量；顶层常量/全局变量带前缀（trm_/trml_/trms_）
+//     防 import 内联后的顶层重名；
+//   - 无 continue/break/递归；&& 非短路（边界与下标分开）；
+//   - interp 执行用迭代循环（无函数递归）。
+//
+// 调用：import 后 trm.init() → trm.load(path) → trm.run_by_name(name, args)
+// / trm.has_result() / trm.result_i64()，失败取 trm.err_msg()。
+
+import "./trm_loader.tie"
+import "./trm_interp.tie"
+
+// ---------- 引擎级常量（模块级全局；数值对齐 ir.op_keys 权威表） ----------
+const TRM_MAX_STEPS: i64 = 200000;  // 单函数执行步数上限（防死循环）
+const TRM_OP_ADD: i64 = 0;
+const TRM_OP_SUB: i64 = 1;
+const TRM_OP_MUL: i64 = 2;
+const TRM_OP_DIV: i64 = 3;
+const TRM_OP_MOD: i64 = 4;
+const TRM_OP_NEG: i64 = 5;
+const TRM_OP_AND: i64 = 6;
+const TRM_OP_OR: i64 = 7;
+const TRM_OP_XOR: i64 = 8;
+const TRM_OP_NOT: i64 = 9;
+const TRM_OP_SHL: i64 = 10;
+const TRM_OP_SHR: i64 = 11;
+const TRM_OP_ICMP: i64 = 12;
+const TRM_OP_BR: i64 = 30;
+const TRM_OP_CONDBR: i64 = 31;
+const TRM_OP_RET: i64 = 32;
+const TRM_OP_CONST_I: i64 = 60;
+const TRM_CMP_EQ: i64 = 0;
+const TRM_CMP_NE: i64 = 1;
+const TRM_CMP_LT: i64 = 2;
+const TRM_CMP_GT: i64 = 3;
+const TRM_CMP_LE: i64 = 4;
+const TRM_CMP_GE: i64 = 5;
+// 引擎值槽类型码（trm-final-design §3.2 引擎对象/值模型；3=未定义/void）
+const TRM_V_UNDEF: i64 = 3;
+const TRM_V_I64: i64 = 0;
+const TRM_V_F64: i64 = 1;
+const TRM_V_STR: i64 = 2;
+
+// ---------- 门面状态（模块级全局，前缀 trm_） ----------
+var trm_err: string = "";      // 门面错误槽（空 = 无错误）
+var trm_init_done: i64 = 0;    // init 幂等标记（0 未 / 1 已）
+
+namespace trm {
+
+func trm_set_err(msg: string) {
+    trm_err = msg
+}
+
+// 最近错误（空 = 上次操作成功）。
+pub func err_msg() -> string {
+    return trm_err
+}
+
+// 引擎初始化（幂等）。仅登记状态；类加载器/执行器惰性自建。
+pub func init() -> i64 {
+    if trm_init_done == 1 {
+        return 0
+    }
+    trm_init_done = 1
+    trm_set_err("")
+    return 0
+}
+
+// 加载并校验 .tieir 分发单元，登记模块。返回模块 id（>= 0）/ -1（err_msg 取因）。
+pub func load(path: string) -> i64 {
+    var m = load_module(path)
+    if m < 0 {
+        trm_set_err(loader_err())
+    } else {
+        trm_set_err("")
+    }
+    return m
+}
+
+// 类加载器注册表规模（当前已加载模块数）。
+pub func module_count() -> i64 {
+    return trml_count
+}
+
+// 按名运行当前模块中的函数；args 为 i64 实参表。0 成功 / -1 错误。
+pub func run_by_name(name: string, args: table<i64>) -> i64 {
+    var fid = find_func(name)
+    if fid < 0 {
+        trm_set_err("未找到函数: " + name)
+        return -1
+    }
+    var rc = exec_func(fid, args)
+    if rc != 0 {
+        trm_set_err(interp_err())
+    } else {
+        trm_set_err("")
+    }
+    return rc
+}
+
+// 上次运行结果：有结果？（void 函数 / 未运行为 false）。
+pub func has_result() -> bool {
+    return trms_ret_kind != TRM_V_UNDEF
+}
+
+// 上次运行结果（i64；has_result() 为 false 时值无意义）。
+pub func result_i64() -> i64 {
+    return trms_ret_i
+}
+
+}   // namespace trm

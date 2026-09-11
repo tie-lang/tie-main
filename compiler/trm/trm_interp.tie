@@ -1,0 +1,302 @@
+type tie<class>
+// compiler/trm/trm_interp.tie —— InterpBackend（p.7.3.2-a/b：tieir 纯函数解释执行）
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.3.2-a「tieir 加载 + 校验 + interp 执行」。
+// 执行已还原 IR（列式函数/块/指令表）的 i64 纯函数（interp 语义基准子集）：
+//   * 运行时值槽 = SSA 值 id 索引（值 id 全局单调、跨函数唯一 → 单一槽表）；
+//   * 指令子集：add/sub/mul/div/mod/neg/and/or/xor/not/shl/shr/icmp(比较码) +
+//     const_i + br / cond_br / ret；未支持指令 → 报错返回 -1（err 记录指令名，
+//     子集边界显式，不静默、不猜）；
+//   * 控制流：块跳转迭代执行，显式步数上限（TRM_MAX_STEPS）防死循环；
+//   * 除零 / 除模零 → 错误（返回 -1）。
+// interp 是跨平台语义基准（trm-final-design §3.1/§7.4：interp 基准 + 契约矩阵），
+// 也是后端接口的默认实现（InterpBackend：前后端对引擎调度透明、可热切换）。
+//
+// # 值槽模型（可扩展到 f64/string 句柄；本阶段 i64 落地）
+//   trms_kind：每槽类型码（TRM_V_*，3=未定义）；trms_i：i64 值；
+//   参数/指令结果按 SSA 值 id 定位（ir.param_val / ir.ins_val）。
+//
+// # 语言边界
+//   无递归：执行器为迭代循环；无 continue/break：跳转用 if-jumped 标志；
+//   && 非短路：边界判断与取值分开；顶层符号 trms_ 前缀防 import 内联重名。
+
+// ---------- 运行时值槽（模块级全局，namespace trm 跨文件共享；前缀 trms_） ----------
+var trms_err: string = "";   // 执行错误槽（空 = 无错误）
+var trms_kind: table<i64>;   // 槽类型码（TRM_V_*）
+var trms_i: table<i64>;      // 槽 i64 值
+var trms_ret_kind: i64 = 3;  // 上次结果类型（3 = void/无结果）
+var trms_ret_i: i64 = 0;     // 上次结果 i64
+
+namespace trm {
+
+func trms_set_err(msg: string) {
+    trms_err = msg
+}
+
+// 最近执行错误（空 = 上次执行成功）。
+pub func interp_err() -> string {
+    return trms_err
+}
+
+// 函数内最大 SSA 值 id（参数值 + 指令结果值；无指令结果 -1 时取参数）。
+// 用于槽表定容（max v + 1）。跨块扫描（块段 [start, end) 为全局指令下标）。
+func func_max_value(fid: i64) -> i64 {
+    var maxv: i64 = -1
+    var pcnt = ir.func_params_cnt(fid)
+    var p: i64 = 0
+    while p < pcnt {
+        var pv = ir.param_val(fid, p)
+        if pv > maxv {
+            maxv = pv
+        }
+        p = p + 1
+    }
+    var nb = ir.block_count()
+    var b: i64 = 0
+    while b < nb {
+        if ir.block_func(b) == fid {
+            var st = ir.block_start(b)
+            var en = ir.block_end(b)
+            var ii2 = st
+            while ii2 < en {
+                var iv = ir.ins_val(ii2)
+                if iv > maxv {
+                    maxv = iv
+                }
+                ii2 = ii2 + 1
+            }
+        }
+        b = b + 1
+    }
+    return maxv
+}
+
+// 函数的入口块：ir.func_entry（建块时即登记）或首个属于该函数的块。
+func entry_block(fid: i64) -> i64 {
+    var eb = ir.func_entry(fid)
+    if eb >= 0 {
+        return eb
+    }
+    var nb = ir.block_count()
+    var b: i64 = 0
+    while b < nb {
+        if ir.block_func(b) == fid {
+            return b
+        }
+        b = b + 1
+    }
+    return -1
+}
+
+// 取操作数数值（kind 0=值 → 槽；2=立即数 → 原值；1=块 → 原值（块用））。
+func opnd_i64(ii2: i64, k: i64) -> i64 {
+    var v = ir.ins_opnd(ii2, k)
+    var kd = ir.ins_opnd_kind(ii2, k)
+    if kd == 0 {
+        return trms_i[v]
+    }
+    return v
+}
+
+// 单条算术/逻辑/位移/比较指令：读操作数、算、写结果槽。
+// 返回 0 成功 / -1 失败（错误已记 trms_err）。未支持指令也在此显式报错。
+func step_arith(pc: i64) -> i64 {
+    var op = ir.ins_op(pc)
+    var n = ir.ins_ops_cnt(pc)
+    var r0 = opnd_i64(pc, 0)
+    var two: i64 = 0
+    var r1: i64 = 0
+    if n >= 2 {
+        r1 = opnd_i64(pc, 1)
+        two = 1
+    }
+    var out: i64 = 0
+    var wrote: i64 = 0
+    if op == TRM_OP_ADD {
+        out = r0 + r1
+        wrote = 1
+    } else if op == TRM_OP_SUB {
+        out = r0 - r1
+        wrote = 1
+    } else if op == TRM_OP_MUL {
+        out = r0 * r1
+        wrote = 1
+    } else if op == TRM_OP_DIV {
+        if r1 == 0 {
+            trms_set_err("除零错误")
+            return -1
+        }
+        out = r0 / r1
+        wrote = 1
+    } else if op == TRM_OP_MOD {
+        if r1 == 0 {
+            trms_set_err("除零错误")
+            return -1
+        }
+        out = r0 % r1
+        wrote = 1
+    } else if op == TRM_OP_NEG {
+        out = 0 - r0
+        wrote = 1
+    } else if op == TRM_OP_NOT {
+        out = r0 ^ -1
+        wrote = 1
+    } else if op == TRM_OP_AND {
+        out = r0 & r1
+        wrote = 1
+    } else if op == TRM_OP_OR {
+        out = r0 | r1
+        wrote = 1
+    } else if op == TRM_OP_XOR {
+        out = r0 ^ r1
+        wrote = 1
+    } else if op == TRM_OP_SHL {
+        out = r0 << r1
+        wrote = 1
+    } else if op == TRM_OP_SHR {
+        out = r0 >> r1
+        wrote = 1
+    } else if op == TRM_OP_ICMP {
+        var cc = ir.ins_opnd(pc, 2)
+        if cc == TRM_CMP_EQ {
+            if r0 == r1 {
+                out = 1
+            }
+        } else if cc == TRM_CMP_NE {
+            if r0 != r1 {
+                out = 1
+            }
+        } else if cc == TRM_CMP_LT {
+            if r0 < r1 {
+                out = 1
+            }
+        } else if cc == TRM_CMP_GT {
+            if r0 > r1 {
+                out = 1
+            }
+        } else if cc == TRM_CMP_LE {
+            if r0 <= r1 {
+                out = 1
+            }
+        } else if cc == TRM_CMP_GE {
+            if r0 >= r1 {
+                out = 1
+            }
+        }
+        wrote = 1
+    } else {
+        trms_set_err("interp 未支持指令 opcode=" + to_string(op) + "（指令 " + to_string(pc) + "）")
+        return -1
+    }
+    if wrote == 1 {
+        var rid2 = ir.ins_val(pc)
+        if rid2 >= 0 {
+            trms_kind[rid2] = TRM_V_I64
+            trms_i[rid2] = out
+        }
+    }
+    return 0
+}
+
+// 执行函数（InterpBackend.execute）：实参表按参数顺序绑定到参数值槽，
+// 入口块起迭代执行到 ret。返回 0 成功 / -1 错误（interp_err() 取原因）。
+// 成功时结果经 has_result()/result_i64() 读取（void 函数 → 无结果）。
+pub func exec_func(fid: i64, args: table<i64>) -> i64 {
+    trms_set_err("")
+    trms_kind = table_new_i64()
+    trms_i = table_new_i64()
+    var maxv = func_max_value(fid)
+    var n2 = maxv + 1
+    var ii0: i64 = 0
+    while ii0 < n2 {
+        table_push(trms_kind, TRM_V_UNDEF)
+        table_push(trms_i, 0)
+        ii0 = ii0 + 1
+    }
+    // 绑定参数（实参按序；缺省实参保持未定义槽）
+    var pcnt = ir.func_params_cnt(fid)
+    var argn = len(args)
+    var p: i64 = 0
+    while p < pcnt {
+        var pv = ir.param_val(fid, p)
+        if p < argn {
+            trms_kind[pv] = TRM_V_I64
+            trms_i[pv] = args[p]
+        }
+        p = p + 1
+    }
+    // 入口块起，迭代执行（显式帧游标，无递归）
+    var cur = entry_block(fid)
+    if cur < 0 {
+        trms_set_err("函数无块: 无法执行")
+        return -1
+    }
+    var pc = ir.block_start(cur)
+    var done: i64 = 0
+    var steps: i64 = 0
+    var ret_kind: i64 = TRM_V_UNDEF
+    var ret_i: i64 = 0
+    while done == 0 && steps < TRM_MAX_STEPS {
+        var end = ir.block_end(cur)
+        var jumped: i64 = 0
+        if pc >= end {
+            trms_set_err("控制流落出（块 " + to_string(cur) + " 无结尾 ret/br）")
+            return -1
+        }
+        var op = ir.ins_op(pc)
+        if op == TRM_OP_RET {
+            var on = ir.ins_ops_cnt(pc)
+            if on > 0 {
+                var rk = ir.ins_opnd_kind(pc, 0)
+                var rv = ir.ins_opnd(pc, 0)
+                if rk == 0 {
+                    ret_kind = trms_kind[rv]
+                    ret_i = trms_i[rv]
+                } else {
+                    ret_kind = TRM_V_I64
+                    ret_i = rv
+                }
+            }
+            done = 1
+        } else if op == TRM_OP_BR {
+            var dst = ir.ins_opnd(pc, 0)
+            cur = dst
+            pc = ir.block_start(dst)
+            jumped = 1
+        } else if op == TRM_OP_CONDBR {
+            var cv = ir.ins_opnd(pc, 0)
+            var tb = ir.ins_opnd(pc, 1)
+            var fb = ir.ins_opnd(pc, 2)
+            var dst2 = fb
+            if trms_i[cv] != 0 {
+                dst2 = tb
+            }
+            cur = dst2
+            pc = ir.block_start(dst2)
+            jumped = 1
+        } else if op == TRM_OP_CONST_I {
+            var cval = ir.ins_opnd(pc, 0)
+            var rid3 = ir.ins_val(pc)
+            trms_kind[rid3] = TRM_V_I64
+            trms_i[rid3] = cval
+        } else {
+            var rc2 = step_arith(pc)
+            if rc2 != 0 {
+                return -1
+            }
+        }
+        if done == 0 && jumped == 0 {
+            pc = pc + 1
+        }
+        steps = steps + 1
+    }
+    if done == 0 {
+        trms_set_err("执行步数超限（> " + to_string(TRM_MAX_STEPS) + "）")
+        return -1
+    }
+    trms_ret_kind = ret_kind
+    trms_ret_i = ret_i
+    return 0
+}
+
+}   // namespace trm
