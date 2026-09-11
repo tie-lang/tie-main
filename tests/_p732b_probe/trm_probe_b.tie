@@ -32,9 +32,9 @@ func main() {
     check(trm.bridge_find("no", "such") == -1, "桥注册表未找到 (no, such) 返回 -1")
 
     // ---------- 2) 平台表 ----------
-    check(trm.bridge_platforms() == 2, "支持平台表 2 项（posix + win32）")
-    check(trm.bridge_platform_at(0) == "posix", "平台 0 = posix")
-    check(trm.bridge_platform_at(1) == "win32", "平台 1 = win32")
+    check(trm.bridge_platforms() == 4, "支持平台表 4 端（android/macos/posix/win32）")
+    check(trm.bridge_platform_at(0) == "android" && trm.bridge_platform_at(3) == "win32", "平台 0=android / 3=win32")
+    check(trm.bridge_platform_at(1) == "macos" && trm.bridge_platform_at(2) == "posix", "平台 1=macos / 2=posix")
     var def = trm.bridge_platform()
     // 默认 win32（编译器默认开发机）
     check(def == "win32", "默认平台亲缘 win32（正确为默认编译宿主）")

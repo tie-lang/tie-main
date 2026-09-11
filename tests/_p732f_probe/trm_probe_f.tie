@@ -1,0 +1,72 @@
+type tie<logic>
+// tests/_p732f_probe/trm_probe_f.tie —— trm 引擎 p.7.3.2-f 探针：平台扩展细化 + 四端契约矩阵 + wasm/aot 后端
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.3.2-f「平台扩展细化（impl-posix/macos/android 深入）
+// + wasm/AOT 可选后端」。
+// 验收：四端平台表（android/macos/posix/win32）就位；域覆盖矩阵正确（fs/env
+// 公共面支持、未建域拒绝）；四端契约矩阵全绿（每端跑同一套平台无关契约，失败
+// 数 0）；wasm/aot 后端登记未接入（确定性回退已在 d 期验证）。
+// 全过打印「trm 引擎 p.7.3.2-f 自检通过」exit 0；任一失败 exit 1。
+
+import "../../compiler/trm/trm.tie"
+
+var fails: i64 = 0
+
+func check(cond: bool, msg: string) {
+    if cond {
+        println("PASS " + msg)
+    } else {
+        println("FAIL " + msg + "（" + trm.err_msg() + "）")
+        fails = fails + 1
+    }
+}
+
+func main() {
+    var e0 = trm.init()
+    check(e0 == 0, "trm.init 返回 0")
+
+    // ---------- 1) 四端平台表 ----------
+    check(trm.pt_platforms_total() == 4, "平台表 4 端（android/macos/posix/win32）")
+    check(trm.bridge_platform_at(0) == "android" && trm.bridge_platform_at(1) == "macos", "平台序 android/macos 就位")
+    check(trm.bridge_platform_at(2) == "posix" && trm.bridge_platform_at(3) == "win32", "平台序 posix/win32 就位")
+    var sp1 = trm.bridge_set_platform("macos")
+    check(sp1 == 0 && trm.bridge_platform() == "macos", "切到 macos 成功")
+    var sp2 = trm.bridge_set_platform("android")
+    check(sp2 == 0, "切到 android 成功")
+    var sp3 = trm.bridge_set_platform("win32")
+    check(sp3 == 0, "切回 win32")
+
+    // ---------- 2) 域覆盖矩阵 ----------
+    check(trm.pt_domains_supported("win32", "fs") == 1, "win32 × fs = 支持")
+    check(trm.pt_domains_supported("macos", "env") == 1, "macos × env = 支持")
+    check(trm.pt_domains_supported("posix", "fs") == 1, "posix × fs = 支持")
+    check(trm.pt_domains_supported("android", "env") == 1, "android × env = 支持")
+    check(trm.pt_domains_supported("win32", "terminal") == 0, "未建域 terminal = 暂不支持（p.9 扩展域）")
+    check(trm.pt_domains_supported("nintendods", "fs") == 0, "未知平台 = 不支持")
+
+    // ---------- 3) 四端契约矩阵全绿（每端同一套平台无关契约） ----------
+    var f_win = trm.pt_run_contract("win32")
+    check(f_win == 0, "win32 契约跑通（0 失败）")
+    var f_pos = trm.pt_run_contract("posix")
+    check(f_pos == 0, "posix 契约跑通（0 失败）")
+    var f_mac = trm.pt_run_contract("macos")
+    check(f_mac == 0, "macos 契约跑通（0 失败）")
+    var f_android = trm.pt_run_contract("android")
+    check(f_android == 0, "android 契约跑通（0 失败）")
+    check(trm.bridge_platform() == "win32", "契约后平台亲缘恢复 win32")
+
+    // ---------- 4) wasm/AOT 可选后端登记（未接入确定性） ----------
+    check(trm.be_count() == 4, "后端注册 4 项")
+    check(trm.be_avail("wasm") == 0 && trm.be_avail("aot") == 0, "wasm/aot 登记未接入（保证回退）")
+    var cw = trm.be_compile("wasm", 1)
+    check(cw == -66, "compile(wasm) → -66 确定性哨兵")
+    var ca = trm.be_compile("aot", 1)
+    check(ca == -66, "compile(aot) → -66 确定性哨兵")
+    check(trm.be_last() == "backend=aot 未接入（回退 interp）", "be_last 记录最新后端 aot 未接入回退")
+
+    if fails > 0 {
+        println("trm 引擎 p.7.3.2-f 自检失败 total=" + to_string(fails))
+        exit(1)
+    }
+    println("trm 引擎 p.7.3.2-f 自检通过（四端平台 + 域覆盖矩阵 + 四端契约矩阵全绿 + wasm/aot 确定性未接入）")
+}

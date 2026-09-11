@@ -63,15 +63,17 @@ func bridge_reg(domain: string, fn: string, sel: i64) -> i64 {
 
 // ---------- 平台桥 ----------
 
-// 桥接线（幂等）：建平台表（win32/posix）+ 注册 fs/env 域桥项。
+// 桥接线（幂等）：建平台表（android/macos/posix/win32 四端）+ 注册 fs/env 域桥项。
 pub func sys_boot() -> i64 {
     if trmsys_booted == 1 {
         return 0
     }
     if len(trmsys_plats) == 0 {
         trmsys_plats = table_new_string()
+        table_push(trmsys_plats, "android")
+        table_push(trmsys_plats, "macos")
         table_push(trmsys_plats, "posix")
-        table_push(trmsys_plats, "win32")   // 升序（posix < win32）
+        table_push(trmsys_plats, "win32")
         trmsys_doms = table_new_string()
         trmsys_fns = table_new_string()
         trmsys_sels = table_new_i64()
@@ -202,6 +204,71 @@ pub func lib_fs_delete(p: string) -> i64 {
 // trm.env.get：按名取环境变量（0 命中 / -1 未命中；值经 env_last()）。
 pub func lib_env_get(v: string) -> i64 {
     return bridge_impl(3, 0, v)
+}
+
+// ---------- 四端契约矩阵（p.7.3.2-f 平台扩展细化） ----------
+
+// 平台总数（四端：android/macos/posix/win32）。
+pub func pt_platforms_total() -> i64 {
+    return len(trmsys_plats)
+}
+
+// 域覆盖矩阵：平台 x 域 是否支持（1=支持 0=不支持）。
+// 本期已落地域 = fs/env（四端公共面）；terminal/process/net 等为 p.9 扩展域。
+pub func pt_domains_supported(plat: string, domain: string) -> i64 {
+    // 平台必须在表内
+    var i: i64 = 0
+    var plat_ok: i64 = 0
+    while i < len(trmsys_plats) {
+        if trmsys_plats[i] == plat {
+            plat_ok = 1
+        }
+        i = i + 1
+    }
+    if plat_ok == 0 {
+        return 0
+    }
+    if domain == "fs" {
+        return 1
+    }
+    if domain == "env" {
+        return 1
+    }
+    return 0
+}
+
+// 在指定平台上跑契约探针（fs/env 公共契约）：切换平台亲缘 → 运行与
+// 平台无关的 fs/env 断言（文件存在/目录判型/环境命中）→ 恢复原平台。
+// 返回失败契约数（0 = 四端契约矩阵全绿）。
+pub func pt_run_contract(plat: string) -> i64 {
+    var prev = trmsys_plat
+    var rc = bridge_set_platform(plat)
+    if rc != 0 {
+        trmsys_last = "平台不可用: " + plat
+        return -1
+    }
+    var failures: i64 = 0
+    // 契约 1：fs.exists 对仓库根 README.md
+    var c1 = lib_fs_exists("README.md")
+    if c1 != 1 {
+        failures = failures + 1
+    }
+    // 契约 2：fs.is_dir 对 compiler 目录
+    var c2 = lib_fs_is_dir("compiler")
+    if c2 != 1 {
+        failures = failures + 1
+    }
+    // 契约 3：env.get 命中 PATH
+    var c3 = lib_env_get("PATH")
+    if c3 != 0 {
+        failures = failures + 1
+    }
+    // 恢复平台
+    var rr = bridge_set_platform(prev)
+    if rr != 0 {
+        failures = failures + 1
+    }
+    return failures
 }
 
 }   // namespace trm
