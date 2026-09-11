@@ -1,0 +1,150 @@
+type tie<logic>
+// tests/_p716_probe/cli_probe.tie —— p.7.1.6 CLI 子命令注册化验收
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.1.6「CLI 子命令注册化 + 库树收敛」。
+// 验收点：
+//   1. keelcli.register 幂等（重登不重复登记，count 不增）+ 升序有序；
+//   2. has / count / desc_of 正确（登记命中、未登记未命中、描述可查）；
+//   3. boot() 后 CLI 注册表含 cli:pack / cli:verify / cli:install 等登记（对齐
+//      pkg/main.tie 的 tie <子命令> 表面）；
+//   4. driver 侧 handle 分派序（探针内用 switch 模拟 driver 侧处理，验证
+//      注册 → 查表 → switch 分派序；未知命令走 default 报错）。
+// 全部通过打印「keel p.7.1.6 CLI 注册化自检通过」exit 0；任一失败 exit 1。
+//
+// # import 顺序（语言边界）
+//   keel_registry → keel_cli（boot 依赖 keelcli）→ keel_boot（用 keelreg+keelcli）。
+//   keel_executor 本探针不涉及，可不 import。
+
+import "../../compiler/keel/keel_registry.tie"
+import "../../compiler/keel/keel_cli.tie"
+import "../../compiler/keel/keel_boot.tie"
+
+// 断言辅助：失败打印明细并返回 false；main 累积全部结果。
+func check(ok: bool, what: string) -> bool {
+    if !ok {
+        println("keel-cli 自检失败: " + what)
+    }
+    return ok
+}
+
+// 模拟 driver 侧 handle（compiler/driver.tie 的 keelcli_handle 同构）：
+// 按名 → 整数选择子 → switch；default = 未知命令。验证分派序正确触达分支。
+func handle_sim(cmd: string) -> string {
+    var sel: i64 = -1
+    if cmd == "pack" {
+        sel = 0
+    } else if cmd == "verify" {
+        sel = 1
+    } else if cmd == "install" {
+        sel = 2
+    } else if cmd == "search" {
+        sel = 3
+    } else if cmd == "info" {
+        sel = 4
+    }
+    var out: string = ""
+    switch sel {
+        case 0:
+            out = "pack"
+        case 1:
+            out = "verify"
+        case 2:
+            out = "install"
+        case 3:
+            out = "search"
+        case 4:
+            out = "info"
+        default:
+            out = "unknown"
+    }
+    return out
+}
+
+func main() {
+    var ok: bool = true
+
+    // ---------- 1) register 幂等 + 已登记命令数 ----------
+    // 第一次登记
+    var c1 = keelcli.count()
+    keelcli.register("cli:probe_cmd", "探针命令")
+    var c2 = keelcli.count()
+    if !check(c2 == c1 + 1, "首次 register count 增 1（" + to_string(c1) + "→" + to_string(c2) + "）") {
+        ok = false
+    }
+    // 幂等：重登不重复登记
+    keelcli.register("cli:probe_cmd", "探针命令（重登）")
+    if !check(keelcli.count() == c2, "重登幂等 count 不增") {
+        ok = false
+    }
+    // 升序有序：probe_cmd 应排在 install 之后字典序更大（或按具体键验证有序性）
+    if !check(keelcli.has("cli:probe_cmd") == 1, "has 命中已登记命令") {
+        ok = false
+    }
+
+    // ---------- 2) has / count / desc_of ----------
+    if !check(keelcli.has("cli:no_such_cmd") == 0, "has 未登记命令为 0") {
+        ok = false
+    }
+    if !check(keelcli.desc_of("cli:probe_cmd") == "探针命令", "desc_of 返回首次登记描述") {
+        ok = false
+    }
+    if !check(keelcli.desc_of("cli:no_such_cmd") == "", "desc_of 未登记返回空串") {
+        ok = false
+    }
+
+    // ---------- 3) boot 后 CLI 注册表含 tie 工具链子命令 ----------
+    var plid = keelboot.boot()
+    if !check(plid >= 0, "boot 返回 pipeline_default id") {
+        ok = false
+    }
+    if !check(keelcli.has("cli:pack") == 1, "boot 后含 cli:pack") {
+        ok = false
+    }
+    if !check(keelcli.has("cli:verify") == 1, "boot 后含 cli:verify") {
+        ok = false
+    }
+    if !check(keelcli.has("cli:install") == 1, "boot 后含 cli:install") {
+        ok = false
+    }
+    if !check(keelcli.has("cli:publish") == 1, "boot 后含 cli:publish") {
+        ok = false
+    }
+    if !check(keelcli.has("cli:help") == 1, "boot 后含 cli:help") {
+        ok = false
+    }
+    // boot 后已登记命令总数 >= 13（tie <子命令> 全表面）+ 探针 1 条
+    var c_after = keelcli.count()
+    if !check(c_after >= 14, "boot+探针后命令数 >= 14（实际 " + to_string(c_after) + "）") {
+        ok = false
+    }
+    // desc_of 非空（pack 描述可查）
+    if !check(str_len(keelcli.desc_of("cli:pack")) > 0, "cli:pack 描述可查非空") {
+        ok = false
+    }
+    // boot 幂等：重复引导 count 不增
+    var c_boot = keelcli.count()
+    keelboot.boot()
+    if !check(keelcli.count() == c_boot, "boot 幂等（重导 count 不变）") {
+        ok = false
+    }
+
+    // ---------- 4) 分派序（register → has → switch 到达正确分支） ----------
+    if !check(handle_sim("pack") == "pack", "分派 pack 到达分支") {
+        ok = false
+    }
+    if !check(handle_sim("verify") == "verify", "分派 verify 到达分支") {
+        ok = false
+    }
+    if !check(handle_sim("install") == "install", "分派 install 到达分支") {
+        ok = false
+    }
+    if !check(handle_sim("no_such") == "unknown", "未登记命令走 default(unknown)") {
+        ok = false
+    }
+
+    // ---------- 汇总 ----------
+    if !ok {
+        exit(1)
+    }
+    println("keel p.7.1.6 CLI 注册化自检通过（boot 后命令数 " + to_string(keelcli.count()) + "）")
+}

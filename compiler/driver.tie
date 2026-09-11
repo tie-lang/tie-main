@@ -31,9 +31,12 @@ import "./tdzd.tie"
 // p.6.9.15 诊断标号：error[E#####]/warning[W#####] 渲染（driver 打印入口）
 import "./frontend/diagcode.tie"
 // p.7.1.1 Keel 骨架接线：driver 真实 pass 登记为注册项，经 Keel 注册表驱动
-// 执行管线（import 文本内联；顺序 registry → boot → executor，各文件内部
+// 执行管线（import 文本内联；顺序 registry → cli → boot → executor，各文件内部
 // 互不 import，依赖经入口 import 链内联可达）。
 import "./keel/keel_registry.tie"
+// p.7.1.6 CLI 子命令注册化：keel_cli 承载命令登记/查表/描述；boot 依赖
+// keelcli（须先于 keel_boot.tie 内经内联可达），故 import 顺序 registry→cli→boot。
+import "./keel/keel_cli.tie"
 import "./keel/keel_boot.tie"
 import "./keel/keel_executor.tie"
 
@@ -920,8 +923,115 @@ func err_span(proto: string) -> string {
 
 // ==================== 主流程 ====================
 
+// ==================== p.7.1.6 CLI 子命令注册化分派（driver 侧） ====================
+// tie 工具链 `tie <子命令>` 层按 keelcli 注册表分派（设计稿 §3）：boot 已登记
+// cli:pack/cli:verify/... 等；本层查表并 switch 到实际处理函数。**边界**：tiec
+// 自身参数（-o/-O/--emit-ir/--target/...）不是子命令，保持既有语义逐字节不变；
+// 本层为**新增能力**——仅当首个参数 token 恰好命中已登记 cli:xxx 时触发子命令
+// 分派，否则原样回退到既有 tiec 参数路径（正常 `tiec <文件>` 的 token 非任何
+// cli 子命令 → 不受影响）。未登记命令在 switch default 报"未知命令"。
+
+// 首个 token 是否表示一个已登记 tie 工具链子命令（0/1）。
+// 规则：有参数、首 token 非空且不以 '-' 开头、且 keelcli.has("cli:"+token)==1。
+func keelcli_is_subcmd() -> i64 {
+    if arg_count() == 0 {
+        return 0
+    }
+    var tok = arg_string(0)
+    if str_len(tok) == 0 {
+        return 0
+    }
+    if str_char(tok, 0) == "-" {
+        return 0
+    }
+    if keelcli.has("cli:" + tok) == 1 {
+        return 1
+    }
+    return 0
+}
+
+// 子命令执行桩：真实工具链（pack/verify 等驻 pkg/*.tie，独立入口 pkg.exe）尚未
+// 接入 tiec —— 在此打印注册描述表示"按注册表分派已路由到 driver 侧处理骨架"。
+// 真实工具链联动留待后续 p.7.1.x 接线（分派骨架已验证可运行）。
+func keelcli_cmd_stub(cmd: string) -> i64 {
+    println("[keel-cli] 子命令 '" + cmd + "' 已按注册表分派（工具链未接入 tiec，边界见 p.7.1.6）: " + keelcli.desc_of("cli:" + cmd))
+    return 0
+}
+
+// 子命令分派入口（返回退出码）。C1 按名分派（switch 内联 driver 实际处理）；
+// switch default = 未登记命令 → "未知命令" 返回 1。
+func keelcli_handle(cmd: string) -> i64 {
+    var sel: i64 = -1
+    if cmd == "help" {
+        sel = 0
+    } else if cmd == "init" {
+        sel = 1
+    } else if cmd == "add" {
+        sel = 2
+    } else if cmd == "remove" {
+        sel = 3
+    } else if cmd == "install" {
+        sel = 4
+    } else if cmd == "update" {
+        sel = 5
+    } else if cmd == "build" {
+        sel = 6
+    } else if cmd == "run" {
+        sel = 7
+    } else if cmd == "publish" {
+        sel = 8
+    } else if cmd == "pack" {
+        sel = 9
+    } else if cmd == "verify" {
+        sel = 10
+    } else if cmd == "search" {
+        sel = 11
+    } else if cmd == "info" {
+        sel = 12
+    }
+    switch sel {
+        case 0:
+            return keelcli_cmd_stub("help")
+        case 1:
+            return keelcli_cmd_stub("init")
+        case 2:
+            return keelcli_cmd_stub("add")
+        case 3:
+            return keelcli_cmd_stub("remove")
+        case 4:
+            return keelcli_cmd_stub("install")
+        case 5:
+            return keelcli_cmd_stub("update")
+        case 6:
+            return keelcli_cmd_stub("build")
+        case 7:
+            return keelcli_cmd_stub("run")
+        case 8:
+            return keelcli_cmd_stub("publish")
+        case 9:
+            return keelcli_cmd_stub("pack")
+        case 10:
+            return keelcli_cmd_stub("verify")
+        case 11:
+            return keelcli_cmd_stub("search")
+        case 12:
+            return keelcli_cmd_stub("info")
+        default:
+            println(diagcode.render_error(-1, -1, "未知命令: " + cmd))
+            return 1
+    }
+}
+
 // 入口：解析参数 → 读文件 → 头部扫描 → 角色分派。返回退出码。
 func main() -> i64 {
+    // p.7.1.6 tie 工具链 CLI 子命令注册化：先就绪 CLI 注册表（幂等、轻量；
+    // 独立于 boot 的 pass/pipeline 登记，因子命令分派须先于编译引导可用），
+    // 命中已登记 cli:xxx 时走注册表分派；否则原样走既有 tiec 参数解析（token
+    // 非任何 cli 子命令 → 零行为变化）。
+    keelboot.register_cli()
+    if keelcli_is_subcmd() == 1 {
+        return keelcli_handle(arg_string(0))
+    }
     var pr = parse_args()
     if pr == 2 {
         return usage()
