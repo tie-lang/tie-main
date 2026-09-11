@@ -1,0 +1,125 @@
+type tie<logic>
+// tests/_p712_probe/ver_probe.tie —— p.7.1.2 Keel「id+version」验收
+// ============================================================
+// 里程碑：2026.2 路线图 p.7.1.2「id+version：注册项 schema 表驱动 + 同 id
+// 异 version 仲裁」（Keel 龙骨架构第二步）。验收点：
+//   1. register_v 同 id 同 version 幂等（返回原 id，count 不增）；
+//   2. register_v 同 id 异 version（优先级不同）→ arbitrate 按优先级胜出；
+//   3. 同 id 同优先级异 version → arbitrate 返回 -1 且 conflict_flag=1；
+//   4. check_version 正例（"0.0.1"/"1.2.3"）与负例（"1.2"/""/"a.b.c"）；
+//   5. 现有 register 4 参仍可用（向后兼容，默认 version "1.0.0"）。
+// 全部通过打印「keel p.7.1.2 id+version 自检通过」exit 0；任一失败 exit 1。
+//
+// # import（语言边界）
+//   只 import keel_registry.tie（单入口，零依赖自持）。字符串比较/二分/表格
+//   等均在 registry 内部自持，本探针仅调用其 pub 接口 + 语言底座原语
+//   （table_new_i64 / println / exit）。
+
+import "../../compiler/keel/keel_registry.tie"
+
+// 断言辅助：失败打印明细；main 累积全部结果。
+func check(ok: bool, what: string) -> bool {
+    if !ok {
+        println("keel p.7.1.2 自检失败: " + what)
+    }
+    return ok
+}
+
+func main() {
+    var ok: bool = true
+    var dep: table<i64> = table_new_i64()
+
+    // ---------- 1) register_v 同 id 同 version 幂等 ----------
+    var cnt0 = keelreg.count()
+    var ridA = keelreg.register_v("t712::A", "pass", "implA", dep, "3.0.0")
+    var ridA2 = keelreg.register_v("t712::A", "pass", "implA", dep, "3.0.0")
+    if !check(ridA == ridA2 && ridA >= 0, "同 id 同 version 幂等返回原 id") {
+        ok = false
+    }
+    if !check(keelreg.count() == cnt0 + 1, "同 id 同 version count 不增") {
+        ok = false
+    }
+    if !check(keelreg.find_conflict("t712::A") == 1, "单版本 find_conflict==1") {
+        ok = false
+    }
+    if !check(keelreg.version_of(ridA) == "3.0.0", "version_of 返回首登版本") {
+        ok = false
+    }
+
+    // ---------- 2) 同 id 异 version（优先级不同）→ 按优先级胜出 ----------
+    keelreg.set_priority("t712::X", 0)
+    var ridX = keelreg.register_v("t712::X", "pass", "implX", dep, "1.0.0")  // 内建 prio0
+    keelreg.set_priority("t712::X", 2)                                        // 项目 prio2
+    var ridX2 = keelreg.register_v("t712::X", "pass", "implX", dep, "2.0.0")
+    var wx = keelreg.arbitrate("t712::X")
+    if !check(ridX == ridX2, "同 id 异 version 返回同一 id（id 稳定）") {
+        ok = false
+    }
+    if !check(keelreg.find_conflict("t712::X") == 2, "异 version find_conflict==2") {
+        ok = false
+    }
+    if !check(wx >= 0, "不同优先级 arbitrate 不冲突（槽位 " + to_string(wx) + "）") {
+        ok = false
+    }
+    if wx >= 0 {
+        if !check(keelreg.cand_ver(ridX, wx) == "2.0.0", "高优先级版本胜出（期望 2.0.0，实际 " + keelreg.cand_ver(ridX, wx) + "）") {
+            ok = false
+        }
+    }
+    if !check(keelreg.conflict_flag() == 0, "仲裁成功后 conflict_flag==0") {
+        ok = false
+    }
+
+    // ---------- 3) 同 id 同优先级异 version → 冲突负例 ----------
+    keelreg.set_priority("t712::Y", 1)
+    var ridY = keelreg.register_v("t712::Y", "pass", "implY", dep, "1.0.0")  // prio1
+    keelreg.set_priority("t712::Y", 1)
+    var ridY2 = keelreg.register_v("t712::Y", "pass", "implY", dep, "2.0.0")  // prio1
+    keelreg.clear_conflict()
+    var wy = keelreg.arbitrate("t712::Y")
+    if !check(ridY == ridY2, "同 id 异 version 返回同一 id（id 稳定）") {
+        ok = false
+    }
+    if !check(keelreg.find_conflict("t712::Y") == 2, "异 version find_conflict==2") {
+        ok = false
+    }
+    if !check(wy == -1, "同优先级异 version arbitrate==-1（实际 " + to_string(wy) + "）") {
+        ok = false
+    }
+    if !check(keelreg.conflict_flag() == 1, "冲突后 conflict_flag==1") {
+        ok = false
+    }
+
+    // ---------- 4) check_version 正/负例 ----------
+    if !check(keelreg.check_version("0.0.1"), "check_version(\"0.0.1\") 应真") {
+        ok = false
+    }
+    if !check(keelreg.check_version("1.2.3"), "check_version(\"1.2.3\") 应真") {
+        ok = false
+    }
+    if !check(!keelreg.check_version("1.2"), "check_version(\"1.2\") 应假") {
+        ok = false
+    }
+    if !check(!keelreg.check_version(""), "check_version(\"\") 应假") {
+        ok = false
+    }
+    if !check(!keelreg.check_version("a.b.c"), "check_version(\"a.b.c\") 应假") {
+        ok = false
+    }
+
+    // ---------- 5) 现有 register 4 参仍可用（向后兼容，默认 version 1.0.0）----------
+    keelreg.set_priority("t712::B", 0)
+    var ridB = keelreg.register("t712::B", "pass", "implB", dep)
+    if !check(ridB >= 0, "register 4 参仍可用") {
+        ok = false
+    }
+    if !check(keelreg.version_of(ridB) == "1.0.0", "register 4 参默认 version 1.0.0") {
+        ok = false
+    }
+
+    // ---------- 汇总 ----------
+    if !ok {
+        exit(1)
+    }
+    println("keel p.7.1.2 id+version 自检通过")
+}
