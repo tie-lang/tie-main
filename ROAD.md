@@ -45,14 +45,14 @@ development happens on branch p.7.
 >
 > EN: Basis: the finalized Keel design (plugin-kernel-design.md + keel-architecture.md).
 
-- [ ] p.7.1.1 核心微内核化：pipeline 5 槽 → 注册表执行骨架 + 内建引导集（默认管线注册项）；passmanager 接入 pipeline（验收：tiec 自举 hash 不变 + 回归基线保持）
-- [ ] p.7.1.2 id+version 注册方案：注册项 schema 表驱动 + 同 id 异 version 仲裁（验收：注册冲突负例正确拦截）
-- [ ] p.7.1.3 tieir 消费入口：import tieir 包（消费方免前端）（验收：包 .tieir → 编译运行通过）
-- [ ] p.7.1.4 data→zd 发布转换：publish 压缩 + 指纹计算（验收：zd 包加载运行与 data 等价）
-- [ ] p.7.1.5 安全审计链：TSHA1 指纹（文件 tsha1f + 包树根 tsha1x）+ 凭证/指纹审计链，去中心化信任锚（验收：篡改/冒名包负例全拦截）
-- [ ] p.7.1.6 CLI 子命令注册化 + 库树收敛（std/ext/rdu ↔ lib_v1 定位）（验收：全命令行按注册项分派）
-- [ ] p.7.1.7 安全算法底座：哈希/MAC/对称/KDF/非对称/后量子分类入 std/ext/rdu，TSHA1 优先（审计链前置依赖）
-- [ ] p.7.1.8 TSHA（tsha1 代）四档家族落地：f/b/x/r，位平面 trit + 24/48 基，KAT 向量 + 交叉验证
+- [x] p.7.1.1 核心微内核化：pipeline 5 槽 → 注册表执行骨架 + 内建引导集（默认管线注册项）；passmanager 接入 pipeline（验收：tiec 自举 hash 不变 + 回归基线保持）——**已落地 2026-09-11**：keel_registry/boot/executor 三新文件 + driver 真实 5 pass 接线，tiecA==tiecB 不动点 + .ll 逐字节等价 + 回归 104 PASS
+- [x] p.7.1.2 id+version 注册方案：注册项 schema 表驱动 + 同 id 异 version 仲裁（验收：注册冲突负例正确拦截）——**已落地 2026-09-11**：register_v/version 列/优先级仲裁/check_version，探针 5 断言全过
+- [x] p.7.1.3 tieir 消费入口：import tieir 包（消费方免前端）（验收：包 .tieir → 编译运行通过）——**已落地 2026-09-11**：keel_tieir_in 消费协议（tieir.read 还原 IR → 自包含后端门产出 .ll），探针 11 断言；llvmgen 直连需 driver 勾挂点（后续）
+- [x] p.7.1.4 data→zd 发布转换：publish 压缩 + 指纹计算（验收：zd 包加载运行与 data 等价）——**已落地 2026-09-11**：zdpub.publish/load + tsha1f 指纹 + .zd.fp 清单，篡改拒绝探针过
+- [x] p.7.1.5 安全审计链：TSHA1 指纹（文件 tsha1f + 包树根 tsha1x）+ 凭证/指纹审计链，去中心化信任锚（验收：篡改/冒名包负例全拦截）——**已落地 2026-09-11**：keelaud 指纹树/验签 ed25519/TOFU 锚，篡改/冒名/换钥负例全拦截
+- [x] p.7.1.6 CLI 子命令注册化 + 库树收敛（std/ext/rdu ↔ lib_v1 定位）（验收：全命令行按注册项分派）——**已落地 2026-09-11**：keel_cli 注册表 + boot 13 cli:xxx + driver tie<cmd> 层按表分派（tiec 参数层不动）；库树收敛文档；探针 + 实机 tie pack/verify 命中
+- [x] p.7.1.7 安全算法底座：哈希/MAC/对称/KDF/非对称/后量子分类入 std/ext/rdu，TSHA1 优先（审计链前置依赖）——**已落地 2026-09-11**：清单核对 25 已有/7 缺失/6 建议迁移，文档化缺口
+- [x] p.7.1.8 TSHA（tsha1 代）四档家族落地：f/b/x/r，位平面 trit + 24/48 基，KAT 向量 + 交叉验证——**已落地 2026-09-11**：四档核实齐全，补固化 24/32 KAT，109 断言全过
 
 **仓库分离 + 发行模型（p.7.2）**
 
