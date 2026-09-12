@@ -141,141 +141,141 @@ development happens on branch p.7.
 
 **工具链（p.9.2）**
 
+- [ ] p.9.2.1 崩溃诊断：backtrace + 符号化 + 崩溃日志（配合诊断标号体系）
 - [ ] p.9.2.2 包管理器正式落地（s3.2-package 转正）：依赖解析 / 版本约束 / 上传拉取
 - [ ] p.9.2.3 DAP 调试器：断点 / 单步 / 变量 / 调用栈 + VS Code 客户端
 - [ ] p.9.2.4 剖析器 profiler：CPU / 内存剖析 + 火焰图
 - [ ] p.9.2.5 脚手架 tie new：项目模板 + 初始化
-- [ ] p.9.2.6 崩溃诊断：backtrace + 符号化 + 崩溃日志（配合诊断标号体系）
 
-**tiu UI 框架（p.9.3）**
+**命令行壳 tshell（p.9.3，交互基础设施，先行开发）**
+
+> 定位（2026-09-13 定，设计文档 v0.2）：tie 命令行壳三身份——独立壳（REPL + 脚本运行时 + 系统命令混合 + 值管道，目标全面优于 PowerShell）· **tedit 根基**（终端模组命令引擎，同进程 zd 协议总线 + 子进程 tink 帧双形态）· **trm 基础设施**（tieir 观测台 / 调试前端 / 动态加载交互，执行后端 interp|trm 可配置）；**模块化可嵌入**——能力以九模块交付，开发者把需要的模块嵌入自己的应用（静态 / 动态 / 进程外三形态）；组件仓 `tie-lang/tshell`
+>
+> EN: p.9.3 — tshell command-line shell & interactive infrastructure: three roles (standalone PS-killer shell; tedit terminal-module engine with dual protocol modes; trm interactive infra), modular & embeddable (nine modules, three embedding forms), repo tie-lang/tshell.
+
+- [ ] p.9.3.1 壳核心：REPL 求值循环（tie-interp 执行后端）+ 命令解析（tie 表达式 → 内建 → 外部回退 + 拼写纠错）+ 值管道与渲染（L0–L1，`repl`/`command`/`pipeline`/`render` 模块）
+- [ ] p.9.3.2 会话层：tie 自研行编辑 / 可插拔补全源 / 历史 / 配置（td 资产热加载）（L2，`lineedit`/`complete`/`session` 模块）
+- [ ] p.9.3.3 脚本运行时：`-e` / `-f` / shebang / 脚本内内建命令函数式调用（`run` 模块）
+- [ ] p.9.3.4 双形态协议层：同进程 zd 内存总线（tedit 嵌入）+ `--stdio` tink 帧（子进程 / 远程 / WASM 后端）（L3，`srv` 模块）
+- [ ] p.9.3.5 trm 基础设施：tieir 观测台 / 调试前端 / 动态加载交互 / `set eval-backend interp|trm` 执行后端可配置（`observe` 模块，对齐 p.7.3.2）
+- [ ] p.9.3.6 模块化交付：模块清单冻结 / 装配器 / 三种嵌入形态 / 接 tedit 终端模组嵌入子集（§12 设计）
+  - 设计文档（2026-09-12）：`docs/designs/tshell-architecture.md` v0.2（三身份 + 五层架构 + 双形态集成协议 + 模块系统与嵌入）
+  - 状态：**先行开发（优先启动）**——tshell 作为 tedit（p.9.9.7）根系，**先于 tedit 等组件完成开发**；依赖仅 tiec repl 路径（现货）与 tink 帧协议；trm 侧能力（observe）随 p.7.3 异步接入；**tie 命令行入口由 tshell 承载**（原 p.9.2 tie 命令行条目并入本档）
+
+**tiu UI 框架（p.9.4）**
 
 > 定位（2026-09-11 定）：独立自研、高性能、跨平台、**不依赖 trm**；可与 trm 同用。
 >
 > EN: tiu (2026-09-11): independent in-house UI framework — high-performance,
 > cross-platform, NOT depending on trm; usable alone or with trm.
 
-- [ ] p.9.3.1 tiu 运行时底座：窗口/绘制/事件/资源管理（独立于 trm）
-  - 设计文档已落盘（2026-09-12）：`docs/designs/tiu-render-engine.md`（渲染引擎七层）· `docs/designs/tiu-drawing-api.md`（绘制 API 库）· `docs/designs/tiu-event-system.md`（事件轴）；上层 `docs/designs/tiu-ui-widgets.md`（UI 库，p.9.3.2 输入）
+- [ ] p.9.4.1 tiu 运行时底座：窗口/绘制/事件/资源管理（独立于 trm）
+  - 设计文档已落盘（2026-09-12）：`docs/designs/tiu-render-engine.md`（渲染引擎七层）· `docs/designs/tiu-drawing-api.md`（绘制 API 库）· `docs/designs/tiu-event-system.md`（事件轴）；上层 `docs/designs/tiu-ui-widgets.md`（UI 库，p.9.4.2 输入）
   - API 库实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-api-impl.md`（任务分解 + 契约冻结 + 无遗留闭环）
   - 渲染引擎实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-render-impl.md`（任务分解 + 契约冻结 + 后端落地顺序 + 无遗留闭环）
-- [ ] p.9.3.2 组件树与组合式布局框架
-- [ ] p.9.3.3 release.md 修订：tieui/trm.ui 关系对齐 tiu 独立定位
+- [ ] p.9.4.2 组件树与组合式布局框架
+- [ ] p.9.4.3 release.md 修订：tieui/trm.ui 关系对齐 tiu 独立定位
 
-**trm-lite 协程（p.9.4）**
+**trm-lite 协程（p.9.5）**
 
 > 定位（2026-09-11 定）：部分协程加入 trm-lite（生成器式）；trm 不保留协程。
 >
 > EN: (2026-09-11) partial coroutines join trm-lite (generator-style); trm keeps none.
 
-- [ ] p.9.4.1 生成器式协程：`yield 值` 产出 + 惰性迭代/流（惰性序列、管道、无限流）
-- [ ] p.9.4.2 与既有调度整合：生成器任务可迁移/可窃取，复用 P-段双端队列（p.6.5/p.6.7 底座）
+- [ ] p.9.5.1 生成器式协程：`yield 值` 产出 + 惰性迭代/流（惰性序列、管道、无限流）
+- [ ] p.9.5.2 与既有调度整合：生成器任务可迁移/可窃取，复用 P-段双端队列（p.6.5/p.6.7 底座）
 
-**生态应用（p.9.5）**
+**生态应用（p.9.6）**
 
-- [ ] p.9.5.1 tieDB 完整实现：列式持久化 + 向量检索 vecsearch（zd 底座，Shipyard 四件套之一）
-- [ ] p.9.5.2 去中心化网络：DHT + 打洞直连 + 志愿 relay（网络去中心化总原则，tink v2 语义层）
-- [ ] p.9.5.3 嵌入式脚本：宿主程序/游戏嵌入 tie（对接 Subterra 类项目）
-- [ ] p.9.5.4 在线 Playground：网页写 tie 即时跑（WASM 后端落地后延伸，双语推广）
+- [ ] p.9.6.1 tieDB 完整实现：列式持久化 + 向量检索 vecsearch（zd 底座，Shipyard 四件套之一）
+- [ ] p.9.6.2 去中心化网络：DHT + 打洞直连 + 志愿 relay（网络去中心化总原则，tink v2 语义层）
+- [ ] p.9.6.3 嵌入式脚本：宿主程序/游戏嵌入 tie（对接 Subterra 类项目）
+- [ ] p.9.6.4 在线 Playground：网页写 tie 即时跑（WASM 后端落地后延伸，双语推广）
 
-**平台（p.9.6）**
+**平台（p.9.7）**
 
-- [ ] p.9.6.1 macOS 平台移植（Linux 已在 r.1.6 闭环，补齐三大桌面平台）
-- [ ] p.9.6.2 WASM 目标后端：tie 代码编译到 wasm，浏览器/嵌入式可跑
-- [ ] p.9.6.3 GPU / X11 / SkParagraph 图形收尾（p.6.8 后置项）
-- [ ] p.9.6.4 PQC 后量子密码（docs/plans/pqc-roadmap.md 已有规划）
-- [ ] p.9.6.5 hw-accel 硬件加速（docs/plans/hw-accel.md 已有规划）
+- [ ] p.9.7.1 macOS 平台移植（Linux 已在 r.1.6 闭环，补齐三大桌面平台）
+- [ ] p.9.7.2 WASM 目标后端：tie 代码编译到 wasm，浏览器/嵌入式可跑
+- [ ] p.9.7.3 GPU / X11 / SkParagraph 图形收尾（p.6.8 后置项）
+- [ ] p.9.7.4 PQC 后量子密码（docs/plans/pqc-roadmap.md 已有规划）
+- [ ] p.9.7.5 hw-accel 硬件加速（docs/plans/hw-accel.md 已有规划）
 
-**安装器（p.9.7，最后做）**
+**安装器（p.9.8，最后做）**
 
-- [ ] p.9.7.1 tiwi 安装器：**完全 tie 自研重构**——GUI 用 tiu（自定义）、逻辑全 tie 语言、自解压 setup（六边形架构；2026.2 收尾点，最后落地）
+- [ ] p.9.8.1 tiwi 安装器：**完全 tie 自研重构**——GUI 用 tiu（自定义）、逻辑全 tie 语言、自解压 setup（六边形架构；2026.2 收尾点，最后落地）
 
-**tge 游戏引擎 / t3d / trg（p.9.8，规划中，潜力档位）**
+**tge 游戏引擎 / t3d / trg（p.9.9，规划中，潜力档位）**
 
 > 定位（2026-09-12 定）：通用全栈游戏引擎，100% tie；立场中立（物理/网络/权威/中心化均为开发者可配置选项）。组装 t3d（3D 渲染框架）+ tiu（2D/UI）+ tink（多人）+ trg（共享渲染底栈）。
 >
 > EN: tge — general-purpose full-stack tie game engine, position-neutral; assembles
 > t3d (3D), tiu (2D/UI), tink (networking), trg (shared rendering substrate).
 
-- [ ] p.9.8.1 tge 全栈游戏引擎（ECS 骨架 / 帧模型 / 网络多路径；组件仓 `tie-lang/tge`）
-- [ ] p.9.8.2 t3d 3D 渲染框架（Forward+ / Deferred 双路径 · 三档 GI · GPU-driven · PBR 单源；组件仓 `tie-lang/t3d`）
-- [ ] p.9.8.3 trg 共享渲染底栈（帧图 / shader 预编译 / 资源管理；组件仓 `tie-lang/trg`）
+- [ ] p.9.9.1 tge 全栈游戏引擎（ECS 骨架 / 帧模型 / 网络多路径；组件仓 `tie-lang/tge`）
+- [ ] p.9.9.2 t3d 3D 渲染框架（Forward+ / Deferred 双路径 · 三档 GI · GPU-driven · PBR 单源；组件仓 `tie-lang/t3d`）
+- [ ] p.9.9.3 trg 共享渲染底栈（帧图 / shader 预编译 / 资源管理；组件仓 `tie-lang/trg`）
   - 设计文档（2026-09-12，规划期落于 `F:\Projects\tie-repo\tge\docs\designs\`）：`tge-architecture.md` · `t3d-architecture.md` · `trg-architecture.md` · `taud-architecture.md` · `tanim-architecture.md` · `tphy-architecture.md`（建仓后迁入各组件仓）
   - 状态：**规划中，未建仓**；依赖 2026.2 基本闭环后择期启动
-- [ ] p.9.8.4 taud 音频组件（独立音频系统，可单用/可被 tge 组装；组件仓 `tie-lang/taud`）
-- [ ] p.9.8.5 tanim 动画组件（独立动画系统：骨骼/顶点/混合树/状态机/动画资产；可单用/可被 tge 组装；组件仓 `tie-lang/tanim`）
-- [ ] p.9.8.6 tphy 物理组件（独立物理系统：刚体/碰撞/约束求解/确定性可配；可单用/可被 tge 组装；组件仓 `tie-lang/tphy`）
-- [ ] p.9.8.7 tedit 生态编辑器（tie 生态共用模块化编辑器：薄壳 + 可拆卸模组，每组件贡献生态模组；性能/低内存/老电脑/跨平台/手机可用；组件仓 `tie-lang/tedit`）
+- [ ] p.9.9.4 taud 音频组件（独立音频系统，可单用/可被 tge 组装；组件仓 `tie-lang/taud`）
+- [ ] p.9.9.5 tanim 动画组件（独立动画系统：骨骼/顶点/混合树/状态机/动画资产；可单用/可被 tge 组装；组件仓 `tie-lang/tanim`）
+- [ ] p.9.9.6 tphy 物理组件（独立物理系统：刚体/碰撞/约束求解/确定性可配；可单用/可被 tge 组装；组件仓 `tie-lang/tphy`）
+- [ ] p.9.9.7 tedit 生态编辑器（tie 生态共用模块化编辑器：薄壳 + 可拆卸模组，每组件贡献生态模组；性能/低内存/老电脑/跨平台/手机可用；终端模组基于 tshell（p.9.3）；组件仓 `tie-lang/tedit`）
 
-**计算科学与多媒体域（p.9.9，规划中）**
+**计算科学与多媒体域（p.9.10，规划中）**
 
 > 定位（2026-09-12 定）：tie 生态扩展两大主轴 + 横跨组件——计算科学（tsci→tstat→tsim）+ 多媒体（timg→tvid→tvfx）+ 几何建模 tgeo + 统计可视化 tplot；**库生态靠 pkg/registry（CRAN/PyPI 模式），产出物靠 tplot 绘图 + tedit notebook 报告 + timg/tvid 导出（端到端"能画图、能出产物"）**；设计参考 R/Matlab/Julia。
 >
-> EN: p.9.9 — computational science & media domains (tsci→tstat→tsim, timg→tvid→tvfx, tgeo, tplot); library ecosystem via pkg/registry, outputs via tplot + tedit notebook + timg/tvid; design reference R/Matlab/Julia.
+> EN: p.9.10 — computational science & media domains (tsci→tstat→tsim, timg→tvid→tvfx, tgeo, tplot); library ecosystem via pkg/registry, outputs via tplot + tedit notebook + timg/tvid; design reference R/Matlab/Julia.
 
-- [ ] p.9.9.1 tsci 科学计算（数值线性代数/FFT/ODE/优化；组件仓 `tie-lang/tsci`）
-- [ ] p.9.9.2 tstat 统计预测（分布/回归/时间序列/ML 基础；社会/经济预测；依赖 tsci；组件仓 `tie-lang/tstat`）
-- [ ] p.9.9.3 tsim 仿真模拟（DES/蒙特卡洛/系统动力学/agent-based；依赖 tsci+tstat；组件仓 `tie-lang/tsim`）
-- [ ] p.9.9.4 tgeo 几何建模（B-rep/NURBS/网格/参数化；供 t3d/tphy/tanim；组件仓 `tie-lang/tgeo`）
-- [ ] p.9.9.5 timg 图像处理（编解码/滤镜/缩放/颜色管理；依赖 trg；组件仓 `tie-lang/timg`）
-- [ ] p.9.9.6 tvid 视频处理（编解码/转码/帧流；依赖 timg；组件仓 `tie-lang/tvid`）
-- [ ] p.9.9.7 tvfx 特效（粒子/后处理/着色器特效；独立仓，依赖 t3d；组件仓 `tie-lang/tvfx`）
-- [ ] p.9.9.8 tplot 统计可视化（图表/数据可视化；依赖 tiu+timg，产出物链路关键；组件仓 `tie-lang/tplot`）
-- [ ] p.9.9.9 tac API 生成器（tie api compiler：读 tieapi td 定义 → API IR → 各语言 codegen backend → tink-xxx 绑定库；首期 Python/Rust/C；组件仓 `tie-lang/tac`）
+- [ ] p.9.10.1 tsci 科学计算（数值线性代数/FFT/ODE/优化；组件仓 `tie-lang/tsci`）
+- [ ] p.9.10.2 tstat 统计预测（分布/回归/时间序列/ML 基础；社会/经济预测；依赖 tsci；组件仓 `tie-lang/tstat`）
+- [ ] p.9.10.3 tsim 仿真模拟（DES/蒙特卡洛/系统动力学/agent-based；依赖 tsci+tstat；组件仓 `tie-lang/tsim`）
+- [ ] p.9.10.4 tgeo 几何建模（B-rep/NURBS/网格/参数化；供 t3d/tphy/tanim；组件仓 `tie-lang/tgeo`）
+- [ ] p.9.10.5 timg 图像处理（编解码/滤镜/缩放/颜色管理；依赖 trg；组件仓 `tie-lang/timg`）
+- [ ] p.9.10.6 tvid 视频处理（编解码/转码/帧流；依赖 timg；组件仓 `tie-lang/tvid`）
+- [ ] p.9.10.7 tvfx 特效（粒子/后处理/着色器特效；独立仓，依赖 t3d；组件仓 `tie-lang/tvfx`）
+- [ ] p.9.10.8 tplot 统计可视化（图表/数据可视化；依赖 tiu+timg，产出物链路关键；组件仓 `tie-lang/tplot`）
+- [ ] p.9.10.9 tac API 生成器（tie api compiler：读 tieapi td 定义 → API IR → 各语言 codegen backend → tink-xxx 绑定库；首期 Python/Rust/C；组件仓 `tie-lang/tac`）
   - 布局文档（2026-09-12）：`docs/plans/2026-09-12-p99-sci-media-domains.md`（领域清单/依赖链/库生态与产出物/R·Matlab·Julia 设计参考）
   - 状态：**规划中，未建仓**；依赖 2026.2 基本闭环后择期启动
   - 生态格式与 API 家族规范（2026-09-12）：`docs/designs/tie-format-api-family.md`（tieapi 统一 API 规范层 + td/zd 同源双态 + 专项格式谱系 + 家族纪律 + 对外互操作 + 绑定生成策略 + tac 实现细节）
 
-**语言功能与语法糖第二轮（p.9.10，语言层补全）**
+**语言功能与语法糖第二轮（p.9.11，语言层补全）**
 
 > p.8 档（语言第一轮 21 项）闭环后的第二轮语言层；全部能力纳入当前架构、仅区分落地
 > 顺序（用户 2026-09-13 全选确认）。设计文档：`docs/designs/tie-lang-round2-design.md`。
-> 联动：yield 语法↔trm-lite p.9.4.1；#cfg↔p.9.6 平台移植；inline↔p.9.1.2 编译资源可调。
+> 联动：yield 语法↔trm-lite p.9.5.1；#cfg↔p.9.7 平台移植；inline↔p.9.1.2 编译资源可调。
 >
 > EN: Round-2 language layer after p.8 closed (confirmed by user 2026-09-13, full set);
-> design in docs/designs/tie-lang-round2-design.md; ties to p.9.4.1/p.9.6/p.9.1.2.
+> design in docs/designs/tie-lang-round2-design.md; ties to p.9.5.1/p.9.7/p.9.1.2.
 
-- [ ] p.9.10.1 match/switch **表达式**：模式匹配表达式位取值 `let v = when x { 1 => "a" _ => "b" }`（复用穷尽检查）
-- [ ] p.9.10.2 **if-let** 解构条件：`if let Some(x) = opt { }`（可带 else），Option/Result 解包惯用法
-- [ ] p.9.10.3 **try 块** 错误聚合：`try { a? b? }` 块内 `?` 早退传播，无异常语义
-- [ ] p.9.10.4 **defer** 资源释放：`defer { f.close() }` 作用域退出逆序执行（tie 无 RAII 的钥匙）
-- [ ] p.9.10.5 **映射/记录字面量**：`{name: "x", age: 3}`（真实缺口，花括号消歧设计：首元素标识符/字符串+冒号即记录）
-- [ ] p.9.10.6 **表不可变更新**：`t2 = t1 with {k: v}` 值语义新生表、未变部分零拷贝共享
-- [ ] p.9.10.7 **切片/区间糖**：`t[1..3]`/`t[..n]`/`t[n..]`/`t[..]`（表+字符串）
-- [ ] p.9.10.8 **剩余解构**：`var (a, ...rest) = t` rest 收集为表
-- [ ] p.9.10.9 **checked 运算**：`a +? b` 溢出即诊断；普通 `+` 零变化；策略可配置
-- [ ] p.9.10.10 **inline 标注**：`inline fn hot()` 内联提示（联动优化档位）
-- [ ] p.9.10.11 **immut 只读形参**：`fn f(immut t)` 防误写/降拷贝
-- [ ] p.9.10.12 **@注解/属性**：`@component class X` 声明式注解（联动 Keel 注册表/tieapi/tdiag）
-- [ ] p.9.10.13 **#cfg 条件编译**：`#cfg(os=linux)`/`#else` 目标求值裁剪（平台移植钥匙）
-- [ ] p.9.10.14 **import 别名/重导出**：`import x as y`（解析层糖）
-- [ ] p.9.10.15 **yield 生成器语法**：`func gen() { yield v }`（语言侧 tiec，运行时 trm-lite p.9.4.1）
-- [ ] p.9.10.16 **迭代器协议 + 惰性序列**：iterable 协议 + 惰性链（性能导向，与 p.9.4 同源）
-- [ ] p.9.10.17 **函数类型一等公民**：`fn(i64)->bool` 类型写法（与闭包/尾随闭包配套）
-- [ ] p.9.10.18 **多行表达式续行**：行尾 `\`/流水线延续（修补实测缺口）
-- [ ] p.9.10.19 **数值字面量加强 + raw 字符串**：`1_000_000`/`0b`/`r"..."`
-- [ ] p.9.10.20 **enum 关联方法**：enum 类型方法定义（与 struct 方法约定一致）
-- [ ] p.9.10.21 **interface/trait 轻量化**（候选池排后）：`type Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
-
-**命令行壳 tshell（p.9.11，交互基础设施，规划中）**
-
-> 定位（2026-09-13 定，设计文档 v0.2）：tie 命令行壳三身份——独立壳（REPL + 脚本运行时 + 系统命令混合 + 值管道，目标全面优于 PowerShell）· **tedit 根基**（终端模组命令引擎，同进程 zd 协议总线 + 子进程 tink 帧双形态）· **trm 基础设施**（tieir 观测台 / 调试前端 / 动态加载交互，执行后端 interp|trm 可配置）；**模块化可嵌入**——能力以九模块交付，开发者把需要的模块嵌入自己的应用（静态 / 动态 / 进程外三形态）；组件仓 `tie-lang/tshell`
->
-> EN: p.9.11 — tshell command-line shell & interactive infrastructure: three roles (standalone PS-killer shell; tedit terminal-module engine with dual protocol modes; trm interactive infra), modular & embeddable (nine modules, three embedding forms), repo tie-lang/tshell.
-
-- [ ] p.9.11.1 壳核心：REPL 求值循环（tie-interp 执行后端）+ 命令解析（tie 表达式 → 内建 → 外部回退 + 拼写纠错）+ 值管道与渲染（L0–L1，`repl`/`command`/`pipeline`/`render` 模块）
-- [ ] p.9.11.2 会话层：tie 自研行编辑 / 可插拔补全源 / 历史 / 配置（td 资产热加载）（L2，`lineedit`/`complete`/`session` 模块）
-- [ ] p.9.11.3 脚本运行时：`-e` / `-f` / shebang / 脚本内内建命令函数式调用（`run` 模块）
-- [ ] p.9.11.4 双形态协议层：同进程 zd 内存总线（tedit 嵌入）+ `--stdio` tink 帧（子进程 / 远程 / WASM 后端）（L3，`srv` 模块）
-- [ ] p.9.11.5 trm 基础设施：tieir 观测台 / 调试前端 / 动态加载交互 / `set eval-backend interp|trm` 执行后端可配置（`observe` 模块，对齐 p.7.3.2）
-- [ ] p.9.11.6 模块化交付：模块清单冻结 / 装配器 / 三种嵌入形态 / 接 tedit 终端模组嵌入子集（§12 设计）
-  - 设计文档（2026-09-12）：`docs/designs/tshell-architecture.md` v0.2（三身份 + 五层架构 + 双形态集成协议 + 模块系统与嵌入）
-  - 状态：**先行开发（优先启动）**——tshell 作为 tedit（p.9.8.7）根系，**先于 tedit 等组件完成开发**；依赖仅 tiec repl 路径（现货）与 tink 帧协议；trm 侧能力（observe）随 p.7.3 异步接入；**tie 命令行入口由 tshell 承载**（原 p.9.2.1 并入本档）
+- [ ] p.9.11.1 match/switch **表达式**：模式匹配表达式位取值 `let v = when x { 1 => "a" _ => "b" }`（复用穷尽检查）
+- [ ] p.9.11.2 **if-let** 解构条件：`if let Some(x) = opt { }`（可带 else），Option/Result 解包惯用法
+- [ ] p.9.11.3 **try 块** 错误聚合：`try { a? b? }` 块内 `?` 早退传播，无异常语义
+- [ ] p.9.11.4 **defer** 资源释放：`defer { f.close() }` 作用域退出逆序执行（tie 无 RAII 的钥匙）
+- [ ] p.9.11.5 **映射/记录字面量**：`{name: "x", age: 3}`（真实缺口，花括号消歧设计：首元素标识符/字符串+冒号即记录）
+- [ ] p.9.11.6 **表不可变更新**：`t2 = t1 with {k: v}` 值语义新生表、未变部分零拷贝共享
+- [ ] p.9.11.7 **切片/区间糖**：`t[1..3]`/`t[..n]`/`t[n..]`/`t[..]`（表+字符串）
+- [ ] p.9.11.8 **剩余解构**：`var (a, ...rest) = t` rest 收集为表
+- [ ] p.9.11.9 **checked 运算**：`a +? b` 溢出即诊断；普通 `+` 零变化；策略可配置
+- [ ] p.9.11.10 **inline 标注**：`inline fn hot()` 内联提示（联动优化档位）
+- [ ] p.9.11.11 **immut 只读形参**：`fn f(immut t)` 防误写/降拷贝
+- [ ] p.9.11.12 **@注解/属性**：`@component class X` 声明式注解（联动 Keel 注册表/tieapi/tdiag）
+- [ ] p.9.11.13 **#cfg 条件编译**：`#cfg(os=linux)`/`#else` 目标求值裁剪（平台移植钥匙）
+- [ ] p.9.11.14 **import 别名/重导出**：`import x as y`（解析层糖）
+- [ ] p.9.11.15 **yield 生成器语法**：`func gen() { yield v }`（语言侧 tiec，运行时 trm-lite p.9.5.1）
+- [ ] p.9.11.16 **迭代器协议 + 惰性序列**：iterable 协议 + 惰性链（性能导向，与 p.9.5 同源）
+- [ ] p.9.11.17 **函数类型一等公民**：`fn(i64)->bool` 类型写法（与闭包/尾随闭包配套）
+- [ ] p.9.11.18 **多行表达式续行**：行尾 `\`/流水线延续（修补实测缺口）
+- [ ] p.9.11.19 **数值字面量加强 + raw 字符串**：`1_000_000`/`0b`/`r"..."`
+- [ ] p.9.11.20 **enum 关联方法**：enum 类型方法定义（与 struct 方法约定一致）
+- [ ] p.9.11.21 **interface/trait 轻量化**（候选池排后）：`type Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
 
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
 > - docs/designs/trm-final-design.md（对齐 p.7.3 trm 重定位）
-> - docs/release.md（对齐 p.7.2 多仓拆分与聚合发行、p.9.3 tiu 独立定位、发行物出仓）
+> - docs/release.md（对齐 p.7.2 多仓拆分与聚合发行、p.9.4 tiu 独立定位、发行物出仓）
 > - docs/superpowers/specs/2026-08-29-plugin-kernel-design.md（落地编号对齐本 ROAD p.7.1.x）
 
 EN: Existing finalized docs to be aligned during 2026.2 (revised in place, no separate
