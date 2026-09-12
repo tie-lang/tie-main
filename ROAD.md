@@ -141,7 +141,6 @@ development happens on branch p.7.
 
 **工具链（p.9.2）**
 
-- [ ] p.9.2.1 tie 命令行：基于 tink 管道编排器（形态 A tink pipe）
 - [ ] p.9.2.2 包管理器正式落地（s3.2-package 转正）：依赖解析 / 版本约束 / 上传拉取
 - [ ] p.9.2.3 DAP 调试器：断点 / 单步 / 变量 / 调用栈 + VS Code 客户端
 - [ ] p.9.2.4 剖析器 profiler：CPU / 内存剖析 + 火焰图
@@ -256,6 +255,21 @@ development happens on branch p.7.
 - [ ] p.9.10.19 **数值字面量加强 + raw 字符串**：`1_000_000`/`0b`/`r"..."`
 - [ ] p.9.10.20 **enum 关联方法**：enum 类型方法定义（与 struct 方法约定一致）
 - [ ] p.9.10.21 **interface/trait 轻量化**（候选池排后）：`type Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
+
+**命令行壳 tshell（p.9.11，交互基础设施，规划中）**
+
+> 定位（2026-09-13 定，设计文档 v0.2）：tie 命令行壳三身份——独立壳（REPL + 脚本运行时 + 系统命令混合 + 值管道，目标全面优于 PowerShell）· **tedit 根基**（终端模组命令引擎，同进程 zd 协议总线 + 子进程 tink 帧双形态）· **trm 基础设施**（tieir 观测台 / 调试前端 / 动态加载交互，执行后端 interp|trm 可配置）；**模块化可嵌入**——能力以九模块交付，开发者把需要的模块嵌入自己的应用（静态 / 动态 / 进程外三形态）；组件仓 `tie-lang/tshell`
+>
+> EN: p.9.11 — tshell command-line shell & interactive infrastructure: three roles (standalone PS-killer shell; tedit terminal-module engine with dual protocol modes; trm interactive infra), modular & embeddable (nine modules, three embedding forms), repo tie-lang/tshell.
+
+- [ ] p.9.11.1 壳核心：REPL 求值循环（tie-interp 执行后端）+ 命令解析（tie 表达式 → 内建 → 外部回退 + 拼写纠错）+ 值管道与渲染（L0–L1，`repl`/`command`/`pipeline`/`render` 模块）
+- [ ] p.9.11.2 会话层：tie 自研行编辑 / 可插拔补全源 / 历史 / 配置（td 资产热加载）（L2，`lineedit`/`complete`/`session` 模块）
+- [ ] p.9.11.3 脚本运行时：`-e` / `-f` / shebang / 脚本内内建命令函数式调用（`run` 模块）
+- [ ] p.9.11.4 双形态协议层：同进程 zd 内存总线（tedit 嵌入）+ `--stdio` tink 帧（子进程 / 远程 / WASM 后端）（L3，`srv` 模块）
+- [ ] p.9.11.5 trm 基础设施：tieir 观测台 / 调试前端 / 动态加载交互 / `set eval-backend interp|trm` 执行后端可配置（`observe` 模块，对齐 p.7.3.2）
+- [ ] p.9.11.6 模块化交付：模块清单冻结 / 装配器 / 三种嵌入形态 / 接 tedit 终端模组嵌入子集（§12 设计）
+  - 设计文档（2026-09-12）：`docs/designs/tshell-architecture.md` v0.2（三身份 + 五层架构 + 双形态集成协议 + 模块系统与嵌入）
+  - 状态：**先行开发（优先启动）**——tshell 作为 tedit（p.9.8.7）根系，**先于 tedit 等组件完成开发**；依赖仅 tiec repl 路径（现货）与 tink 帧协议；trm 侧能力（observe）随 p.7.3 异步接入；**tie 命令行入口由 tshell 承载**（原 p.9.2.1 并入本档）
 
 ### 关联定稿（修订项）
 
