@@ -249,26 +249,26 @@ development happens on branch p.7.
 > EN: Round-2 language layer after p.8 closed (confirmed by user 2026-09-13, full set);
 > design in docs/designs/tie-lang-round2-design.md; ties to p.9.5.1/p.9.7/p.9.1.2.
 
-- [ ] p.9.11.1 match/switch **表达式**：模式匹配表达式位取值 `let v = when x { 1 => "a" _ => "b" }`（复用穷尽检查）
-- [ ] p.9.11.2 **if-let** 解构条件：`if let Some(x) = opt { }`（可带 else），Option/Result 解包惯用法
-- [ ] p.9.11.3 **try 块** 错误聚合：`try { a? b? }` 块内 `?` 早退传播，无异常语义
-- [ ] p.9.11.4 **defer** 资源释放：`defer { f.close() }` 作用域退出逆序执行（tie 无 RAII 的钥匙）
-- [ ] p.9.11.5 **映射/记录字面量**：`{name: "x", age: 3}`（真实缺口，花括号消歧设计：首元素标识符/字符串+冒号即记录）
-- [ ] p.9.11.6 **表不可变更新**：`t2 = t1 with {k: v}` 值语义新生表、未变部分零拷贝共享
-- [ ] p.9.11.7 **切片/区间糖**：`t[1..3]`/`t[..n]`/`t[n..]`/`t[..]`（表+字符串）
-- [ ] p.9.11.8 **剩余解构**：`var (a, ...rest) = t` rest 收集为表
-- [ ] p.9.11.9 **checked 运算**：`a +? b` 溢出即诊断；普通 `+` 零变化；策略可配置
-- [ ] p.9.11.10 **inline 标注**：`inline fn hot()` 内联提示（联动优化档位）
-- [ ] p.9.11.11 **immut 只读形参**：`fn f(immut t)` 防误写/降拷贝
-- [ ] p.9.11.12 **@注解/属性**：`@component class X` 声明式注解（联动 Keel 注册表/tieapi/tdiag）
-- [ ] p.9.11.13 **#cfg 条件编译**：`#cfg(os=linux)`/`#else` 目标求值裁剪（平台移植钥匙）
-- [ ] p.9.11.14 **import 别名/重导出**：`import x as y`（解析层糖）
-- [ ] p.9.11.15 **yield 生成器语法**：`func gen() { yield v }`（语言侧 tiec，运行时 trm-lite p.9.5.1）
-- [ ] p.9.11.16 **迭代器协议 + 惰性序列**：iterable 协议 + 惰性链（性能导向，与 p.9.5 同源）
-- [ ] p.9.11.17 **函数类型一等公民**：`fn(i64)->bool` 类型写法（与闭包/尾随闭包配套）
-- [ ] p.9.11.18 **多行表达式续行**：行尾 `\`/流水线延续（修补实测缺口）
-- [ ] p.9.11.19 **数值字面量加强 + raw 字符串**：`1_000_000`/`0b`/`r"..."`
-- [ ] p.9.11.20 **enum 关联方法**：enum 类型方法定义（与 struct 方法约定一致）
+- [x] p.9.11.1 match/switch **表达式**——**已落地 2026-09-13**：tiec 4192249（N_SWITCH_EXPR，表达式位 switch，`=>` 新 token lex_fatarrow，phi 汇合取值，复用穷尽检查）：模式匹配表达式位取值 `let v = when x { 1 => "a" _ => "b" }`（复用穷尽检查）
+- [x] p.9.11.2 **if-let** 解构条件——**已落地 2026-09-13**：tiec 61f6c68（desugar 到 switch case/default，支持 else/else-if 链）：`if let Some(x) = opt { }`（可带 else），Option/Result 解包惯用法
+- [x] p.9.11.3 **try 块** 错误聚合——**已落地 2026-09-13**：tiec 00538b2（纯语法分组+内联直发，块内 `?` 传播到当前函数，块末表达式取值）：`try { a? b? }` 块内 `?` 早退传播，无异常语义
+- [x] p.9.11.4 **defer** 资源释放——**已落地 2026-09-13**：tiec 61658b9（编译期注册表+运行期 LIFO 标志链，覆盖 return/break/`?`，continue/panic 注明不触发）：`defer { f.close() }` 作用域退出逆序执行（tie 无 RAII 的钥匙）
+- [x] p.9.11.5 **映射/记录字面量**——**已落地 2026-09-13**：tiec bacd0ba（`{` 消歧：首元素标识符/字符串+冒号即记录；desugar 键化表 map，rec.k 走 map 读取）：`{name: "x", age: 3}`（真实缺口，花括号消歧设计：首元素标识符/字符串+冒号即记录）
+- [x] p.9.11.6 **表不可变更新**——**已落地 2026-09-13**：tiec f83c3e2（`with` 保留字 token，复制+合并产新表，多键/链式）：`t2 = t1 with {k: v}` 值语义新生表、未变部分零拷贝共享
+- [x] p.9.11.7 **切片/区间糖**——**已落地 2026-09-13**：tiec b5c877b（左闭右开，越界 clamp，表拷贝/字符串子串）：`t[1..3]`/`t[..n]`/`t[n..]`/`t[..]`（表+字符串）
+- [x] p.9.11.8 **剩余解构**——**已落地 2026-09-13**：tiec 0cc26b2（末位 `...rest` 收集为表，desugar 索引+切片，非末位诊断）：`var (a, ...rest) = t` rest 收集为表
+- [x] p.9.11.9 **checked 运算**——**已落地 2026-09-13**：tiec e87b860（`+? -? *?` 整数溢出运行期可捕获 panic，普通运算零变化）：`a +? b` 溢出即诊断；普通 `+` 零变化；策略可配置
+- [x] p.9.11.10 **inline 标注**——**已落地 2026-09-13**：tiec 8734803（LLVM 定义附加 alwaysinline，普通函数零变化）：`inline fn hot()` 内联提示（联动优化档位）
+- [x] p.9.11.11 **immut 只读形参**——**已落地 2026-09-13**：tiec 14f19c2（变量重写/自增自减/字段与下标写编译期拒绝，零运行期开销）：`fn f(immut t)` 防误写/降拷贝
+- [x] p.9.11.12 **@注解/属性**——**已落地 2026-09-13**：tiec 44993dd（`@name(@args)` 挂 func/struct/enum 编译期元数据 + pann 查询注册表，悬空/重复/非字面量诊断）：`@component class X` 声明式注解（联动 Keel 注册表/tieapi/tdiag）
+- [x] p.9.11.13 **#cfg 条件编译**——**已落地 2026-09-13**：tiec 4658c9a（词法前按行裁剪 #cfg(键=值)/#else/#end，键 os/target/debug/release，未闭合/嵌套诊断）：`#cfg(os=linux)`/`#else` 目标求值裁剪（平台移植钥匙）
+- [x] p.9.11.14 **import 别名/重导出**——**已落地 2026-09-13**：tiec 66ffb38（`as` 别名登记+重复诊断，`pub import` 重导出标记，内联模型零成本）：`import x as y`（解析层糖）
+- [x] p.9.11.15 **yield 生成器语法**——**已落地 2026-09-13**：tiec f04962d（yield 标记生成器函数，签名 table&lt;elem&gt;，for 直接消费；惰性协程运行期归 p.9.5.1）：`func gen() { yield v }`（语言侧 tiec，运行时 trm-lite p.9.5.1）
+- [x] p.9.11.16 **迭代器协议 + 惰性序列**——**已落地 2026-09-13**：tiec 8e39eee（has_next/next 两方法协议，for/推导式消费分派，接收者求值一次）：iterable 协议 + 惰性链（性能导向，与 p.9.5 同源）
+- [x] p.9.11.17 **函数类型一等公民**——**已落地 2026-09-13**：tiec 522033e（四位承载验证 + fn 字段调用改写为函数值间接调用）：`fn(i64)->bool` 类型写法（与闭包/尾随闭包配套）
+- [x] p.9.11.18 **多行表达式续行**——**已落地 2026-09-13**：tiec 6cd00f2（行尾 `\` 续行，行尾 |/-> 由 ASI 天然续行；行首运算符延续留候选）：行尾 `\`/流水线延续（修补实测缺口）
+- [x] p.9.11.19 **数值字面量加强 + raw 字符串**——**已落地 2026-09-13**：tiec f323d77（数字分隔 _/0x_FF/0b，raw r"..." 免转义无插值）：`1_000_000`/`0b`/`r"..."`
+- [x] p.9.11.20 **enum 关联方法**——**已落地 2026-09-13**：tiec 846e346（namespace 绑定+接收者自动引用，obj.method() 分派 &lt;Enum&gt;::method，payload 解构可用）：enum 类型方法定义（与 struct 方法约定一致）
 - [ ] p.9.11.21 **interface/trait 轻量化**（候选池排后）：`type Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
 
 ### 关联定稿（修订项）
@@ -280,3 +280,6 @@ development happens on branch p.7.
 
 EN: Existing finalized docs to be aligned during 2026.2 (revised in place, no separate
 tier): trm-final-design.md, release.md, plugin-kernel-design.md.
+
+
+
