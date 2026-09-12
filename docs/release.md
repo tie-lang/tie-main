@@ -59,10 +59,10 @@ EN: Each official release is assigned an internal codename that represents the a
 | 版本 | 内部代号 | 含义 |
 | --- | --- | --- |
 | 2026.1 | **Harbor 港湾** | 首个正式版 = 工具链第一次靠岸停泊，形成可交付的稳定形态 |
-| 2026.2 | **Shipyard 造船厂** | 编译器彻底重构 = 进入 **Keel 龙骨架构**时代：核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；插件/包经 tieir 分发与审计链入港。工具链完整形态：**trm**（运行时）、**UI 框架**、**tiedb**（数据库/向量检索）与 **tiwi**（安装器）随船厂一体下水 |
+| 2026.2 | **Shipyard 造船厂** | 编译器彻底重构 = 进入 **Keel 龙骨架构**时代：核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；插件/包经 tieir 分发与审计链入港。工具链完整形态：**trm**（运行时）、**UI 框架**、**tdb**（数据库/向量检索）与 **twi**（安装器）随船厂一体下水 |
 
 EN: The table above lists each release version, its internal codename, and its meaning: 2026.1 is codenamed **Harbor 港湾**, where the first official release = the toolchain's first docking and berthing, forming a deliverable, stable shape.
-EN: 2026.2 is codenamed **Shipyard 造船厂**, marking the complete compiler restructure into the **Keel 龙骨架构** era: the core retains only the mechanism layer (registry/auditor/loader/execution skeleton, zero behavior), and all behavior is a registration item; plugins/packages dock via tieir distribution and the audit chain. The toolchain reaches its full form — **trm** (runtime), **UI framework**, **tiedb** (database/vector search) and **tiwi** (installer builder) are launched together from the shipyard.
+EN: 2026.2 is codenamed **Shipyard 造船厂**, marking the complete compiler restructure into the **Keel 龙骨架构** era: the core retains only the mechanism layer (registry/auditor/loader/execution skeleton, zero behavior), and all behavior is a registration item; plugins/packages dock via tieir distribution and the audit chain. The toolchain reaches its full form — **trm** (runtime), **UI framework**, **tdb** (database/vector search) and **twi** (installer builder) are launched together from the shipyard.
 
 代号仅用于宣传/文档/产物命名（如安装包名），不进入版本号。
 
@@ -112,10 +112,10 @@ EN: The repo root of the package carries `README.md`, `NEW.md`, `CHANGELOG.md` a
 
 - **trm**（运行时）：动态库延迟绑定 + system 域（terminal/process/fs/env/session/clock/net/data）
 - **UI 框架**：tiu 独立自研 UI（窗口/绘制/事件 + 组件树/布局组合式框架；不依赖 trm，可与 trm 同用）
-- **tiedb**（数据库）：tieDB 完整形态（列式持久化 + 向量检索 vecsearch，zd 格式底座）
-- **tiwi**（安装器）：tie 安装程序制作器（**完全 tie 自研重构**——GUI 用 tiu、逻辑全 tie 语言、自解压 setup，六边形架构）
+- **tdb**（数据库）：tieDB 完整形态（列式持久化 + 向量检索 vecsearch，zd 格式底座）
+- **twi**（安装器）：tie 安装程序制作器（**完全 tie 自研重构**——GUI 用 tiu、逻辑全 tie 语言、自解压 setup，六边形架构）
 
-EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is completed with: **trm** (runtime: dynamic-library lazy binding + the system domain terminal/process/fs/env/session/clock/net/data); the **UI framework** **tiu**, an independent in-house UI (window/drawing/events + composable component tree/layout; not depending on trm, usable together with trm); **tiedb** (the database in full form: columnar persistence + vecsearch over the zd format); and **tiwi** (the tie installer builder, fully rebuilt with tie's own stack — GUI via tiu, logic entirely in tie, self-extracting setup, hexagonal architecture).
+EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is completed with: **trm** (runtime: dynamic-library lazy binding + the system domain terminal/process/fs/env/session/clock/net/data); the **UI framework** **tiu**, an independent in-house UI (window/drawing/events + composable component tree/layout; not depending on trm, usable together with trm); **tdb** (the database in full form: columnar persistence + vecsearch over the zd format); and **twi** (the tie installer builder, fully rebuilt with tie's own stack — GUI via tiu, logic entirely in tie, self-extracting setup, hexagonal architecture).
 
 ### 3.4 仓库组织与发行版位置（2026.2 多仓拆分）
 *EN: Repository organization and release-artifact location (multi-repo split in 2026.2)*
@@ -127,7 +127,7 @@ EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is c
   （README / CHANGELOG / LICENSE / NEW / CONTRIBUTING / ROAD 等）+ 聚合发行脚本；
   其余内容已按迁移清单迁往组件仓
 - **组件仓库**：各组件（编译器 tiec、数据互联 tink、LSP 服务 tsp、运行时 trm、
-  UI 框架 tiu、数据库 tdb、安装器 tiwi、包管理器 tpkg、编辑器扩展 vscode-tie、
+  UI 框架 tiu、数据库 tdb、安装器 twi、包管理器 tpkg、编辑器扩展 vscode-tie、
   tie-dev 技能等）各自独立仓，独立演进与发布
 
 组件仓库清单（2026-09-11 定稿；p.7.2.7 / 2026-09-12 已落地建仓）：
@@ -140,7 +140,7 @@ EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is c
 | 运行时 trm | `tie-lang/trm` | JVM 式可选 VM（字节码 + 运行时 VM + 引擎级 GC），可插拔后端，不捆绑编译器 |
 | UI 框架 tiu | `tie-lang/tiu` | 独立自研 UI（窗口/绘制/事件 + 组件树/布局），高性能跨平台、不依赖 trm |
 | 数据库 tdb | `tie-lang/tdb` | tieDB 完整形态（列式持久化 + 向量检索 vecsearch，zd 底座；原 tiedb） |
-| 安装器 tiwi | `tie-lang/tiwi` | tie 安装程序制作器（完全 tie 自研：GUI 用 tiu、逻辑全 tie、自解压 setup） |
+| 安装器 twi | `tie-lang/twi` | tie 安装程序制作器（完全 tie 自研：GUI 用 tiu、逻辑全 tie、自解压 setup；原 tiwi） |
 | 包管理器 tpkg | `tie-lang/tpkg` | 依赖解析 + tie.lock + registry 交互（p.9.2.2 正式落地；原 tie-pkg） |
 | 编辑器扩展 | `tie-lang/vscode-tie` | VSCode 扩展（语法高亮 + LSP 诊断） |
 | 开发技能 | `tie-lang/tie-dev` | tie-dev AI 开发技能（SKILL.md） |
@@ -153,8 +153,8 @@ EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is c
 > **tiec** (compiler sources + keel + std/ext/rdu + repl + build scripts), **tink**
 > (language-agnostic data-flow interop: zd v2 framing, module.function(byte-in→byte-out), `tink pipe`),
 > **tsp** (LSP server), **trm** (optional JVM-style VM, never bundled), **tiu**
-> (independent UI framework), **tiedb** (database/vecsearch), **tiwi** (installer),
-> **tie-pkg** (package manager), **vscode-tie** (editor extension), **tie-dev**
+> (independent UI framework), **tdb** (database/vecsearch), **twi** (installer),
+> **tpkg** (package manager), **vscode-tie** (editor extension), **tie-dev**
 > (AI development skill), **old_docs** (archives).
 
 发行物：
@@ -281,9 +281,9 @@ then run `dist/package.exe 2026.2` (optional `skip-repl` / `skip-llvm`).
 ### 4.4 README 路线图
 *EN: README roadmap*
 
-Harbor M0 里程碑 = 2026.1 正式发行版基础；Shipyard = 2026.2 完整形态（Keel 架构 + trm/UI/tiedb/tiwi）。
+Harbor M0 里程碑 = 2026.1 正式发行版基础；Shipyard = 2026.2 完整形态（Keel 架构 + trm/UI/tdb/twi）。
 
-EN: The Harbor M0 milestone = the 2026.1 official-release foundation; Shipyard = the 2026.2 full form (Keel architecture + trm/UI/tiedb/tiwi).
+EN: The Harbor M0 milestone = the 2026.1 official-release foundation; Shipyard = the 2026.2 full form (Keel architecture + trm/UI/tdb/twi).
 
 ### 4.5 主仓聚合发行（2026.2）
 *EN: Aggregated release of the whole toolchain (2026.2)*
@@ -374,14 +374,14 @@ EN: Adapted from the publish-release skill (the dotnet/Rust variant retired with
 4. `compiler/tiec.exe scripts/package.tie -- {版本}` 自举验证 + 打包生成 zip
 5. 提交并推送 GitHub（`tie-main` remote = github；内部远端 git.franj2.top 已弃用，不再推送）
 6. 打 git tag（裸版本号 `2026.1`）
-7. 创建双平台 Release（GitHub / GitCode），上传压缩包（安装包自 2026.2 tiwi 起）
+7. 创建双平台 Release（GitHub / GitCode），上传压缩包（安装包自 2026.2 twi 起）
 
-EN: 1. Infer the version number (year.revision, confirm with the user); 2. update CHANGELOG.md (per changelog-writing rules, recorded immediately with each commit); 3. sync the docs (README, language.md, ai-guide, the release.md codename table, etc.); 4. run `compiler/tiec.exe scripts/package.tie -- {version}` for bootstrap verification + zip packaging; 5. commit and push to GitHub (tie-main remote = github; the internal remote git.franj2.top is deprecated and never pushed anymore); 6. create the git tag (bare version `2026.1`); 7. create the dual-platform Release (GitHub / GitCode) and upload the archives (installers arrive with tiwi in 2026.2).
+EN: 1. Infer the version number (year.revision, confirm with the user); 2. update CHANGELOG.md (per changelog-writing rules, recorded immediately with each commit); 3. sync the docs (README, language.md, ai-guide, the release.md codename table, etc.); 4. run `compiler/tiec.exe scripts/package.tie -- {version}` for bootstrap verification + zip packaging; 5. commit and push to GitHub (tie-main remote = github; the internal remote git.franj2.top is deprecated and never pushed anymore); 6. create the git tag (bare version `2026.1`); 7. create the dual-platform Release (GitHub / GitCode) and upload the archives (installers arrive with twi in 2026.2).
 
 ## 6. 既定决策
 *EN: Established Decisions*
 
-- 打包产物：**仅 zip 压缩包**（`tie-{版本}-win-x64.zip`）；安装器自 2026.2（tiwi）引入
+- 打包产物：**仅 zip 压缩包**（`tie-{版本}-win-x64.zip`）；安装器自 2026.2（twi）引入
 - 编辑器扩展：**包含** `editor/vscode-tie`（随发行版分发）
 - 目标平台：**仅 win-x64**（本机可验证；跨平台后续版本）
 - LLVM：**捆绑精简工具链**（bin/llvm/，无需用户另装）
@@ -391,4 +391,4 @@ EN: 1. Infer the version number (year.revision, confirm with the user); 2. updat
 - 发行物：**出仓**——zip 经 GitHub / GitCode Release 附件分发，不进 git 跟踪
 - 源码包（2026.2）：发行目录设 `src/` 收拢全部源码，另出只含 `src/` 的 `tie-{版本}-src.zip`
 
-EN: Packaging artifacts: **zip archives only** (`tie-{version}-win-x64.zip`); installers arrive with tiwi in 2026.2. Editor extension: **included** — `editor/vscode-tie` (distributed with the release). Target platform: **win-x64 only** (verifiable on this machine; cross-platform comes in a later version). LLVM: **bundled as a minimal toolchain** (bin/llvm/, no separate install needed). Packager: **written in tie** (scripts/package.tie, 0-PowerShell). Repo organization: **multi-repo split** — tie-main is the aggregation/release repository (artifacts + current-version docs), other components live in their own repositories. Release artifacts: **leave the git tree** — zips are distributed as GitHub/GitCode Release assets.
+EN: Packaging artifacts: **zip archives only** (`tie-{version}-win-x64.zip`); installers arrive with twi in 2026.2. Editor extension: **included** — `editor/vscode-tie` (distributed with the release). Target platform: **win-x64 only** (verifiable on this machine; cross-platform comes in a later version). LLVM: **bundled as a minimal toolchain** (bin/llvm/, no separate install needed). Packager: **written in tie** (scripts/package.tie, 0-PowerShell). Repo organization: **multi-repo split** — tie-main is the aggregation/release repository (artifacts + current-version docs), other components live in their own repositories. Release artifacts: **leave the git tree** — zips are distributed as GitHub/GitCode Release assets.

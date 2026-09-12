@@ -35,7 +35,7 @@
 
 ### 1.2 td（人类可读源） / Human-readable Source
 * 语法**属 tie**（表字面量 `{ key: value }`、`[1,2,3]`）——可读写、可 diff、可版本控制
-* 一切数据/配置/资产（tge 场景/prefab · tanim clip/骨架/状态机 · tphy 材质 · tiedb 数据 · tsim 模型 …）的**可读源形态**
+* 一切数据/配置/资产（tge 场景/prefab · tanim clip/骨架/状态机 · tphy 材质 · tdb 数据 · tsim 模型 …）的**可读源形态**
 
 ### 1.3 zd（二进制变体） / Binary Variant
 * 人类不可读、二进制、即时读取、低内存；td 的**同源双态**（`tiec --compress-data` tdzd 转换）

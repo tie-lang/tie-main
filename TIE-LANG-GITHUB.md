@@ -15,8 +15,8 @@ This is real work, not a slide deck:
   **Generics shipped**, with the full pipeline of compile-time monomorphization.
 - **标准库自给自足**：字符串/编码（string、utf、json、regex）、数据结构与算法（sort、collection、crypto、graph、linalg、math）、IO 与系统（fs、http、net、db、time）。
   **Self-sufficient standard library**: strings/encoding (string, utf, json, regex), data structures & algorithms (sort, collection, crypto, graph, linalg, math), IO & system (fs, http, net, db, time).
-- **配套齐全**：prep 预处理器、包管理器 pkg、REPL、tieDB 数据库接口库、rdu 嵌入式基础层。
-  **Full toolkit**: prep preprocessor, pkg package manager, REPL, tieDB database layer, rdu embedded low-level layer.
+- **配套齐全**：prep 预处理器、包管理器 pkg、REPL、tdb 数据库接口库、rdu 嵌入式基础层。
+  **Full toolkit**: prep preprocessor, pkg package manager, REPL, tdb database layer, rdu embedded low-level layer.
 
 语言还在快速迭代，语法随时可能变，暂不建议上生产。
 The language is still iterating fast and the syntax can change anytime — not recommended for production yet.

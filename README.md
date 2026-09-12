@@ -132,7 +132,7 @@ tie-main/              聚合/发行仓（aggregation/release repo）
 | 运行时 trm | 可选 JVM 式 VM（不捆绑编译器） | [tie-lang/trm](https://github.com/tie-lang/trm) | 已独立 |
 | UI 框架 tiu | 独立自研 UI（不依赖 trm） | `tie-lang/tiu` | 规划中（p.9.3）|
 | 数据库 tdb | 列式持久化 + 向量检索（zd 底座） | [tie-lang/tdb](https://github.com/tie-lang/tdb) | 已独立 |
-| 安装器 tiwi | tie 自研安装程序制作器 | [tie-lang/tiwi](https://github.com/tie-lang/tiwi) | 已独立 |
+| 安装器 twi | tie 自研安装程序制作器 | [tie-lang/twi](https://github.com/tie-lang/twi) | 已独立 |
 | 包管理器 tpkg | 依赖解析 + tie.lock + registry 交互 | [tie-lang/tpkg](https://github.com/tie-lang/tpkg) | 已独立 |
 | 编辑器扩展 | VSCode 语法高亮 + LSP 诊断 | [tie-lang/vscode-tie](https://github.com/tie-lang/vscode-tie) | 已独立 |
 | 开发技能 | tie-dev AI 开发技能 | [tie-lang/tie-dev](https://github.com/tie-lang/tie-dev) | 已独立 |

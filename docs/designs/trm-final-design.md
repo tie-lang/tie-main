@@ -76,7 +76,7 @@ EN: **In one sentence**: pure compilation gives everyone a stable zero-dependenc
 │  库层（业务能力面，全 tie 写，静态/动态混合）                │
 │  ├── 纯逻辑域：terminal process fs env session clock       │
 │  │             net data（语义层）→ 静态编入产物            │
-│  │            + 工具集成：log compress http tieDB regex  │
+│  │            + 工具集成：log compress http tdb regex  │
 │  └── 平台绑定：trm_platform.dll/.so/.dylib 动态库           │
 │              （平台桥 ABI：扩展链面，见 §6.2）              │
 ├──────────────────────────────────────────────────────────┤

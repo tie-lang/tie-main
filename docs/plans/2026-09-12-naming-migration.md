@@ -53,9 +53,9 @@
 | 仓 | 状态 | 日期 | 提交 |
 |---|---|---|---|
 | tdiag | ✅ 已完成 | 2026-09-12 | GitHub 改名 tie-lang/tdiag · 本地目录 tie-repo/tdiag · 仓内 README/gen-docs.ps1（tdiag d144931）· tie-main 引用（language.md/SKILL.md/package.tie，0f4b07d）· grep 旧名=0（豁免：历史 CHANGELOG + 映射描述）|
-| tpkg | 待执行 | — | — |
-| twi | 待执行 | — | — |
-| tdb | 待执行 | — | — |
+| tpkg | ✅ 已完成 | 2026-09-13 | GitHub 建仓/改名 tie-lang/tpkg · 本地 origin → tie-lang/tpkg · tie-main 引用清扫 · grep 旧名=0 |
+| twi | ✅ 已完成 | 2026-09-13 | GitHub 仓库 tie-lang/twi · 本地 twi 改名（bin/lib/tie lib/sample，8f77c1a）· tie-main 引用 · grep 旧名=0 |
+| tdb | ✅ 已完成 | 2026-09-13 | GitHub 建仓/改名 tie-lang/tdb · 本地 origin → tie-lang/tdb · tiedb 旧目录清理（源码归档）· tie-main 引用 |
 
 ---
 

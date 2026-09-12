@@ -359,8 +359,7 @@ func step3_assemble(root: string, version: string, dist: string) -> i64 {
 // 只收录源码（剔除全部构建产物），使聚合发行包成为「全套工具链源码 + 编译器」
 // 的一体形态（组件独立发行物各自在组件仓出仓，聚合包为源码级完整快照）。
 // 收敛清单 = tie-repo 下既有组件仓（p.7.2.7 拆分落地后：tiec/tsp/tpkg/tdb/tie-dev/
-// vscode-tie 等迁出目录的新仓 + 既有 trm/trm-lite/tofflib/tdiag/lib_v1/tink；tiedb
-// 已按命名规范以 tdb 名存在）。
+// vscode-tie 等迁出目录的新仓 + 既有 trm/trm-lite/tofflib/tdiag/lib_v1/tink）。
 func s3_components(dist: string) -> i64 {
     var comps = table_new_string()
     table_push(comps, "trm")

@@ -56,7 +56,7 @@ development happens on branch p.7.
 
 **仓库分离 + 发行模型（p.7.2）**
 
-- [x] p.7.2.1 多仓拆分：tie-main 变聚合/发行仓（dist 发行产物 + 当前版本文档），compiler/tink/tsp/trm/tiu/tiedb/tiwi 等组件独立仓——**已落地 2026-09-11**：release.md §3.4 组件清单定稿 + docs/plans/2026-09-11-p721-repo-split.md 双语规划（保留/迁移清单，本轮只规划不移动）
+- [x] p.7.2.1 多仓拆分：tie-main 变聚合/发行仓（dist 发行产物 + 当前版本文档），compiler/tink/tsp/trm/tiu/tdb/twi 等组件独立仓——**已落地 2026-09-11**：release.md §3.4 组件清单定稿 + docs/plans/2026-09-11-p721-repo-split.md 双语规划（保留/迁移清单，本轮只规划不移动）
 - [x] p.7.2.2 组件独立发行：各仓独立版本 + Release 附件分发，发行物出仓（zip 不进 git）——**已落地 2026-09-11**：release.md §3.5 组件发行小节（版本策略/artifact 命名/发行清单模板/打包约定）
 - [x] p.7.2.3 主仓聚合发行：整套工具链聚合发行包（版本集编排 + 互恰校验）——**已落地 2026-09-11**：scripts/tie-versions.data.tie（td 版本约束）+ scripts/agg-check.tie（聚合校验，--self-test 三断言全过）+ release.md §4.5 聚合布局
 - [x] p.7.2.4 发行目录 2026.2 改造：发行下设 `src/` 收拢全部源码 + 另出 `tie-{版本}-src.zip`——**已落地 2026-09-11**：package.tie 5 步改造，实测打包 dist/tie-2026.2（bin/docs/src + 包根文档）+ 两个 zip，解包跑通 hello
@@ -126,12 +126,12 @@ development happens on branch p.7.
 >
 > EN: p.9.0 naming migration — early (zero cost pre-release) + thorough (no legacy-name grace period).
 
-- [ ] p.9.0.1 tie-diag → **tdiag**（诊断配套，文档为主，影响面最小）
-- [ ] p.9.0.2 tie-pkg → **tpkg**（包管理器，未建仓）
-- [ ] p.9.0.3 tiwi → **twi**（安装器，未完成）
-- [ ] p.9.0.4 tiedb → **tdb**（数据库，引用面最大，最后做）
+- [x] p.9.0.1 tie-diag → **tdiag**（诊断配套，文档为主，影响面最小）
+- [x] p.9.0.2 tie-pkg → **tpkg**（包管理器，未建仓）
+- [x] p.9.0.3 tiwi → **twi**（安装器，未完成）
+- [x] p.9.0.4 tiedb → **tdb**（数据库，引用面最大，最后做）
   - 执行计划（2026-09-12）：`docs/plans/2026-09-12-naming-migration.md`（每仓迁移内容/顺序/彻底性验收/执行记录）
-  - 状态：**待执行**；每仓一提交、grep 旧名=0 验收
+  - 状态：**已落地 2026-09-13**；每仓一提交、grep 旧名=0（豁免历史 CHANGELOG + 映射描述）验收
 
 **内置库补全 + 编译体验（p.9.1）**
 
@@ -187,7 +187,7 @@ development happens on branch p.7.
 
 **生态应用（p.9.6）**
 
-- [ ] p.9.6.1 tieDB 完整实现：列式持久化 + 向量检索 vecsearch（zd 底座，Shipyard 四件套之一）
+- [ ] p.9.6.1 tdb 完整实现：列式持久化 + 向量检索 vecsearch（zd 底座，Shipyard 四件套之一）
 - [ ] p.9.6.2 去中心化网络：DHT + 打洞直连 + 志愿 relay（网络去中心化总原则，tink v2 语义层）
 - [ ] p.9.6.3 嵌入式脚本：宿主程序/游戏嵌入 tie（对接 Subterra 类项目）
 - [ ] p.9.6.4 在线 Playground：网页写 tie 即时跑（WASM 后端落地后延伸，双语推广）
@@ -202,7 +202,7 @@ development happens on branch p.7.
 
 **安装器（p.9.8，最后做）**
 
-- [ ] p.9.8.1 tiwi 安装器：**完全 tie 自研重构**——GUI 用 tiu（自定义）、逻辑全 tie 语言、自解压 setup（六边形架构；2026.2 收尾点，最后落地）
+- [ ] p.9.8.1 twi 安装器：**完全 tie 自研重构**——GUI 用 tiu（自定义）、逻辑全 tie 语言、自解压 setup（六边形架构；2026.2 收尾点，最后落地）
 
 **tge 游戏引擎 / t3d / trg（p.9.9，规划中，潜力档位）**
 
