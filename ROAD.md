@@ -226,6 +226,37 @@ development happens on branch p.7.
   - 状态：**规划中，未建仓**；依赖 2026.2 基本闭环后择期启动
   - 生态格式与 API 家族规范（2026-09-12）：`docs/designs/tie-format-api-family.md`（tieapi 统一 API 规范层 + td/zd 同源双态 + 专项格式谱系 + 家族纪律 + 对外互操作 + 绑定生成策略 + tac 实现细节）
 
+**语言功能与语法糖第二轮（p.9.10，语言层补全）**
+
+> p.8 档（语言第一轮 21 项）闭环后的第二轮语言层；全部能力纳入当前架构、仅区分落地
+> 顺序（用户 2026-09-13 全选确认）。设计文档：`docs/designs/tie-lang-round2-design.md`。
+> 联动：yield 语法↔trm-lite p.9.4.1；#cfg↔p.9.6 平台移植；inline↔p.9.1.2 编译资源可调。
+>
+> EN: Round-2 language layer after p.8 closed (confirmed by user 2026-09-13, full set);
+> design in docs/designs/tie-lang-round2-design.md; ties to p.9.4.1/p.9.6/p.9.1.2.
+
+- [ ] p.9.10.1 match/switch **表达式**：模式匹配表达式位取值 `let v = when x { 1 => "a" _ => "b" }`（复用穷尽检查）
+- [ ] p.9.10.2 **if-let** 解构条件：`if let Some(x) = opt { }`（可带 else），Option/Result 解包惯用法
+- [ ] p.9.10.3 **try 块** 错误聚合：`try { a? b? }` 块内 `?` 早退传播，无异常语义
+- [ ] p.9.10.4 **defer** 资源释放：`defer { f.close() }` 作用域退出逆序执行（tie 无 RAII 的钥匙）
+- [ ] p.9.10.5 **映射/记录字面量**：`{name: "x", age: 3}`（真实缺口，花括号消歧设计：首元素标识符/字符串+冒号即记录）
+- [ ] p.9.10.6 **表不可变更新**：`t2 = t1 with {k: v}` 值语义新生表、未变部分零拷贝共享
+- [ ] p.9.10.7 **切片/区间糖**：`t[1..3]`/`t[..n]`/`t[n..]`/`t[..]`（表+字符串）
+- [ ] p.9.10.8 **剩余解构**：`var (a, ...rest) = t` rest 收集为表
+- [ ] p.9.10.9 **checked 运算**：`a +? b` 溢出即诊断；普通 `+` 零变化；策略可配置
+- [ ] p.9.10.10 **inline 标注**：`inline fn hot()` 内联提示（联动优化档位）
+- [ ] p.9.10.11 **immut 只读形参**：`fn f(immut t)` 防误写/降拷贝
+- [ ] p.9.10.12 **@注解/属性**：`@component class X` 声明式注解（联动 Keel 注册表/tieapi/tdiag）
+- [ ] p.9.10.13 **#cfg 条件编译**：`#cfg(os=linux)`/`#else` 目标求值裁剪（平台移植钥匙）
+- [ ] p.9.10.14 **import 别名/重导出**：`import x as y`（解析层糖）
+- [ ] p.9.10.15 **yield 生成器语法**：`func gen() { yield v }`（语言侧 tiec，运行时 trm-lite p.9.4.1）
+- [ ] p.9.10.16 **迭代器协议 + 惰性序列**：iterable 协议 + 惰性链（性能导向，与 p.9.4 同源）
+- [ ] p.9.10.17 **函数类型一等公民**：`fn(i64)->bool` 类型写法（与闭包/尾随闭包配套）
+- [ ] p.9.10.18 **多行表达式续行**：行尾 `\`/流水线延续（修补实测缺口）
+- [ ] p.9.10.19 **数值字面量加强 + raw 字符串**：`1_000_000`/`0b`/`r"..."`
+- [ ] p.9.10.20 **enum 关联方法**：enum 类型方法定义（与 struct 方法约定一致）
+- [ ] p.9.10.21 **interface/trait 轻量化**（候选池排后）：`type Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
+
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
