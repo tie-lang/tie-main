@@ -3,12 +3,12 @@
 *EN: tie Language Features & Sugar — Round 2 Design*
 
 > 定位：p.8 档（语言第一轮：特性+糖集 21 项）已闭环后，第二轮语言层规划。
-> 按四个梯队 + 候选池组织；全部能力纳入当前架构，仅区分落地顺序（ROAD p.9.10 逐子项立项）。
+> 按四个梯队 + 候选池组织；全部能力纳入当前架构，仅区分落地顺序（ROAD p.9.11 逐子项立项）。
 > 依据：三支柱（效率·性能·安全·通用）+ p.8 各子项实测遗留缺口（含批次 C 多行续行实测坑）。
 >
 > EN: Round 2 of language-layer planning after the p.8 tier (21 language sub-items) closed.
 > Organized in four tiers plus a candidate pool; every capability is part of the current
-> architecture — only the landing order differs (ROAD p.9.10, one sub-item per feature).
+> architecture — only the landing order differs (ROAD p.9.11, one sub-item per feature).
 
 ## 1. 分组总览 / Overview
 
@@ -95,12 +95,12 @@ EN: Pool (deferred): lightweight interfaces/traits, table-pattern matching, labe
 
 | ROAD | 项目 |
 |---|---|
-| p.9.10.1–4 | match 表达式 / if-let / try 块 / defer |
-| p.9.10.5–8 | 记录字面量 / 表更新 / 切片 / 剩余解构 |
-| p.9.10.9–11 | checked 运算 / inline / immut |
-| p.9.10.12–15 | @注解 / #cfg / import 别名 / yield |
-| p.9.10.16–20 | 迭代器协议 / 函数类型 / 续行 / 数值字面量 / enum 方法 |
-| p.9.10.21 | interface/trait 轻量化（候选池排后） |
+| p.9.11.1–4 | match 表达式 / if-let / try 块 / defer |
+| p.9.11.5–8 | 记录字面量 / 表更新 / 切片 / 剩余解构 |
+| p.9.11.9–11 | checked 运算 / inline / immut |
+| p.9.11.12–15 | @注解 / #cfg / import 别名 / yield |
+| p.9.11.16–20 | 迭代器协议 / 函数类型 / 续行 / 数值字面量 / enum 方法 |
+| p.9.11.21 | interface/trait 轻量化（候选池排后） |
 
-EN: every feature maps to one ROAD p.9.10.x sub-item; pool items still get numbered
+EN: every feature maps to one ROAD p.9.11.x sub-item; pool items still get numbered
 sub-items but land later.
