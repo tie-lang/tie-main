@@ -135,7 +135,7 @@ development happens on branch p.7.
 
 **内置库补全 + 编译体验（p.9.1）**
 
-- [x] p.9.1.1 更多内置库——**已落地 2026-09-13**：tiec 1765147（doc库清单 14 条：高=zlib/gzip·WebP·AVIF·datetime·GIF）（一库一子项，清单与优先级在库补全设计中定；候选含多媒体编解码 WebP/AVIF/音频/视频）
+- [x] p.9.1.1 更多内置库——**已落地 2026-09-13**：tiec 1765147+ 5 批次（清单扩至 21 项，20 项已实现纯 tie——zlib/gzip·WebP(VP8L)·datetime·GIF·JSON5·WAV·regex-pro·xlsx·color·rng-adv·QR 解码·BMP·bytes·process 管道/超时·fs·zip·mono 时钟·regex；.3 AVIF 登记待环境 libavif、.8 视频容器待专项）（一库一子项，清单与优先级在库补全设计中定；候选含多媒体编解码 WebP/AVIF/音频/视频）
 - [x] p.9.1.2 编译资源可调——**已落地 2026-09-13**：tiec 5a4beee（`--mem-limit <MB>` 超限 O3 自动降 O2 + `--jobs` 并发预留 + 分配档位 CLI>配置>默认）：内存上限 / 并发度 / 优化档位可配置（利好老电脑）
 - [x] p.9.1.3 编译速度提升——**已落地 2026-09-13**：tiec ddc173d（编译缓存：源哈希+参数+盐为键 → ~/.tiec-cache；`--no-cache`；脚本 verify-cache.ps1）：增量编译 / 并行编译 / 编译缓存
 
