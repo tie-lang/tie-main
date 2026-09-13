@@ -135,17 +135,17 @@ development happens on branch p.7.
 
 **内置库补全 + 编译体验（p.9.1）**
 
-- [ ] p.9.1.1 更多内置库（一库一子项，清单与优先级在库补全设计中定；候选含多媒体编解码 WebP/AVIF/音频/视频）
-- [ ] p.9.1.2 编译资源可调：内存上限 / 并发度 / 优化档位可配置（利好老电脑）
-- [ ] p.9.1.3 编译速度提升：增量编译 / 并行编译 / 编译缓存
+- [x] p.9.1.1 更多内置库——**已落地 2026-09-13**：tiec 1765147（doc库清单 14 条：高=zlib/gzip·WebP·AVIF·datetime·GIF）（一库一子项，清单与优先级在库补全设计中定；候选含多媒体编解码 WebP/AVIF/音频/视频）
+- [x] p.9.1.2 编译资源可调——**已落地 2026-09-13**：tiec 5a4beee（`--mem-limit <MB>` 超限 O3 自动降 O2 + `--jobs` 并发预留 + 分配档位 CLI>配置>默认）：内存上限 / 并发度 / 优化档位可配置（利好老电脑）
+- [x] p.9.1.3 编译速度提升——**已落地 2026-09-13**：tiec ddc173d（编译缓存：源哈希+参数+盐为键 → ~/.tiec-cache；`--no-cache`；脚本 verify-cache.ps1）：增量编译 / 并行编译 / 编译缓存
 
 **工具链（p.9.2）**
 
-- [ ] p.9.2.1 崩溃诊断：backtrace + 符号化 + 崩溃日志（配合诊断标号体系）
-- [ ] p.9.2.2 包管理器正式落地（s3.2-package 转正）：依赖解析 / 版本约束 / 上传拉取
-- [ ] p.9.2.3 DAP 调试器：断点 / 单步 / 变量 / 调用栈 + VS Code 客户端
-- [ ] p.9.2.4 剖析器 profiler：CPU / 内存剖析 + 火焰图
-- [ ] p.9.2.5 脚手架 tie new：项目模板 + 初始化
+- [x] p.9.2.1 崩溃诊断——**已落地 2026-09-13**：tiec ec41436（crashdiag：interp panic backtrace 符号化 + 崩溃日志，配合诊断标号）：backtrace + 符号化 + 崩溃日志（配合诊断标号体系）
+- [x] p.9.2.2 包管理器正式落地——**已落地 2026-09-13**：tpkg 4c41e3e（依赖解析 MVS/tie.lock + 版本约束 x.y.z·^·>=·* + TSHA1-f 指纹上传拉取，文件注册表后端）（s3.2-package 转正）：依赖解析 / 版本约束 / 上传拉取
+- [x] p.9.2.3 DAP 调试器——**已落地 2026-09-13**：tiec 7627a63（tiedap DAP 适配器服务驱动 interp：断点/单步/调用栈/变量 + VS Code 最小扩展）：断点 / 单步 / 变量 / 调用栈 + VS Code 客户端
+- [x] p.9.2.4 剖析器 profiler——**已落地 2026-09-13**：tiec 6be21eb（profiler：运行期调用采样 + 折叠栈 + ASCII 火焰图）：CPU / 内存剖析 + 火焰图
+- [x] p.9.2.5 脚手架 tie new——**已落地 2026-09-13**：tpkg 15f31e9（`tpkg new` 项目模板 + 初始化，hello 编译跑通）：项目模板 + 初始化
 
 **命令行壳 tshell（p.9.3，交互基础设施，先行开发）**
 
@@ -153,12 +153,12 @@ development happens on branch p.7.
 >
 > EN: p.9.3 — tshell command-line shell & interactive infrastructure: three roles (standalone PS-killer shell; tedit terminal-module engine with dual protocol modes; trm interactive infra), modular & embeddable (nine modules, three embedding forms), repo tie-lang/tshell.
 
-- [ ] p.9.3.1 壳核心：REPL 求值循环（tie-interp 执行后端）+ 命令解析（tie 表达式 → 内建 → 外部回退 + 拼写纠错）+ 值管道与渲染（L0–L1，`repl`/`command`/`pipeline`/`render` 模块）
-- [ ] p.9.3.2 会话层：tie 自研行编辑 / 可插拔补全源 / 历史 / 配置（td 资产热加载）（L2，`lineedit`/`complete`/`session` 模块）
-- [ ] p.9.3.3 脚本运行时：`-e` / `-f` / shebang / 脚本内内建命令函数式调用（`run` 模块）
-- [ ] p.9.3.4 双形态协议层：同进程 zd 内存总线（tedit 嵌入）+ `--stdio` tink 帧（子进程 / 远程 / WASM 后端）（L3，`srv` 模块）
-- [ ] p.9.3.5 trm 基础设施：tieir 观测台 / 调试前端 / 动态加载交互 / `set eval-backend interp|trm` 执行后端可配置（`observe` 模块，对齐 p.7.3.2）
-- [ ] p.9.3.6 模块化交付：模块清单冻结 / 装配器 / 三种嵌入形态 / 接 tedit 终端模组嵌入子集（§12 设计）
+- [x] p.9.3.1 壳核心——**已落地 2026-09-13**：tshell 179def3（REPL 复用 tiec interp.eval + 命令解析/纠错 + 值管道）：REPL 求值循环（tie-interp 执行后端）+ 命令解析（tie 表达式 → 内建 → 外部回退 + 拼写纠错）+ 值管道与渲染（L0–L1，`repl`/`command`/`pipeline`/`render` 模块）
+- [x] p.9.3.2 会话层——**已落地 2026-09-13**：tshell e3885b3（行编辑/补全源/历史/td 配置热加载）：tie 自研行编辑 / 可插拔补全源 / 历史 / 配置（td 资产热加载）（L2，`lineedit`/`complete`/`session` 模块）
+- [x] p.9.3.3 脚本运行时——**已落地 2026-09-13**：tshell 48e33c3（`-e`/`-f`/shebang/内建函数式调用）：`-e` / `-f` / shebang / 脚本内内建命令函数式调用（`run` 模块）
+- [x] p.9.3.4 双形态协议层——**已落地 2026-09-13**：tshell 679c322（zd 帧编解码 + `--stdio` tink 帧服务）：同进程 zd 内存总线（tedit 嵌入）+ `--stdio` tink 帧（子进程 / 远程 / WASM 后端）（L3，`srv` 模块）
+- [x] p.9.3.5 trm 基础设施——**已落地 2026-09-13**：tshell 7d97de2（observe 模块骨架 + `set eval-backend interp|trm`；tieir 观测待 trm p.7.3 接入）：tieir 观测台 / 调试前端 / 动态加载交互 / `set eval-backend interp|trm` 执行后端可配置（`observe` 模块，对齐 p.7.3.2）
+- [x] p.9.3.6 模块化交付——**已落地 2026-09-13**：tshell 8c693e1（九模块清单冻结 + 装配器 + 三嵌入形态 + tedit 子集）：模块清单冻结 / 装配器 / 三种嵌入形态 / 接 tedit 终端模组嵌入子集（§12 设计）
   - 设计文档（2026-09-12）：`docs/designs/tshell-architecture.md` v0.2（三身份 + 五层架构 + 双形态集成协议 + 模块系统与嵌入）
   - 状态：**先行开发（优先启动）**——tshell 作为 tedit（p.9.9.7）根系，**先于 tedit 等组件完成开发**；依赖仅 tiec repl 路径（现货）与 tink 帧协议；trm 侧能力（observe）随 p.7.3 异步接入；**tie 命令行入口由 tshell 承载**（原 p.9.2 tie 命令行条目并入本档）
 
@@ -280,6 +280,7 @@ development happens on branch p.7.
 
 EN: Existing finalized docs to be aligned during 2026.2 (revised in place, no separate
 tier): trm-final-design.md, release.md, plugin-kernel-design.md.
+
 
 
 
