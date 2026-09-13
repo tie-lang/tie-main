@@ -171,7 +171,7 @@ development happens on branch p.7.
 > EN: tiu (2026-09-11): independent in-house UI framework — high-performance,
 > cross-platform, NOT depending on trm; usable alone or with trm.
 
-- [ ] p.9.4.1 tiu 运行时底座：窗口/绘制/事件/资源管理（独立于 trm）
+- [ ] p.9.4.1 tiu 运行时底座：窗口/绘制/事件/资源管理（独立于 trm）——**第一闭环已落地 2026-09-14**（tiu 仓 `engine/` `api/`：API M1 对象模型 / M2 IR 编码器（布局冻结+key 派生+增量段）/ M3 Canvas 双模式会话，引擎 E1 IR loader + 软件光栅 rect/纯色/文本位图字形 + gold ≤1/255 + 双模式像素一致；剩余引擎 E2-E7 与 API T4/T5 待续）
   - 设计文档已落盘（2026-09-12）：`docs/designs/tiu-render-engine.md`（渲染引擎七层）· `docs/designs/tiu-drawing-api.md`（绘制 API 库）· `docs/designs/tiu-event-system.md`（事件轴）；上层 `docs/designs/tiu-ui-widgets.md`（UI 库，p.9.4.2 输入）
   - API 库实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-api-impl.md`（任务分解 + 契约冻结 + 无遗留闭环）
   - 渲染引擎实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-render-impl.md`（任务分解 + 契约冻结 + 后端落地顺序 + 无遗留闭环）
@@ -184,8 +184,8 @@ development happens on branch p.7.
 > 
 > EN: (2026-09-11) partial coroutines join trm-lite (generator-style); trm keeps none.
 
-- [ ] p.9.5.1 生成器式协程：`yield 值` 产出 + 惰性迭代/流（惰性序列、管道、无限流）
-- [ ] p.9.5.2 与既有调度整合：生成器任务可迁移/可窃取，复用 P-段双端队列（p.6.5/p.6.7 底座）
+- [x] p.9.5.1 生成器式协程：`yield 值` 产出 + 惰性迭代/流（惰性序列、管道、无限流）——**已落地 2026-09-14**：trm-lite `core/gen/tl_gen.tie`（trm_lite_gen：惰性源 counter/infinite + 惰性管道 fmap/filter/take 无中间表 + from_table 桥接 tiec yield 表 + 并发原子拉取 pull/pull_id），探针 gen_probe 全绿（10 万 range 惰性证明 map 仅调 5 次、无限流截断）；**语言侧契约差异如实登记**：tiec f04962d 的 yield = 急切攒表（无运行期挂起/恢复调用点），真惰性协程需 tiec 侧补 yield 挂起调用点（待后续语言档）
+- [x] p.9.5.2 与既有调度整合：生成器任务可迁移/可窃取，复用 P-段双端队列（p.6.5/p.6.7 底座）——**已落地 2026-09-14**：流状态存全局注册表不绑定 worker → S-deque 窃取/迁移后继续消费不破坏惰性语义；探针 gen_mig_probe（2 worker × 8 任务共享消费 0..63/0..99 精确无重复遗漏、stolen>0、池复用）全绿
 
 **生态应用（p.9.6）**
 
