@@ -20,6 +20,171 @@
 > 5. Major-version archive: on stable release, copy this file to `<version>.CHANGELOG` at the repo root, then start a fresh one.
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Shipyard-2026.2-preview.2（2026-09-13）
+
+> **2026.2 预发布 2 = 语言层全量 + 生态/工具链前半**：语言两轮 40 项（p.8 第一轮 19 项 +
+> p.9.11 第二轮 21 项）· 组件仓命名迁移 p.9.0（tdiag/tpkg/twi/tdb）· 内置库 20 项 + 编译
+> 资源可调 + 编译缓存（p.9.1）· 工具链四件（crashdiag/DAP/profiler/tpkg，p.9.2）· tshell
+> 命令壳（p.9.3）· tsh 脚本运行时 + 门禁 .ps1→.tsh.tie 迁移（p.9.3.7/9.3.8/9.4）· 多仓
+> 拆分执行落地（p.7.2.7）。编译器自举不动点 SHA `8575C3A5…`，门禁基线保持。
+>
+> EN: Shipyard 2026.2 preview 2 = full language tier + first half of ecosystem/tooling:
+> 40 language items across two rounds (p.8 round-1 19 + p.9.11 round-2 21); component
+> naming migration p.9.0 (tdiag/tpkg/twi/tdb); 20 builtin libs + configurable compile
+> resources + compile cache (p.9.1); toolchain quartet crashdiag/DAP/profiler/tpkg (p.9.2);
+> the tshell command shell (p.9.3); tsh script runtime + gates ported .ps1→.tsh.tie
+> (p.9.3.7/9.3.8/9.4); multi-repo split executed (p.7.2.7). Bootstrap fixed point SHA
+> `8575C3A5…`, gate baselines unchanged.
+
+## [feat] p.9.11 语言功能与语法糖第二轮：match 表达式/if-let/try/defer/记录/切片/生成器/interface 等 21 项（2026-09-13）
+
+* **表达式与解构（p.9.11.1-2）**：`match` 表达式位取值（`=>` 新 token，phi 汇合）+ `if let`
+  解构条件（desugar 到 switch，支持 else/else-if）。
+  EN: match-as-expression (new `=>` token, phi-merge) + if-let destructure conditions.
+* **资源与组合（p.9.11.3-4）**：`try {}` 错误聚合块（块内 `?` 传播）+ `defer {}` 作用域退出
+  逆序执行（覆盖 return/break/`?`，LIFO 标志链）。
+  EN: try-block error aggregation + defer LIFO resource release on scope exit.
+* **数据字面量与更新（p.9.11.5-7）**：记录字面量 `{k: v}`（键化表 map，rec.k==rec["k"]）+
+  表不可变更新 `t with {k: v}`（复制+合并）＋切片/区间 `t[1..3]`/`t[..n]`（表拷贝/字符串子串）。
+  EN: record literals (map desugar), immutable `with` updates, slice/range sugar.
+* **解构与安全（p.9.11.8-9）**：剩余解构 `var (a, ...rest) = t`（索引+切片 desugar）+ checked
+  运算 `+? -? *?` 溢出运行期可捕获 panic。
+  EN: rest destructuring + checked arithmetic with catchable overflow panic.
+* **标注与裁剪（p.9.11.10-14）**：`inline` 标注（LLVM alwaysinline）+ `immut` 只读形参 +
+  `@注解` 编译期元数据 + `#cfg` 条件编译 + import 别名/重导出。
+  EN: inline hint, immut read-only params, @annotations, #cfg conditional compilation, import alias/re-export.
+* **迭代与生成（p.9.11.15-17）**：`yield` 生成器语法（签名登记 table<elem>）+ 迭代器协议
+  （has_next/next 两方法分派）+ 函数类型一等公民（四位承载）。
+  EN: yield generators, iterator protocol, first-class function types.
+* **书写体验（p.9.11.18-19）**：多行续行（行尾 `\`）+ 数字分隔符 `1_000_000` 与 raw 字符串
+  `r"..."`（免转义无插值）。
+  EN: line continuation, numeric separators, raw strings.
+* **类型系统（p.9.11.20-21）**：enum 关联方法（obj.method() 分派 <Enum>::method）+ 轻量
+  interface（structural 隐式实现，签名兼容即实现，vtable/提升/约束复用）。
+  EN: enum associated methods + lightweight structural interface (implicit impl).
+
+## [feat] p.9.3/9.4 tshell 命令壳 + tsh 脚本运行时：模块化壳与门禁 .ps1→.tsh.tie 迁移（2026-09-13）
+
+* **tshell（p.9.3.1-6）**：新组件仓 tie-lang/tshell——REPL 三通道分派 + 值管道 + 拼写纠错
+  （p.9.3.1）；tie 自研 lineedit/补全/历史/session（p.9.3.2）；脚本运行时 `-e`/`-f`/shebang
+  （p.9.3.3）；zd 帧编解码 + `--stdio` tink 帧服务（p.9.3.4）；observe 模块 + `set eval-backend`
+  （p.9.3.5）；九模块清单 + 三嵌入形态 + tedit 子集装配（p.9.3.6）。**全部 tie 实现**。
+  EN: the tie-lang/tshell shell — REPL three-way dispatch + value pipelines + did-you-mean (9.3.1);
+  self-written lineedit/complete/history/session (9.3.2); script runtime -e/-f/shebang (9.3.3);
+  zd framing + --stdio tink-frame service (9.3.4); observe skeleton + set eval-backend (9.3.5);
+  nine embeddable modules + three embedding forms + tedit subset (9.3.6). Entirely in tie.
+* **tsh 脚本运行时（p.9.4/9.3.7）**：tiec 新增 `tsh` 角色与 `.tsh.tie` 分派；`eval_script`
+  整文件求值（定义段/语句段两趟 + 顶层 var 跨函数共享）+ 条件退出透传；interp 内建补全
+  （contains/split/substr/replace/list_dir/args/hash/timeout/exit…）+ 递归重入根因修复
+  （活动段计数模型）+ 字符串后端缓冲污染规避 + 崩溃/缓存/自举门禁 .tsh.tie 化。
+  EN: tsh role + whole-file eval_script (two-pass defs/stmts + shared top-level globals) +
+  conditional exit passthrough; interp builtins completed (contains/split/substr/list_dir/args/
+  hash/timeout/exit…); recursion re-entrancy root-caused & fixed (active-segment model); gate
+  scripts ported to .tsh.tie.
+* **0-Rust 深化（p.9.3.8）**：退役 6 个依赖 Rust 产物的基线对比测试（regress-driver-lite/
+  bench/test-errors/regenerate-golden/repl-parity/run-interp-tests）；自举链修复——Sleep 登记
+  libc 消除假阳性 interp 桥、regex_findstr 改纯 tie findstr 子集匹配器，`b_findstr` 量词偏移
+  修正；无 tie_interp.lib 完全 0-Rust 自举。
+  EN: 6 Rust-bridge baseline tests retired; bootstrap chain fixed — Sleep whitelisted as libc,
+  regex_findstr rewritten as pure-tie findstr-subset matcher (quantifier offset fixed); full
+  0-Rust self-host without tie_interp.lib.
+
+## [feat] p.9.2 工具链：crashdiag/DAP/profiler/tpkg 包管理器/脚手架（2026-09-13）
+
+* **crashdiag（p.9.2.1）**：解释器 panic backtrace + 符号化 + 崩溃日志（共用 interp_dbug 仪器）。
+  EN: interp panic backtrace/symbolication + crash log.
+* **tpkg 正式落地（p.9.2.2/9.2.5）**：依赖解析树（BFS+MVS+冲突→锁）+ 版本约束（精确/^x.y/>=x.y/*）
+  + TSHA1-f 签名上传拉取 + vendor std；`tpkg new` 标准项目模板脚手架。组件仓 tie-lang/tpkg。
+  EN: formal package manager — dep tree (BFS+MVS+lock), version constraints, TSHA1-f signed
+  upload/fetch, vendored std; tpkg new scaffold. Repo tie-lang/tpkg.
+* **DAP 调试器（p.9.2.3）**：tiedap 适配器服务驱动 interp（运行至完成+游标单步，断点/栈/全局变量）
+  + VS Code 客户端示例。
+  EN: DAP adapter tiedap.exe driving interp (run-to-completion + cursor stepping, breakpoints/
+  stack/globals) + VS Code client example.
+* **profiler（p.9.2.4）**：运行期函数级调用采样（C/R 时间戳），输出每函数计数/含子·自耗秒 +
+  折叠栈 + 文本火焰图；内存剖析接口预留。
+  EN: runtime function-level call sampling → per-func counts/inclusive-exclusive seconds +
+  folded stacks + text flame graph; memory profiling interface reserved.
+
+## [feat] p.9.1 内置库补全（20 项）+ 编译资源可调 + 编译缓存（2026-09-13）
+
+* **库清单与四目录定案（p.9.1.1）**：std（标准）/ext（扩展）/rdu（嵌入式精简原语）/sys（平台
+  层）四目录；22 项清单、20 项纯 tie 落地——zlib/gzip（RFC1950/51/52）、WebP（VP8L 无损子集）、
+  GIF87a/89a（LZW 解码+编码）、JSON5、WAV（PCM 8-32 + float32 编解码）、regex 增强（前瞻/
+  回引用/\p{L}/惰性量词/regexpx 命名空间/交替与 replace）、datetime（儒略日历/ISO8601）、xlsx
+  只读、zip 容器（tar 互通验证）、fs 增强（dir_size/copy_tree）、process 双向管道与超时强杀、
+  bytes 增强（大小端/f32-f64/hex/base64）、color（sRGB/HSV/HSL/混合/delta-E）、rng-adv 统一
+  随机（BCrypt 动态加载）、QR 解码（RS 纠错/图像定位）、BMP 编解码、mono 单调毫秒时钟
+  （GetTickCount）；AVIF 如实登记（环境无 libavif，FFI 待补）。
+  EN: four-dir catalog + 20 pure-tie libraries: zlib/gzip, WebP(VP8L), GIF, JSON5, WAV,
+  regex-pro (lookahead/backref/\p{L}/lazy/alternation), datetime, xlsx reader, zip container,
+  fs (dir_size/copy_tree), process pipes + timeout kill, bytes endian/f64/hex/base64, color,
+  rng-adv (runtime-loaded BCrypt), QR decode (RS + image locate), BMP codec, monotonic ms clock;
+  AVIF honestly registered pending libavif.
+* **编译资源可调（p.9.1.2）**：`--mem-limit <MB>`（超限 O3 自动降 O2+警告）+ `--jobs <N>` 并发
+  预留 + `-O` 别名 O2，优化优先级 CLI>配置>默认。
+  EN: --mem-limit (O3→O2 degrade), --jobs reservation, -O alias, documented opt priority.
+* **编译缓存（p.9.1.3）**：缓存键=源码哈希+全部输出参数+编译器盐，产物缓存 `~/.tiec-cache`
+  （或 cache.dir），命中即复制跳过编译，`--no-cache` 重编；verify-cache 验收门禁。
+  EN: compile cache keyed on src hash + output params + compiler salt; hit copies artifact,
+  --no-cache forces rebuild; verify-cache gate.
+
+## [feat] p.9.0 组件仓命名迁移：tdiag/tpkg/twi/tdb（2026-09-12→13）
+
+* **迁移全落地**：tie-diag→**tdiag**（诊断配套，仓库改名+引用清扫）· tie-pkg→**tpkg**（GitHub
+  建仓+引用清扫）· tiwi→**twi**（仓库/二进制/库/样例全改名）· tiedb→**tdb**（v2 完整源码并入
+  tdb 为 tieDB 实现仓，v1 归档 archive/v1，旧目录归档 tie-archive/tdb-v2-legacy）；每仓一提交、
+  grep 旧名=0（豁免历史 CHANGELOG/映射描述）；tie/tiec/tie-dev/tie-lang/tie-main 保留。
+  EN: naming migration completed — tdiag / tpkg / twi / tdb (tiedb v2 merged into tdb as full
+  tieDB repo, v1 archived); one commit per repo, grep-legacy=0; tie/tiec/tie-dev/org preserved.
+
+## [feat] p.7.2.7 多仓拆分执行落地：编译器/工具链/库 6 仓独立（2026-09-12）
+
+* **subtree split 保历史建仓**：tiec（compiler+prep/std/ext/rdu/repl+scripts+tests+diagdocs）·
+  tpkg（pkg/）· tsp（compiler/lsp/）· tdb（tieDB/）· tie-dev（skills/tie-dev/）· vscode-tie
+  （editor/vscode-tie/）——全 TPL 2.0 + README；tie-main 瘦身为聚合/发行仓（docs/scripts/dist/
+  仓库级文件），README 组件索引对齐新格局；聚合打包经 scripts/package.tie 收拢 src/components/。
+  EN: six component repos split via git subtree with full history (tiec/tpkg/tsp/tdb/tie-dev/
+  vscode-tie), all TPL 2.0; tie-main slimmed to the aggregation/release repo; aggregate packager
+  gathers component sources under src/components/.
+
+## [feat] p.8.2 语法糖批量 12 项（2026-09-12）
+
+* **糖集核心（p.8.2.1-3）**：可空链 `?.`/`?:`/`a?[i]`（与 p.8.1.5 同提交）· 常用糖集——for..in
+  解构迭代/级联调用/命名参数/链式比较 · 字符串插值 `"Hello, {name}"`（含 2 个 RCA 修复：插值
+  lbrace 独立 tag、前瞻收紧 ASCII 表达式起始）。
+  EN: optional chaining, destructuring for-in/cascades/named args/chained compare, string
+  interpolation (2 root-cause fixes).
+* **运算符与属性（p.8.2.4/7）**：struct `op_*` 方法运算符重载（左置右回调度的裁决表，内置零变化）·
+  计算属性 getter/setter（`<Struct>::attr`/`attr_set`，只读写报诊断）。
+  EN: op_*-method operator overloading; computed properties via getter/setter methods.
+* **容器与推导（p.8.2.5/6）**：表/数组推导式 `[expr for x in src if cond]`（支持 for..in 解构）·
+  泛型糖 `<T, U=默认>` 默认类型参数 + 约束共享简写。
+  EN: list comprehensions; generic default type args + shared-constraint sugar.
+* **调用与管道（p.8.2.8-10）**：数据流箭头 `->`/`<-` 链式/方法/反向推广并锁定确定性规则（D1-D6）·
+  尾随闭包裸 `{ }` 作末位实参 · 展开调用 `f(xs...)` 运行期展开进变参区。
+  EN: extended dataflow arrows (deterministic D1–D6 rules), trailing closures, spread calls.
+* **控制流与宏（p.8.2.11-12）**：`guard cond else { }` 前置条件早退 · 宏升级——声明式模板宏
+  `macro name(a,b){体}` + `__` 前缀卫生唯一化，与既有函数式宏双轨共存。
+  EN: guard-else early return; declarative template macros with __-hygiene, coexisting with
+  functional macros.
+
+## [feat] p.8.1 语言特性批 7 项（2026-09-12）
+
+* **const fn（p.8.1.1）**：编译期常量折叠更强能力，可行静态元编程。
+  EN: const fn compile-time evaluation.
+* **错误处理统一（p.8.1.2）**：Option/Result 泛型增强 + `?` 解包深化（无异常保持）。
+  EN: Option/Result generics + deepened ? unwrap (exception-free).
+* **泛型增强（p.8.1.3）**：约束/特化/变长泛型（infer_type_args 变长 ...T）。
+  EN: generic constraints/specialization/variadics.
+* **模式匹配增强（p.8.1.4）**：enum payload 结构化解构/穷尽检查/守卫（when）。
+  EN: enum-payload destructuring, exhaustiveness, guards.
+* **可空类型（p.8.1.5）**：路线 2 增强 Option 不引 `T?`，保「无 null」安全目标。
+  EN: enhanced Option (no T? / null).
+* **表操作（p.8.1.6-7）**：动态表 `pop`/截断缩表原语 + enum payload 白名单扩展放开
+  table/f64（ECS 支撑前置达成）。
+  EN: table pop/truncate primitive; enum payload whitelist extended to table/f64.
+
 ## Shipyard-2026.2-preview.1（2026-09-11）
 
 > **2026.2 预发布 1 = 架构先行档（p.7）全量**：Keel 龙骨架构（注册表/审计器/加载器/执行骨架）+

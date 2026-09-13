@@ -403,11 +403,11 @@ func s3_components(dist: string) -> i64 {
     return 0
 }
 
-// 组件复制后清理构建产物（.exe/.ll/.bc/.obj/.o/.a/.lib/.pdb + 常见构建目录）。
+// 组件复制后清理构建产物（.exe/.ll/.bc/.obj/.o/.a/.lib/.pdb + 常见构建目录 + .git 元数据）。
 // 用系统命令批量删除（文件级 del /s；目录级 for /d /r 递归）。
 func prune_comp_artifacts(dir: string) {
     var _r = exec_code("del /s /q " + shell_q(dir + "\\*.exe") + " " + shell_q(dir + "\\*.ll") + " " + shell_q(dir + "\\*.bc") + " " + shell_q(dir + "\\*.obj") + " " + shell_q(dir + "\\*.o") + " " + shell_q(dir + "\\*.a") + " " + shell_q(dir + "\\*.lib") + " " + shell_q(dir + "\\*.pdb") + " >nul 2>&1")
-    var _r = exec_code("for /d /r " + shell_q(dir) + " %d in (target obj bin Debug Release build dist .gradle .cargo .zig-cache out) do @rd /s /q \"%d\" >nul 2>&1")
+    var _r = exec_code("for /d /r " + shell_q(dir) + " %d in (target obj bin Debug Release build dist .gradle .cargo .zig-cache out .git) do @rd /s /q \"%d\" >nul 2>&1")
 }
 
 // 组件仓根目录 = 本仓上一级（tie-repo），如 F:\Projects\tie-repo\ 尾随反斜杠。

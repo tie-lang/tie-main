@@ -271,7 +271,7 @@ development happens on branch p.7.
 - [x] p.9.11.18 **多行表达式续行**——**已落地 2026-09-13**：tiec 6cd00f2（行尾 `\` 续行，行尾 |/-> 由 ASI 天然续行；行首运算符延续留候选）：行尾 `\`/流水线延续（修补实测缺口）
 - [x] p.9.11.19 **数值字面量加强 + raw 字符串**——**已落地 2026-09-13**：tiec f323d77（数字分隔 _/0x_FF/0b，raw r"..." 免转义无插值）：`1_000_000`/`0b`/`r"..."`
 - [x] p.9.11.20 **enum 关联方法**——**已落地 2026-09-13**：tiec 846e346（namespace 绑定+接收者自动引用，obj.method() 分派 &lt;Enum&gt;::method，payload 解构可用）：enum 类型方法定义（与 struct 方法约定一致）
-- [ ] p.9.11.21 **interface/trait 轻量化**（候选池排后）：`type Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
+- [x] p.9.11.21 **interface/trait 轻量化**——**已落地 2026-09-13**：tiec 5fdaf39（`interface Name { }` 结构性接口，struct/enum 命名空间方法签名兼容即隐式实现（免 impl 块），自动合成 impl 记录复用 vtable/提升/泛型约束全套机制，缺方法/签名不匹配诊断）：`interface Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
 
 ### 关联定稿（修订项）
 
