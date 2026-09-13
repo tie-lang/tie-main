@@ -6,7 +6,7 @@
 > 与 2026.1 不同，2026.2 发布**多个预发布档**（preview 线段）：**p.7 → p.8 → p.9 → …
 > → r.2**，每档完成一部分新功能并发布一个预览版（preview.N）；**架构性变化必做于
 > 第一档（p.7）**，后续档在其上叠加。档位只代表先后顺序，全部在 2026.2 内完成。
->
+> 
 > - **预发布段（p.7/p.8/p.9/…）**：全部新功能按档完成，开发号 **P.x.y.z**
 >   （即 CHANGELOG 中的 p.x.y.z；x=档号，y=模块，z=子项）。
 > - **正式版段（r.2）**：最后一个预发布档发布后启动，**基于预发布段**开发——
@@ -34,7 +34,7 @@ development happens on branch p.7.
 ### p.7 档（架构先行）
 
 > 架构性变化第一档：编译器重构、仓库模型、运行时定调——后续档全依赖此三件套落地。
->
+> 
 > EN: Tier p.7 — architecture first: the following tiers depend on these landing.
 
 **编译器彻底重构 + 插件化（p.7.1，Keel 龙骨架构）**
@@ -42,7 +42,7 @@ development happens on branch p.7.
 > 依据：docs/superpowers/specs/2026-08-29-plugin-kernel-design.md（定稿）+ docs/designs/keel-architecture.md。
 > 核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；
 > 落地编号以本 ROAD 为准，设计稿原步骤编号作废。
->
+> 
 > EN: Basis: the finalized Keel design (plugin-kernel-design.md + keel-architecture.md).
 
 - [x] p.7.1.1 核心微内核化：pipeline 5 槽 → 注册表执行骨架 + 内建引导集（默认管线注册项）；passmanager 接入 pipeline（验收：tiec 自举 hash 不变 + 回归基线保持）——**已落地 2026-09-11**：keel_registry/boot/executor 三新文件 + driver 真实 5 pass 接线，tiecA==tiecB 不动点 + .ll 逐字节等价 + 回归 104 PASS
@@ -69,7 +69,7 @@ development happens on branch p.7.
 > 定位（2026-09-11 定）：可用可不用、不捆绑编译器（import trm 走路线 B，编译器默认原生
 > 路线 A）；不提供语言层多线程（并发归 trm-lite）与语言对象/表内存 GC（归 trm-lite
 > 引用计数）；保留**引擎级 GC**（管 tieir 运行时 Object/Value 生命期）；协程移交 trm-lite。
->
+> 
 > EN: trm (2026-09-11): optional JVM-style VM — import trm = Route B, otherwise pure
 > compilation Route A (zero dependency); no language-level multithreading / no table GC
 > (trm-lite); engine-level GC kept; coroutines move to trm-lite.
@@ -81,7 +81,7 @@ development happens on branch p.7.
 ### p.8 档（语言）
 
 > 在 p.7 架构上铺语言层：特性加糖两开花。
->
+> 
 > EN: Tier p.8 — the language layer on top of the new architecture.
 
 **语言特性（p.8.1）**
@@ -98,7 +98,7 @@ development happens on branch p.7.
 
 > 现状盘点：已有元组解构 `var (a,b)`、switch 解构/区间/守卫、`for i in 0..10`、标签、
 > 默认参数、语句级宏（p.6.2.3）、`?` 解包、闭包、数据流箭头 `->`/`<-`（P1 已实现）。
->
+> 
 > EN: Current sugar inventory and planned additions below.
 
 - [x] p.8.2.1 可空链语法：`?.` 安全调用 / `?:` 默认值 / `a?[i]`（联动 p.8.1.5）——**已落地 2026-09-12**：tiec 仓 ba9221d（与 p.8.1.5 同提交）
@@ -117,13 +117,13 @@ development happens on branch p.7.
 ### p.9 档（其余全部）
 
 > 库、工具链、UI、生态、平台在语言层之上补齐，全部在 2026.2 内。
->
+> 
 > EN: Tier p.9 — the rest: libraries, toolchain, UI, ecosystem, platforms. All within 2026.2.
 
 **命名迁移（p.9.0，最先做）**
 
 > 尽早（趁组件未发行改名零成本）+ 彻底（不留旧名兼容期）。依据 tie-naming-convention.md v0.2。
->
+> 
 > EN: p.9.0 naming migration — early (zero cost pre-release) + thorough (no legacy-name grace period).
 
 - [x] p.9.0.1 tie-diag → **tdiag**（诊断配套，文档为主，影响面最小）
@@ -150,7 +150,7 @@ development happens on branch p.7.
 **命令行壳 tshell（p.9.3，交互基础设施，先行开发）**
 
 > 定位（2026-09-13 定，设计文档 v0.2）：tie 命令行壳三身份——独立壳（REPL + 脚本运行时 + 系统命令混合 + 值管道，目标全面优于 PowerShell）· **tedit 根基**（终端模组命令引擎，同进程 zd 协议总线 + 子进程 tink 帧双形态）· **trm 基础设施**（tieir 观测台 / 调试前端 / 动态加载交互，执行后端 interp|trm 可配置）；**模块化可嵌入**——能力以九模块交付，开发者把需要的模块嵌入自己的应用（静态 / 动态 / 进程外三形态）；组件仓 `tie-lang/tshell`
->
+> 
 > EN: p.9.3 — tshell command-line shell & interactive infrastructure: three roles (standalone PS-killer shell; tedit terminal-module engine with dual protocol modes; trm interactive infra), modular & embeddable (nine modules, three embedding forms), repo tie-lang/tshell.
 
 - [x] p.9.3.1 壳核心——**已落地 2026-09-13**：tshell 179def3（REPL 复用 tiec interp.eval + 命令解析/纠错 + 值管道）：REPL 求值循环（tie-interp 执行后端）+ 命令解析（tie 表达式 → 内建 → 外部回退 + 拼写纠错）+ 值管道与渲染（L0–L1，`repl`/`command`/`pipeline`/`render` 模块）
@@ -159,7 +159,7 @@ development happens on branch p.7.
 - [x] p.9.3.4 双形态协议层——**已落地 2026-09-13**：tshell 679c322（zd 帧编解码 + `--stdio` tink 帧服务）：同进程 zd 内存总线（tedit 嵌入）+ `--stdio` tink 帧（子进程 / 远程 / WASM 后端）（L3，`srv` 模块）
 - [x] p.9.3.5 trm 基础设施——**已落地 2026-09-13**：tshell 7d97de2（observe 模块骨架 + `set eval-backend interp|trm`；tieir 观测待 trm p.7.3 接入）：tieir 观测台 / 调试前端 / 动态加载交互 / `set eval-backend interp|trm` 执行后端可配置（`observe` 模块，对齐 p.7.3.2）
 - [x] p.9.3.6 模块化交付——**已落地 2026-09-13**：tshell 8c693e1（九模块清单冻结 + 装配器 + 三嵌入形态 + tedit 子集）：模块清单冻结 / 装配器 / 三种嵌入形态 / 接 tedit 终端模组嵌入子集（§12 设计）
-- [ ] p.9.3.7 tsh 脚本运行时补全（0-Rust 自举后**运行时缺陷**，2026-09-13 实测登记；库级能力已剥离至内置库清单 p.9.1.1.15–21——bytes 增强/process 管道与超时/fs 增强/zip/单调时钟/regex 语义）：①interp 函数内多局部变量与 exec_* 内建共存缺陷（局部槽丢失）②递归 re-entrancy 残边（递归调用后两 var 场景；活动段计数已修未完全）③file_exists/mkdir_all 运行期新建路径陈旧伪值（需盘上实查）④var 偶发 command-not-found 扰行；验收=待补运行时缺陷清零 + 依赖库落地（p.9.1.1）后剩余 .ps1（package×2 / verify-tiedap）改写完成，grep .ps1=0
+- [x] p.9.3.7 tsh 脚本运行时补全（0-Rust 自举后**运行时缺陷**，2026-09-13 实测登记；库级能力已剥离至内置库清单 p.9.1.1.15–21——bytes 增强/process 管道与超时/fs 增强/zip/单调时钟/regex 语义）：①interp 函数内多局部变量与 exec_* 内建共存缺陷（局部槽丢失）②递归 re-entrancy 残边（递归调用后两 var 场景；活动段计数已修未完全）③file_exists/mkdir_all 运行期新建路径陈旧伪值（需盘上实查）④var 偶发 command-not-found 扰行；验收=待补运行时缺陷清零 + 依赖库落地（p.9.1.1）后剩余 .ps1（package×2 / verify-tiedap）改写完成，grep .ps1=0
 - [x] p.9.3.8 Rust 桥基线测试退役——**已落地 2026-09-13**：tiec 471bde4（0-Rust 后删除 6 个依赖 tie-*.exe/tie_interp.lib 的对比测试：regress-driver-lite/bench/test-errors/regenerate-golden/repl-parity/run-interp-tests，引用同步清扫；脚本迁移另见 tsh 角色 .tsh.tie 替换：tiec 10 门 + tshell/tpkg/tink/trm/tdiag 全仓共约 20 个 .ps1→.tsh.tie，保留 regress-s21/package×2/verify-tiedap）
   - 设计文档（2026-09-12）：`docs/designs/tshell-architecture.md` v0.2（三身份 + 五层架构 + 双形态集成协议 + 模块系统与嵌入）
   - 状态：**先行开发（优先启动）**——tshell 作为 tedit（p.9.9.7）根系，**先于 tedit 等组件完成开发**；依赖仅 tiec repl 路径（现货）与 tink 帧协议；trm 侧能力（observe）随 p.7.3 异步接入；**tie 命令行入口由 tshell 承载**（原 p.9.2 tie 命令行条目并入本档）
@@ -167,7 +167,7 @@ development happens on branch p.7.
 **tiu UI 框架（p.9.4）**
 
 > 定位（2026-09-11 定）：独立自研、高性能、跨平台、**不依赖 trm**；可与 trm 同用。
->
+> 
 > EN: tiu (2026-09-11): independent in-house UI framework — high-performance,
 > cross-platform, NOT depending on trm; usable alone or with trm.
 
@@ -175,13 +175,13 @@ development happens on branch p.7.
   - 设计文档已落盘（2026-09-12）：`docs/designs/tiu-render-engine.md`（渲染引擎七层）· `docs/designs/tiu-drawing-api.md`（绘制 API 库）· `docs/designs/tiu-event-system.md`（事件轴）；上层 `docs/designs/tiu-ui-widgets.md`（UI 库，p.9.4.2 输入）
   - API 库实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-api-impl.md`（任务分解 + 契约冻结 + 无遗留闭环）
   - 渲染引擎实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-render-impl.md`（任务分解 + 契约冻结 + 后端落地顺序 + 无遗留闭环）
-- [ ] p.9.4.2 组件树与组合式布局框架
-- [ ] p.9.4.3 release.md 修订：tieui/trm.ui 关系对齐 tiu 独立定位
+- [x] p.9.4.2 组件树与组合式布局框架——**已落地 2026-09-14**：tiu 仓 `ui/src/` 五模块（tree 骨架 / build 声明式构建与三类复用 / layout 约束式组合布局 / diff 差分桥 / hit 事件轴对接）+ 探针全绿；差分消费 API T2.3 增量段冻结件（子树 key 前缀 + dirty rect）
+- [x] p.9.4.3 release.md 修订：tieui/trm.ui 关系对齐 tiu 独立定位——**已落地 2026-09-14**：docs/release.md（代号表 §2、§4.4）与 README 组件索引明确 tiu 独立自研定位（不依赖 trm，可与 trm 同用）
 
 **trm-lite 协程（p.9.5）**
 
 > 定位（2026-09-11 定）：部分协程加入 trm-lite（生成器式）；trm 不保留协程。
->
+> 
 > EN: (2026-09-11) partial coroutines join trm-lite (generator-style); trm keeps none.
 
 - [ ] p.9.5.1 生成器式协程：`yield 值` 产出 + 惰性迭代/流（惰性序列、管道、无限流）
@@ -209,7 +209,7 @@ development happens on branch p.7.
 **tge 游戏引擎 / t3d / trg（p.9.9，规划中，潜力档位）**
 
 > 定位（2026-09-12 定）：通用全栈游戏引擎，100% tie；立场中立（物理/网络/权威/中心化均为开发者可配置选项）。组装 t3d（3D 渲染框架）+ tiu（2D/UI）+ tink（多人）+ trg（共享渲染底栈）。
->
+> 
 > EN: tge — general-purpose full-stack tie game engine, position-neutral; assembles
 > t3d (3D), tiu (2D/UI), tink (networking), trg (shared rendering substrate).
 
@@ -226,7 +226,7 @@ development happens on branch p.7.
 **计算科学与多媒体域（p.9.10，规划中）**
 
 > 定位（2026-09-12 定）：tie 生态扩展两大主轴 + 横跨组件——计算科学（tsci→tstat→tsim）+ 多媒体（timg→tvid→tvfx）+ 几何建模 tgeo + 统计可视化 tplot；**库生态靠 pkg/registry（CRAN/PyPI 模式），产出物靠 tplot 绘图 + tedit notebook 报告 + timg/tvid 导出（端到端"能画图、能出产物"）**；设计参考 R/Matlab/Julia。
->
+> 
 > EN: p.9.10 — computational science & media domains (tsci→tstat→tsim, timg→tvid→tvfx, tgeo, tplot); library ecosystem via pkg/registry, outputs via tplot + tedit notebook + timg/tvid; design reference R/Matlab/Julia.
 
 - [ ] p.9.10.1 tsci 科学计算（数值线性代数/FFT/ODE/优化；组件仓 `tie-lang/tsci`）
@@ -247,7 +247,7 @@ development happens on branch p.7.
 > p.8 档（语言第一轮 21 项）闭环后的第二轮语言层；全部能力纳入当前架构、仅区分落地
 > 顺序（用户 2026-09-13 全选确认）。设计文档：`docs/designs/tie-lang-round2-design.md`。
 > 联动：yield 语法↔trm-lite p.9.5.1；#cfg↔p.9.7 平台移植；inline↔p.9.1.2 编译资源可调。
->
+> 
 > EN: Round-2 language layer after p.8 closed (confirmed by user 2026-09-13, full set);
 > design in docs/designs/tie-lang-round2-design.md; ties to p.9.5.1/p.9.7/p.9.1.2.
 
@@ -276,13 +276,10 @@ development happens on branch p.7.
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
+> 
 > - docs/designs/trm-final-design.md（对齐 p.7.3 trm 重定位）
 > - docs/release.md（对齐 p.7.2 多仓拆分与聚合发行、p.9.4 tiu 独立定位、发行物出仓）
 > - docs/superpowers/specs/2026-08-29-plugin-kernel-design.md（落地编号对齐本 ROAD p.7.1.x）
 
 EN: Existing finalized docs to be aligned during 2026.2 (revised in place, no separate
 tier): trm-final-design.md, release.md, plugin-kernel-design.md.
-
-
-
-

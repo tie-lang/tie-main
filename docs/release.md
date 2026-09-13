@@ -59,10 +59,10 @@ EN: Each official release is assigned an internal codename that represents the a
 | 版本 | 内部代号 | 含义 |
 | --- | --- | --- |
 | 2026.1 | **Harbor 港湾** | 首个正式版 = 工具链第一次靠岸停泊，形成可交付的稳定形态 |
-| 2026.2 | **Shipyard 造船厂** | 编译器彻底重构 = 进入 **Keel 龙骨架构**时代：核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；插件/包经 tieir 分发与审计链入港。工具链完整形态：**trm**（运行时）、**UI 框架**、**tdb**（数据库/向量检索）与 **twi**（安装器）随船厂一体下水 |
+| 2026.2 | **Shipyard 造船厂** | 编译器彻底重构 = 进入 **Keel 龙骨架构**时代：核心只余机制层（注册表/审计器/加载器/执行骨架，零行为），一切行为皆为注册项；插件/包经 tieir 分发与审计链入港。工具链完整形态：**trm**（运行时）、**tiu**（UI 框架，独立自研、不依赖 trm，可与 trm 同用）、**tdb**（数据库/向量检索）与 **twi**（安装器）随船厂一体下水 |
 
 EN: The table above lists each release version, its internal codename, and its meaning: 2026.1 is codenamed **Harbor 港湾**, where the first official release = the toolchain's first docking and berthing, forming a deliverable, stable shape.
-EN: 2026.2 is codenamed **Shipyard 造船厂**, marking the complete compiler restructure into the **Keel 龙骨架构** era: the core retains only the mechanism layer (registry/auditor/loader/execution skeleton, zero behavior), and all behavior is a registration item; plugins/packages dock via tieir distribution and the audit chain. The toolchain reaches its full form — **trm** (runtime), **UI framework**, **tdb** (database/vector search) and **twi** (installer builder) are launched together from the shipyard.
+EN: 2026.2 is codenamed **Shipyard 造船厂**, marking the complete compiler restructure into the **Keel 龙骨架构** era: the core retains only the mechanism layer (registry/auditor/loader/execution skeleton, zero behavior), and all behavior is a registration item; plugins/packages dock via tieir distribution and the audit chain. The toolchain reaches its full form — **trm** (runtime), **tiu** (the independent in-house UI framework, not depending on trm, usable together with trm), **tdb** (database/vector search) and **twi** (installer builder) are launched together from the shipyard.
 
 代号仅用于宣传/文档/产物命名（如安装包名），不进入版本号。
 
@@ -281,9 +281,9 @@ then run `dist/package.exe 2026.2` (optional `skip-repl` / `skip-llvm`).
 ### 4.4 README 路线图
 *EN: README roadmap*
 
-Harbor M0 里程碑 = 2026.1 正式发行版基础；Shipyard = 2026.2 完整形态（Keel 架构 + trm/UI/tdb/twi）。
+Harbor M0 里程碑 = 2026.1 正式发行版基础；Shipyard = 2026.2 完整形态（Keel 架构 + trm/tiu/tdb/twi；tiu 独立自研 UI，不依赖 trm）。
 
-EN: The Harbor M0 milestone = the 2026.1 official-release foundation; Shipyard = the 2026.2 full form (Keel architecture + trm/UI/tdb/twi).
+EN: The Harbor M0 milestone = the 2026.1 official-release foundation; Shipyard = the 2026.2 full form (Keel architecture + trm/tiu/tdb/twi; tiu is the independent in-house UI framework, not depending on trm).
 
 ### 4.5 主仓聚合发行（2026.2）
 *EN: Aggregated release of the whole toolchain (2026.2)*
