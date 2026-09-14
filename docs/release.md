@@ -134,7 +134,8 @@ EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is c
 
 | 组件 / Component | 独立仓 / Repo | 职责边界 / Responsibility |
 |---|---|---|
-| 编译器（源码 + driver + keel + std/ext/rdu + repl + scripts） | `tie-lang/tiec` | 自举编译器全源码、Keel 架构、语言标准/扩展/精简库、REPL、构建回归脚本；发行 `tiec` 组件 |
+| 编译器（源码 + driver + keel + repl + scripts） | `tie-lang/tiec` | 自举编译器全源码、Keel 架构、REPL、构建回归脚本；**内置库零副本**（std/ext/rdu/sys 独立为 tlib，自举/使用经 `TIE_LIB_ROOT`/`--lib-root` 库根取值）；发行 `tiec` 组件 |
+| 内置库 tlib | `tie-lang/tlib` | 语言内置库四层：std 标准 / ext 扩展 / rdu 嵌入式 / sys 平台（sys_*）；以 `/std` `/ext` `/rdu` `/sys` 别名经库根引用，权威源独立演进与发行 |
 | 数据互联 tink | `tie-lang/tink` | 通用数据流互联服务（语言无关）：zd v2 帧协议、模块.函数(字节进→字节出) ABI、管道编排器 `tink pipe` |
 | LSP 服务器 tsp | `tie-lang/tsp` | language server（`tie --lsp`），编辑扩展的后端 |
 | 运行时 trm | `tie-lang/trm` | JVM 式可选 VM（字节码 + 运行时 VM + 引擎级 GC），可插拔后端，不捆绑编译器 |
@@ -150,7 +151,9 @@ EN: In 2026.2, in addition to the Keel-restructured compiler, the toolchain is c
 > EN: From 2026.2 the tie-lang org splits into per-component repositories. The
 > inventory above (finalized 2026-09-11, detail in the p.7.2.1 planning doc) maps
 > each component to its suggested repository and responsibility boundary:
-> **tiec** (compiler sources + keel + std/ext/rdu + repl + build scripts), **tink**
+> **tiec** (compiler sources + keel + repl + build scripts; builtin libraries live
+> **zero-copy** in **tlib**, resolved via `TIE_LIB_ROOT`/`--lib-root`), **tlib**
+> (builtin std/ext/rdu/sys as `/std /ext /rdu /sys` aliases), **tink**
 > (language-agnostic data-flow interop: zd v2 framing, module.function(byte-in→byte-out), `tink pipe`),
 > **tsp** (LSP server), **trm** (optional JVM-style VM, never bundled), **tiu**
 > (independent UI framework), **tdb** (database/vecsearch), **twi** (installer),
