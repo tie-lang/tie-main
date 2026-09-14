@@ -273,6 +273,18 @@ development happens on branch p.7.
 - [x] p.9.11.20 **enum 关联方法**——**已落地 2026-09-13**：tiec 846e346（namespace 绑定+接收者自动引用，obj.method() 分派 &lt;Enum&gt;::method，payload 解构可用）：enum 类型方法定义（与 struct 方法约定一致）
 - [x] p.9.11.21 **interface/trait 轻量化**——**已落地 2026-09-13**：tiec 5fdaf39（`interface Name { }` 结构性接口，struct/enum 命名空间方法签名兼容即隐式实现（免 impl 块），自动合成 impl 记录复用 vtable/提升/泛型约束全套机制，缺方法/签名不匹配诊断）：`interface Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
 
+**语言缺陷修复批次（p.9.12，tiu/tsp 实战驱动）**
+
+> 2026-09-14 从 tiu 落地 9 条坑与 tsp LSP 帧损坏中收敛的编译器缺陷修复（用户排期）。源问题：tiu 坑复盘（无 struct 数组/引用共享/ns 禁 const/f64 默认值崩溃/enum 分隔/越界写静默/保留字/无码点字符）+ tsp「未定义函数」误报（实际为 tiec 长串折叠丢内容导致 LSP 帧损坏）。
+>
+> EN: p.9.12 — compiler defect fixes driven by tiu landing & tsp LSP frame corruption.
+
+- [x] p.9.12.1 长字符串常量折叠/发射丢内容（tsp LSP 帧损坏根因）——**已落地 2026-09-14**：tiec 64b69a7（RC1：全局初始化引用先前折叠全局 S_N_VAR 不折叠→空/零，补 global_init_fold VAR 分支 + llvmgen.global_folded_of；RC2：字面量 `}}`→`}` 无条件折叠损坏 JSON 花括号，lex_scan 只保留 `{{`→`{`、插值段花括号转义移 pexpr 折叠）：>500B 全局拼接逐字节正确、长串+尾、`}}` 保留；自举不动点 B4C69459；tsp initialize 帧 json.loads VALID（frame_dump.py）
+- [x] p.9.12.2 表下标写越界静默丢弃 → 自动扩容——**已落地 2026-09-14**：tiec 32d497b（s21_table_set 重写：i≥len 按元素零值逐槽扩容 max(len,i+1) 后回写；新增 s21_index_raise 负下标诊断 + s21_elem_zero 空串修复）：空表 t[5]=42→len6、连续写、t[1000] 零填、string/f64/bool 扩容、复合赋值、局部/全局表全过；越界读语义不动；自举不动点 D5F239DA（ECS/tiu 对象池稀疏寻址前置）
+- [x] p.9.12.3 struct 字段 f64 默认值整数字面量 irgen 崩溃——**已落地 2026-09-14**：tiec 87115fe（tig_struct_construct 缺省路径 vt 改为 tig_expr 实际发射类型，统一走 S1.3 收窄 sitofp/trunc）：f64=5/f32=3/u16=7/bool/R(2)/R(3.0) 全 PASS；自举不动点 A15E9980
+- [x] p.9.12.4 命名空间体内 const 声明——**已落地 2026-09-14**：tiec f45060e（parse_namespace 加 lex_const 分支；scollect_port 全名登记 gb_*；sinfer gb_find_ns 前缀补全；scheck const 只读拦截；irgen/llvmgen @ns$NAME 发射）：ns::NAME 引用/跨 ns/顶层同名不冲突/重赋值拒绝 13/13 PASS；自举不动点 AC4DDCA4（tiu 常量归位）
+- [x] p.9.12.5 enum 变体分隔符放宽——**已落地 2026-09-14**：tiec 2554c34（parse_enum 硬 expect(lex_semi) 改可选 `;`/`,`/无空格，AST 零变化）：同行空格/逗号/混用/payload 同行/尾随逗号 29/29 PASS；自举不动点 4DDCAB21；既有换行写法零破坏
+
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
