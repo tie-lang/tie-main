@@ -1,6 +1,6 @@
-# tie 语言基元与运算符（设计 v0.2 / ROAD p.9.13）
+# tie 语言基元与运算符（设计 v0.4 / ROAD p.9.13）
 
-*EN: tie language primitives & operators (design v0.2 / ROAD p.9.13)*
+*EN: tie language primitives & operators (design v0.4 / ROAD p.9.13)*
 
 ## 定位 / Positioning
 
@@ -51,46 +51,68 @@
 
 *EN: piped anonymous blocks `x -> { v -> expr }`; pipe into index/field/destructure `t -> [i]` `p -> .field` `t -> (a,b)`; pipe into primitives/operators `t -> in xs` `t -> + [x]`; conditional pipe; pipe-as-temporary-single-arg-function `f = t -> expr`; reverse destructure `(a,b) <- t`.*
 
-## 5. 并行数据流图（全新并行书写）/ Parallel dataflow graph (v0.2: graph as first-class value)
+## 5. 并行数据流图（全新并行书写）/ Parallel dataflow graph (v0.3: graph value + unsafe magic + graph-theory suite)
 
 * **graph 新值类型**（v0.2 定案）：并行图是一等数据值——先构造、可存储/传递/组合，再执行。
   内部 = 节点表（fn 值）+ 边表（前向/分叉/汇合/回边记录）+ 入口/出口标记；以现成表/struct 表达，
   语言只做类型封装 + 检查（边类型一致性、回边有界性）。
 * 图语法（图内运算符）：
-  * 节点 = 模块（普通 tie 函数、或 `{ v -> expr }` 匿名单参块）；
+  * 节点 = 模块（普通 tie 函数、或 `{ v -> expr }` 匿名单参块）；函数名即节点名，匿名块自动编号；
   * **图值字面量** `{ A } - { B -> ~ A }`：花括号=节点模块，`-` 并行分叉，`~` 汇合/回边
-    （`a -> ~ b`：a 的尽头汇回 b 作为其新一波输入；多入边节点自动 join = 所有入边到齐才放行）。
-    **`=>` 不出现**（已随单箭头统一移除，§1），图入口即"执行"。
-  * **执行** = 统一箭头送值 `x -> g`（图 = 可运行的数据流函数值，波次 SDF 语义见下）。
-  * **组合**：`g1 - g2` 并行组合两图、`g1 -> g2` 串联、`~` 回边并入 g1 内表达式——都是值语义，返回新图。
-* **执行模型（定案：波次 SDF）**：
-  * 入口节点每吐一个值启动一波；回边把结果带回前节点作为下一波输入；
-  * 收敛由「节点条件 + 入口流长度」自然决定（如 B 判定 ≥10 丢弃即该流线收敛）；入口排空 → 全图结束；
-  * 用户无需写波次上限（无 `~(N)` 记法），有界性由输入流驱动；静态不可证处，运行期有界守护兜底。
-* **图出口**：并行图表达式的值 = 各末端节点（无汇合时）末波结果组成的表；汇合点取 join 值。落地版再冻结细则。
-* **安全默认（v0.2 加强：graph 默认不可变）**：
-  * **graph 正常代码中不可被声明为可变/不可原地改结构**——只能整体替换（重新赋值新图值）或组合（运算符返回新图）；
-  * **unsafe 内可声明可变 graph**，并配有"改变 graph 的强大语法"：unsafe 块内复用同一批运算符
-    （`+ {..}` 追加节点、`- {..}` 追加分叉、`-> ~ b` 追加回边、结构化删除/改线原语）作**原地图变异**；
-  * 节点捕获白名单：只许标量/不可变/按值拷贝；捕获共享可变表引用 → 编译期诊断；
-  * 边 = 有界队列 + 背压（复用 `ch_send_block`）；join = 同步屏障；
-  * 调度归 trm-lite work-stealing；与既有 actor/async/ppool/channel 是同一执行层，图只是其表达层。
-* 落地范围：先最小内核（入口 → 分叉 → 前进 → 汇合/回边 → 出口），再扩展嵌套图/边类型。
+    （`a -> ~ b`：a 的尽头汇回 b 作为其新一波输入；多入边节点自动 join = 所有入边到齐才放行）；
+  * **执行** = 统一箭头送值 `x -> g`（图 = 可运行的数据流函数值，波次 SDF 语义见下）；
+  * **组合**：`g1 - g2` 并行组合、`g1 -> g2` 串联、`~` 并入 g1 内——值语义，返回新图。
+* **执行模型（定案：波次 SDF）**：入口节点每吐一个值启动一波；回边把结果带回前节点作为下一波输入；
+  收敛由「节点条件 + 入口流长度」自然决定；入口排空 → 全图结束；无显式波次上限，静态不可证处运行期有界守护兜底。
+* **图出口**：图的值 = 各末端节点末波结果组成的表；汇合点取 join 值。落地版再冻结细则。
+* **安全模型（v0.2：默认不可变）**：
+  * 安全区：graph 不可声明可变、不可原地改结构——只能整体替换或组合（返回新图）；读模式 `g[A]`/`len(g)` 可用；
+  * **unsafe 强大魔法（v0.3 定案）**：
+    * 声明：`unsafe { var g: graph = { A } - { B -> ~ A } }`（安全区写 `var g: graph` → 诊断）；
+    * 节点寻址 `g[name]`（读=节点 fn 值；写=换体）；
+    * **原地变异 = 与图字面量同构的写模式**（全运算符，无新保留字）：
+      `g[A] = { v -> … }` 换体 · `g[A] - { C }` 分叉加节点 · `g[C] -> g[D]` 加前向边 · `g[B] -> ~ g[A]` 加回边 ·
+      `g[A] -|` 断全部出边 · `g[A] <-|` 断全部入边 · `g[A] ->x g[B]`/`g[A] ~x g[B]` 删特定边 ·
+      `g[A] -><` 删节点（连带边，悬空自动清理，残留引用诊断）；
+    * **波界生效（定案）**：结构性变异只在**波次边界**生效——图执行中冻结，改动排队到下一波重排落地；
+      并发安全来自调度同步点而非锁；
+    * unsafe 内捕获白名单放宽（开发者担责），有界守护保留。
+* **graph 图论算法套件（v0.3 定案，基元函数形态，免 import）**——graph 同时是"可算的图结构"：
+  * 结构分析：`cycle(g)` 环检测（回边合法性/收敛性校验）· `topo(g)` 拓扑序（无环行走序/可行执行序）·
+    `conn(g)` 连通分量 · `reach(g, a, b)` 可达性；
+  * 路径与工期：`shortest(g, a, b)` 加权最短路径（BFS/非负 Dijkstra）· `critpath(g)` 关键路径 CPM（最长耗时链）；
+  * 流与匹配：`maxflow(g, s, t)` 最大流 / `mincut(g, s, t)` 最小割（Dinic）；
+  * 双重用途：① 图自身分析（回边环合法、拓扑可行序、关键路径 → 供波次调度器静态分析/收敛证明/并行度上界）；
+    ② 纯图计算模拟（依赖图、状态机、网络/供应链、资源分配）。
+* **与 table / trit 联动（v0.4 定案）**：
+  * **table ↔ graph**：
+    * 建图：`graph(edge_tbl)` / `graph(node_tbl, edge_tbl)` 基元函数用表批量构图（边表 = (from, to, kind) 平行列或行池 `table<EdgeRow>`）；
+    * 导出：`nodes(g)` → 节点名表 · `edges(g)` → 边表（from/to/kind 平行列）——结果可接 §2 表基元（`in`/`join`/`sort`）；
+    * 算法结果天然表承载：`topo(g)` → 序表 · `conn(g)` → 分量表 · `shortest(g,a,b)` → (路径表, 总权) · `maxflow(g,s,t)` → 流量表；
+    * 行池协同：`table<R>` 字段可持 graph 句柄（i64 号入列）；graph 元素数组/嵌套 v1 不做。
+  * **trit ↔ graph**：
+    * 节点/边标记可用 trit（-1 阻塞 / 0 待定 / 1 就绪）——依赖图三态传播、状态机图三态驱动；
+    * 图算法输出可带 trit 语义：`reach(g,a,b)` 三态可达（-1 不可达 / 0 未知 / 1 可达）· `cycle(g)` 可用 trit 表达
+      （0 无环 / 1 有环），为模拟场景保留"未定态"表达；
+    * 波次 SDF 收敛条件可直接用 trit：回边收敛 = 节点末波输出 trit 到齐判定（与 §3 trit 类型一致）。
+* 落地范围：先最小内核（graph 类型 + 字面量 + 执行 + 波次 SDF + 安全默认），再 unsafe 魔法，最后图论套件 + table/trit 联动。
 
-*EN: v0.2 — parallel graph is a first-class `graph` value (constructed, storable/composable, then
-executed). Literal `{ A } - { B -> ~ A }` (`-` fan-out, `~` join/back-edge; multi-in join waits
-all inputs). Execution = unified-arrow value feed `x -> g` (graph = runnable dataflow function).
-Composition (`g1 - g2`, `g1 -> g2`, `~ in g1`) are value semantics returning new graphs —
-no graph entry `=>` anywhere (consistent with single-arrow unification). Execution = wave SDF
-(entry emits a wave per input; back edge feeds next wave; convergence from node condition +
-input stream length; drain ends; no explicit wave-count; runtime boundedness guard where static
-proof impossible). Graph value = table of end-node wave results / join value. Safety-by-default:
-**graph is immutable in safe code** — no mutable declaration, no in-place structural change
-(only whole-value replacement or compositional new graphs); **inside unsafe, graph may be declared
-mutable with the same operator set (`+`, `-`, `~`…) acting as in-place graph mutation ("powerful
-graph-altering syntax")**; plus node capture whitelist (shared mutable table capture →
-compile-time diagnostic), bounded backpressured edges (`ch_send_block`), join barriers, trm-lite
-scheduling. Land minimal kernel first.*
+*EN: v0.4 — `graph` is a first-class value (construct via literal `{A}-{B}`, execute `x -> g`,
+compose `g1-g2`/`g1->g2`). Execution = wave SDF (entry emits a wave per input; back edge feeds
+next wave; convergence from node condition + input-stream length; runtime boundedness guard
+where not statically provable). Graph value = table of end-node wave results. Safety-by-default:
+graph immutable in safe code (only whole-value replacement / composition; reads `g[A]`/`len(g)`
+allowed). **Unsafe powerful magic (v0.3): `unsafe { var g: graph = … }`; node addressing
+`g[name]`; in-place mutation fully via operators** — `g[A] = { v -> … }` rewire body, `g[A] - { C }`
+fork-add node, `g[C] -> g[D]` add forward edge, `g[B] -> ~ g[A]` add back edge, `g[A] -|` drop
+out-edges, `g[A] <-|` drop in-edges, `g[A] ->x g[B]`/`g[A] ~x g[B]` delete edge, `g[A] -><` delete
+node+edges (no new reserved words). **Structural mutations take effect only at wave boundaries**
+(graph frozen while running; changes queue to next-wave rewire; concurrency safety from
+scheduler sync points, not locks). Capture whitelist relaxed inside unsafe; boundedness guard kept.
+**Graph-theory suite (v0.3, bare-name builtins): cycle/topo/conn/reach/shortest+critpath
+(maxflow/mincut)** — dual use: analyzing the executable graph (cycle legality, topological order,
+critical path for wave-scheduler analysis) and pure graph computation/simulation (dependency
+graphs, state machines, networks/supply chains, resource allocation).*
 
 ## 6. 边界 / Bounds
 
