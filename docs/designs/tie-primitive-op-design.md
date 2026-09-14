@@ -1,6 +1,6 @@
-# tie 语言基元与运算符（设计 v0.5 / ROAD p.9.13）
+# tie 语言基元与运算符（设计 v0.6 / ROAD p.9.13）
 
-*EN: tie language primitives & operators (design v0.5 / ROAD p.9.13)*
+*EN: tie language primitives & operators (design v0.6 / ROAD p.9.13)*
 
 ## 定位 / Positioning
 
@@ -36,7 +36,9 @@
 
 * `in` / `not in`（中缀布尔）：右 string→子串包含；右 table→元素包含（按类型比较）；右 map→键包含（O(1)）。优先级：比较与逻辑之间。`not in` 为一词法组合，`in` 复用既有保留字。
 * `+` 语义扩展（原数字/string+string 语义不变）：string+标量→自动 `to_string` 拼接；table+table→**值语义新表**（全拷，性能裁决同 p.9.11.6 `with`，大表慎用并文档化）；map+map→合并新表。
-* `**` 幂（右结合，高于 `*`；int 幂走快速幂、f64 走 libc pow）；`//` 整除（int 族截断；f64 走 floor-div）；补 `%%` f64 取余成对。全部 desugar 到既有原语，零新运行期依赖。
+* `**` 幂（右结合，高于 `*`；int 幂走快速幂、f64 走 libc pow）；`//` 整除（int 族截断；f64 走 floor-div）；补 `%%` f64 取余成对；
+  **溢出裁决（v0.6）**：`**` 与 `*` 一致（i64 回绕），另备 **`**?` checked 变体**（运行期溢出 panic，对齐 p.9.11.9 `+?`/`-?`/`*?` 族）。
+  全部 desugar 到既有原语，零新运行期依赖。
 
 *EN: `in`/`not in` membership (string substring / table element / map key); `+` extensions (string+scalar concat, value-semantics table concat, map merge — original semantics unchanged); `**` power (right-assoc above `*`), `//` integer/floor division, paired `%%` f64 modulo. All desugar to existing primitives.*
 
@@ -79,6 +81,17 @@
     * **波界生效（定案）**：结构性变异只在**波次边界**生效——图执行中冻结，改动排队到下一波重排落地；
       并发安全来自调度同步点而非锁；
     * unsafe 内捕获白名单放宽（开发者担责），有界守护保留。
+* **安全分层一览与裁决（v0.6 定案）**：
+  * **SAFE（安全区默认可用，编译期保证）**：单箭头统一（纯语法）；基元前置全部；运算符 `in`/`not in`、`+` 扩展（值语义）、`//`、`%%`；
+    箭头续扩全套；graph 构造/字面量/组合（不可变值语义）、执行 `x -> g`（任务隔离+有界队列背压+join 屏障+捕获白名单+波界冻结）、
+    读操作（`nodes/edges` 读视图、`len`、`g[A]` 读、表语法只读操图）、图论算法全套 + `tprop(g)`（纯函数表变换）、不可变 graph 句柄入表；
+  * **UNSAFE（必须 unsafe 上下文）**：`unsafe { var g: graph }` 可变图声明；原地变异运算符全套
+    （换体/加节点/加边/加回边/断边/删边/删节点）；unsafe 内捕获白名单放宽；可变 graph 句柄跨线程共享；
+  * **三个裁决**：
+    1. **读视图只读强制**：`nodes(g)`/`edges(g)` 返回共享读视图，安全区**写视图 = 编译期诊断**（只读强制，防借道改图击穿不可变）；
+       unsafe 内写视图 = 原地变异；
+    2. **`**` 溢出**：回绕对齐 `*`，新增 **`**?` checked**（见 §3）；
+    3. **`tprop` 双形态**：safe 纯函数 `tprop(g)` 返回新 trit 表；**unsafe 内可原地写图的 trit 标记**（`g[A].flag` 写模式，走波界生效）。
 * **graph 图论算法套件（v0.3 定案；v0.5: 算法 = 表的纯函数变换）**——graph 同时是"可算的图结构"：
   * 结构分析：`cycle(g)` 环检测（回边合法性/收敛性校验）· `topo(g)` 拓扑序（无环行走序/可行执行序）·
     `conn(g)` 连通分量 · `reach(g, a, b)` 可达性；
@@ -97,7 +110,7 @@
     * 三态逻辑（Kleene）随图传播，与 tie 既有 trit 类型一致。
 * 落地范围：先最小内核（graph 类型 + 字面量 + 执行 + 波次 SDF + 安全默认），再 unsafe 魔法，最后图论套件 + table/trit 一体。
 
-*EN: v0.5 — `graph` is a first-class value (construct via literal `{A}-{B}`, execute `x -> g`,
+*EN: v0.6 — `graph` is a first-class value (construct via literal `{A}-{B}`, execute `x -> g`,
 compose `g1-g2`/`g1->g2`). Execution = wave SDF (entry emits a wave per input; back edge feeds
 next wave; convergence from node condition + input-stream length; runtime boundedness guard
 where not statically provable). Graph value = table of end-node wave results. Safety-by-default:
