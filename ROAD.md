@@ -292,7 +292,7 @@ development happens on branch p.7.
 >
 > EN: p.9.13 — language primitives & operators for human writing ergonomics; single-arrow unification (breaking) precedes.
 
-- [ ] p.9.13.1 单箭头统一：`->` 唯一箭头（数据流/返回位/match 臂 `pat -> expr`/宏/块管道绑定 `{ v -> expr }`），`=>` 移除 + 存量迁移 grep 清零
+- [x] p.9.13.1 单箭头统一（先决破坏项）——**已落地 2026-09-14**：tiec c11884d（lexer 删 lex_fatarrow + 新诊断「`=>` 已移除，请用 `->`」，`>=` 等零影响；parser 臂分隔符换 `->` + parse_ternary/parse_case_arm_pattern 让 when 守卫与模式止于顶层 `->`）· 4ccb03d（存量 20 处迁移 + 探针）· d4815a0（自举不动点 B0689D5B）；grep `=>` 代码位=0（豁免：注释/诊断串/负例 fixture）；回归 s21 159P·6F·2S / diag FAILS=7 / m5 8P·0F 不劣化；tlib/tshell 无 `=>` 无需迁移
 - [ ] p.9.13.2 基元前置：编译器级隐式前置（免 import 裸名、同名用户遮蔽），首批 ~30 词（字符串/容器/数学转换/调试输出）
 - [ ] p.9.13.3 运算符批：`in`/`not in`（string 子串/table 元素/map 键）、`+` 扩展（string+标量、table+table 值语义、map 合并）、`**`/`//`/`%%` + `**?` checked 变体（溢出 panic 对齐 p.9.11.9）
 - [ ] p.9.13.4 箭头续扩：块管道、进容器/字段/解构、接基元/运算符、条件管道、临时单参函数、`(a,b) <- t` 反解构
