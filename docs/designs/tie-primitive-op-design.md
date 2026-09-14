@@ -1,6 +1,6 @@
-# tie 语言基元与运算符（设计 v0.1 / ROAD p.9.13）
+# tie 语言基元与运算符（设计 v0.2 / ROAD p.9.13）
 
-*EN: tie language primitives & operators (design v0.1 / ROAD p.9.13)*
+*EN: tie language primitives & operators (design v0.2 / ROAD p.9.13)*
 
 ## 定位 / Positioning
 
@@ -51,24 +51,46 @@
 
 *EN: piped anonymous blocks `x -> { v -> expr }`; pipe into index/field/destructure `t -> [i]` `p -> .field` `t -> (a,b)`; pipe into primitives/operators `t -> in xs` `t -> + [x]`; conditional pipe; pipe-as-temporary-single-arg-function `f = t -> expr`; reverse destructure `(a,b) <- t`.*
 
-## 5. 并行数据流图（全新并行书写）/ Parallel dataflow graph
+## 5. 并行数据流图（全新并行书写）/ Parallel dataflow graph (v0.2: graph as first-class value)
 
-* 语法（图内运算符）：
+* **graph 新值类型**（v0.2 定案）：并行图是一等数据值——先构造、可存储/传递/组合，再执行。
+  内部 = 节点表（fn 值）+ 边表（前向/分叉/汇合/回边记录）+ 入口/出口标记；以现成表/struct 表达，
+  语言只做类型封装 + 检查（边类型一致性、回边有界性）。
+* 图语法（图内运算符）：
   * 节点 = 模块（普通 tie 函数、或 `{ v -> expr }` 匿名单参块）；
-  * `->` 前进边；`-` **并行分叉**（一节点分出多路）；`~` **汇合/回边**（`a -> ~ b`：a 的尽头汇回 b 作为其新一波输入；多入边节点自动 join = 所有入边到齐才放行）；`=>` 并行图入口（左进右出）。
-  * 示例：`=> M0 -> A - { A -> B -> ~ A } - { A -> C }`
+  * **图值字面量** `{ A } - { B -> ~ A }`：花括号=节点模块，`-` 并行分叉，`~` 汇合/回边
+    （`a -> ~ b`：a 的尽头汇回 b 作为其新一波输入；多入边节点自动 join = 所有入边到齐才放行）。
+    **`=>` 不出现**（已随单箭头统一移除，§1），图入口即"执行"。
+  * **执行** = 统一箭头送值 `x -> g`（图 = 可运行的数据流函数值，波次 SDF 语义见下）。
+  * **组合**：`g1 - g2` 并行组合两图、`g1 -> g2` 串联、`~` 回边并入 g1 内表达式——都是值语义，返回新图。
 * **执行模型（定案：波次 SDF）**：
   * 入口节点每吐一个值启动一波；回边把结果带回前节点作为下一波输入；
-  * 收敛由「节点条件 + 入口流长度」自然决定（如示例 B 判定 ≥10 丢弃即该流线收敛）；入口排空 → 全图结束；
-  * 用户无需写波次上限（无 `~(N)` 记法），有界性由输入流驱动。
-* **图出口**：并行区表达式的值 = 各末端节点（无汇合时）末波结果组成的表；汇合点为 join 值。落地版再冻结细则。
-* **安全默认（编译器护栏）**：
+  * 收敛由「节点条件 + 入口流长度」自然决定（如 B 判定 ≥10 丢弃即该流线收敛）；入口排空 → 全图结束；
+  * 用户无需写波次上限（无 `~(N)` 记法），有界性由输入流驱动；静态不可证处，运行期有界守护兜底。
+* **图出口**：并行图表达式的值 = 各末端节点（无汇合时）末波结果组成的表；汇合点取 join 值。落地版再冻结细则。
+* **安全默认（v0.2 加强：graph 默认不可变）**：
+  * **graph 正常代码中不可被声明为可变/不可原地改结构**——只能整体替换（重新赋值新图值）或组合（运算符返回新图）；
+  * **unsafe 内可声明可变 graph**，并配有"改变 graph 的强大语法"：unsafe 块内复用同一批运算符
+    （`+ {..}` 追加节点、`- {..}` 追加分叉、`-> ~ b` 追加回边、结构化删除/改线原语）作**原地图变异**；
   * 节点捕获白名单：只许标量/不可变/按值拷贝；捕获共享可变表引用 → 编译期诊断；
   * 边 = 有界队列 + 背压（复用 `ch_send_block`）；join = 同步屏障；
-  * 调度归 trm-lite work-stealing；与既有 actor/async/ppool/channel 是同一执行层，图只是它们的表达层。
-* 落地范围：先最小内核（入口 → 分叉 → 前进 → 汇合/回边 → 出口），再扩展嵌套图/边类型。行为记录：回边必须有界才允许（B 类条件终结或输入流长度），编译期静态检查即时不能全证的，运行期有界守护兜底。
+  * 调度归 trm-lite work-stealing；与既有 actor/async/ppool/channel 是同一执行层，图只是其表达层。
+* 落地范围：先最小内核（入口 → 分叉 → 前进 → 汇合/回边 → 出口），再扩展嵌套图/边类型。
 
-*EN: Graph syntax: nodes are modules (functions or `{ v -> expr }` blocks); `->` forward edge; `-` parallel fan-out; `~` join/back edge (multi-in edges join = all inputs arrive before release); `=>` graph entry. Execution = wave SDF (entry emits one wave per input; back edges feed next wave; convergence from node condition + input stream length; entry drain ends the graph; no explicit wave-count syntax). Graph value = table of end-node wave results (join value at join points). Safety-by-default: capture whitelist (shared mutable table capture → compile-time diagnostic), bounded queues + backpressure (`ch_send_block`), join barriers, trm-lite scheduling. Land minimal kernel first; boundedness guarded statically where provable, runtime guard otherwise.*
+*EN: v0.2 — parallel graph is a first-class `graph` value (constructed, storable/composable, then
+executed). Literal `{ A } - { B -> ~ A }` (`-` fan-out, `~` join/back-edge; multi-in join waits
+all inputs). Execution = unified-arrow value feed `x -> g` (graph = runnable dataflow function).
+Composition (`g1 - g2`, `g1 -> g2`, `~ in g1`) are value semantics returning new graphs —
+no graph entry `=>` anywhere (consistent with single-arrow unification). Execution = wave SDF
+(entry emits a wave per input; back edge feeds next wave; convergence from node condition +
+input stream length; drain ends; no explicit wave-count; runtime boundedness guard where static
+proof impossible). Graph value = table of end-node wave results / join value. Safety-by-default:
+**graph is immutable in safe code** — no mutable declaration, no in-place structural change
+(only whole-value replacement or compositional new graphs); **inside unsafe, graph may be declared
+mutable with the same operator set (`+`, `-`, `~`…) acting as in-place graph mutation ("powerful
+graph-altering syntax")**; plus node capture whitelist (shared mutable table capture →
+compile-time diagnostic), bounded backpressured edges (`ch_send_block`), join barriers, trm-lite
+scheduling. Land minimal kernel first.*
 
 ## 6. 边界 / Bounds
 

@@ -288,7 +288,7 @@ development happens on branch p.7.
 
 **语言基元与运算符（p.9.13，面向"人"的书写体验）**
 
-> 设计文档（2026-09-14 定案）：`docs/designs/tie-primitive-op-design.md` v0.1。三大目标：常用平台无关函数进语言（免 import 基元前置）、高频操作进语法（运算符与单箭头，非方法链）、全新并行书写（数据流图 + 波次 SDF，默认安全）。先决：单箭头统一（`->` 唯一，`=>` 移除零兼容别名）。
+> 设计文档（2026-09-14 定案）：`docs/designs/tie-primitive-op-design.md` v0.2。三大目标：常用平台无关函数进语言（免 import 基元前置）、高频操作进语法（运算符与单箭头，非方法链）、全新并行书写（graph 一等值类型 + 波次 SDF，默认安全）。先决：单箭头统一（`->` 唯一，`=>` 移除零兼容别名）。
 >
 > EN: p.9.13 — language primitives & operators for human writing ergonomics; single-arrow unification (breaking) precedes.
 
@@ -296,7 +296,7 @@ development happens on branch p.7.
 - [ ] p.9.13.2 基元前置：编译器级隐式前置（免 import 裸名、同名用户遮蔽），首批 ~30 词（字符串/容器/数学转换/调试输出）
 - [ ] p.9.13.3 运算符批：`in`/`not in`（string 子串/table 元素/map 键）、`+` 扩展（string+标量、table+table 值语义、map 合并）、`**`/`//`/`%%`
 - [ ] p.9.13.4 箭头续扩：块管道、进容器/字段/解构、接基元/运算符、条件管道、临时单参函数、`(a,b) <- t` 反解构
-- [ ] p.9.13.5 并行数据流图：`=>` 入口 / `-` 分叉 / `~` 汇合回边 / `->` 前进边；波次 SDF 执行（输入流驱动收敛，回边=下一波）；捕获白名单 + 有界队列背压 + join 屏障 + trm-lite 调度（安全默认）
+- [ ] p.9.13.5 并行数据流图：`graph` 一等值类型（字面量 `{A}-{B}`、`x -> g` 执行、组合 g1-g2/g1->g2）；`-` 分叉 `~` 汇合回边；波次 SDF 执行（输入流驱动收敛，回边=下一波）；**graph 默认不可变**（安全区禁原地变异），unsafe 内可变 graph + 同批运算符作原地图变异；捕获白名单 + 有界队列背压 + join 屏障 + trm-lite 调度
 - [ ] p.9.13.6 文档/示例/迁移说明（含 `=>`→`->` 存量改写样例）
 
 ### 关联定稿（修订项）
