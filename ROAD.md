@@ -284,6 +284,7 @@ development happens on branch p.7.
 - [x] p.9.12.3 struct 字段 f64 默认值整数字面量 irgen 崩溃——**已落地 2026-09-14**：tiec 87115fe（tig_struct_construct 缺省路径 vt 改为 tig_expr 实际发射类型，统一走 S1.3 收窄 sitofp/trunc）：f64=5/f32=3/u16=7/bool/R(2)/R(3.0) 全 PASS；自举不动点 A15E9980
 - [x] p.9.12.4 命名空间体内 const 声明——**已落地 2026-09-14**：tiec f45060e（parse_namespace 加 lex_const 分支；scollect_port 全名登记 gb_*；sinfer gb_find_ns 前缀补全；scheck const 只读拦截；irgen/llvmgen @ns$NAME 发射）：ns::NAME 引用/跨 ns/顶层同名不冲突/重赋值拒绝 13/13 PASS；自举不动点 AC4DDCA4（tiu 常量归位）
 - [x] p.9.12.5 enum 变体分隔符放宽——**已落地 2026-09-14**：tiec 2554c34（parse_enum 硬 expect(lex_semi) 改可选 `;`/`,`/无空格，AST 零变化）：同行空格/逗号/混用/payload 同行/尾随逗号 29/29 PASS；自举不动点 4DDCAB21；既有换行写法零破坏
+- [ ] p.9.12.6 `table<R>` 结构化行池（tiu 坑 #1 定案：表元素由仅内建扩展为 struct 行池、按 id 稀疏寻址、行级自动扩容；复用 p.9.12.2 自动扩底座；零新增关键字）——设计定案 2026-09-14 `docs/designs/tie-rowpool-design.md` v0.1，实施待委派
 
 ### 关联定稿（修订项）
 
