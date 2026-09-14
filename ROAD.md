@@ -296,7 +296,7 @@ development happens on branch p.7.
 - [ ] p.9.13.2 基元前置：编译器级隐式前置（免 import 裸名、同名用户遮蔽），首批 ~30 词（字符串/容器/数学转换/调试输出）
 - [ ] p.9.13.3 运算符批：`in`/`not in`（string 子串/table 元素/map 键）、`+` 扩展（string+标量、table+table 值语义、map 合并）、`**`/`//`/`%%`
 - [ ] p.9.13.4 箭头续扩：块管道、进容器/字段/解构、接基元/运算符、条件管道、临时单参函数、`(a,b) <- t` 反解构
-- [ ] p.9.13.5 并行数据流图：`graph` 一等值类型（字面量 `{A}-{B}`、`x -> g` 执行、组合 g1-g2/g1->g2）；`-` 分叉 `~` 汇合回边；波次 SDF 执行（输入流驱动收敛，回边=下一波）；**graph 默认不可变**（安全区禁原地变异），unsafe 内可变 graph + 同批运算符作原地图变异（波界生效）；图论套件（cycle/topo/conn/reach/shortest+critpath/maxflow·mincut，基元函数免 import）；与 table（graph(edge_tbl)/nodes/edges/算法结果表承载/行池句柄）· trit（-1/0/1 标记与三态可达、三态收敛）联动；捕获白名单 + 有界队列背压 + join 屏障 + trm-lite 调度
+- [ ] p.9.13.5 并行数据流图：`graph` 一等值类型（字面量 `{A}-{B}`、`x -> g` 执行、组合 g1-g2/g1->g2）；**图即表**（graph 无独立存储=节点/边两表+共享读视图，表语法直接操图，表→图→表闭环）；`-` 分叉 `~` 汇合回边；波次 SDF 执行（输入流驱动收敛，回边=下一波，trit 收敛判定）；**graph 默认不可变**（安全区禁原地变异），unsafe 内可变 graph + 同批运算符作原地图变异（波界生效）；图论套件（cycle/topo/conn/reach/shortest+critpath/maxflow·mincut，算法=表变换全表化）；**trit 三态穿透全套**（标记 trit 字段、算法输出 trit 域、`tprop(g)` 三态传播原语）；捕获白名单 + 有界队列背压 + join 屏障 + trm-lite 调度
 - [ ] p.9.13.6 文档/示例/迁移说明（含 `=>`→`->` 存量改写样例）
 
 ### 关联定稿（修订项）

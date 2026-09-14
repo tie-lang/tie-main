@@ -1,6 +1,6 @@
-# tie 语言基元与运算符（设计 v0.4 / ROAD p.9.13）
+# tie 语言基元与运算符（设计 v0.5 / ROAD p.9.13）
 
-*EN: tie language primitives & operators (design v0.4 / ROAD p.9.13)*
+*EN: tie language primitives & operators (design v0.5 / ROAD p.9.13)*
 
 ## 定位 / Positioning
 
@@ -53,9 +53,11 @@
 
 ## 5. 并行数据流图（全新并行书写）/ Parallel dataflow graph (v0.3: graph value + unsafe magic + graph-theory suite)
 
-* **graph 新值类型**（v0.2 定案）：并行图是一等数据值——先构造、可存储/传递/组合，再执行。
-  内部 = 节点表（fn 值）+ 边表（前向/分叉/汇合/回边记录）+ 入口/出口标记；以现成表/struct 表达，
-  语言只做类型封装 + 检查（边类型一致性、回边有界性）。
+* **graph 新值类型（v0.5: 图即表——以表为唯一存储）**：图的价值不是"新存储"，而是**表的语义视图**——
+  graph 内部 = **两张表**（节点平行表 / 边平行表，边用行池 `table<EdgeRow>`），无其它隐藏状态；
+  `nodes(g)` / `edges(g)` 返回**共享读视图**（零拷贝，安全区只读）；**图元素直接进入表语法**
+  （`for e in edges(g)`、`e in edges(g)`、`edges(g) -> filter …`、表推导式）——表语法 = 图语法；
+  图值可折叠回表（`g -> edges`）再成图（`graph(edge_tbl)`），邻接矩阵 `graph(adj)`/距离矩阵互转，闭环可折叠。
 * 图语法（图内运算符）：
   * 节点 = 模块（普通 tie 函数、或 `{ v -> expr }` 匿名单参块）；函数名即节点名，匿名块自动编号；
   * **图值字面量** `{ A } - { B -> ~ A }`：花括号=节点模块，`-` 并行分叉，`~` 汇合/回边
@@ -77,27 +79,25 @@
     * **波界生效（定案）**：结构性变异只在**波次边界**生效——图执行中冻结，改动排队到下一波重排落地；
       并发安全来自调度同步点而非锁；
     * unsafe 内捕获白名单放宽（开发者担责），有界守护保留。
-* **graph 图论算法套件（v0.3 定案，基元函数形态，免 import）**——graph 同时是"可算的图结构"：
+* **graph 图论算法套件（v0.3 定案；v0.5: 算法 = 表的纯函数变换）**——graph 同时是"可算的图结构"：
   * 结构分析：`cycle(g)` 环检测（回边合法性/收敛性校验）· `topo(g)` 拓扑序（无环行走序/可行执行序）·
     `conn(g)` 连通分量 · `reach(g, a, b)` 可达性；
   * 路径与工期：`shortest(g, a, b)` 加权最短路径（BFS/非负 Dijkstra）· `critpath(g)` 关键路径 CPM（最长耗时链）；
   * 流与匹配：`maxflow(g, s, t)` 最大流 / `mincut(g, s, t)` 最小割（Dinic）；
+  * **表化契约**：输入输出全部表位置（权重/容量/起点 = 表；结果 = 序表/分量表/路径表/距离矩阵 `table<table<i64>>`/流量表）；
+    表→图→表 闭环可折叠；邻接矩阵直转；
   * 双重用途：① 图自身分析（回边环合法、拓扑可行序、关键路径 → 供波次调度器静态分析/收敛证明/并行度上界）；
     ② 纯图计算模拟（依赖图、状态机、网络/供应链、资源分配）。
-* **与 table / trit 联动（v0.4 定案）**：
-  * **table ↔ graph**：
-    * 建图：`graph(edge_tbl)` / `graph(node_tbl, edge_tbl)` 基元函数用表批量构图（边表 = (from, to, kind) 平行列或行池 `table<EdgeRow>`）；
-    * 导出：`nodes(g)` → 节点名表 · `edges(g)` → 边表（from/to/kind 平行列）——结果可接 §2 表基元（`in`/`join`/`sort`）；
-    * 算法结果天然表承载：`topo(g)` → 序表 · `conn(g)` → 分量表 · `shortest(g,a,b)` → (路径表, 总权) · `maxflow(g,s,t)` → 流量表；
-    * 行池协同：`table<R>` 字段可持 graph 句柄（i64 号入列）；graph 元素数组/嵌套 v1 不做。
-  * **trit ↔ graph**：
-    * 节点/边标记可用 trit（-1 阻塞 / 0 待定 / 1 就绪）——依赖图三态传播、状态机图三态驱动；
-    * 图算法输出可带 trit 语义：`reach(g,a,b)` 三态可达（-1 不可达 / 0 未知 / 1 可达）· `cycle(g)` 可用 trit 表达
-      （0 无环 / 1 有环），为模拟场景保留"未定态"表达；
-    * 波次 SDF 收敛条件可直接用 trit：回边收敛 = 节点末波输出 trit 到齐判定（与 §3 trit 类型一致）。
-* 落地范围：先最小内核（graph 类型 + 字面量 + 执行 + 波次 SDF + 安全默认），再 unsafe 魔法，最后图论套件 + table/trit 联动。
+* **与 table / trit 一体（v0.5: 图即表 + 三态穿透全套）**：
+  * **table ↔ graph（存储一体）**：graph 无独立存储（见上"图即表"）；建图/导出/算法输入输出全表化；行池 `table<EdgeRow>` 与图同构。
+  * **trit 穿透全套（v0.5 定案）**：
+    * 节点/边标记 = trit 类型字段（-1 阻塞 / 0 待定 / 1 就绪）——依赖图三态传播、状态机图三态驱动；
+    * 算法输出统一 trit 域：`reach(g,a,b)` 三态可达（-1/0/1）· `cycle(g)` trit（0 无环 / 1 有环）· 波次 SDF 回边收敛 = 末波 trit 表到齐判定；
+    * **新增三态传播原语 `tprop(g)`**：按边做确定性三态值传播（依赖/状态机/网络的三态模拟）——"用 graph 做模拟计算"的最短路径；
+    * 三态逻辑（Kleene）随图传播，与 tie 既有 trit 类型一致。
+* 落地范围：先最小内核（graph 类型 + 字面量 + 执行 + 波次 SDF + 安全默认），再 unsafe 魔法，最后图论套件 + table/trit 一体。
 
-*EN: v0.4 — `graph` is a first-class value (construct via literal `{A}-{B}`, execute `x -> g`,
+*EN: v0.5 — `graph` is a first-class value (construct via literal `{A}-{B}`, execute `x -> g`,
 compose `g1-g2`/`g1->g2`). Execution = wave SDF (entry emits a wave per input; back edge feeds
 next wave; convergence from node condition + input-stream length; runtime boundedness guard
 where not statically provable). Graph value = table of end-node wave results. Safety-by-default:
