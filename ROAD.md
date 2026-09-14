@@ -299,6 +299,7 @@ development happens on branch p.7.
 - [ ] p.9.13.5 并行数据流图：`graph` 一等值类型（字面量 `{A}-{B}`、`x -> g` 执行、组合 g1-g2/g1->g2）；**图即表**（graph 无独立存储=节点/边两表+共享读视图，表语法直接操图，表→图→表闭环）；`-` 分叉 `~` 汇合回边；波次 SDF 执行（输入流驱动收敛，回边=下一波，trit 收敛判定）；**graph 默认不可变**（安全区禁原地变异），unsafe 内可变 graph + 同批运算符作原地图变异（波界生效）；图论套件（cycle/topo/conn/reach/shortest+critpath/maxflow·mincut，算法=表变换全表化）；**trit 三态穿透全套**（标记 trit 字段、算法输出 trit 域、`tprop(g)` 三态传播原语 + unsafe 原地写标记）；安全分层（SAFE：构造/组合/执行/读视图/算法；UNSAFE：可变声明/变异运算符/捕获放宽/跨线程）+ 三裁决（读视图只读诊断 / `**?` checked / tprop 双形态）；捕获白名单 + 有界队列背压 + join 屏障 + trm-lite 调度
 - [ ] p.9.13.6 文档/示例/迁移说明（含 `=>`→`->` 存量改写样例）
 - [x] p.9.13.7 内置库独立仓 tlib（p.9.13 前置，先于 .1 执行）——**已落地 2026-09-14**：std/ext/rdu/sys 四目录 218 提交经 subtree add 迁入 **tie-lang/tlib**（TPL2.0 + 双语 README + 四层定位 std/ext/rdu/sys；tiec 4 笔：1ccc6d5 库根别名 import（`/std /ext /rdu /sys`，`TIE_LIB_ROOT`/`--lib-root` 取值）· 46a5e99 230 文件 import 迁移 · 988f38a 删四目录（git ls-files 四库=0）· b744369 fetch-lib.ps1 + 打包收口）；自举不动点 F0625533，回归 test-diagcodes FAILS=7 / s21 159P·6F·2S / m5 8P·0F 不劣化；release.md 组件清单加 tlib 行（tiec 内置库零副本）
+- [x] p.9.13.8 tsh 脚本化（用户规则：禁用 .ps1，只用 tshell）——**已落地 2026-09-14**：tsh 本机可用（tiec p.9.13.7 重建 tsh_main/tsh_main+tedit_embed；interp 缺陷①-④探针全 PASS，已由 tiec 修复；tshell bed678c 收录探针）；tiec 5 个 .ps1 全量迁移 .tsh.tie（regress-s21/package/fetch-lib/m6_actor_regress/verify-tiedap，c689af0 已推；`git ls-files *.ps1`=0，豁免仅文档/注释文本引用）；门禁经 tsh 实测基线不劣化（s21 159P·6F·2S / diag FAILS=7 / m5 8P·0F / tiedap OK / package 端到端）；tsh interp 5 项限制已文档化（if 块重赋值读空·exit 顺序·逐帧 stdin 喂入等）
 
 ### 关联定稿（修订项）
 
