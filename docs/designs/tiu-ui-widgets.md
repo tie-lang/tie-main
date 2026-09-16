@@ -4,7 +4,7 @@
 **日期** / Date: 2026-09-12 · **类型** / Type: 架构设计（文档；本期只落到设计，不进入实现）
 **依据** / Basis: `docs/designs/tiu-drawing-api.md`（绘制 API 库，本层唯一消费接口）· `docs/designs/tiu-render-engine.md`（引擎，本层不感知）· ROAD.md p.9.3.2（组件树与组合式布局框架）
 **关联** / Related: `docs/designs/tiu-event-system.md`（事件轴，独立通道）· `docs/plans/2026-09-12-tiu-api-impl.md`（增量段协议 T2.3 冻结件，本层按此消费）
-**版本** / Version: v0.2（2026-09-12 依三支柱方针重构：高性能/低内存/易用贯穿全篇，内嵌实施任务清单闭环）· v0.1 概要
+**版本** / Version: v0.3（2026-09-16 用法定案五议题收敛：Elem=enum 判别和 + payload 白名单二批 · 事件批次自动帧 · lazy_list 键行生成器 · 回调等待 fn 捕获定稿 · 不可变 props + 链式覆写，新增 §15）· v0.2（2026-09-12 依三支柱方针重构：高性能/低内存/易用贯穿全篇，内嵌实施任务清单闭环）· v0.1 概要
 
 > EXEC BRIEF: Defines tiu's UI layer around three pillars — **performance**
 > (differential update in O(changed), localized layout, zero-allocation hot
@@ -217,12 +217,12 @@ let ui = view.column({
 契约沿用 API 实施计划 §2（增量段 = T2.3 冻结件；IR/wire = T2.1）；**唯一新增冻结 = §8.1 UI 结构 key**。每任务单提交、模块完成即自验证：
 
 * **模块一：骨架/快照/arena** —— SoA 骨架、双缓冲快照、帧位图；帧分配零探针
-* **模块二：构建与三类复用** —— 声明式组合 API、slot 定位、替换/新建规则；复用率与首批控件（Button / Text / Row / Column / Scroll / TextInput / Image）单提交交付
+* **模块二：构建与三类复用** —— 声明式组合 API、slot 定位、替换/新建规则；复用率与首批控件（Button / Text / Row / Column / Scroll / ListView(lazy_list) / TextInput / Image）单提交交付；控件动作参数位冻结策略见 §15.4
 * **模块三：布局引擎** —— 单趟约束传播、三档约束、局部重排 + 静态子树缓存；gold 布局断言
 * **模块四：主题 token 与解析** —— token 单例、三层覆写、默认主题、换肤路径；组合空间对齐
 * **模块五：差分桥** —— UI 结构 key → 脏位图 → 增量段（消费 API T2.3）；整树隔离探针
 * **模块六：动画时钟** —— 声明式动画、活跃集预算、降采样；帧车道探针
-* **模块七：滚动 / 焦点 / 文本消费** —— clip+偏移滚动（骨架命中探针）、焦点视觉状态、排版缓存 LRU
+* **模块七：滚动 / 焦点 / 文本消费** —— clip+偏移滚动（骨架命中探针）、焦点视觉状态、排版缓存 LRU；帧调度语义（事件批次自动帧 / request_frame / 空闲零帧，§15.2）
 * **终点验收**：§11 全项探针 + 与 API 库联调 end-to-end gold
 
 依赖：API 库模块一/二/三（对象模型 / 编码器 / 双模式）+ 事件轴定稿；本层不直接依赖引擎。
@@ -239,7 +239,70 @@ let ui = view.column({
 
 ---
 
-## 15. 附录 / Appendix
+## 15. 用法定案（2026-09-16 五议题收敛）/ Usage rulings (five topics, 2026-09-16)
+
+> 用法侧五个悬置议题经讨论收敛为本节定案；每条含定案、依据与否决记录。
+> 语言档依赖（p.8.1.8 / p.9.11.22）随本节登记进 ROAD。
+> EN: The five usage-side open topics converge here; each ruling carries its
+> basis and rejected alternatives. Language-track dependencies (p.8.1.8 /
+> p.9.11.22) are registered into the ROAD alongside.
+
+### 15.1 Elem 表示（议题 1 定案）
+
+* `Elem` = **enum 判别和**（Rust 风格 ADT 已落地：带载荷构造 / switch tag 判别 / 泛型全通）。变体示意：`Text(TextProps) · Button(ButtonProps) · Row(table<Elem>, LayoutProps) · Column(…) · Scroll(…) · TextInput(…) · Image(…)`——payload 结构随模块二冻结。
+* **依赖语言档 p.8.1.8**：payload 白名单二批放开 **struct / fn**（一批 f64/table<T>/map<V>/string 已落，p.8.1.7），附 `table<Elem>` 自引用递归探针（enum 作表元素已证、enum 作 struct 字段已证，自引用待证）与 i64/i128 解构确认。
+* 过渡期：`table<any>` + 运行时 kind 校验；控件构造签名不变，白名单落地换表示不动应用代码。
+* 否决记录：统一 struct Elem（kind + 全 props 内嵌——每个 Elem 背全部控件字段，内存/缓存劣）；裸 `table<any>` 定案（静态安全全失、每帧装箱）。
+
+*EN: Elem = payload enum (ADT already landed). Depends on p.8.1.8 whitelist batch 2 (struct/fn payload + recursive table<Elem> probe); table<any> as interim with unchanged constructor signatures. Rejected: unified struct Elem (carries all widgets' props), any-only representation (no static safety, per-frame boxing).*
+
+### 15.2 帧调度（议题 2 定案）
+
+* 事件批次处理完 → UI 层**自动排一帧**（差分 O(变化)、静态帧零编码，多排不亏）；`ui.request_frame()` 显式出口（后台线程/定时器，经事件循环投递）。
+* 动画时钟活跃期自驱节奏；**空闲零帧**——不做连续 60fps 空转（功耗纪律，对齐 §7 活跃集预算哲学）。
+* 状态归应用（§3.3 不动摇）：框架不关心状态住在哪，只认「帧函数 + 变更后重算」；不做 tiu 侧 Signal/Store。
+
+*EN: auto-frame per event batch + explicit request_frame escape; the animation clock drives its own cadence; zero idle frames (no 60fps spinning); app-owned state per §3.3 — no framework-side signals/stores.*
+
+### 15.3 变长列表（议题 3 定案，B+A 结合）
+
+* `ui.lazy_list(count, rows)`：count = 总行数（i64，数据驱动）；rows = **键行生成器**，`yield RowSlot(key: string, elem: Elem)`——生成器写法之顺（B，yield 惰性 p.9.11.15 现货）+ 显式 count 与稳定键之魂（A，对账与随机定位）。
+* `RowSlot` 为普通 struct 表元素（**不涉 payload 白名单**；enum 作 struct 字段已证）；键与行同源单产，无平行生成器同步负担。
+* 对账按 key：新行建骨架 / 消失行回收 / 未变行只换快照——位置漂移不触发重建（「无需手写 key」承诺范围 = 静态树；动态列表恰为例外，本控件即例外出口）。
+* 惰性拉取窗口 = 视口 ± overscan（可配）；滚动 = 换窗 + 内容偏移（§9 变换级，静态子树骨架缓存满命中）。
+* 语义约束：count 与产出数不一致 → E；key 重复 → E；`scroll_to(i)` 顺序拉 O(N)（文档明示；将来可加 height_hint 参数位优化常跳场景）。
+* 否决记录：纯位置生成器（键弱、跳转 O(N) 全占）；虚拟化后置（列表最常见控件，欠债必还）。
+
+*EN: ui.lazy_list(count, rows) — generator yields RowSlot(key, elem) pairs: generator ergonomics (B) with explicit count and stable keys (A). Reconciliation by key; lazy window = viewport±overscan; count/keys mismatches are E diagnostics; scroll_to is O(N) sequential by contract. Rejected: positional-only generators, deferred virtualization.*
+
+### 15.4 回调冻结策略（议题 4 定案）
+
+* **控件动作参数位冻结，等待 tie fn 捕获语义定稿**（新语言档 **p.9.11.22**：fn 值捕获规则——安全区捕获面 / 可变捕获标注 / 与事件循环线程的交互）。
+* 定稿前控件 API 不含 action 形参：Button 首批交付时动作位留待补，或以可后填 props 槽位冻结结构。
+* Msg 消息值方案（`enum Msg` + 单点 update）搁置不立项——fn 捕获定稿后如仍需零捕获形态（录制回放/测试）可再评。
+
+*EN: action parameters stay unfrozen until tie's fn-capture semantics land (new p.9.11.22: safe capture surface / mutable-capture annotation / event-loop-thread interaction). Msg-value alternative shelved, re-evaluable for record/replay needs.*
+
+### 15.5 特殊属性/自定义属性（议题 5 定案）
+
+* 三类分清：**框架语义字段**（focusable / tab 序 / a11y 角色·标签·值·动作 / test_id / hit 内边距——事件轴 §7 一等公民）/ **布局约束**（expand / margin / 对齐——§5 三档约束的表达载体）/ **真自定义**（应用私有/平台穿透）。
+* **不可变 props + 链式覆写**：对齐 drawing-api §3.4 Paint「任何修改返回新引用（结构共享）」既有裁决——控件 props 内嵌 `Common`（上述语义字段与布局约束全集，默认值齐），修饰符 `with_*` 返回新值：`ui.text("标题", t.font.title(20)).a11y("计数器标题").expand(1)`。
+* 修饰链进差分：只动 props 版本号，零命令流（对齐 §7 零命令流纪律）。
+* 自定义属性**不开 map 后门**：自定义控件 = 组合内置控件 + 自有 props struct（§4.1 组合优于继承）；平台穿透需求走版本表立项。
+* Common 内嵌依赖白名单二批（同 15.1）。
+
+*EN: three prop classes (framework semantic fields / layout constraints / truly custom). Immutable props + with_* modifier chain mirroring the Paint structural-sharing ruling; Common struct embedded with full defaults; modifier chains ride the diff via props versioning; no map backdoor for custom props — composition instead. Depends on whitelist batch 2 (as 15.1).*
+
+### 15.6 语言档依赖汇总
+
+* **p.8.1.8** enum payload 白名单二批：struct / fn payload + 递归 `table<Elem>` 探针 + i64/i128 解构确认——15.1/15.5 受益；与 p.8.1.7 一批同动机（ECS 组件标记/事件类型同族）。
+* **p.9.11.22** fn 值捕获语义白名单：安全区捕获面 / 可变捕获标注 / 事件循环线程交互——15.4 等它。
+
+*EN: two language-track items registered: p.8.1.8 (payload whitelist batch 2) serving 15.1/15.5, and p.9.11.22 (fn capture semantics) serving 15.4.*
+
+---
+
+## 16. 附录 / Appendix
 
 * 术语 / Terms：骨架（stable skeleton，跨帧复用的结构身份）· 快照（per-frame props 载体）· 双缓冲 arena · SoA（结构数组）· 结构 key（UI 层 O(1) 版本号差分键）· 槽位（slot，兄弟定位）
 * 演进：与 API 库（§4/§8）、事件轴（§5）互引用；模块一实现结论反向修订骨架定义（记入版本表）
