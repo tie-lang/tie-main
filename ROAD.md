@@ -93,6 +93,7 @@ development happens on branch p.7.
 - [x] p.8.1.5 可空类型（路线 2：增强 Option，不引入 `T?`，保「无 null」安全目标）：`?.` 安全调用 / `?:` 默认值 / `a?[i]` 安全索引 / unwrap 语法糖——**已落地 2026-09-12**：tiec 仓 ba9221d（与 p.8.2.1 同提交）
 - [x] p.8.1.6 表删除/缩表原语：动态表 `pop` / 截断缩表（现仅 `table_push` + 下标写，无删除/缩表，删除靠重建表模拟）——**已落地 2026-09-12**：tiec 仓 8df05a7（ECS 支撑前置达成）
 - [x] p.8.1.7 enum payload 白名单扩展：放开 `table/f64` payload（现白名单排除；联动 p.8.1.4 结构化解构）——**已落地 2026-09-12**：tiec 仓 90dbdca + bdf5912（ECS 支撑前置达成）
+- [ ] p.8.1.8 enum payload 白名单二批：放开 **struct / fn** payload（一批 f64/table<T>/map<V>/string 已落，p.8.1.7）+ `table<Enum>` 自引用递归探针 + i64/i128 解构确认——tiu Elem 判别和/修饰符 Common 与 ECS/事件类型同族受益（tiu-ui-widgets.md §15.1/§15.5/§15.6）
 
 **语法糖批量（p.8.2）**
 
@@ -278,6 +279,7 @@ development happens on branch p.7.
 - [x] p.9.11.19 **数值字面量加强 + raw 字符串**——**已落地 2026-09-13**：tiec f323d77（数字分隔 _/0x_FF/0b，raw r"..." 免转义无插值）：`1_000_000`/`0b`/`r"..."`
 - [x] p.9.11.20 **enum 关联方法**——**已落地 2026-09-13**：tiec 846e346（namespace 绑定+接收者自动引用，obj.method() 分派 &lt;Enum&gt;::method，payload 解构可用）：enum 类型方法定义（与 struct 方法约定一致）
 - [x] p.9.11.21 **interface/trait 轻量化**——**已落地 2026-09-13**：tiec 5fdaf39（`interface Name { }` 结构性接口，struct/enum 命名空间方法签名兼容即隐式实现（免 impl 块），自动合成 impl 记录复用 vtable/提升/泛型约束全套机制，缺方法/签名不匹配诊断）：`interface Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
+- [ ] p.9.11.22 **fn 值捕获语义白名单**：安全区捕获面（可捕获什么）/ 可变捕获标注 / 与事件循环线程的交互——tiu 控件动作参数位冻结等待此档（tiu-ui-widgets.md §15.4/§15.6）
 
 **语言缺陷修复批次（p.9.12，tiu/tsp 实战驱动）**
 
