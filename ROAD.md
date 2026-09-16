@@ -302,6 +302,19 @@ development happens on branch p.7.
 - [x] p.9.13.7 内置库独立仓 tlib（p.9.13 前置，先于 .1 执行）——**已落地 2026-09-14**：std/ext/rdu/sys 四目录 218 提交经 subtree add 迁入 **tie-lang/tlib**（TPL2.0 + 双语 README + 四层定位 std/ext/rdu/sys；tiec 4 笔：1ccc6d5 库根别名 import（`/std /ext /rdu /sys`，`TIE_LIB_ROOT`/`--lib-root` 取值）· 46a5e99 230 文件 import 迁移 · 988f38a 删四目录（git ls-files 四库=0）· b744369 fetch-lib.ps1 + 打包收口）；自举不动点 F0625533，回归 test-diagcodes FAILS=7 / s21 159P·6F·2S / m5 8P·0F 不劣化；release.md 组件清单加 tlib 行（tiec 内置库零副本）
 - [x] p.9.13.8 tsh 脚本化（用户规则：禁用 .ps1，只用 tshell）——**已落地 2026-09-14**：tsh 本机可用（tiec p.9.13.7 重建 tsh_main/tsh_main+tedit_embed；interp 缺陷①-④探针全 PASS，已由 tiec 修复；tshell bed678c 收录探针）；tiec 5 个 .ps1 全量迁移 .tsh.tie（regress-s21/package/fetch-lib/m6_actor_regress/verify-tiedap，c689af0 已推；`git ls-files *.ps1`=0，豁免仅文档/注释文本引用）；门禁经 tsh 实测基线不劣化（s21 159P·6F·2S / diag FAILS=7 / m5 8P·0F / tiedap OK / package 端到端）；tsh interp 5 项限制已文档化（if 块重赋值读空·exit 顺序·逐帧 stdin 喂入等）
 
+**tie 模组开发一等支持（p.9.14，自 Subterra 计划移交）**
+
+> 目标：tie 写模组达到与 Kotlin/C# 写模组同等体验——tiec 编译到目标平台**托管运行时**（JVM 字节码 / .NET IL），完整互操作宿主 API（调用、接口实现、注解/attribute、集合/字符串/枚举类型映射），与 tiec→DLL→FFM 桥互补：热点片段走原生 DLL，完整模组逻辑走托管。2026-09-16 自 Subterra 路线图整体移交（原编号 p.2.34.1–.6）：tie 本身的开发归 tie 轨道，消费平台不修改 tie 本身；消费侧衔接（api 契约 / devkit 接线）待后端落地后回给消费平台另行排期。
+>
+> EN: p.9.14 — first-class tie modding (transferred wholesale from the Subterra roadmap, orig. p.2.34.1–.6): tiec managed targets (JVM bytecode / .NET IL) with full host interop, complementary to the DLL/FFM bridge (hot paths native, full mod logic managed); consumer-side wiring is re-planned by the consuming platform once the backends land.
+
+- [ ] p.9.14.1 tiec JVM 目标后端：tie → JVM 字节码（.class），在宿主 JVM 内直接运行（原 p.2.34.1，MC 模组主路径；模块化后端挂进 tiec，缺省仍原生目标，JVM 目标按需切换）
+- [ ] p.9.14.2 tiec .NET 目标后端：tie → .NET IL（CIL），供 .NET 宿主、与 C# 写 .NET 程序同等体验（原 p.2.34.2，非 MC 路径的通用托管目标能力）
+- [ ] p.9.14.3 JvmInterop 互操作层：方法绑定 / 接口实现 / 注解 / 集合、字符串、枚举类型映射（原 p.2.34.3；契约面随消费平台落地，本档锁定能力边界）
+- [ ] p.9.14.4 DotnetInterop 互操作层：.NET API 调用 / 接口实现 / attribute / 类型映射（原 p.2.34.4，同上）
+- [ ] p.9.14.5 tie 模组装配骨架：td 数据包 + tie 逻辑一体（以 tie 注册方块/物品/事件/配置），scaffold 生成 tie 模组工程（原 p.2.34.5）
+- [ ] p.9.14.6 tie 模组探针 + E2E：tie 编写的模组在宿主内确定性运行 marker（原 p.2.34.6）
+
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
