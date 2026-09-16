@@ -241,6 +241,12 @@ development happens on branch p.7.
   - 布局文档（2026-09-12）：`docs/plans/2026-09-12-p99-sci-media-domains.md`（领域清单/依赖链/库生态与产出物/R·Matlab·Julia 设计参考）
   - 状态：**规划中，未建仓**；依赖 2026.2 基本闭环后择期启动
   - 生态格式与 API 家族规范（2026-09-12）：`docs/designs/tie-format-api-family.md`（tieapi 统一 API 规范层 + td/zd 同源双态 + 专项格式谱系 + 家族纪律 + 对外互操作 + 绑定生成策略 + tac 实现细节）
+- [ ] p.9.10.10 dec 真小数（精确十进制数值类型：快径 96-bit 系数内联 24B 零堆 + 慢径任意精度自动升位；加减乘恒精确、除/根/负幂可尽则精确否则显式舍入——零偏差契约；性能基准门对 Python decimal/Java BigDecimal/rust_decimal/C# decimal；科学计算域数值底座，tsci 前置；tlib 库级 `/std/dec.tie`，非组件仓；字面量后缀 `d` 待内核落地后立项语言档）
+  - 设计文档（2026-09-16）：`docs/designs/dec-true-decimal.md`（两条硬约束 · 表示与零偏差契约 · 性能工程与基准协议 · 分期 p.9.10.10.1–.5）
+- [ ] p.9.10.11 big 大整数底座（tlib `/std/big.tie`：基 10^18 单内核 · 加减乘除模/gcd/lcm/pow · 任意基串化（tie 连续字符台）· op_ 全套；dec（p.9.10.10）慢径改挂其上；数值底座唯一大数内核——算法族地基，后续算法模块一模块一立项持续扩展（2026-09-16 用户定））
+  - 设计文档（2026-09-16）：`docs/designs/numeric-substrate.md`（分层架构 · big/进制/素数三模块定案 · base48 事实标准并入 · 分期）
+- [ ] p.9.10.12 进制转换器（big 整数域 + dec 小数域双向 parse/to_str；基 2..48 默认 tie 连续字符台前缀——base48 与 std/b48 全台逐字符互认——+ 自定义字母表；跨基零偏差契约：目标基可尽则精确否则陷阱/显式 ctx）
+- [ ] p.9.10.13 primes 素数寻找器（tlib `/std/primes.tie` 全套：u64/i128 确定性 Miller-Rabin + big BPSW 判定 · next/prev/nth（wheel-30）· 分段筛 yield 惰性流 · primes_between · factorize（Pollard-Brent）· π(x)（Lehmer）；基准门对 Python sympy/gmpy2 关键路径 ≥10×）
 
 **语言功能与语法糖第二轮（p.9.11，语言层补全）**
 
