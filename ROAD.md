@@ -310,8 +310,8 @@ development happens on branch p.7.
 - [x] p.9.11.28 **return 可省**（等号体 + 单表达式体）——依据 `docs/designs/return-elision-design.md`：`func f(x: i64) -> i64 = x * 2` 等号体与「体恰一条表达式语句」隐式返回两种形式（desugar 等价，复用 when/try 块值 phi 机制）；闭包纳入（体长 1 触发）、void 允许值丢弃、`?` 收尾允许、返回类型强制显式标注（泛型提升/递归自引用/宽类型落型三复杂度源零新增）；尾随闭包语义不动；明确排除 Rust 式任意块末隐式（ASI 词法层跨层耦合 + 分号语义坑）与 Ruby/Julia 全隐式；验收：形式 × 函数类别 × 返回/void/`?` 矩阵探针 + 混用与体长 2 负例 + 自举不动点 + 回归不劣化；**[已落地 2026-09-17，tiec 0786441：等号体 + 单表达式体，含负例诊断]**
 - [x] p.9.11.29 **doc 注释 `///`**——依据 `docs/designs/round3-sugar-safe-std-design.md` §3：声明前连续 `///` 行附着为文档字符串，入诊断元数据注册表（p.9.11.12 @注解同路）落盘，tsp LSP hover/补全直接消费；纯编译期零运行时；**[已落地 2026-09-17，tiec 0786441：doc 注册表 + pdoc_* 查询接口 + `--dump-docs`]**
 - [x] p.9.11.30 **多行字符串三引号**——依据 round3 设计 §2：`"""..."""` 跨行免转义 + 闭引号行基准缩进剥离（Swift 对齐语义）+ 复用 p.8.2.3 插值拼接链；**[已落地 2026-09-17，tiec 9d81a86：三引号多行 + margin 剥离 + raw 语义 + 插值]**
-- [ ] p.9.11.31 **选择性导入**——依据 round3 设计 §6：`import x.{a, b}` 按名登记，desugar 到现有 import 机制，`pub import` 组合合法，零新诊断码
-- [ ] p.9.11.32 **类型别名 `alias`**——依据 round3 设计 §4：透明别名（语义层展开，无标称区分），支持泛型参数 `alias Pair<T> = (T, T)`；`type` 已被文件头占用故取 `alias`
+- [x] p.9.11.31 **选择性导入**——依据 round3 设计 §6：`import x.{a, b}` 按名登记，desugar 到现有 import 机制，`pub import` 组合合法，零新诊断码
+- [x] p.9.11.32 **类型别名 `alias`**——依据 round3 设计 §4：透明别名（语义层展开，无标称区分），支持泛型参数 `alias Pair<T> = (T, T)`；`type` 已被文件头占用故取 `alias`
 - [x] p.9.11.33 **struct 的 `with`**——依据 round3 设计 §5：`p = p with {x: 1}` 值语义复制 + 指定字段覆盖 + 未提及字段编译期共享；复用 p.9.11.6/p.9.11.5 机制；不做 Rust `..base` 形式；**[已落地 2026-09-17，tiec 9da7672：struct `with` 值语义复制 + 字段覆盖]**
 - [ ] p.9.11.34 **短闭包 `it`**（与 p.9.11.22 捕获白名单同批）——依据 round3 设计 §1：闭包体未声明 `it` 绑定为唯一隐式参数（类型由上下文 fn 类型推定，无上下文报诊断），与 p.9.11.28 单表达式隐式返回咬合 `arr.map({ it * 2 })`；尾随闭包升级（无参 void → 可带参可返回）同批定；多参 fn 上下文不支持
 - [ ] p.9.1.4 **unsafe 安全封装库**——依据 round3 设计 §7（用户指令：高频 unsafe 安全写法进标准库）：①CStr/FFI 所有权桥（`c_str` 注册 defer 收尾自动 free / `from_c_str` 拷入并释放源，NUL/非 UTF-8 可捕获负例）②slice 安全视图函数族（`view`/`view_len`/`view_get` 越界可捕获/`view_sub`/`view_copy_into`，纯 tie 收拢 slice_of 散装帮手）；alloc(n) 暂不立 Buffer（动态表连续缓冲代偿，随 bytes 库观察）；atomic/volatile/asm/unsafe goto 明确不封装（专家向，封装模糊危险边界）；验收：封装库单测（含负例）+ FFI 实战回放 + 安全路径免 unsafe 上下文验证
