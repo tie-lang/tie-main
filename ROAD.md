@@ -115,6 +115,28 @@ development happens on branch p.7.
 - [x] p.8.2.11 guard 早退：`guard cond else { return }` 前置条件——**已落地 2026-09-12**：tiec 仓 e869dc4（= if not(cond) desugar；scheck 强制 else 块尾跳转；guard 非保留字，语句位语境识别）
 - [x] p.8.2.12 宏升级：语句级宏 → 完整元编程（卫生宏/声明式宏，边界待定）——**已落地 2026-09-12**：tiec 仓 aa806b1（声明式模板/AST 片段宏 `macro name(a,b){体}` + `__` 前缀卫生唯一化跨展开单调 + 与既有语句级宏双轨共存；边界：完整模式匹配/递归/卫生闭包语义注明后续）
 
+**actor 缺口补全（p.8.3，并发语言层）**
+
+> 依据：docs/designs/concurrency-model.md §5.7（字段显式初值捕获）+ §9（async 结果回传）。
+> 两项均为 2026-09-16 定稿的 2026.2 语言层收口：语法不变、补语义，纯编译零运行时。
+>
+> EN: p.8.3 — actor gap closure (concurrency language layer), per concurrency-model.md
+> §5.7 (explicit field initial values) + §9 (async result return). Both finalized
+> 2026-09-16 as 2026.2 language-layer closures: syntax unchanged, semantics added,
+> pure compilation with zero runtime.
+
+- [ ] p.8.3.1 actor 字段显式初值捕获：`var count: i64 = 0` 的 `= N` 写入 `run Typed()`
+  record 初始化（启动工作线程前按字段序 store，常量折叠进 init 块；初值限字面量，
+  规则集同函数默认值参数 language.md §6.1；整数字面量赋 f64/f32 走既有收窄路径；
+  消息槽布局不变；不引入 `init()` 方法）（验收：全类型初值 / 零值混排 / f64 收窄
+  探针 + 非字面量与类型不匹配负例 + 自举不动点 + 回归基线不劣化）
+- [ ] p.8.3.2 async 结果回传：`pub async func m(...) -> R` 合法化 + `future` 值
+  （{record_ptr, slot_id, seq} 三元组，复用同步 RPC 应答槽，可复制/可选 move）+
+  `await f` 阻塞取值（结果 move 回调用方；panic 在 await 点原地 raise；未 await 允许
+  丢弃不告警；无返回值 async 保持 fire-and-forget；安全路径消息参数仍限标量）
+  （验收：延迟取值 / 多 future 乱序完成按 seq 回取 / panic 传播 / 丢弃 / 与同步 RPC
+  混用探针 + 回归基线不劣化）
+
 ### p.9 档（其余全部）
 
 > 库、工具链、UI、生态、平台在语言层之上补齐，全部在 2026.2 内。
@@ -280,6 +302,24 @@ development happens on branch p.7.
 - [x] p.9.11.20 **enum 关联方法**——**已落地 2026-09-13**：tiec 846e346（namespace 绑定+接收者自动引用，obj.method() 分派 &lt;Enum&gt;::method，payload 解构可用）：enum 类型方法定义（与 struct 方法约定一致）
 - [x] p.9.11.21 **interface/trait 轻量化**——**已落地 2026-09-13**：tiec 5fdaf39（`interface Name { }` 结构性接口，struct/enum 命名空间方法签名兼容即隐式实现（免 impl 块），自动合成 impl 记录复用 vtable/提升/泛型约束全套机制，缺方法/签名不匹配诊断）：`interface Drawable { fn draw(); }` + 实现检查（tiu/t3d/tge 受益）
 - [ ] p.9.11.22 **fn 值捕获语义白名单**：安全区捕获面（可捕获什么）/ 可变捕获标注 / 与事件循环线程的交互——tiu 控件动作参数位冻结等待此档（tiu-ui-widgets.md §15.4/§15.6）
+- [ ] p.9.11.23 **命名实参 × 默认值打通**（掩码预计算）——依据 `docs/designs/param-system-design.md` §3：默认值声明连续居尾不变，命名实参可跳过居尾默认段任意子集（`f(x: 1, z: 3)` 合法）；声明侧预计算默认值常量表 + 可选位掩码入符号表，调用点 O(1) 查表补齐（顺手替换现有 O(n²) 名字匹配）；验收：跳过/乱序/混用/区间与变参负例探针 + 自举不动点 + 回归不劣化
+- [ ] p.9.11.24 **默认值 const 白名单**——依据 param-system-design.md §4：放宽到字面量 + const 引用 + 常量算术/比较/拼接 + const fn 调用（p.8.1.1 底座）；声明侧求值一次存符号表，调用点 O(1) 读缓存；struct 字段默认值共用同一 evaluator 同步放宽；排除引用形参（运行期默认值）与运行期任意表达式；验收：const fn/算术/引用探针 + 非白名单负例 + 求值次数断言
+- [ ] p.9.11.25 **方法默认值 + 命名实参解锁**——依据 param-system-design.md §5：`obj.method(...)` → `命名空间函数(obj, ...)` 转发中接收者首参不参与重排/补齐，其余规则同普通函数；actor 方法仍限标量；清除 language.md §6.1「方法默认值参数留待 M3」悬空项
+- [ ] p.9.11.26 **参数传递约定矩阵**——依据 param-system-design.md §6：值拷贝（默认）/ `ref` 可写借用 / `immut` 只读借用 / `move` 所有权转移四约定统一为参数位唯一声明面（immut×ref 互斥诊断、move 后使用走 smove 检查）；先归位声明面与诊断，`ref` 扩展非表类型随后；验收：约定 × 值类别矩阵探针 + 大表 immut 免拷贝基准
+- [ ] p.9.11.27 **编译期值参数**（泛型系统扩展，方向定稿）——`[const N: i64]` 式编译期值参数：固定尺寸定长容器零堆、t3d/tsci 数值场景受益；详细设计（实例化缓存/与变长泛型组合/诊断）另出设计稿，依据 param-system-design.md §7
+- [x] p.9.11.28 **return 可省**（等号体 + 单表达式体）——依据 `docs/designs/return-elision-design.md`：`func f(x: i64) -> i64 = x * 2` 等号体与「体恰一条表达式语句」隐式返回两种形式（desugar 等价，复用 when/try 块值 phi 机制）；闭包纳入（体长 1 触发）、void 允许值丢弃、`?` 收尾允许、返回类型强制显式标注（泛型提升/递归自引用/宽类型落型三复杂度源零新增）；尾随闭包语义不动；明确排除 Rust 式任意块末隐式（ASI 词法层跨层耦合 + 分号语义坑）与 Ruby/Julia 全隐式；验收：形式 × 函数类别 × 返回/void/`?` 矩阵探针 + 混用与体长 2 负例 + 自举不动点 + 回归不劣化；**[已落地 2026-09-17，tiec 0786441：等号体 + 单表达式体，含负例诊断]**
+- [x] p.9.11.29 **doc 注释 `///`**——依据 `docs/designs/round3-sugar-safe-std-design.md` §3：声明前连续 `///` 行附着为文档字符串，入诊断元数据注册表（p.9.11.12 @注解同路）落盘，tsp LSP hover/补全直接消费；纯编译期零运行时；**[已落地 2026-09-17，tiec 0786441：doc 注册表 + pdoc_* 查询接口 + `--dump-docs`]**
+- [x] p.9.11.30 **多行字符串三引号**——依据 round3 设计 §2：`"""..."""` 跨行免转义 + 闭引号行基准缩进剥离（Swift 对齐语义）+ 复用 p.8.2.3 插值拼接链；**[已落地 2026-09-17，tiec 9d81a86：三引号多行 + margin 剥离 + raw 语义 + 插值]**
+- [ ] p.9.11.31 **选择性导入**——依据 round3 设计 §6：`import x.{a, b}` 按名登记，desugar 到现有 import 机制，`pub import` 组合合法，零新诊断码
+- [ ] p.9.11.32 **类型别名 `alias`**——依据 round3 设计 §4：透明别名（语义层展开，无标称区分），支持泛型参数 `alias Pair<T> = (T, T)`；`type` 已被文件头占用故取 `alias`
+- [x] p.9.11.33 **struct 的 `with`**——依据 round3 设计 §5：`p = p with {x: 1}` 值语义复制 + 指定字段覆盖 + 未提及字段编译期共享；复用 p.9.11.6/p.9.11.5 机制；不做 Rust `..base` 形式；**[已落地 2026-09-17，tiec 9da7672：struct `with` 值语义复制 + 字段覆盖]**
+- [ ] p.9.11.34 **短闭包 `it`**（与 p.9.11.22 捕获白名单同批）——依据 round3 设计 §1：闭包体未声明 `it` 绑定为唯一隐式参数（类型由上下文 fn 类型推定，无上下文报诊断），与 p.9.11.28 单表达式隐式返回咬合 `arr.map({ it * 2 })`；尾随闭包升级（无参 void → 可带参可返回）同批定；多参 fn 上下文不支持
+- [ ] p.9.1.4 **unsafe 安全封装库**——依据 round3 设计 §7（用户指令：高频 unsafe 安全写法进标准库）：①CStr/FFI 所有权桥（`c_str` 注册 defer 收尾自动 free / `from_c_str` 拷入并释放源，NUL/非 UTF-8 可捕获负例）②slice 安全视图函数族（`view`/`view_len`/`view_get` 越界可捕获/`view_sub`/`view_copy_into`，纯 tie 收拢 slice_of 散装帮手）；alloc(n) 暂不立 Buffer（动态表连续缓冲代偿，随 bytes 库观察）；atomic/volatile/asm/unsafe goto 明确不封装（专家向，封装模糊危险边界）；验收：封装库单测（含负例）+ FFI 实战回放 + 安全路径免 unsafe 上下文验证
+- [ ] p.9.11.35 **安全 unsafe 重分类**——依据 `docs/designs/safe-unsafe-reclassification.md`（用户指令：安全的 unsafe 踢出 unsafe；判定准则 = 不可能引发 UB）：`atomic<T>` 全家、`slice<T>` 下标/len/slice_of（边界防护转正）、`ptr<T>` 声明/比较/传参、`#[repr(C)]` 声明 → 安全；`*p` 解引/指针算术、`alloc(n)`、`addr_of`、`extern` 调用、volatile/asm/unsafe goto 维持 unsafe（同一类型两访问面两门禁，Rust 安全切片 vs 裸指针同构）；凭据门禁面正交不动；落地时同步修订 language.md §14/§16 标注；验收：正负例门禁探针 + 越界 panic 行为逐字节一致（纯门禁移动零运行期变化）+ 自举不动点 + 回归不劣化
+- [ ] p.9.11.36 **unsafe 凭据双锁**——依据 `docs/designs/unsafe-credential-lock.md`（用户指令：凭证系统推广到全体 unsafe，最后一道安全锁）：unsafe = 门禁上下文 + 域凭据双锁缺一不可；五域定稿 `mem`（解引/算术/alloc/addr_of）·`ext`（extern 全链）·`share`（§7.1.1 A 组）·`trm`（C 组）·`raw`（新增：asm!/MMIO/unsafe goto 裸机器面）；持证三形态（函数级 `#[unsafe.<域>]` 隐式持证 / 块级 `unsafe use`·`unsafe.with` / 文件级 `type tie<logic> + unsafe[域]`）；guard<cap> move-only 拷贝即诊断、挂空凭据告警；产出 unsafe-audit 清单入 Keel 指纹树（p.7.1.5 审计链）；破坏性变更无兼容期（对齐 p.9.0 纪律），自举链 unsafe 位同批迁移作完备性实证；验收：五域正负例 × 三持证形态矩阵探针 + 审计清单逐行对账 + 自举零裸 unsafe + 回归不劣化
+- [ ] p.9.1.5 **rdu 扩充**（嵌入式基础层第二批）——依据 `docs/designs/rdu-expansion-design.md`（用户指令：扩充 rdu + 定位定稿「默认仅 rdu 即够，不学 std/ext/sys」）：无栈纪律 v1.1（调用方预分配缓冲可传参）+ v1.2（零堆型原语精确化：volatile/atomic 准入）；批一 `rdu/encode`（hex/base64 无查表/varint LEB128）+ `rdu/control`（PID 抗饱和 + EMA + lerp/map/constrain，f64 与 Q16.16 双变体）+ `rdu/fixmath`（fixed_sqrt Newton + CORDIC 无查表 sin/cos/atan2）；批二 `rdu/hash`（xxHash32/64 增量 + Adler-32 + sum8/xor/LRC）+ `rdu/bitfield`（位段 pack/unpack/sget/sset）+ `rdu/reg`（volatile 寄存器安全面，模块内持 raw 凭据对外免 unsafe，芯片映射归厂商包）+ `rdu/time`（tick 换算/回绕安全 uptime）；批三 `rdu/vec3`/`rdu/quat`（struct 值语义 IMU 姿态）+ `rdu/ring`（RingState + 调用方 backing）；批四候选 `rdu/sha256`（OTA 固件校验）；**自足清单九能力域 = rdu 完成定义**（数值/校验/编码/控制/姿态/缓冲/寄存器/时间/位段），清单外（GUI/网络栈/RTOS）明示不在默认面；加密仍走 std/ext、动态容器仍调用方自持；验收：RFC/官方 KAT + CORDIC 角度扫描误差门 + PID 阶跃探针 + freestanding 链接验证 + 纪律 grep 门（v1.2 后含 volatile 白名单）
+- [ ] p.9.1.6 **sys 扩充**（平台层二期，用户指令：扩充 sys）——依据 `docs/designs/sys-expansion-design.md`：定位定稿「桌面/系统级开发的平台默认面，OS 深度集成不手写 extern」；全库纪律 = 库内持凭据对外安全面（p.9.11.36 落地后用户面零 unsafe）+ 平台能力清单九域（进程线程/动态库/文件元数据卷/输入/电源/shell 通知/高精度时间/网络枚举/硬件枚举，逐平台打勾 win32/posix/darwin）；批一 `sys/dynlib`（LoadLibraryW+dlopen 双后端 + extern 签名绑定 helper，泛化 rng-adv BCrypt 模式，解锁 iphlpapi，句柄 defer 收尾）+ win32 二期核心（proc_launch 完整版/shell_open/qpc 纳秒级/磁盘卷/文件元数据）；批二 `sys/input`（GetAsyncKeyState 键鼠 + win_enum + 显示器枚举，tiu 引擎与输入轴取数口）+ `sys/power`（电量/阻睡眠/用户空闲）+ `sys/net` 转正（iphlapi 动态加载，net_adapters 弃注册表代理）；批三 `sys/posix`（dlopen 双后端并入/poll-epoll/procfs/mmap/signal 可捕获）+ `sys/darwin` 登记（挂 p.9.7.1）；不进 sys：GUI 面（归 tiu）、网络栈（归 std-http/tink）、加密（std/ext）、驱动内核面；验收：存在断言式探针（仿一期 21 条范式）+ dynlib 实测加载 BCrypt/iphlapi + net_adapters 与注册表代理值对账 + 用户面零 unsafe 验证
+- [ ] p.9.1.7 **std 扩充**（应用默认层，用户指令：扩充 std + 生态裁决「td/zd 取代 json」）——依据 `docs/designs/std-expansion-design.md`：**生态内数据格式 = td/zd，json 降级外部边界适配器并冻结**（std/json 与 JSON5 停止增强，文档显式标注「生态内数据交换用 td/zd」）；批一 `std/td`（td 文本↔表/map/struct 双向编解码 + 行列定位诊断）+ `std/zd`（keel zdpub 五件套用户面化：publish/load/fingerprint/integrity，应用持久化默认 zd）+ `std/tds`（td schema 校验，对标 JSON Schema 生态位）+ `std/log`（结构化日志，行格式用 td 非 json，收编 ext/log）；批二 `std/q`（table/map 内存集合查询 group_by/join/agg/order_by，管道箭头组合位）+ `std/path`（跨平台路径算术零 IO）+ `std/cli`（子命令/旗标/用法生成，tsh 同风格）；批三 `std/xml`（边界适配，路径取值子集）+ `std/uuid`（v4 csprng 底座/ULID）+ `std/env`（跨平台统一面，确立 std 可依赖 sys 层序）；不进 std：toml（生态配置已定 td）、yaml/json 增强（冻结）、ORM（tdb 定位）；验收：td↔表全类型 roundtrip 矩阵 + zd 与 keel zdpub 同指纹互通 + tds 校验负例集 + SQL 心算对账样例 + 双语文档一语义一名
 
 **语言缺陷修复批次（p.9.12，tiu/tsp 实战驱动）**
 
