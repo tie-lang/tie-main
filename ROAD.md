@@ -350,18 +350,68 @@ development happens on branch p.7.
 - [x] p.9.13.7 内置库独立仓 tlib（p.9.13 前置，先于 .1 执行）——**已落地 2026-09-14**：std/ext/rdu/sys 四目录 218 提交经 subtree add 迁入 **tie-lang/tlib**（TPL2.0 + 双语 README + 四层定位 std/ext/rdu/sys；tiec 4 笔：1ccc6d5 库根别名 import（`/std /ext /rdu /sys`，`TIE_LIB_ROOT`/`--lib-root` 取值）· 46a5e99 230 文件 import 迁移 · 988f38a 删四目录（git ls-files 四库=0）· b744369 fetch-lib.ps1 + 打包收口）；自举不动点 F0625533，回归 test-diagcodes FAILS=7 / s21 159P·6F·2S / m5 8P·0F 不劣化；release.md 组件清单加 tlib 行（tiec 内置库零副本）
 - [x] p.9.13.8 tsh 脚本化（用户规则：禁用 .ps1，只用 tshell）——**已落地 2026-09-14**：tsh 本机可用（tiec p.9.13.7 重建 tsh_main/tsh_main+tedit_embed；interp 缺陷①-④探针全 PASS，已由 tiec 修复；tshell bed678c 收录探针）；tiec 5 个 .ps1 全量迁移 .tsh.tie（regress-s21/package/fetch-lib/m6_actor_regress/verify-tiedap，c689af0 已推；`git ls-files *.ps1`=0，豁免仅文档/注释文本引用）；门禁经 tsh 实测基线不劣化（s21 159P·6F·2S / diag FAILS=7 / m5 8P·0F / tiedap OK / package 端到端）；tsh interp 5 项限制已文档化（if 块重赋值读空·exit 顺序·逐帧 stdin 喂入等）
 
-**tie 模组开发一等支持（p.9.14，自 Subterra 计划移交）**
+**警告系统独立与性能优化（p.9.14，复用原模组腾出号）**
 
-> 目标：tie 写模组达到与 Kotlin/C# 写模组同等体验——tiec 编译到目标平台**托管运行时**（JVM 字节码 / .NET IL），完整互操作宿主 API（调用、接口实现、注解/attribute、集合/字符串/枚举类型映射），与 tiec→DLL→FFM 桥互补：热点片段走原生 DLL，完整模组逻辑走托管。2026-09-16 自 Subterra 路线图整体移交（原编号 p.2.34.1–.6）：tie 本身的开发归 tie 轨道，消费平台不修改 tie 本身；消费侧衔接（api 契约 / devkit 接线）待后端落地后回给消费平台另行排期。
+> 定位（2026-09-17 讨论对齐，设计 `docs/designs/warning-system.md`）：**性能极其差**的警告链——`sm_warn_add` 内联在语义/类型推断热路径（每次编译、零警告也付全量检查成本）+ `;W:` 文本协议往返（序列化→再解析→`render_warning` 每条二次 `normalize()`）+ 目录/渲染嵌 tiec 前端。三线并治：①**结构化警告事件、去 `;W:` 文本往返**（`(code W#####,line,col,params)` 直接发，渲染仅输出端一次；tsp p.9.16 免解析文本）②**独立警告 pass**（编译期非阻塞、可裁剪；`--no-warn` 全关、目录清单逐条开关，零警告不付全量检查）③**tdiag 收束**（目录/标号/归一化/渲染迁独立诊断面，对齐 p.9.0.1 tdiag 与 tieapi 统一诊断契约）。W##### 目录与渲染结果逐字节等价为硬门禁。
 >
-> EN: p.9.14 — first-class tie modding (transferred wholesale from the Subterra roadmap, orig. p.2.34.1–.6): tiec managed targets (JVM bytecode / .NET IL) with full host interop, complementary to the DLL/FFM bridge (hot paths native, full mod logic managed); consumer-side wiring is re-planned by the consuming platform once the backends land.
+> EN: p.9.14 — warning system independency & performance optimization (reusing the vacated modding number). The very-slow warning chain: `sm_warn_add` inline in the semantic/type-inference hot path (every compile pays full check cost even with zero warnings) + `;W:` text round-trip (serialize → re-parse → `render_warning` re-normalize per entry) + catalog/rendering embedded in the tiec frontend. Three lines: ①structured warning events — remove the `;W:` text round-trip (`(code W#####, line, col, params)` sent directly; render once at the output boundary; p.9.16 tsp no longer parses text) ②independent warning pass (compile-time, non-blocking, prunable; `--no-warn` full off, per-warning toggle via catalog, zero extra cost when disabled) ③fold into **tdiag** (catalog / W##### / normalization / rendering move to the independent diagnostics surface, aligned with p.9.0.1 tdiag & the tieapi unified diagnostic contract). W##### catalog & rendered results byte-identical is a hard gate.
 
-- [ ] p.9.14.1 tiec JVM 目标后端：tie → JVM 字节码（.class），在宿主 JVM 内直接运行（原 p.2.34.1，MC 模组主路径；模块化后端挂进 tiec，缺省仍原生目标，JVM 目标按需切换）
-- [ ] p.9.14.2 tiec .NET 目标后端：tie → .NET IL（CIL），供 .NET 宿主、与 C# 写 .NET 程序同等体验（原 p.2.34.2，非 MC 路径的通用托管目标能力）
-- [ ] p.9.14.3 JvmInterop 互操作层：方法绑定 / 接口实现 / 注解 / 集合、字符串、枚举类型映射（原 p.2.34.3；契约面随消费平台落地，本档锁定能力边界）
-- [ ] p.9.14.4 DotnetInterop 互操作层：.NET API 调用 / 接口实现 / attribute / 类型映射（原 p.2.34.4，同上）
-- [ ] p.9.14.5 tie 模组装配骨架：td 数据包 + tie 逻辑一体（以 tie 注册方块/物品/事件/配置），scaffold 生成 tie 模组工程（原 p.2.34.5）
-- [ ] p.9.14.6 tie 模组探针 + E2E：tie 编写的模组在宿主内确定性运行 marker（原 p.2.34.6）
+- [ ] p.9.14.1 **结构化警告事件 + 去文本往返**：警告改 `(code,line,col,params)` 直接发，删 `;W:` 序列化→解析→二次归一化；渲染移输出端一次；tsp（p.9.16）改消费结构化事件。
+- [ ] p.9.14.2 **独立警告 pass**：从语义/类型推断热路径解耦为独立非阻塞 pass；`--no-warn` 全关、目录清单逐条开关；零警告不付全量检查成本。
+- [ ] p.9.14.3 **tdiag 收束**：警告目录/标号/归一化/渲染迁独立诊断面 tdiag（p.9.0.1），对齐 tieapi 统一诊断契约；tiec 仅发结构化事件。
+- [ ] p.9.14.4 **验收与回归**：警告逐字节等价门禁 + warnings.md 同步 + s21/diagcodes/m5 回归不劣化 + 脚本一律 `.tsh.tie`。
+
+**编译器缓存重构 + 多线程并行构建（p.9.15，缓存与并行合档，双线一档）**
+
+> 定位（2026-09-17 讨论对齐，缓存设计 `docs/designs/compiler-cache-redesign.md` + 并行设计 `docs/designs/tiec-parallel-build.md`，替换 p.9.1.3 单文件缓存）：**缓存线**修复四类确认缺陷——**陈旧缓存**（缓存键只哈希入口源、不含 import，改依赖不失效）、**碰撞静默错产物**（31 位滚动哈希 + 命中无指纹核对）、**无增量**（只缓存最终产物）、**磁盘无限增长 + 非原子写**。轴心=内容寻址（CAS，对象以 tsha1r 指纹为名）+ 依赖清单（import 全依赖指纹聚合成键 + `.dep` 清单命中复核）+ 产物 tsha1r 二次指纹核对 + 临时文件 rename 原子写 + 分层缓存（L0 最终产物 / L1 tieir / L2 opt）+ 可配置 LRU 淘汰（`--cache-clean` + `cache.max_entries/max_bytes`）。**并行线**兑现 `--jobs`（p.9.1.3 预留“增量/缓存/并行一并落地”）：工程级 batch（多入口/工程清单）**文件级粗粒度**并行，`--jobs` 落为原生线程 worker 池（默认底座、零运行时、确定性门禁）+ 后端 clang 子进程并发 + 与缓存协同的并发原子写；**超级并行模式**（`--parallel-mode=super`，trm-lite Go 式 M:N 超订，默认关、可配置）。哈希统一用 `std/tsha1` 的 `tsha1r`（用户指定）。
+>
+> EN: p.9.15 — tiec compiler **cache redesign + parallel build, one tier, two tracks**, superseding the p.9.1.3 single-file cache. **Cache**: fixes stale cache (key hashes entry only, not imports) / silent wrong artifact on hash collision / no incrementality / unbounded disk growth with non-atomic writes. Core = content-addressed storage (objects named by tsha1r) + dependency manifest + artifact tsha1r fingerprint verification + atomic write + layered cache (L0/L1/L2) + configurable LRU eviction. **Parallel**: delivers `--jobs` — project-level batch (multi-entry / manifest) with file-granular parallelism; native-thread worker pool by default (zero-runtime, determinism-gated) + concurrent clang subprocess backend + concurrent atomic cache writes; opt-in **super-parallel mode** (`--parallel-mode=super`, trm-lite Go-style M:N, default off, config-driven). Sole hash = `tsha1r`.
+
+- [ ] p.9.15.1 **依赖感知缓存键 + 依赖清单**：依赖集解析复用（import 递归闭包）、`tsha1r` 聚合构建键、`.dep` 清单写读与命中复核。修复“改 import 不失效”主缺陷。
+- [ ] p.9.15.2 **强哈希 + 产物指纹核对 + 原子写**：键换 `tsha1r`、命中产物二次指纹校验、临时文件 + rename 原子写、内容寻址 `objects/<fp>` 去重布局。
+- [ ] p.9.15.3 **中间级增量（L1 tieir / L2 opt 分层缓存）**：kpass 挂点插入、整文件粒度命中复用 + 按依赖清单传播变更边界。多文件工程仅改单文件 → 其余复用中间产物。
+- [ ] p.9.15.4 **淘汰与配置治理**：`--cache-clean` + `cache.max_entries/max_bytes/lru`，超限 LRU 淘汰。
+- [ ] p.9.15.5 **验收与回归（缓存）**：`verify-cache.tsh.tie` 全面强化（依赖变更失效/篡改/指纹碰撞/原子写/淘汰/增量复用探针）+ 自举不动点复核 + s21/diagcodes/m5 回归不劣化 + grep `.ps1`=0。
+- [ ] p.9.15.6 **工程级 batch + 原生线程 worker 池（并行默认底座）**：多入口/工程清单、`--jobs` 落为 worker 池、前端+irgen 文件级并行、汇合确定性、后端 clang 子进程并发 + 统一链接（设计 `docs/designs/tiec-parallel-build.md`）。
+- [ ] p.9.15.7 **并发缓存写验证**：多线程/进程并发写 p.9.15 内容寻址缓存（原子 rename/指纹核对），无竞态、无半截缓存。
+- [ ] p.9.15.8 **超级并行模式**：`--parallel-mode=super` 接入 trm-lite 的 M:N 超订（Go 式运行时），高吞吐；默认关保持零运行时基线。
+- [ ] p.9.15.9 **并行验收与性能报告**：确定性门禁（串行/并行/超并行产物恒等 + 自举不动点二次 SHA）+ 性能参考报告（多核利用率/编译耗时）+ 回归不劣化 + grep `.ps1`=0。（验收“兼顾”= 确定性硬门禁 + 性能软报告）
+
+**编译器与 LSP 内存工程（p.9.16，tsp 内存优化 + 前端 AST 生命周期）**
+
+> 定位（2026-09-17 讨论对齐，设计 `docs/designs/tsp-memory.md`）：tsp（tie 写的 LSP 服务器）内存过大，一源三治。三线全做——①**按需 lazy + AST 释放**（诊断走指纹缓存、文本未变即复用；引用/语义令牌/大纲等重型能力按需跑完整管线、用后释放 AST；didChange 防抖合并）②**状态去冗余**（去 server 重复符号索引、诊断懒构建、符号段瘦身）③**常驻生命周期治理**（分析后释放 AST，常驻仅留索引+诊断；闲置文档 LRU 回收 AST→全文→索引粒度可配；`tsp.max_open_docs/mem_budget` 上限）。前端静态表 `s_*`/`intern` 的 AST 释放接口由 **tiec/frontend 侧**引入（`release_ast()`），纯 tie、零新增运行时。
+>
+> EN: p.9.16 — compiler & LSP memory engineering (tsp memory optimization + frontend AST lifecycle). tsp (tie-language LSP server) memory too large, one source three cures. Three lines all in scope — ①lazy eval + AST release (diagnostics via fingerprint cache; heavy capabilities run full pipeline on demand then release AST; didChange debounce) ②state de-dup (drop redundant server symbol index, lazy diagnostics build, slim symbol segments) ③resident lifecycle (release AST after analysis, keep only index+diagnostics resident; LRU recycle idle docs, granularity AST→text→index; `tsp.max_open_docs/mem_budget` caps). Frontend static-table `s_*`/`intern` AST release interface added on the tiec/frontend side (`release_ast()`), pure tie, zero new runtime.
+
+- [ ] p.9.16.1 **tiec 前端 AST 释放接口**：`release_ast()` 重置 `s_*` 列式表与 `intern` 池；纯 tie、零新增运行时；供 tsp 用后释放。
+- [ ] p.9.16.2 **tsp 按需 lazy 求值**：诊断指纹缓存保留；引用/语义令牌/大纲按需跑完整管线 + 用后调 `release_ast()`；didChange 防抖合并（默认文本未变即跳）。
+- [ ] p.9.16.3 **tsp 状态去冗余**：去 server 重复符号索引、诊断懒构建、符号段/签名瘦身。
+- [ ] p.9.16.4 **tsp 常驻生命周期（LRU）**：闲置文档 LRU 回收（AST→全文→索引粒度可配）+ `tsp.max_open_docs/mem_budget` 上限。
+- [ ] p.9.16.5 **验收与回归**：内存峰值/稳态对比报告（前/后）+ `lsp_smoke*.py` 探针全绿 + 编辑/引用/语义令牌功能等价 + 脚本一律 `.tsh.tie` + 回归不劣化。
+
+**解释器性能（p.9.17，分级 JIT + 拆箱 + 字符串原语优先）**
+
+> 定位（2026-09-17 讨论对齐，设计 `docs/designs/interp-performance.md`）：解释器（tree-walking interp，服务 REPL/脚本/DAP/诊断）性能极差，四项并改——①**分级 JIT 即时编译**（AST → LLVM IR → native 动态加载，复用 tiec 后端；函数级 JIT 缓存挂钩 p.9.15 编译缓存、衔接 p.9.16 AST 生命周期；冷热阈值可配，小输入不走 clang 子进程）②**拆箱标量**（int/float/bool/trit/char 直接值，消灭 per-value 10 表 push/寻址）③**字符串/容器原语优先**（`str_char` 360µs/char、逐码点 O(n²)、拼接分配——编译器/解释器/tsp 三方全局受益）④**优化树遍历直驱**（JIT 冷路径基线）。确定性硬门禁：JIT 与解释器同输入结果逐字节恒等；与 trm 字节码运行时路线 B **保持边界**，不强行统一。
+>
+> EN: p.9.17 — interpreter performance (tiered JIT + unboxed values + string-primitives-first). The tree-walking interp (serving REPL/script/DAP/diagnostics) is extremely slow — four lines: ①tiered JIT (AST → LLVM IR → native dynamic load via tiec backend; per-function JIT cache wired to p.9.15 compile cache + p.9.16 AST lifecycle; cold/hot thresholds configurable, small inputs skip clang) ②unboxed scalars (int/float/bool/trit/char direct values, removing per-value 10-table push/index) ③string/container primitives first (`str_char` 360µs/char, char-wise O(n²), concat alloc — global win for compiler/interp/tsp) ④optimized tree-walk dispatch as the JIT cold-path baseline. Determinism gate: JIT/interp results byte-identical for the same input. Keeps boundary with the trm bytecode route-B runtime.
+
+- [ ] p.9.17.1 **运行期字符串/容器原语优化**：`str_char`/逐码点遍历/拼接分配 + 容器复制遍历优化；全局受益（编译器/解释器/tsp）。
+- [ ] p.9.17.2 **解释器拆箱标量**：int/float/bool/trit/char 拆箱，消灭 per-value 10 表 push；与 JIT 统一接口。
+- [ ] p.9.17.3 **优化树遍历直驱**：`exec_stmt`/`gen_expr` 直分派 switch + 解码直驱，作 JIT 冷路径基线。
+- [ ] p.9.17.4 **分级 JIT 即时编译**：AST → LLVM IR → native 动态加载 + 函数级 JIT 缓存 + 冷热阈值；复用/挂钩 p.9.15 编译缓存与 p.9.16 AST 生命周期。
+- [ ] p.9.17.5 **验收与回归**：性能基准报告 + 正确性探针（REPL/DAP/脚本等价 + JIT/解释器逐字节恒等门禁）+ 回归不劣化 + 脚本一律 `.tsh.tie`。
+
+**嵌入式解释器（p.9.18，低内存执行面，双面并立）**
+
+> 定位（2026-09-17 讨论对齐，设计 `docs/designs/embedded-interpreter.md`）：**JIT 太重**（外部 clang/LLVM + 动态加载 + 编译缓存 + 内存/体积），不适合嵌入；老解释器保留为**嵌入门面的一等交付**。已研读 trm 新定稿（p.7.3：引擎层执行 tieir + interp 前端语义基准 + 可替换后端 + 引擎级统一 GC + `trm-embedded` 静态子集 + 无 LLVM 退纯 interp）。**双面并立、同期落地**：面 A=老解释器（源码级 AST 树遍历，REPL/脚本/DAP，零外部、确定性）；面 B=trm tieir-interp 嵌入式执行面（tieir 紧凑表示 + Backend 接口 + 统一对象身份/GC，衔接 p.7.3.2）。低内存攻坚：**拆箱标量 + 值池/常量池复用 + 紧凑表示**；复用 p.9.17.1 字符串原语与 p.9.16 `release_ast()`。验收**兼顾**（确定性硬门禁 + 体积/内存报告 + 性能参考）；与 p.9.17 JIT 分开、JIT 为宿主可选上层。
+>
+> EN: p.9.18 — embedded interpreter (low-RAM execution surface, dual-face). JIT is too heavy (external clang/LLVM + dynamic load + compile cache + footprint) for embedded; legacy interpreter kept as a first-class embedded surface. Studied the new trm spec (p.7.3: engine executes tieir + interp front as semantic baseline + replaceable backends + engine-level unified GC + `trm-embedded` static subset + no-LLVM falls back to interp). **Dual-face, landed together**: Face A = legacy interpreter (source-level AST tree-walk, REPL/script/DAP, zero-external, deterministic); Face B = trm tieir-interp embedded surface (tieir compact representation + Backend interface + unified object identity/GC, wires to p.7.3.2). Low-RAM: **unboxed scalars + value/constant-pool reuse + compact representation**; reuses p.9.17.1 string primitives & p.9.16 `release_ast()`. Acceptance is balanced (determinism gate + footprint/memory report + perf reference); separate from p.9.17 JIT (JIT = optional host layer).
+
+- [ ] p.9.18.1 **面 A 拆箱 + 值池/常量池复用**：老解释器标量拆箱、值池/常量池复用、字符串 intern；消灭 per-value 10 表 push 与会话只增不减；零外部、确定性。
+- [ ] p.9.18.2 **面 A 直驱 + 字节级规避**：`exec_stmt`/`gen_expr` 直分派 + 解码直驱 + 复用 p.9.17.1 字符串原语；低延迟。
+- [ ] p.9.18.3 **面 B trm tieir-interp 嵌入面**：tieir 紧凑表示 + Backend 接口 + 统一对象身份/GC + `trm-embedded` 静态子集；源码→tiec→tieir→interp 前端执行（衔接 p.7.3.2）。
+- [ ] p.9.18.4 **双面统一接口 + trm/WASM 接入**：面 A/面 B 同接口热切换；接入 trm（p.9.5.3）与 WASM（p.9.6.2）嵌入面。
+- [ ] p.9.18.5 **验收与回归**：兼顾——确定性门禁（两面与现状逐字节恒等）+ 体积/内存对比报告 + 性能参考 + REPL/DAP/脚本等价 + 回归不劣化 + 脚本一律 `.tsh.tie`。
 
 ### 关联定稿（修订项）
 
