@@ -438,7 +438,10 @@ development happens on branch p.7.
   * 落地要点：分离式 `-l 2` 与非法档 `-l9` 均给针对性诊断（不退化成通用参数错误）；旧 config 顶层 `opt` 键出现即报错（不再静默忽略）；`cache_key_str` 与 `dep_cache_key` 双轴键已同步（二者曾不一致，会命中过期产物）。
 - [x] p.9.20.2 **中端 pass 框架**：`middle/passes.tie` 管道挂点（irgen 后 llvmgen 前）、pass 顺序版本化固定、t 级别门控、tieir 序列化单元头携带 t 级别；**[已落地 2026-09-21，tiec d67189b + b17d8f6]**
   * 落地要点：t0 零 pass → t0/t3 产物 `.opt.ll` 与 `.exe` 均逐字节全等（不动点不变）；tieir 单元头新增 t 档 + pass 管道版本两个 i64，`TIEIR_VERSION` 1→2（旧版读新版会错位，由版本校验拦截并提示迁移）；自举不动点达成（一阶/二阶 exe SHA 全等 `15c7178…`）；regress-s21 与改动前同基线 157/8/2（8 项为既有失败，非回归）。
-- [ ] p.9.20.3 **t1 单函数局部 pass**：常量折叠、代数化简、死值消除；验收 = 确定性探针（同输入逐字节恒等）+ 每档性能参考。
+- [ ] p.9.20.3 **t1 单函数局部 pass**：常量折叠、代数化简、死值消除；验收 = 确定性探针（同输入逐字节恒等）+ 每档性能参考。**[已落地 2026-09-21，tiec b8a77f7；性能参考待 p.9.20.6 统一补]**
+  * 落地要点：单遍线性（const_i 登记 → 双常量折叠 + 恒等式化简 → 值传播 → DCE 物理压缩）；**icmp 不折叠**（实证存在 ins_ty=TK_I64 的 icmp，rewrite 后与 br i1 类型断裂；常量条件由前端 consteval + LLVM opt 兜底）；`ir.tie` 新增最小写面（set_opnd / rewrite_to_const / compact_dead——线性保序重建指令表、操作数段、块区间、参数段与 inst_total）。
+  * 两处 compact RCA（注释已记）：①参数段漏搬 → param_val 错位、llvmgen 输出未定义寄存器；②按块 id 序重排颠倒文本块序（llvmgen 按指令 id 序输出块，而块创建序≠指令落位序）→ use-before-def。均以「旧指令 id 线性保序」修复。
+  * 验收：t0 默认路径 IR 逐字节不变（sha 2028fdd1）；t1 自举达自身不动点（一/二阶 exe SHA 全等 4cda381f）；冒烟 t0/t1 输出一致且 IR 635→614 行；regress 同基线 157/8/2。
 - [ ] p.9.20.4 **t2 过程内 pass**：公共子表达式、循环不变外提、边界检查消除（`--check-bounds` 显式开启时让位）。
 - [ ] p.9.20.5 **t3 过程间 pass**：小函数内联、tail call、字符串构建融合（衔接 p.9.17.1 字符串原语）。
 - [ ] p.9.20.6 **验收与回归**：不动点门禁（默认 l2/t0 逐字节不变）+ 各档（l×t 组合）性能参考报告 + trm/WASM 后端前瞻验证（t pass 输出可直供非 LLVM 后端）+ 回归不劣化 + 脚本一律 `.tsh.tie`。
