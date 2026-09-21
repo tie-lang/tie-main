@@ -428,6 +428,21 @@ development happens on branch p.7.
 - [x] p.9.19.7 **字符串池 O(1) 查表**：`str_slot(name_id)`/`str_len_of_slot(slot)` 每次线性扫 `str_pool`/`str_idx`（S ≈ 10 万诊断串 × 每处引用 = O(S×refs)）；改印章表直查 + `g_slot_len` 登记时直索引（byte_len 只算一次）；emit **8.3s → 5.5s**；**[已落地 2026-09-21，tiec 0147149]**
 - [x] p.9.19.8 **验收与确定性**：不动点 SHA 逐字节三轮全等（重编/自举/再自举）+ driver.tie 完整 `.ll`（25MB）新旧编译器 SHA 逐字节一致 + 74 条 golden 诊断码新旧输出逐字节全等（绕缓存）+ `-O3` 对照（自举 25.3/24.4s vs -O2 24.0/24.5s 平手，不动点与 IR 对宿主编译档位不变）；完整自举 **10h+（卡死）→ 24.0s**；遗留：缓存键未含编译器二进制版本（跨版本命中过期产物，随 p.9.15.2 补）；**[已落地 2026-09-21，tiec a14aad3]**
 
+**双轴优化器（p.9.20，-l LLVM/clang 轴 × -t tiec 中端轴）**
+
+> 定位（2026-09-21 用户拍板，设计 `docs/designs/tiec-dual-axis-optimizer.md`）：现有 `-O0..-O3` 只映射 LLVM 侧（opt 子进程 + clang 档），tiec 中端零优化且 trm/WASM 后端无 LLVM 优化器。**双轴拆分**：`-l <0-3>`（LLVM/clang 轴，原 `-O` 语义平移）× `-t <0-3>`（tiec 中端 pass 管道，挂 irgen 后 llvmgen 前）；CLI 短参 `-l2`/`-t3` 与长参 `--llvm-opt=`/`--tie-opt=` **并存**；默认 **l2/t0**（自举不动点不变）；旧 `-O` **硬移除**报错提示；config `opt` 键拆 `llvm_opt`/`tiec_opt`（dev=l0/t0、release=l2/t0）；缓存键 `O<n>` → `L<n>+T<n>`。t 轴分期：t0 零 pass / t1 单函数局部（常量折叠、代数化简、死值消除）/ t2 过程内（CSE、LICM、边界检查消除且让位 `--check-bounds`）/ t3 过程间（小函数内联、tail call、字符串构建融合）。确定性硬门禁：pass 集合顺序版本化固定、t 级别进缓存键与 tieir 头、纯 tie 禁 Rust、不动点默认不变。
+>
+> EN: p.9.20 — dual-axis optimizer: `-l <0-3>` (LLVM/clang axis, old `-O` semantics moved verbatim) × `-t <0-3>` (tiec middle-end pass pipeline after irgen, before llvmgen). Short+long CLI forms coexist; default l2/t0 (bootstrap fixed point unchanged); old `-O` hard-removed with an error hint; config `opt` splits into `llvm_opt`/`tiec_opt` (dev=l0/t0, release=l2/t0); cache key `O<n>` → `L<n>+T<n>`. t-axis tiers: t0 none / t1 intra-function locals / t2 intra-procedural (CSE, LICM, BCE yielding to `--check-bounds`) / t3 inter-procedural (small-fn inlining, tail call, string-build fusion). Determinism gates: versioned pass set & order, t level in cache key and tieir header, pure tie, fixed point unchanged by default.
+
+- [x] p.9.20.1 **双轴 CLI/配置面**：`-l/-t` 短参 + `--llvm-opt=`/`--tie-opt=` 长参解析（非法值诊断）、`-O*` 硬移除报错、config `opt` → `llvm_opt`/`tiec_opt` 拆键（root/dev/release 三处）、帮助文本、mem-limit 降档仅作用 l 轴、缓存键 `L<n>+T<n>`；**[已落地 2026-09-21，tiec d67189b]**
+  * 落地要点：分离式 `-l 2` 与非法档 `-l9` 均给针对性诊断（不退化成通用参数错误）；旧 config 顶层 `opt` 键出现即报错（不再静默忽略）；`cache_key_str` 与 `dep_cache_key` 双轴键已同步（二者曾不一致，会命中过期产物）。
+- [x] p.9.20.2 **中端 pass 框架**：`middle/passes.tie` 管道挂点（irgen 后 llvmgen 前）、pass 顺序版本化固定、t 级别门控、tieir 序列化单元头携带 t 级别；**[已落地 2026-09-21，tiec d67189b + b17d8f6]**
+  * 落地要点：t0 零 pass → t0/t3 产物 `.opt.ll` 与 `.exe` 均逐字节全等（不动点不变）；tieir 单元头新增 t 档 + pass 管道版本两个 i64，`TIEIR_VERSION` 1→2（旧版读新版会错位，由版本校验拦截并提示迁移）；自举不动点达成（一阶/二阶 exe SHA 全等 `15c7178…`）；regress-s21 与改动前同基线 157/8/2（8 项为既有失败，非回归）。
+- [ ] p.9.20.3 **t1 单函数局部 pass**：常量折叠、代数化简、死值消除；验收 = 确定性探针（同输入逐字节恒等）+ 每档性能参考。
+- [ ] p.9.20.4 **t2 过程内 pass**：公共子表达式、循环不变外提、边界检查消除（`--check-bounds` 显式开启时让位）。
+- [ ] p.9.20.5 **t3 过程间 pass**：小函数内联、tail call、字符串构建融合（衔接 p.9.17.1 字符串原语）。
+- [ ] p.9.20.6 **验收与回归**：不动点门禁（默认 l2/t0 逐字节不变）+ 各档（l×t 组合）性能参考报告 + trm/WASM 后端前瞻验证（t pass 输出可直供非 LLVM 后端）+ 回归不劣化 + 脚本一律 `.tsh.tie`。
+
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
