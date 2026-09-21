@@ -442,7 +442,10 @@ development happens on branch p.7.
   * 落地要点：单遍线性（const_i 登记 → 双常量折叠 + 恒等式化简 → 值传播 → DCE 物理压缩）；**icmp 不折叠**（实证存在 ins_ty=TK_I64 的 icmp，rewrite 后与 br i1 类型断裂；常量条件由前端 consteval + LLVM opt 兜底）；`ir.tie` 新增最小写面（set_opnd / rewrite_to_const / compact_dead——线性保序重建指令表、操作数段、块区间、参数段与 inst_total）。
   * 两处 compact RCA（注释已记）：①参数段漏搬 → param_val 错位、llvmgen 输出未定义寄存器；②按块 id 序重排颠倒文本块序（llvmgen 按指令 id 序输出块，而块创建序≠指令落位序）→ use-before-def。均以「旧指令 id 线性保序」修复。
   * 验收：t0 默认路径 IR 逐字节不变（sha 2028fdd1）；t1 自举达自身不动点（一/二阶 exe SHA 全等 4cda381f）；冒烟 t0/t1 输出一致且 IR 635→614 行；regress 同基线 157/8/2。
-- [ ] p.9.20.4 **t2 过程内 pass**：公共子表达式、循环不变外提、边界检查消除（`--check-bounds` 显式开启时让位）。
+- [x] p.9.20.4 **t2 过程内 pass**：公共子表达式、循环不变外提、边界检查消除（`--check-bounds` 显式开启时让位）。**[已落地 2026-09-21（范围裁定版），tiec 3fc8494]**
+  * 落地要点：**块内 CSE** 实装（签名乘法哈希 + 全等比对防碰撞；块内开放寻址表，负载 < 1/2；命中经值替代 + DCE 清理）。**BCE 按让位语义为零操作**——检查指令仅在 `--check-bounds` 显式开启时生成（irgen `g_check_bounds` 门控），默认无检查可消、显式开启时用户要求检查即让位。**LICM 与跨块 CSE 依赖支配分析，顺延至后续子项**（未含于本项，ROAD 不勾假账）。
+  * 附带修复的数据模型隐患：call/extern_call/call_vararg/const_f/const_str/const_global/inline_asm 的操作数①是「kind=OK_VALUE 但内容为符号/字符串池 id」的历史约定——值传播曾改写该槽导致被调符号名损坏（`@ir_meta::sym_sig` 非法标识符）。passes 以 `is_sym_slot` 在传播与 DCE 扫描中跳过；长期修法（kind=SYMBOL 独立类别）待独立子项。
+  * 验收：t0 IR 逐字节不变（cc5cfb6b）；t2 自举不动点（bc5cbfe4）；冒烟 t0/t1/t2 输出一致、IR 635/614/610 行；regress 同基线 157/8/2。
 - [ ] p.9.20.5 **t3 过程间 pass**：小函数内联、tail call、字符串构建融合（衔接 p.9.17.1 字符串原语）。
 - [ ] p.9.20.6 **验收与回归**：不动点门禁（默认 l2/t0 逐字节不变）+ 各档（l×t 组合）性能参考报告 + trm/WASM 后端前瞻验证（t pass 输出可直供非 LLVM 后端）+ 回归不劣化 + 脚本一律 `.tsh.tie`。
 
