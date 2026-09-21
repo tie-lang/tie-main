@@ -310,8 +310,8 @@ development happens on branch p.7.
 - [x] p.9.11.28 **return 可省**（等号体 + 单表达式体）——依据 `docs/designs/return-elision-design.md`：`func f(x: i64) -> i64 = x * 2` 等号体与「体恰一条表达式语句」隐式返回两种形式（desugar 等价，复用 when/try 块值 phi 机制）；闭包纳入（体长 1 触发）、void 允许值丢弃、`?` 收尾允许、返回类型强制显式标注（泛型提升/递归自引用/宽类型落型三复杂度源零新增）；尾随闭包语义不动；明确排除 Rust 式任意块末隐式（ASI 词法层跨层耦合 + 分号语义坑）与 Ruby/Julia 全隐式；验收：形式 × 函数类别 × 返回/void/`?` 矩阵探针 + 混用与体长 2 负例 + 自举不动点 + 回归不劣化；**[已落地 2026-09-17，tiec 0786441：等号体 + 单表达式体，含负例诊断]**
 - [x] p.9.11.29 **doc 注释 `///`**——依据 `docs/designs/round3-sugar-safe-std-design.md` §3：声明前连续 `///` 行附着为文档字符串，入诊断元数据注册表（p.9.11.12 @注解同路）落盘，tsp LSP hover/补全直接消费；纯编译期零运行时；**[已落地 2026-09-17，tiec 0786441：doc 注册表 + pdoc_* 查询接口 + `--dump-docs`]**
 - [x] p.9.11.30 **多行字符串三引号**——依据 round3 设计 §2：`"""..."""` 跨行免转义 + 闭引号行基准缩进剥离（Swift 对齐语义）+ 复用 p.8.2.3 插值拼接链；**[已落地 2026-09-17，tiec 9d81a86：三引号多行 + margin 剥离 + raw 语义 + 插值]**
-- [x] p.9.11.31 **选择性导入**——依据 round3 设计 §6：`import x.{a, b}` 按名登记，desugar 到现有 import 机制，`pub import` 组合合法，零新诊断码
-- [x] p.9.11.32 **类型别名 `alias`**——依据 round3 设计 §4：透明别名（语义层展开，无标称区分），支持泛型参数 `alias Pair<T> = (T, T)`；`type` 已被文件头占用故取 `alias`
+- [x] p.9.11.31 **选择性导入**——依据 round3 设计 §6：`import x.{a, b}` 按名登记，desugar 到现有 import 机制，`pub import` 组合合法，零新诊断码；**[已落地 2026-09-17，tiec c6a3e60：选择性导入 + 可选分号 + 探针]**
+- [x] p.9.11.32 **类型别名 `alias`**——依据 round3 设计 §4：透明别名（语义层展开，无标称区分），支持泛型参数 `alias Pair<T> = (T, T)`；`type` 已被文件头占用故取 `alias`；**[已落地 2026-09-17，tiec 65c0e79：alias 保留为真关键字 + alias_id]**
 - [x] p.9.11.33 **struct 的 `with`**——依据 round3 设计 §5：`p = p with {x: 1}` 值语义复制 + 指定字段覆盖 + 未提及字段编译期共享；复用 p.9.11.6/p.9.11.5 机制；不做 Rust `..base` 形式；**[已落地 2026-09-17，tiec 9da7672：struct `with` 值语义复制 + 字段覆盖]**
 - [ ] p.9.11.34 **短闭包 `it`**（与 p.9.11.22 捕获白名单同批）——依据 round3 设计 §1：闭包体未声明 `it` 绑定为唯一隐式参数（类型由上下文 fn 类型推定，无上下文报诊断），与 p.9.11.28 单表达式隐式返回咬合 `arr.map({ it * 2 })`；尾随闭包升级（无参 void → 可带参可返回）同批定；多参 fn 上下文不支持
 - [ ] p.9.1.4 **unsafe 安全封装库**——依据 round3 设计 §7（用户指令：高频 unsafe 安全写法进标准库）：①CStr/FFI 所有权桥（`c_str` 注册 defer 收尾自动 free / `from_c_str` 拷入并释放源，NUL/非 UTF-8 可捕获负例）②slice 安全视图函数族（`view`/`view_len`/`view_get` 越界可捕获/`view_sub`/`view_copy_into`，纯 tie 收拢 slice_of 散装帮手）；alloc(n) 暂不立 Buffer（动态表连续缓冲代偿，随 bytes 库观察）；atomic/volatile/asm/unsafe goto 明确不封装（专家向，封装模糊危险边界）；验收：封装库单测（含负例）+ FFI 实战回放 + 安全路径免 unsafe 上下文验证
@@ -356,8 +356,8 @@ development happens on branch p.7.
 >
 > EN: p.9.14 — warning system independency & performance optimization (reusing the vacated modding number). The very-slow warning chain: `sm_warn_add` inline in the semantic/type-inference hot path (every compile pays full check cost even with zero warnings) + `;W:` text round-trip (serialize → re-parse → `render_warning` re-normalize per entry) + catalog/rendering embedded in the tiec frontend. Three lines: ①structured warning events — remove the `;W:` text round-trip (`(code W#####, line, col, params)` sent directly; render once at the output boundary; p.9.16 tsp no longer parses text) ②independent warning pass (compile-time, non-blocking, prunable; `--no-warn` full off, per-warning toggle via catalog, zero extra cost when disabled) ③fold into **tdiag** (catalog / W##### / normalization / rendering move to the independent diagnostics surface, aligned with p.9.0.1 tdiag & the tieapi unified diagnostic contract). W##### catalog & rendered results byte-identical is a hard gate.
 
-- [ ] p.9.14.1 **结构化警告事件 + 去文本往返**：警告改 `(code,line,col,params)` 直接发，删 `;W:` 序列化→解析→二次归一化；渲染移输出端一次；tsp（p.9.16）改消费结构化事件。
-- [ ] p.9.14.2 **独立警告 pass**：从语义/类型推断热路径解耦为独立非阻塞 pass；`--no-warn` 全关、目录清单逐条开关；零警告不付全量检查成本。
+- [x] p.9.14.1 **结构化警告事件 + 去文本往返**：警告改 `(code,line,col,params)` 直接发，删 `;W:` 序列化→解析→二次归一化；渲染移输出端一次；tsp（p.9.16）改消费结构化事件；**[已落地 2026-09-19，tiec e496666：结构化警告事件替代 `;W:` 文本往返]**
+- [x] p.9.14.2 **独立警告 pass**：从语义/类型推断热路径解耦为独立非阻塞 pass；`--no-warn` 全关、目录清单逐条开关；零警告不付全量检查成本；**[已落地 2026-09-20，tiec 55d002b：`sm_warn_active` 默认关（默认只报错）、`-w`/`--no-warn` 切换，mod_walk/diag_walk/w19_*/lit_scan 全子树短路]**
 - [ ] p.9.14.3 **tdiag 收束**：警告目录/标号/归一化/渲染迁独立诊断面 tdiag（p.9.0.1），对齐 tieapi 统一诊断契约；tiec 仅发结构化事件。
 - [ ] p.9.14.4 **验收与回归**：警告逐字节等价门禁 + warnings.md 同步 + s21/diagcodes/m5 回归不劣化 + 脚本一律 `.tsh.tie`。
 
@@ -367,7 +367,7 @@ development happens on branch p.7.
 >
 > EN: p.9.15 — tiec compiler **cache redesign + parallel build, one tier, two tracks**, superseding the p.9.1.3 single-file cache. **Cache**: fixes stale cache (key hashes entry only, not imports) / silent wrong artifact on hash collision / no incrementality / unbounded disk growth with non-atomic writes. Core = content-addressed storage (objects named by tsha1r) + dependency manifest + artifact tsha1r fingerprint verification + atomic write + layered cache (L0/L1/L2) + configurable LRU eviction. **Parallel**: delivers `--jobs` — project-level batch (multi-entry / manifest) with file-granular parallelism; native-thread worker pool by default (zero-runtime, determinism-gated) + concurrent clang subprocess backend + concurrent atomic cache writes; opt-in **super-parallel mode** (`--parallel-mode=super`, trm-lite Go-style M:N, default off, config-driven). Sole hash = `tsha1r`.
 
-- [ ] p.9.15.1 **依赖感知缓存键 + 依赖清单**：依赖集解析复用（import 递归闭包）、`tsha1r` 聚合构建键、`.dep` 清单写读与命中复核。修复“改 import 不失效”主缺陷。
+- [x] p.9.15.1 **依赖感知缓存键 + 依赖清单**：依赖集解析复用（import 递归闭包）、`tsha1r` 聚合构建键、`.dep` 清单写读与命中复核。修复“改 import 不失效”主缺陷；**[已落地 2026-09-18，tiec 1b080f0：依赖感知缓存键 + .dep 清单；注意：缓存键尚未含编译器二进制版本（跨编译器版本命中过期产物，见 p.9.19.8 遗留）]**
 - [ ] p.9.15.2 **强哈希 + 产物指纹核对 + 原子写**：键换 `tsha1r`、命中产物二次指纹校验、临时文件 + rename 原子写、内容寻址 `objects/<fp>` 去重布局。
 - [ ] p.9.15.3 **中间级增量（L1 tieir / L2 opt 分层缓存）**：kpass 挂点插入、整文件粒度命中复用 + 按依赖清单传播变更边界。多文件工程仅改单文件 → 其余复用中间产物。
 - [ ] p.9.15.4 **淘汰与配置治理**：`--cache-clean` + `cache.max_entries/max_bytes/lru`，超限 LRU 淘汰。
@@ -412,6 +412,21 @@ development happens on branch p.7.
 - [ ] p.9.18.3 **面 B trm tieir-interp 嵌入面**：tieir 紧凑表示 + Backend 接口 + 统一对象身份/GC + `trm-embedded` 静态子集；源码→tiec→tieir→interp 前端执行（衔接 p.7.3.2）。
 - [ ] p.9.18.4 **双面统一接口 + trm/WASM 接入**：面 A/面 B 同接口热切换；接入 trm（p.9.5.3）与 WASM（p.9.6.2）嵌入面。
 - [ ] p.9.18.5 **验收与回归**：兼顾——确定性门禁（两面与现状逐字节恒等）+ 体积/内存对比报告 + 性能参考 + REPL/DAP/脚本等价 + 回归不劣化 + 脚本一律 `.tsh.tie`。
+
+**编译器自举性能与确定性（p.9.19，O(n²) 清零 + 自举断档突破）**
+
+> 定位（2026-09-20/21 实战批次，诊断档案 `tiec/docs/2026-09-18-compile-perf-regression-diagnosis.md`）：自举编译 10h+ 卡死（病态非慢），逐环节实测定位出四处 O(n²)（prep / parse build / emit ren / 字符串池）并全部消除；同期突破「旧编译器编不动新源码」的自举断档（瘦入口中转配方）。方法论沉淀：**相位隔离 RIP 采样（x64 CONTEXT 规范结构，Rip=0xF8）→ PE .pdata 函数映射 → Ghidra 反编译认领 → 修复 → IR SHA 逐字节等价 + 自举不动点**。全程脚本 `.tsh.tie`/前台。完整自举 **10h+（卡死）→ 24.0s**。
+>
+> EN: p.9.19 — compiler bootstrap performance & determinism. Four O(n²) hotspots (prep / parse build / emit ren / string pool) located by measurement and eliminated; the bootstrap deadlock ("old compiler cannot compile new sources") broken via the slim-entry relay recipe. Methodology: phase-isolated RIP sampling → PE .pdata function mapping → Ghidra decompilation attribution → fix → IR SHA byte-equivalence + bootstrap fixed point. Full bootstrap: 10h+ (stuck) → 24.0s.
+
+- [x] p.9.19.1 **--shared DLL 全局表 ctor**：动态库模式发射 `tie$rt_init` 模块构造器 + `llvm.global_ctors`（纯标量库不发射、导出面逐字不变），修 DLL 全局表初始化缺失；**[已落地 2026-09-18，tiec 9f50709]**
+- [x] p.9.19.2 **prep O(n²) 修复**：`scan_header` 弃全文件 `split_lines` 改 in-place 只扫前 20 行；`split_lines` 单 StringBuilder + `sb_reset` 复用；`semantic.imported_has` intern-id 有序二分（——已落地 2026-09-20，tiec 55d002b；与 p.9.14.2 同批）
+- [x] p.9.19.3 **自举断档突破**：瘦入口 `compiler/_slim.tie`（只接 front→irgen→emit→opt→link）经旧 tiec 编出 `_slim.exe`（~112s）+ `trm_lite.a` 手工补链（对齐 toolchain.link_exe 本机命令行）→ 编出含新前端的完整 tiec，完整自举 ~95s 恢复；同批修 scan_header CRLF 回归（行尾 `\r` 未剥，CRLF 源全被拒）+ `strip_type_header` 单 StringBuilder O(n)；tiec.exe 提升（——已落地 2026-09-20，tiec ed3edb1；不动点 SHA 逐字节三连）
+- [x] p.9.19.4 **相位隔离性能工具链**：x64 RIP 采样器修正版（规范 CONTEXT 结构、Rip=0xF8、延时窗口相位隔离、ReadProcessMemory 扫栈定位调用方）+ PE `.pdata` 函数边界映射（2231 函数）+ Ghidra headless 反编译认领 + semantic imports 五段计时（TIEC_TIME=1）；定位 parse build 平方在 `parse_program` 本体（lex/fill/append 均线性）；**[已落地 2026-09-21，tiec d86b7f8]**
+- [x] p.9.19.5 **parse build O(n²) 消除**：`save_pos`/`restore_pos` 旧实现每次复制剩余整个 token 流（4 表 × O(文件)）× 每 `<`/`?` 歧义探测 = O(文件×探测次数)；改水位线（`g_pend_n`，表无截断原语以逻辑长度回退）+ `split_current_gt` 原位覆盖撤销日志（`g_j_*` 逆序回放），save/restore O(1)；split 追加写逻辑位并补缺失 lexemes 列；build **23.9s → 577ms**；**[已落地 2026-09-21，tiec 5007aa0]**
+- [x] p.9.19.6 **emit ren O(n²) 消除**：值 id 全编译单调递增（`ir_val_cnt` 仅整次编译复位），旧 `ren_def` 每函数把映射表增长到全局基址（Σbase = 平方）；改印章表（`g_ren_stamp`/`g_ren_val` 跨函数持久 + `g_ren_fn` 每函数 +1 比对），增长全程 O(总指令)；ren **15.8s → 770ms**；**[已落地 2026-09-21，tiec 5007aa0]**
+- [x] p.9.19.7 **字符串池 O(1) 查表**：`str_slot(name_id)`/`str_len_of_slot(slot)` 每次线性扫 `str_pool`/`str_idx`（S ≈ 10 万诊断串 × 每处引用 = O(S×refs)）；改印章表直查 + `g_slot_len` 登记时直索引（byte_len 只算一次）；emit **8.3s → 5.5s**；**[已落地 2026-09-21，tiec 0147149]**
+- [x] p.9.19.8 **验收与确定性**：不动点 SHA 逐字节三轮全等（重编/自举/再自举）+ driver.tie 完整 `.ll`（25MB）新旧编译器 SHA 逐字节一致 + 74 条 golden 诊断码新旧输出逐字节全等（绕缓存）+ `-O3` 对照（自举 25.3/24.4s vs -O2 24.0/24.5s 平手，不动点与 IR 对宿主编译档位不变）；完整自举 **10h+（卡死）→ 24.0s**；遗留：缓存键未含编译器二进制版本（跨版本命中过期产物，随 p.9.15.2 补）；**[已落地 2026-09-21，tiec a14aad3]**
 
 ### 关联定稿（修订项）
 
