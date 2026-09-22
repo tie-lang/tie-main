@@ -484,6 +484,7 @@ development happens on branch p.7.
 - [ ] p.9.21.4 **II1 强制可见性**：namespace 内非 pub 跨 ns 不可见（先诊断后强制），tiec dogfood。
 - [ ] p.9.21.5 **II2 pub const**：跨文件常量可见，消灭本地重定义漂移。
 - [ ] p.9.21.6 **II3 模块级增量编译**：模块 = 缓存单元（联动 p.9.15），增量正确性 + 提速数据。
+* 收尾提示词：`docs/p921-completion-prompt.md`（p.9.21 剩余工作的自包含交接：G1-G9 目标与验收、依赖矩阵 10 条越界边收口方向、拆分工程与 tsh 脚本铁律、执行顺序）。
 
 ### 关联定稿（修订项）
 
