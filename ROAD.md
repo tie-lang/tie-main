@@ -456,11 +456,17 @@ development happens on branch p.7.
 
 **tiec 模块化与库化（p.9.21，解耦 · 组件化 · 阶段无关 · 消灭大文件）**
 
-> 定位（2026-09-22 设计 `docs/designs/tiec-modularization-design.md`，待评审定稿）：现状 124 文件 9.9 万行、36 个超 800 行占 75%、irgen_expr 10844 行（builtin_expr 单函数 2688 行）。两层方案：**层 I 组织重构**（不动语言——依赖方向契约 + deps-check 门禁 + 同 namespace 跨文件拆分 + 组件 API 面封装，单文件 ≤800 行/单函数 ≤300 行）；**层 II 语言模块系统**（tie 增强：强制可见性 / pub const / 模块级增量编译 / 模块注册表，tiec dogfood）。「与阶段无关」验收 = middle 不 import frontend/backend、组件独立自检、pass 管线可外部重排。
+> 定位（2026-09-22 设计 `docs/designs/tiec-modularization-design.md`，已定稿；D1/D2 已拍板）：现状 124 文件 9.9 万行、36 个超 800 行占 75%、irgen_expr 10844 行（builtin_expr 单函数 2688 行）。两层方案：**层 I 组织重构**（不动语言——依赖方向契约 + deps-check 门禁 + 同 namespace 跨文件拆分 + 组件 API 面封装，单文件 ≤800 行/单函数 ≤300 行）；**层 II 语言模块系统**（tie 增强：强制可见性 / pub const / 模块级增量编译 / 模块注册表，tiec dogfood）。「与阶段无关」验收 = middle 不 import frontend/backend、组件独立自检、pass 管线可外部重排。
 >
 > EN: p.9.21 — modularization & library-ization of tiec. Two layers: Layer I organizational (dependency-direction contract, deps-check gate, same-namespace cross-file splitting, per-component API surface; file cap 800 lines / function cap 300), Layer II language module system (enforced visibility, pub const, module-level incremental compilation, module registry - tiec dogfoods its own language). Stage-agnostic acceptance: middle never imports frontend/backend, per-component self-tests, externally re-orderable pass pipeline.
 
-- [ ] p.9.21.1 **依赖方向契约**：deps-check.tsh.tie 门禁脚本（import 方向矩阵）+ driver 拆分试点（cli_args/cfg_load 先行）。
+- [x] p.9.21.0 **v3 世代归档**：p.9.21 开工前把 tiec v3 世代（p.9.20 双轴优化器完成态）整体归档为 `tie-lang/tiec_v3`——服务端完整副本（全历史 `main` + `p.7` 分支，默认分支 `p.7`），归档点 `p.7` = tiec dbbcc92（自举 exe 不动点 2cec594a）、`main` = 6081f99；归档仓只作历史参照，p.9.21 起的开发仍在 `tie-lang/tiec` 主线。**[已落地 2026-09-22]**
+- [ ] p.9.21.1 **依赖方向契约**：deps-check.tsh.tie 门禁脚本（import 方向矩阵）+ driver 拆分试点（cli_args/cfg_load 先行）。**[门禁已落地 2026-09-22，tiec 3dfd0a4；driver 拆分试点待办]**
+  * 门禁矩阵：21 库位（16 设计方法库 + core 公共基建 + trm / legacy / external 登记位），跨库越界边、跨库环、悬空 import 一律 FAIL；附带各库规模统计（文件 / 行数 / 超 800 行）。
+  * 基线（2026-09-22，全仓 210 条目）：**越界边 10 条 / 7 库处于跨库环 / 悬空 import 0**。**10 条越界边即 p.9.21 拆分工作清单**：diag→sema（error_driver→semantic）、types→ir（stype→data）、types→sema（stype→sstate）、parse→interp（mexpand→interp）、sema→parse（semantic→parser/mexpand）、irgen→llvmgen（irgen→llvmgen）、interp→types/parse/sema（interp→types/parser/sstate）、trm→tieir（trm_loader→tieir_ser）。
+  * 规模基线：33 个文件超 800 行（irgen_expr 10844 / sinfer 3361 / pstmt_top …）；`documented` 单文件上限执行面见 p.9.21.3。
+  * 实现约束（写脚本必读）：tsh 解释器约 5 万语句/秒——全仓逐字符扫描不可行，重活交原生 findstr/find，解释器只处理小输出；表作形参是值拷贝；顶层 `var x = f()` 初始化被提升到最前；函数内 while 中「标志位 + 嵌套 if/else」不终止（复现件 `tiec/tests/_p921_interp_flag_probe/flag_nested_if.tie`）。
+  * 附带发现：`compiler/middle/pass/*`（passmanager / pass_registry / passes / pass_test，9 月 12 日旧件）无任何外部引用 = 孤儿模块，列入 p.9.21.3 清理候选。
 - [ ] p.9.21.2 **irgen_expr 拆解**：builtin_expr 两步制（分支提子函数 → 表驱动调度）+ 按内置域分文件。
 - [ ] p.9.21.3 **driver 全拆 + 批量拆分**：>1000 行文件逐文件子任务化，全仓 ≤800（gen 豁免）。
 - [ ] p.9.21.4 **II1 强制可见性**：namespace 内非 pub 跨 ns 不可见（先诊断后强制），tiec dogfood。
