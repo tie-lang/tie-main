@@ -2,7 +2,7 @@
 
 *EN: tiec modularization & library-ization design — decoupling, componentization, stage-agnostic APIs, eliminating oversized files*
 
-**日期** / Date: 2026-09-22 · **类型** / Type: 设计（待评审定稿）
+**日期** / Date: 2026-09-22 · **类型** / Type: 设计（定稿；D1/D2 已拍板 2026-09-22，D3/D4 按推荐执行）
 **依据** / Basis: 用户指令「tiec 彻底解耦、模块化、库化、与阶段无关、封装为 n 个方法、彻底消灭大文件」
 **关联** / Related: ROAD p.9.20 双轴优化器（passes 组件已是本设计的首个受益者）· p.9.15 编译缓存（层 II 增量编译的地基）· p.9.0 自举纪律（每步不动点验证）
 
@@ -165,7 +165,12 @@ driver/  （薄壳）                        —— import 全部，唯一 know-
 
 ## 7. 决策点（待拍板）/ Decision points
 
-| # | 决策点 | 推荐 |
+| # | 决策点 | 结论 |
+|---|---|---|
+| D1 | 单文件上限 | **800 行（已拍板 2026-09-22）** |
+| D2 | 层 II 语言增强入 ROAD | **是（已拍板 2026-09-22）**，p.9.21.4-6 执行 |
+| D3 | builtin_expr 拆法 | 两步制（按推荐执行：先提子函数，后表驱动调度） |
+| D4 | 单函数上限 | 300 行（按推荐执行） |
 |---|---|---|
 | D1 | 单文件上限 | **800 行**（gen 生成文件豁免） |
 | D2 | 层 II 语言增强是否入 ROAD | **是**，p.9.21.4-6 预留，tiec 痛点驱动 |
