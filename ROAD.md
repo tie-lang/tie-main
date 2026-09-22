@@ -461,14 +461,21 @@ development happens on branch p.7.
 > EN: p.9.21 — modularization & library-ization of tiec. Two layers: Layer I organizational (dependency-direction contract, deps-check gate, same-namespace cross-file splitting, per-component API surface; file cap 800 lines / function cap 300), Layer II language module system (enforced visibility, pub const, module-level incremental compilation, module registry - tiec dogfoods its own language). Stage-agnostic acceptance: middle never imports frontend/backend, per-component self-tests, externally re-orderable pass pipeline.
 
 - [x] p.9.21.0 **v3 世代归档**：p.9.21 开工前把 tiec v3 世代（p.9.20 双轴优化器完成态）整体归档为 `tie-lang/tiec_v3`——服务端完整副本（全历史 `main` + `p.7` 分支，默认分支 `p.7`），归档点 `p.7` = tiec dbbcc92（自举 exe 不动点 2cec594a）、`main` = 6081f99；归档仓只作历史参照，p.9.21 起的开发仍在 `tie-lang/tiec` 主线。**[已落地 2026-09-22]**
-- [ ] p.9.21.1 **依赖方向契约**：deps-check.tsh.tie 门禁脚本（import 方向矩阵）+ driver 拆分试点（cli_args/cfg_load 先行）。**[门禁已落地 2026-09-22，tiec 3dfd0a4；driver 拆分试点待办]**
+- [x] p.9.21.1 **依赖方向契约**：deps-check.tsh.tie 门禁脚本（import 方向矩阵）+ driver 拆分（cli_args/cfg_load 先行，实际一次拆完）。**[已落地 2026-09-22，tiec 3dfd0a4（门禁）+ a34af13（driver 拆）]**
   * 门禁矩阵：21 库位（16 设计方法库 + core 公共基建 + trm / legacy / external 登记位），跨库越界边、跨库环、悬空 import 一律 FAIL；附带各库规模统计（文件 / 行数 / 超 800 行）。
-  * 基线（2026-09-22，全仓 210 条目）：**越界边 10 条 / 7 库处于跨库环 / 悬空 import 0**。**10 条越界边即 p.9.21 拆分工作清单**：diag→sema（error_driver→semantic）、types→ir（stype→data）、types→sema（stype→sstate）、parse→interp（mexpand→interp）、sema→parse（semantic→parser/mexpand）、irgen→llvmgen（irgen→llvmgen）、interp→types/parse/sema（interp→types/parser/sstate）、trm→tieir（trm_loader→tieir_ser）。
-  * 规模基线：33 个文件超 800 行（irgen_expr 10844 / sinfer 3361 / pstmt_top …）；`documented` 单文件上限执行面见 p.9.21.3。
+  * **越界边 10 条（p.9.21 拆分工作清单，未变）**：diag→sema（error_driver→semantic）、types→ir（stype→data）、types→sema（stype→sstate）、parse→interp（mexpand→interp）、sema→parse（semantic→parser/mexpand）、irgen→llvmgen（irgen→llvmgen）、interp→types/parse/sema（interp→types/parser/sstate）、trm→tieir（trm_loader→tieir_ser）。7 个库处于跨库环；悬空 import 0。
+  * driver 拆分结果：`driver.tie` 2529 → 474 行；新增 `compiler/driver/{util,cli_args,role_reg,front_end,keelcli,pipeline,cache_drv}.tie`（7 文件，最大 434 行）——driver 库已 0 个超 800 行文件（4392 行 / 18 文件）。
+  * 拆分约定（实测固化）：全局 var 与 import 树留主文件、拆出文件只含函数与注释；**main 必须留顶层**（放进 ns 链接期缺入口 LNK1561）；ns 文件用 `namespace driver { pub func }`，ns 外调用须 `driver.<名>()`（私有 ns 成员裸调报 E00332）；ns 内可裸调同单元顶层函数；`driver/util.tie` 暂留 flat 平铺——`consteval.tie` 等 12+ 处前端/后端文件裸调 `slice/trim/split_lines…` 一直在绑 driver 顶层实现，这层隐藏耦合留给 L1 可见性项收口。
   * 实现约束（写脚本必读）：tsh 解释器约 5 万语句/秒——全仓逐字符扫描不可行，重活交原生 findstr/find，解释器只处理小输出；表作形参是值拷贝；顶层 `var x = f()` 初始化被提升到最前；函数内 while 中「标志位 + 嵌套 if/else」不终止（复现件 `tiec/tests/_p921_interp_flag_probe/flag_nested_if.tie`）。
   * 附带发现：`compiler/middle/pass/*`（passmanager / pass_registry / passes / pass_test，9 月 12 日旧件）无任何外部引用 = 孤儿模块，列入 p.9.21.3 清理候选。
-- [ ] p.9.21.2 **irgen_expr 拆解**：builtin_expr 两步制（分支提子函数 → 表驱动调度）+ 按内置域分文件。
-- [ ] p.9.21.3 **driver 全拆 + 批量拆分**：>1000 行文件逐文件子任务化，全仓 ≤800（gen 豁免）。
+- [x] p.9.21.2 **irgen_expr 拆解**：builtin_expr 两步制①（108 内置分支 → 独立函数，按段注释分域）已落地；② 表驱动调度待 L5（函数引用）就绪后再评估；irgen_expr 文件级拆解一并完成。**[已落地 2026-09-22，tiec 9256cc5 + ff4682b]**
+  * 两步制①：`builtin_expr` 2689 → 635 行（108 分支 → `bi_<名>` 函数），落 8 个文件 `irgen_bi_{mem,num,str,dyn,sys,msg,trm}.tie`（最大 610 行；最大单函数 165 行）；`as_*` 链因共享局部变量 `as_dst` 跨区域引用，按区域提取规则**就地保留**在调度器内。
+  * 文件级拆解：`irgen_expr.tie` 8790 → 744 行——129 个 namespace 内嵌辅助函数 + `builtin_expr`(→`irgen_dispatch.tie`) + `tig_switch_expr`(→`irgen_switch.tie`) 按域落到 16 个文件（conv/bits/strutil/huff/proc/stdio/msgrt/net/netudp/fs/dir/http/inflate/archive 等，最大 757 行）；仅 `tig_expr` / `is_builtin_name` 留在原文件。
+  * 两步制②（表驱动）**阻塞**：真正的「名字 → 处理函数」表需要一等函数引用（L5），语言当前没有；改索引 + switch 只是等价形态，不改架构 → 待 L5 立项后再评估。
+  * 附带修复（RCA，tiec 16b7c8a）：`expand_generics` 的泛型实例化上限原为**绝对 2000**，而它统计的是**整个编译单元被扫描的函数总数**（随源码线性增长）——2026-09 的 tiec 单单元已约 1900 个函数，任何合法小函数拆分都会撞上限（实测：bi 提取即触发 E00520）。改为相对上限 `2000 + n0 * 4`（n0 = 初始顶层函数数）：线性增长放行，失控的指数展开仍被拦；诊断输出实际上限值。注意**自举次序**：旧编译器执行旧上限，先落上限修正并自举升格，才能编译 bi 提取。
+- [ ] p.9.21.3 **driver 全拆 + 批量拆分**：>800 行文件逐文件子任务化，全仓 ≤800（gen 豁免）。**[driver 与 irgen_expr 已完成；余量见下]**
+  * 现状（2026-09-22 门禁实测，全仓 241 条目）：**31 个文件超 800 行**（起点 33）。driver 库 0（已清），irgen 库 8：irgen_stmt 3331 / irgen_str 2650 / irgen_agg 2292 / irgen_rt 2103 / irgen.tie 1910 / irgen_arith 1515 / llvmgen 1429 / irgen_regex 1089；其余库：sema 8（sinfer 3361 …）/ parse 5（pstmt_top …）/ types 2 / interp 2 / llvmgen 库 2 / diag 1（gen 文件豁免）/ lex 1 / passes 1（含孤儿 `middle/pass/*`）/ config 1。
+  * 单函数超 300 行仍存（D4 未清）：`tig_parse_float` 358、`tig_inflate_raw` 541（均在 irgen 域），需按函数拆解（会增函数数，上限已放宽但仍需评估）。
 - [ ] p.9.21.4 **II1 强制可见性**：namespace 内非 pub 跨 ns 不可见（先诊断后强制），tiec dogfood。
 - [ ] p.9.21.5 **II2 pub const**：跨文件常量可见，消灭本地重定义漂移。
 - [ ] p.9.21.6 **II3 模块级增量编译**：模块 = 缓存单元（联动 p.9.15），增量正确性 + 提速数据。
