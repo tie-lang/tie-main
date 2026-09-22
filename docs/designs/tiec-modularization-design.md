@@ -187,10 +187,10 @@ tiec（driver） 纯编排薄壳          ← 全部，唯一流程知识汇聚�
 
 ## 4. 「与阶段无关」的验收定义 / Stage-agnostic acceptance
 
-1. `middle/` 的任何文件不出现 `frontend|backend` 字样的 import；
-2. 每组件可在无 driver 的情况下编译并通过独立自检（ir_test 模式推广：每组件一个 `*_test.tie`）；
-3. pass 管线可被外部重排（kpass 序列只是 driver 的编排数据，组件无顺序知识）；
-4. 依赖方向矩阵检查脚本全绿。
+1. 每库不 import 依赖矩阵之外的其他库（如 `tie.llvmgen` 不出现 ast/sema 字样的引用）；
+2. 每库可在无 driver 的情况下编译并通过独立自检（ir_test 模式推广：每库一个 `tie.<lib>_test.tie`）；
+3. 编译管线可被外部重排（kpass 序列只是 driver 的编排数据，方法库无顺序知识）；
+4. 库依赖矩阵检查脚本全绿（无环、单向）。
 
 ---
 
