@@ -454,6 +454,19 @@ development happens on branch p.7.
   * **字符串构建融合顺延**：需先勘察 p.9.17.1 字符串原语 IR 形态再做 IR 级设计（新原语 + llvmgen 消费），不在本轮强塞。
 - [ ] p.9.20.6 **验收与回归**：不动点门禁（默认 l2/t0 逐字节不变）+ 各档（l×t 组合）性能参考报告 + trm/WASM 后端前瞻验证（t pass 输出可直供非 LLVM 后端）+ 回归不劣化 + 脚本一律 `.tsh.tie`。
 
+**tiec 模块化与库化（p.9.21，解耦 · 组件化 · 阶段无关 · 消灭大文件）**
+
+> 定位（2026-09-22 设计 `docs/designs/tiec-modularization-design.md`，待评审定稿）：现状 124 文件 9.9 万行、36 个超 800 行占 75%、irgen_expr 10844 行（builtin_expr 单函数 2688 行）。两层方案：**层 I 组织重构**（不动语言——依赖方向契约 + deps-check 门禁 + 同 namespace 跨文件拆分 + 组件 API 面封装，单文件 ≤800 行/单函数 ≤300 行）；**层 II 语言模块系统**（tie 增强：强制可见性 / pub const / 模块级增量编译 / 模块注册表，tiec dogfood）。「与阶段无关」验收 = middle 不 import frontend/backend、组件独立自检、pass 管线可外部重排。
+>
+> EN: p.9.21 — modularization & library-ization of tiec. Two layers: Layer I organizational (dependency-direction contract, deps-check gate, same-namespace cross-file splitting, per-component API surface; file cap 800 lines / function cap 300), Layer II language module system (enforced visibility, pub const, module-level incremental compilation, module registry - tiec dogfoods its own language). Stage-agnostic acceptance: middle never imports frontend/backend, per-component self-tests, externally re-orderable pass pipeline.
+
+- [ ] p.9.21.1 **依赖方向契约**：deps-check.tsh.tie 门禁脚本（import 方向矩阵）+ driver 拆分试点（cli_args/cfg_load 先行）。
+- [ ] p.9.21.2 **irgen_expr 拆解**：builtin_expr 两步制（分支提子函数 → 表驱动调度）+ 按内置域分文件。
+- [ ] p.9.21.3 **driver 全拆 + 批量拆分**：>1000 行文件逐文件子任务化，全仓 ≤800（gen 豁免）。
+- [ ] p.9.21.4 **II1 强制可见性**：namespace 内非 pub 跨 ns 不可见（先诊断后强制），tiec dogfood。
+- [ ] p.9.21.5 **II2 pub const**：跨文件常量可见，消灭本地重定义漂移。
+- [ ] p.9.21.6 **II3 模块级增量编译**：模块 = 缓存单元（联动 p.9.15），增量正确性 + 提速数据。
+
 ### 关联定稿（修订项）
 
 > 以下既有定稿在 2026.2 按本 ROAD 对齐修订（就地改，不另立档）：
