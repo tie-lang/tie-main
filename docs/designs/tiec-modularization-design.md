@@ -63,19 +63,35 @@ tie 当前的模块机制是**文本内联**（`mexpand`：import 展开先于�
 
 维持文本内联机制，用「同 namespace 跨文件」范式 + 依赖方向纪律完成拆分。**全部收益立即可得，风险仅在于拆分过程的自举验证**。
 
-#### I1 依赖方向契约（硬规则）
+#### I1 方法分类的库架构（2026-09-22 用户拍板：不用 frontend/backend 阶段桶）
+
+**架构原则变更**：模块按**方法/能力域**分类，每库 = 一组方法（pub API）+ 自检 + 独立发行能力；**不设 frontend/backend 阶段桶**。库之间是「使用」关系（调用图），不是「流水线阶段」的先后关系——编译管线只是 driver 对方法库的一个编排序列，换一条编排（如解释器路径）不要求任何库移动位置。
 
 ```
-lib/     （interner/columnar/bytes）—— 不 import 任何编译器内部
-core/    （ir/types/diagcode/ir_meta）—— 只 import lib/
-frontend/（proto 解析 + 语义）           —— import lib/ + core/
-backend/ （irgen + llvmgen）             —— import lib/ + core/ + frontend（AST 输入）
-middle/  （passes/tieir_ser）            —— import lib/ + core/（不 import frontend/backend）
-interp/  （解释器后端）                  —— import lib/ + core/ + frontend
-driver/  （薄壳）                        —— import 全部，唯一 know-how 汇聚点
+tie.interner   字符串池            ← 零依赖（基础方法库）
+tie.bytes      字节缓冲            ← 零依赖
+tie.columnar   列式存储            ← 零依赖
+tie.diag       诊断码 + 渲染       ← 零依赖
+tie.types      类型系统            ← interner
+tie.ir         tie-IR 列式 + ir_meta + opcode 表 ← interner/columnar/types
+tie.lex        词法分析            ← interner/diag
+tie.ast        AST 数据结构        ← interner
+tie.parse      语法分析            ← lex/ast/interner/diag
+tie.sema       语义分析            ← ast/types/diag/interner
+tie.irgen      AST→IR 转换         ← ast/ir/sema 的注解（显式交接物）
+tie.llvmgen    IR→LLVM 文本        ← ir（不感知 ast/sema）
+tie.interp     解释器              ← ir
+tie.passes     中端 pass 管道      ← ir（阶段无关示范组件）
+tie.tieir      IR 序列化           ← ir
+tie.config     构建配置            ← 零依赖
+tiec（driver） 纯编排薄壳          ← 全部，唯一流程知识汇聚点
 ```
 
-违规检查脚本化（`scripts/deps-check.tsh.tie`：解析 import 语句 vs 方向矩阵，CI 门禁）。
+**关键显式化：sema → irgen 的交接物**。当前 `irgen_*` 裸读 sema 的全局（sstate/node_types/scope_*）——方法分类后这是**库间隐式耦合**，必须收敛为一个显式数据契约（`sema` 产出的「注解 AST」结构：节点类型表/符号表快照/作用域信息），irgen 只消费该契约。这是本次架构变更中**唯一有设计难度**的点，也是解耦收益最大的点。
+
+**库的资格**（四条，缺一不可）：①显式 pub API 面（方法清单即契约）；②独立自检（`<lib>_test.tie`，无 driver 可跑）；③独立发行（L3/L4 模块系统就绪后即可 `pkg publish`）；④依赖单向（deps-check 门禁，禁止环）。
+
+违规检查脚本化（`scripts/deps-check.tsh.tie`：解析 import vs 库依赖矩阵，CI 门禁）。
 
 #### I2 大文件拆解（按病灶定策略）
 
