@@ -473,9 +473,11 @@ development happens on branch p.7.
   * 文件级拆解：`irgen_expr.tie` 8790 → 744 行——129 个 namespace 内嵌辅助函数 + `builtin_expr`(→`irgen_dispatch.tie`) + `tig_switch_expr`(→`irgen_switch.tie`) 按域落到 16 个文件（conv/bits/strutil/huff/proc/stdio/msgrt/net/netudp/fs/dir/http/inflate/archive 等，最大 757 行）；仅 `tig_expr` / `is_builtin_name` 留在原文件。
   * 两步制②（表驱动）**阻塞**：真正的「名字 → 处理函数」表需要一等函数引用（L5），语言当前没有；改索引 + switch 只是等价形态，不改架构 → 待 L5 立项后再评估。
   * 附带修复（RCA，tiec 16b7c8a）：`expand_generics` 的泛型实例化上限原为**绝对 2000**，而它统计的是**整个编译单元被扫描的函数总数**（随源码线性增长）——2026-09 的 tiec 单单元已约 1900 个函数，任何合法小函数拆分都会撞上限（实测：bi 提取即触发 E00520）。改为相对上限 `2000 + n0 * 4`（n0 = 初始顶层函数数）：线性增长放行，失控的指数展开仍被拦；诊断输出实际上限值。注意**自举次序**：旧编译器执行旧上限，先落上限修正并自举升格，才能编译 bi 提取。
-- [ ] p.9.21.3 **driver 全拆 + 批量拆分**：>800 行文件逐文件子任务化，全仓 ≤800（gen 豁免）。**[driver 与 irgen_expr 已完成；余量见下]**
-  * 现状（2026-09-22 门禁实测，全仓 241 条目）：**31 个文件超 800 行**（起点 33）。driver 库 0（已清），irgen 库 8：irgen_stmt 3331 / irgen_str 2650 / irgen_agg 2292 / irgen_rt 2103 / irgen.tie 1910 / irgen_arith 1515 / llvmgen 1429 / irgen_regex 1089；其余库：sema 8（sinfer 3361 …）/ parse 5（pstmt_top …）/ types 2 / interp 2 / llvmgen 库 2 / diag 1（gen 文件豁免）/ lex 1 / passes 1（含孤儿 `middle/pass/*`）/ config 1。
-  * 单函数超 300 行仍存（D4 未清）：`tig_parse_float` 358、`tig_inflate_raw` 541（均在 irgen 域），需按函数拆解（会增函数数，上限已放宽但仍需评估）。
+- [ ] p.9.21.3 **driver 全拆 + 批量拆分**：>800 行文件逐文件子任务化，全仓 ≤800（gen 豁免）。**[driver / irgen_expr / 后端 8 大文件已完成；余量见下]**
+  * 已完成（tiec ff4682b + 5111ea9）：driver 库 0 个超限文件（4392 行 / 18 文件）；`irgen_expr` 8790 → 744 + 16 域文件；后端 8 个文件按整函数贪心分片（irgen_str 2650→4 片 / irgen_agg 2292→4 / irgen_rt 2103→3 / irgen_arith 1515→3 / llvmgen 1429→2 / irgen 1910→2 / irgen_regex 1089→2 / irgen_call 895→2，单片 ≤757）。
+  * 现状（2026-09-22 门禁实测）：**23 个文件超 800 行**（起点 33 → 31 → 23）。分布：sema 8（sinfer 3361 …）/ parse 5（pstmt_top …）/ types 2 / interp 2 / diag 1（gen 豁免）/ lex 1 / passes 1（含孤儿 `middle/pass/*` 4 文件）/ config 1 / irgen 1（irgen_stmt 3331）/ llvmgen 1（llvmgen_inst 1190）。driver 与 trm/ir/interner/columnar/ast/tieir/core 已全清。
+  * 单函数超 300 行（D4 未清，需按函数拆解，会增函数数）：`tig_stmt` 1026（irgen_stmt）、`gen_inst` 769（llvmgen_inst）、`tig_parse_float` 358、`tig_inflate_raw` 541（irgen 域）。
+  * 工具（可复用，均在 `F:\Projects\tie-repo\_tiec_verify\`，非入库）：`split_driver.py`（driver 分域 + 限定名）、`split_bi*.py`（builtin 分支提取，含链块/区域规则）、`split_expr_files.py`（按域搬函数）、`split_parts.py`（通用整函数贪心分片）、`fp.sh`（三阶自举不动点校验）。
 - [ ] p.9.21.4 **II1 强制可见性**：namespace 内非 pub 跨 ns 不可见（先诊断后强制），tiec dogfood。
 - [ ] p.9.21.5 **II2 pub const**：跨文件常量可见，消灭本地重定义漂移。
 - [ ] p.9.21.6 **II3 模块级增量编译**：模块 = 缓存单元（联动 p.9.15），增量正确性 + 提速数据。
