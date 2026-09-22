@@ -93,6 +93,41 @@ tiec（driver） 纯编排薄壳          ← 全部，唯一流程知识汇聚�
 
 违规检查脚本化（`scripts/deps-check.tsh.tie`：解析 import vs 库依赖矩阵，CI 门禁）。
 
+#### I1a 门禁实测记录（2026-09-22，p.9.21.3 收尾）
+
+门禁初始报「10 条越界边 / 7 环节点 / 18 条待修记录」。逐条核实后分三类：
+
+**① 分类缺陷（非真实越界，已修）**
+
+* `_pN`/`_qN` 分片未继承主文件库归属，落到目录级泛化规则上——`middle/types_q1.tie` 被判成 ir（虚报 types → ir），`frontend/stype_p1.tie` 被判成 sema（虚报 types → sema）。已为主文件前缀补规则。
+* `compiler/driver/*.tie`、`compiler/config_p*.tie` 未纳入矩阵（门禁按「未纳入矩阵」报错）。已归 driver / config。
+* `frontend/stype.tie` 按文件名被判成 `tie.types`。实为**语义层**的 AST→类型 id 映射器，属 frontend `s*` 家族，已归 sema；`tie.types` 仅指 `middle/types.tie` 的类型 id 编码。
+* `frontend/error_driver.tie` 按 `error` 前缀被判成 diag。实为自带 `main` 的错误 golden 语料编排入口，已归 driver。
+
+**② 冗余 import（不改变耦合，已删）**
+
+* `frontend/stype.tie` 经 `middle/data.tie` 只为「传递可达 types.tie」，未使用 data 的任何符号。改为直接 import types.tie 后，`middle/data.tie` 退出 import 树（其 API 已无调用方，列为孤儿待清理）。
+* `backend/irgen.tie` 反向 import `llvmgen.tie` 仅为一处 `llvmgen.set_linux` 调用。已把装配上移到 driver 入口（`driver/pipeline.tie` 在 `irgen.set_target` 后注入同一判据），语义不变。
+* `trm/trm_loader.tie → tieir_ser.tie`：加载器读 `.tieir` 模块 ABI 是该后端自身的输入契约，判定为**合法正向依赖**，矩阵显式放行（tieir 不并入 ir 库）。
+
+**③ 待收口：前端求值环（parse ↔ sema ↔ interp，5 条边）**
+
+| 边 | 实际形态 |
+|---|---|
+| sema → parse | `check_impl` 内做 import 展开（`expand_one_import`/`expand_imports` → lexer+parser）与宏展开（`mexpand.expand_sstate`） |
+| interp → parse | 解释器执行源码/code 值：`parser.parse` / `parser.parse_src` |
+| parse → interp | `mexpand` 借解释器做编译期求值（宏执行） |
+| interp → sema | 解释器读写 AST：`sstate.load_ast` / `parse_dec` / `slot_off`（**仅 3 个符号**） |
+| interp → types | 仅 `TK_TRIT` 一个关键字常量 |
+
+**结论（本条为设计现状，非缺陷掩盖）**：这 5 条边在文本内联机制下不可用「搬 import」消除，且**不以 p.9.21 现状为可关闭目标**——它们的关闭条件在层 II：
+
+1. `sema → parse`：需要把「import 展开 + 宏展开」从 `check_impl` 内搬到**独立编排模块**（依赖 parse + sema 状态），使 `sema.check_ast` 只消费已展开的 AST。属结构决策，与 L3（import 语义升级）同步最省工。
+2. `parse → interp`：宏展开需要编译期求值器。设计要求的「公共编译期求值契约」在无一等函数引用时无法表达（见 §层 II L5）；L5 落地或 L3 命名空间绑定后按调用方注入（A5b `&func` 起步）最省工。
+3. `interp → parse/sema`：解释器当前执行 **AST**（非 tieir），且 code 值是**源码文本协议**（`interp_code.tie` 生成源码 → 解析执行）。要达成设计写的「interp ← ir」，须把 code 值与解释目标改为 tieir——属 L4 模块 ABI 的同源工作。`interp → types` 同时随 `interp` 下放 `ext/interp` 一并消解（关键字常量由调用方注入）。
+
+因此 p.9.21 G3 的判绿目标为：**①② 类清零（已完成，10 → 5 条边）**；③ 类作为**层 II 的输入约束**跟踪，不在层 I 阶段强行放宽矩阵——放宽会让门禁失去意义，强行关闭则须先完成 L3/L4/L5。
+
 #### I1b 下放判定：哪些方法库进入 std/ext/rdu/sys（2026-09-22 补充）
 
 **内置库现状性能审计**（实测，`~/.tiec-lib/tlib`，l2 档）：
