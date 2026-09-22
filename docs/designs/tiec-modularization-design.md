@@ -93,6 +93,42 @@ tiec（driver） 纯编排薄壳          ← 全部，唯一流程知识汇聚�
 
 违规检查脚本化（`scripts/deps-check.tsh.tie`：解析 import vs 库依赖矩阵，CI 门禁）。
 
+#### I1b 下放判定：哪些方法库进入 std/ext/rdu/sys（2026-09-22 补充）
+
+**内置库现状性能审计**（实测，`~/.tiec-lib/tlib`，l2 档）：
+
+| 证据 | 数据 |
+|---|---|
+| `coll.kmp_find` **正确性** | 20 万字符文本查找存在的串返回「未找到」（手写同算法找到）——库实现存在边界 bug |
+| `coll.heap_push` 抽象成本 | 10 万次 push：库版 9ms vs 裸 `table_push` 3ms（3×，堆上滤合理但可优化） |
+| 静态扫描 | 158 个文件含拼接表达式；`ext/nn.tie` 密度最高（118 处/722 行，且热循环内大量 `as_f64` 装箱）；`std/tsha1_w48.tie` 单文件 19,567 行（疑为展开生成物） |
+| 抽查反模式 | 多数为整数自增/浮点累加（无害），但字符串拼接热路径与装箱转换在 httpc/json5/collection 等常用库普遍存在 |
+
+**下放判定表**（16 个方法库 → std/ext/rdu/sys）：
+
+| 库 | 判定 | 去向 | 注记 |
+|---|---|---|---|
+| tie.interner | **下放 std** | `std/interner` | 纯通用数据结构，零编译器耦合 |
+| tie.bytes | 已在 std | （确认统一） | tiec 内 lib/bytes 为副本，删除改引用 |
+| tie.columnar | **下放 std** | `std/columnar` | 通用列式结构 |
+| tie.diag（渲染部分） | **下放 std** | `std/diagfmt` | 通用诊断渲染框架；**码表注册表留 tiec**（编译器私有） |
+| tie.ast | **下放 std** | `std/ast` | tie 语法的官方 AST = 语言规范资产（linter/formatter/IDE 皆需） |
+| tie.lex / tie.parse / tie.sema | **下放 std** | `std/lex` `std/parse` `std/sema` | 官方解析器/语义器 = 语言规范实现，tiec 改为消费 std（自举自洽：用 std 解析 tie） |
+| tie.ir / tie.tieir | **下放 std** | `std/ir` `std/tieir` | **tie-IR 是语言公共资产**（trm 引擎/dbg/pkg 工具皆消费，非 tiec 私有） |
+| tie.interp | **下放 ext** | `ext/interp` | 解释器为可选组件（tshell/REPL 复用） |
+| tie.types | 留 tiec | — | 编译器类型 ID 编码，等语言静态类型注解（L 系列远期）成熟再评估 |
+| tie.irgen | 留 tiec | — | AST→IR 是 tiec 本职 |
+| tie.llvmgen | 留 tiec | — | 后端专属 |
+| tie.passes | 留 tiec | — | 优化 pass 属编译策略；管道**框架**若通用再评估 |
+| tie.config | **下放 ext** | `ext/config` | config.data.tie 格式解析，pkg/构建工具复用 |
+
+**下放 × 性能联动（硬规则）**：下放 = 高质量实现随行，禁止把烂实现一放了之——
+1. 下放库必须带基准（`<lib>_bench.tie`）与性能预算，不达标的先修再放；
+2. 热路径原语（如 kmp/regex/编码）可评估「编译器内建/内联」路线（irgen_regex 的编译期解析+运行时 VM 即先例）——性能关键处语言内建，通用实现进 std；
+3. tiec 内部经过 p.9.14/9.19 优化的实现（字符串池 O(1)、sb_scan）反哺内置库重写。
+
+**正确性优先**：`coll.kmp_find` 边界 bug 为审计发现的第一例，下放前内置库需一轮正确性回归（现有 tests/language/std_* 为起点补全）。
+
 #### I2 大文件拆解（按病灶定策略）
 
 | 病灶 | 策略 |
