@@ -480,11 +480,13 @@ development happens on branch p.7.
   * **拆分工程铁律（实测踩坑，工具已固化并入库 `tiec/tools/`）**：①else-if 链/多行条件块必须整块搬（含起始 `if` 与闭合 `}`）；②链块与相邻语句共享局部变量时按「区域」搬或就地保留；③花括号计数必须字符串/注释感知；④拆出文件不含 import 与顶层 var；⑤`main` 必须留顶层（ns 内缺入口 LNK1561）；⑥**命名空间归属**：`namespace X {` 之前的函数是顶层函数，跨 ns 裸调依赖其顶层身份——分片必须按各自上下文包裹；⑦**分片文件绝不覆盖** → 新分片用 `_qN` 后缀 + 函数集完整性校验；⑧void 调度分支须多行体。新增实测：⑨多行条件的 `if` 首行括号平衡但块未开（须见 `{` 后才收口）；⑩`} else if` 行会闭合上一臂（跨行条件时深度归零），链是一块不可中途收口；⑪源码存在零缩进 `if` 混在缩进体内（早前工具遗留），先 `git diff -w` 验证做纯空白重排再拆；⑫提子函数沿用原函数形参表与返回类型。
   * 工具（**已入库 `tiec/tools/`，100% tie**；一次性 Python 拆分器已按 2026-09-23 用户裁定移出，git 历史可考）：`tools/func_audit.tie`（超 300 行函数审计，tie 版比 Python 版多抓出 `scan_string` 600 行）、`tools/orphan_check.tie`（孤儿源码检查）、`tools/visibility_survey.tie`（ns 可见性普查）、`scripts/bootstrap-fp.tsh.tie`（三阶自举不动点，断点续跑 + certutil 哈希比对）；拆分踩坑沉淀为 `tools/README.md` 的规则清单。
   * 清理（tiec d55fc83）：删除 8 个已被 `_qN` 取代且无人 import 的死亡 `_pN` 分片；`middle/data.tie` 因 `stype` 改直连 `types.tie` 退出 import 树（API 无调用方，孤儿待清理）。
-- [ ] p.9.21.4 **II1 强制可见性**：namespace 内非 pub 跨 ns 不可见（先诊断后强制），tiec dogfood。**[诊断步已落地 2026-09-23，tiec d5fe664 + tie-main 设计 §II1 现状核实]**
-  * **核实结论：A1b 已作为错误强制生效**（M2.1.7 的 `sstate.check_visibility` 接在 sinfer 全部 6 处调用解析点；显式 pub 放行 / 顶层函数恒放行 / 同 ns 与子 ns 放行 / 其余报错）。设计早前「pub 无强制」的记述过时，已修订；诊断码为 E00331 族（E00332 实为参数个数不符）。
+- [x] p.9.21.4 **II1 强制可见性**：namespace 内非 pub 跨 ns 不可见（先诊断后强制），tiec dogfood。**[已落地 2026-09-23，tiec d5fe664（诊断步）+ 9c9e3cc（梯度旗标），tie-main 设计 §II1 现状核实]**
+  * **核实结论：A1b 已作为错误强制生效**（M2.1.7 的 `sstate.check_visibility` 接在 sinfer 全部 6 处调用解析点；显式 pub 放行 / 顶层函数恒放行 / 同 ns 与子 ns 放行 / 其余报错）。设计早前「pub 无强制」的记述过时，已修订。诊断码 = **E00332**（「函数 'x' 是命名空间 'y' 的私有函数…」；G7 diag 自检以目录查表实证，E00331 为「无签名」）。
   * 全仓普查（`tiec/tools/visibility_survey.tie`，纯 tie 实现；按函数回溯所属命名空间统计）：59 个 ns、2415 个 ns 内函数（pub 1261 / 私有 1154，48% 私有）、141 个顶层函数豁免。
   * **真问题 = pub 的双语义混淆**：`pub` 同时承担「跨文件同 ns 链接」（机械拆分需要）与「对外 API 契约」（设计本意），机械拆分把前者刷成了默认（driver 58/0、sbuiltin 94/0、sstate 77/1）。剩余工作是把两者分开：同 ns 跨文件可见随 L3 命名空间绑定自然成立；对外 API 收敛到 G7 逐库方法全集清单。
-  * 梯度落地时的修正：**A1b 须保持为现有默认**（设计原文「默认 A1a」与现实相悖，照搬会拆掉现有护栏），A1a 仅作为脚本/无 ns 项目的显式降档选项；A1c/A1d 按菜单后续实现。
+  * **梯度旗标落地（tiec 9c9e3cc）**：`--visibility=<a1a|a1b|a1c|a1d>`（driver/cli_args 解析 + 专项诊断；front_end 在 check_ast 前注入 `sstate.set_visibility`）。档位语义：A1a 全开放（脚本降档）/ **A1b ns 级私有（默认 = 历史行为，不传旗标逐字节不变）** / A1c 包级（同顶层 ns 段互见，兄弟/父子 ns 解禁）/ A1d 全私有+显式导出（仅精确同 ns）。顶层函数全档豁免（脚本友好）。试点探针 `tests/_p9214_probe/vis_ladder.tie` 四档实测符合设计。不动点 `34daf1cc`，regress 157/8/2 集合一致。
+  * 梯度落地时的修正：**A1b 须保持为现有默认**（设计原文「默认 A1a」与现实相悖，照搬会拆掉现有护栏），A1a 仅作为脚本/无 ns 项目的显式降档选项；A1c/A1d 已随旗标实现。
+  * 余量：文件级声明（`tie:visibility=`）作为旗标的补充入口，随 L3（import 语义升级）一并评估。
 - [ ] p.9.21.5 **II2 pub const**：跨文件常量可见，消灭本地重定义漂移。
 - [ ] p.9.21.6 **II3 模块级增量编译**：模块 = 缓存单元（联动 p.9.15），增量正确性 + 提速数据。
 - [ ] p.9.21.7 **库资格四项收口（G7）**：①pub API 面清单 ②`<lib>_test.tie` 独立自检 ③独立发行（L3/L4 就绪后）④依赖单向。**[进度 2026-09-23，tiec 20f87d1 + 18c4704 + 700b139 + 9958ead + 666c7fa：interner / columnar / core(dispatch) / types / ast / config / tieir 七库自检全绿（各含 `<lib>_test.tie` + pub 方法全集清单）；lex / ir 沿用既有 golden 自检（lex_test / ir_test），补齐 API 清单；附带修正 `dispatch.at` 与 find 不互逆的契约缺陷]**
