@@ -1,4 +1,4 @@
-# p.9.21 II3 及之后 —— 自包含交接提示词 / Handoff Prompt (II3 and beyond)
+# p.9.21 及之后 —— 自包含交接提示词 / Handoff Prompt (II3 and beyond)
 
 > 交接时点：2026-09-23，p.9.21 的 G1-G8 与 II1/II2 已落地（见 ROAD p.9.21.0-9.21.5）。
 > 本文件是剩余工作的自包含交接：II3 模块级增量编译、G9 性能报告与总验收、G7 余量库自检、
@@ -18,11 +18,12 @@
 * **推送状态**：交接时 tiec 领先远端 3 个提交（9c9e3cc II1 / d123b98 II2 / 本轮 II2 收尾），
   代理 502 持续；恢复后 `git push --no-thin https://$(gh auth token)@github.com/tie-lang/tiec.git HEAD:refs/heads/p.7`。
 
-## 1. II3 模块级增量编译（p.9.21.6）/ Module-level incremental compilation
+## 1. 模块级增量编译（p.9.21.6）/ Module-level incremental compilation
 
 **目标**：模块 = 缓存单元。改一个文件只重编该模块（联动 p.9.15 缓存），增量正确性 + 提速数据。
 
 **现状依赖（先读）**：
+
 * 现有缓存：driver/cache_drv.tie + cache_key_str——键 = (源文件, L 档, T 档, target, M 段
   pass 版本)；粒度 = 整个 driver.tie 编译单元；`--no-cache` 关闭。
 * tieir 序列化（S3.2）：tieir.write/read 已按"分发单元"落盘——模块化缓存的产物形态现成。
@@ -30,6 +31,7 @@
   **单元内没有模块边界，缓存无法按文件切**。
 
 **建议路径（三步，每步独立验收）**：
+
 1. **模块边界显式化**：import 的文件 = 模块。语义层把每个导入文件的顶层符号登记进
    `模块名空间`（gb/sg 表加"来源模块"维度），为按模块失效做准备。验收：不改行为，
    全部回归 + 不动点不变。
@@ -42,11 +44,12 @@
 逐字节一致；提速数据入 ROAD。
 
 **已知约束**：
+
 * 缓存键必须含编译器二进制版本（p.9.19.8 遗留：跨版本命中过期产物）——II3 第 2 步顺手补。
 * pass 管线版本（g_pass_pipeline_ver）已在 tieir 单元头——增量缓存键必须带上。
 * 确定性铁律：同 (源码, l, t, target) → 输出逐字节恒等；禁时间/地址/随机依赖。
 
-## 2. G9 性能报告 + p.9.21 总验收 / Performance report and final acceptance
+## 2. 性能报告 + p.9.21 总验收 / Performance report and final acceptance
 
 * 基准：三阶自举（scripts/bootstrap-fp.tsh.tie 的 n1/n2/n3 各阶时长）+ regress 全量 +
   大型探针工程（tests/language/ 16 文件 tokenize/compile）。
@@ -56,7 +59,7 @@
 * 总验收清单（对照设计 §验收）：层 I 各项（依赖方向 / 文件与函数上限 / 门禁 /
   库资格四项进度）+ 层 II 各项（II1/II2 已落地、II3 本文件第 1 节）+ 每库自检运行方式。
 
-## 3. G7 余量库自检 / Remaining library self-checks
+## 3. 余量库自检 / Remaining library self-checks
 
 已覆盖 10 库（interner / columnar / core(dispatch) / types / ast / config / lex / ir /
 tieir / diag，均含 pub API 清单）。余量按性价比排序：
@@ -104,12 +107,13 @@ tieir / diag，均含 pub API 清单）。余量按性价比排序：
    曾如此门禁，修复后撤gate）。
 10. **文档现状记述会过时**：II1（pub 无强制→已强制）、II2（const 跨文件不可见→可见）两处
     都是先探针实证再动手；每项开工前先写复现探针。
+11. 不要用II，G这种无意义的编号，只能使用p.x.y.z
 
 ## 6. 执行顺序 / Execution order
 
 1. 补推送（基线小节）。
-2. II3 三步（每步独立验收 + 不动点）。
-3. G9 性能报告 + 总验收（引用 II3 的提速数据）。
-4. G7 余量（passes → trm）。
+2. 三步（每步独立验收 + 不动点）。
+3. 性能报告 + 总验收（引用 II3 的提速数据）。
+4. 余量（passes → trm）。
 5. 语言小项（第 4 节）。
 6. ROAD/design 收官勾选 + 归档宣告（对齐 p.9.21.0 的 v3 归档惯例，收官态打 tag）。
