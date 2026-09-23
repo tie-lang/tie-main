@@ -483,9 +483,11 @@ development happens on branch p.7.
 - [ ] p.9.21.4 **II1 强制可见性**：namespace 内非 pub 跨 ns 不可见（先诊断后强制），tiec dogfood。
 - [ ] p.9.21.5 **II2 pub const**：跨文件常量可见，消灭本地重定义漂移。
 - [ ] p.9.21.6 **II3 模块级增量编译**：模块 = 缓存单元（联动 p.9.15），增量正确性 + 提速数据。
-- [ ] p.9.21.7 **库资格四项收口（G7）**：①pub API 面清单 ②`<lib>_test.tie` 独立自检 ③独立发行（L3/L4 就绪后）④依赖单向。**[进度 2026-09-23，tiec 20f87d1 + 18c4704：interner / columnar / core(dispatch) / types 四库自检全绿；附带修正 `dispatch.at` 与 find 不互逆的契约缺陷；types.tie 补 pub 方法全集清单]**
-  * 自检运行方式：`compiler\tiec.exe compiler\<lib>\<lib>_test.tie -o <tmp>\x.exe && x.exe`（exit 0 = 通过）。
-  * 余量：lex / ast / ir / tieir / passes / config / diag / parse / sema / irgen / llvmgen / interp / trm / driver 的自检与 API 清单；其中 sema/parse/interp/driver 属前端求值环（见设计 §I1a），自检需待环收口或按编排入口形态单独设计。
+- [ ] p.9.21.7 **库资格四项收口（G7）**：①pub API 面清单 ②`<lib>_test.tie` 独立自检 ③独立发行（L3/L4 就绪后）④依赖单向。**[进度 2026-09-23，tiec 20f87d1 + 18c4704 + 700b139 + b88e700：interner / columnar / core(dispatch) / types / ast / config 六库自检全绿（各含 `<lib>_test.tie` + pub 方法全集清单）；lex / ir 沿用既有 golden 自检（lex_test / ir_test），补齐 API 清单；附带修正 `dispatch.at` 与 find 不互逆的契约缺陷]**
+  * 自检运行方式：`compiler\tiec.exe compiler\<路径>\<lib>_test.tie -o <tmp>\x.exe && x.exe`（exit 0 = 通过）。
+  * 写自检的约定（沿用 ir_test.tie）：`type tie<logic>` + `check(ok, what)` 断言辅助 + 失败 `exit(1)`；**不定义本地常量**（import 内联后与本库顶层常量同作用域，重名即重复定义报错）；前缀调用；断言累积用嵌套 if。
+  * 余量：tieir / passes / diag / parse / sema / irgen / llvmgen / interp / trm / driver 的自检与清单；其中 parse/sema/interp/driver 属前端求值环（见设计 §I1a），自检需待环收口或按编排入口形态单独设计。
+  * 已知遗留（非本轮引入）：`lex_test.tie` 的 16 个 golden 文件 token 总数基线过期（byref_table 期望 139 实际 144 等——测试语料此后增长），待重录基线。
 * 收尾提示词：`docs/p921-completion-prompt.md`（p.9.21 剩余工作的自包含交接：G1-G9 目标与验收、依赖矩阵 10 条越界边收口方向、拆分工程与 tsh 脚本铁律、执行顺序）。
 
 ### 关联定稿（修订项）
