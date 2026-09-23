@@ -487,14 +487,20 @@ development happens on branch p.7.
   * **梯度旗标落地（tiec 9c9e3cc）**：`--visibility=<a1a|a1b|a1c|a1d>`（driver/cli_args 解析 + 专项诊断；front_end 在 check_ast 前注入 `sstate.set_visibility`）。档位语义：A1a 全开放（脚本降档）/ **A1b ns 级私有（默认 = 历史行为，不传旗标逐字节不变）** / A1c 包级（同顶层 ns 段互见，兄弟/父子 ns 解禁）/ A1d 全私有+显式导出（仅精确同 ns）。顶层函数全档豁免（脚本友好）。试点探针 `tests/_p9214_probe/vis_ladder.tie` 四档实测符合设计。不动点 `34daf1cc`，regress 157/8/2 集合一致。
   * 梯度落地时的修正：**A1b 须保持为现有默认**（设计原文「默认 A1a」与现实相悖，照搬会拆掉现有护栏），A1a 仅作为脚本/无 ns 项目的显式降档选项；A1c/A1d 已随旗标实现。
   * 余量：文件级声明（`tie:visibility=`）作为旗标的补充入口，随 L3（import 语义升级）一并评估。
-- [ ] p.9.21.5 **II2 pub const**：跨文件常量可见，消灭本地重定义漂移。
+- [x] p.9.21.5 **II2 pub const**：跨文件常量可见，消灭本地重定义漂移。**[已落地 2026-09-23，tiec d123b98 + c54f1610 升格；诊断步见设计 §II2]**
+  * **`pub const` 语法（顶层 + 命名空间）**：三处 `lex_pub` 分支（pstmt_top 顶层、pstmt_top_p2 ns 体/单文件模式）接受 `pub const` → val bit1 = ispub（macro 同款）；`collect_global_var` 的 is_const 改位测试（val & 1，`== 1` 等值判断曾把 pub const 误判为非 const）。
+  * **A2b 常量可见性跟随 L1 梯度**：pub 位编进 gb_const 槽（bit0=const，bit1=pub，免改 sorted_insert_gb 签名）；两处 gb_const_of 消费点改位测试；新增 `sstate.check_const_visibility_nid`（阶梯逻辑与函数版一致，顶层常量豁免）接入两个引用点（`infer_expr_path` 限定路径 + `sinfer_ie_ie1` 裸名前缀补全）。诊断码 **E00649**（常量私有拦截，目录按字节序插入）。
+  * **行为矩阵实测**（`tests/_p9215_probe/`）：ns 非 pub const 跨 ns 引用 → E00649 ✓；ns pub const 跨文件 ✓（8）；裸名跨 ns 引用维持「未声明」（前缀补全仅在 ns 内）✓；`--visibility=a1a` 放行非 pub 引用 ✓；顶层常量豁免 ✓（5）。
+  * dogfood 普查：全仓 0 个 ns 级 const（全是顶层，天然豁免）——护栏直接强制，零迁移。
+  * 探针教训：编译失败后跑了**陈旧可执行文件**造成「解析成兄弟常量值」的假象（真缺陷只有 collect_global_var 的等值判断）——测试脚本必须先确认编译成功再运行产物。
+  * 余量：A2b 护栏的文件级声明入口（`tie:visibility=`）随 L3 评估；diagcode 目录生成器（gen-diagcodes.ps1）的 tie 重写。
 - [ ] p.9.21.6 **II3 模块级增量编译**：模块 = 缓存单元（联动 p.9.15），增量正确性 + 提速数据。
 - [ ] p.9.21.7 **库资格四项收口（G7）**：①pub API 面清单 ②`<lib>_test.tie` 独立自检 ③独立发行（L3/L4 就绪后）④依赖单向。**[进度 2026-09-23，tiec 20f87d1 + 18c4704 + 700b139 + 9958ead + 666c7fa：interner / columnar / core(dispatch) / types / ast / config / tieir 七库自检全绿（各含 `<lib>_test.tie` + pub 方法全集清单）；lex / ir 沿用既有 golden 自检（lex_test / ir_test），补齐 API 清单；附带修正 `dispatch.at` 与 find 不互逆的契约缺陷]**
   * 自检运行方式：`compiler\tiec.exe compiler\<路径>\<lib>_test.tie -o <tmp>\x.exe && x.exe`（exit 0 = 通过）。
   * 写自检的约定（沿用 ir_test.tie）：`type tie<logic>` + `check(ok, what)` 断言辅助 + 失败 `exit(1)`；**不定义本地常量**（import 内联后与本库顶层常量同作用域，重名即重复定义报错）；前缀调用；断言累积用嵌套 if；**自检只 import 被测库链**——tieir 自检首版 import types.tie 取类型 id，直接造出 tieir→types 越界边（改为字面量 + 注释标注关键字）。
   * 余量：passes / diag / parse / sema / irgen / llvmgen / interp / trm / driver 的自检与清单；其中 parse/sema/interp/driver 属前端求值环（见设计 §I1a），自检需待环收口或按编排入口形态单独设计。
   * 已知遗留（非本轮引入）：`lex_test.tie` 的 16 个 golden 文件 token 总数基线过期（byref_table 期望 139 实际 144 等——测试语料此后增长），待重录基线。
-* 收尾提示词：`docs/p921-completion-prompt.md`（p.9.21 剩余工作的自包含交接：G1-G9 目标与验收、依赖矩阵 10 条越界边收口方向、拆分工程与 tsh 脚本铁律、执行顺序）。
+* 收尾提示词：`docs/p921-ii3-prompt.md`（**当前有效交接**：II3 模块级增量编译三步路径、G9 性能报告与总验收清单、G7 余量库自检、语言小项、铁律与执行顺序；基线 = 不动点 c54f1610，II1/II2 已落地）。`docs/p921-completion-prompt.md` 为上一轮交接（G1-G8/II1/II2 部分，已完成，留档）。
 
 ### 关联定稿（修订项）
 
