@@ -355,3 +355,49 @@ tiec（driver） 纯编排薄壳          ← 全部，唯一流程知识汇聚�
 | D2 | 层 II 语言增强是否入 ROAD | **是**，p.9.21.4-6 预留，tiec 痛点驱动 |
 | D3 | builtin_expr 拆法 | **两步制**：先提子函数（机械安全），后表驱动调度 |
 | D4 | 单函数上限 | **300 行**（超限需拆子函数或查表化） |
+
+---
+
+## 7. 收官评测（p.9.21.6 落地记录）/ Final assessment
+
+> 2026-09-23。执行记录与缺陷详见 tiec 仓 `docs/p9216-findings.md`。
+
+### 7.1 模块级增量编译（p.9.21.6 三步）
+
+| 步 | 内容 | 验收结果 |
+|---|---|---|
+| 1 模块边界显式化 | `g_file_base` 节点基址 + `sg_mod`/`gb_mod`/`st_mod` 来源模块列 + `file_id_of_node` 访问器 | 纯增量元数据；回归 157/8/2 与基线一致；不动点 6313365a |
+| 2 按模块缓存 tieir | `tieir_slice.write_mod_slice`（重映射表版，兼容菱形导入非连续布局）+ driver 键管理/归属注入 + tieir_test 片段 roundtrip 自检 | 四步验收：冷启 +4 → 重编 +0 → 叶子改动 +1 → 产物逐字节一致；不动点 d7e2fd54 |
+| 3 提速数据 | 见 7.2；片段默认关（`TIEC_MODCACHE=1`），池过滤（层 II 收口）后默认开 | 数据入本节；不动点 2e238f60 |
+
+### 7.2 性能参考（driver 自举基准，-l2 -t0）
+
+| 场景 | 耗时 |
+|---|---|
+| 全量编译（--no-cache） | 26.8s |
+| 单元依赖缓存命中（p.9.15，同 -o 重编） | 15.1s（1.8×；命中成本 = ~200 依赖文件指纹复核对账） |
+| 片段缓存开启的全量编译（写放大，门控中） | 58.2s → 池过滤后消除 |
+| 语言语料（tests/language 前 30 文件，全量） | 平均 1.24s/文件 |
+
+片段缓存**跳过编译**（改叶子只重编该模块的 front/irgen 路径）为层 II 收口项；
+当前片段为证据级产物（命中判定/ABI 形态/roundtrip 自检），不改编译耗时。
+
+### 7.3 自检体系新增
+
+* `middle/passes_test.tie`：两常量相加 → run(1) 折叠 const_i 5 + DCE 4→2；
+  t0 零改动；t1 幂等；pipeline_ver 稳定。
+* `middle/tieir_test.tie`：追加片段 roundtrip 用例（2 模块重映射断言）。
+* `scripts/verify-modcache.tsh.tie`：模块缓存验收（文件证据法）。
+* 余量库自检（passes ✓ / trm 见下）；irgen/llvmgen/interp 属编排层，
+  按模块入口的自检形态待层 II 收口后设计（interp 已有 regress 覆盖）。
+
+### 7.4 自检发现的缺陷（立项）
+
+* **D1（p.9.21.7，高优）**：tieir.deserialize 假设参数段连续，真实单元为
+  每函数 [参数][操作数] 交错 → 自产多函数单元无法过自身 tieir.read。
+  修法 = 反序列化值重映射（与 write_mod_slice 对偶）。
+* **D2（已在 trm 仓修复 6c70b75）**：trm loader 版本闸只认 v1；现 v1/v2 双接受。
+* **D3**：词法诊断列号为字节列，golden 期望码点列（lex_test 负例遗留）。
+* **D4**：bootstrap-fp 单参数调用 out 静默回退默认目录（tsh REPL v1 语义），
+  双参数调用 + 产物直哈希复核绕开；tsh exec/list_dir/file_* 的进程内缓存与
+  异步返回语义实测备忘见 tiec `docs/p9216-findings.md` §4。
