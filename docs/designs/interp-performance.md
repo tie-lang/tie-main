@@ -78,6 +78,45 @@
 - 收益面：编译器自身（parser/semantic 逐字节遍历）、解释器、tsp（p.9.16 同受益），
   属全局性能基建，独立可验收。
 
+#### 4.1.1 勘察增补（2026-09-25，p.9.17.1 执行记录）
+
+*EN: Survey addendum for p.9.17.1 (2026-09-25 execution record).*
+
+**str_char 缓存（实测基线，铁律 3 事实验证）**：`str_char` 编译路径为
+O(n²) 步进（100K 码点 char-wise 遍历 >120s 被 120s 命令上限截断；10K ≈ <1s；
+interp 路径 10K ≈ 1s，~100µs/char——设计文档旧数字 ~360µs 与 interp 路径量级
+吻合）。单槽 (ptr,len) 键缓存方案 **2026-09-24 已验证可行**（@tie_sc_* 手写
+LLVM helper：phi 自环重建循环 + legacy 兜底；50K 遍历 9.2s→0.27s），遗留两缺陷
+（phi 退出值差一 / 交替串单槽失效）后回滚——全部设计/坑/出路存 tiec
+`docs/p9216-findings.md` §10/§11，重上时勿改架构。基准脚本就绪：
+`_tiec_verify/bench_50k.tie` / `bench_mb.tie` / `bench_tsh3.tie`。
+
+*EN: str_char compile path is O(n²) (100K codepoints >120s); the single-slot
+(ptr,len)-keyed cache design was proven (50K: 9.2s→0.27s) but rolled back with
+two bugs pending (phi exit off-by-one / alternating-string single-slot miss).
+Full record in tiec findings §10/§11 — keep the architecture when re-landing.*
+
+**str_sub_bytes 勘察结论（同范式适用性）**：字符串切片 `t[lo..hi]` 走
+`s21_str_sub_bytes`（irgen_str_p1.tie）——字节区间 + clamp + 单次 memcpy
+（SSO 分配，O(len) 一次拷贝），**无 O(n²) 问题，缓存范式不适用**。码点索引
+访问只有 `str_char` 一条路；若未来出现码点区间子串需求，应复用 str_char 缓存
+的码点→字节偏移表（同一 (ptr,len) 键），不另立缓存。
+
+*EN: string slicing is byte-range with one memcpy (O(len)) — the cache scheme
+does not apply; a future codepoint-range substring should reuse str_char's
+offset table under the same key rather than a new cache.*
+
+**容器按值传参 COW/移动语义（裁定：v1 维持拷贝语义，不实施）**：字符串不可变，
+子串 = 拷贝（memcpy 入 SSO/malloc 块，头 {len,data}）；表切片 = 新表（拷贝非
+视图）。改 COW/视图需动字符串内存布局（父指针 + 偏移或视图标记），波及 FFI
+边界（全部桥按 {len,data} ptr 约定）、SSO 池布局与 free 路径
+（tie_str_free_if_heap），风险/收益比差——除非剖析显示子串密集负载，否则维持
+拷贝语义（文档化边界）。
+
+*EN: v1 keeps copy semantics for by-value containers/strings; COW views would
+change the string layout and ripple through FFI/SSO/free paths — poor
+risk/benefit unless substring-heavy workloads show up.*
+
 ### 4.2 拆箱标量（p.9.17.2）
 
 - 值模型拆箱：int/float/bool/trit/char 等小标量直接作为值/寄存器槽，不建节点 id，不做
