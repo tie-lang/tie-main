@@ -36,11 +36,11 @@
 
 * `in` / `not in`（中缀布尔）：右 string→子串包含；右 table→元素包含（按类型比较）；右 map→键包含（O(1)）。优先级：比较与逻辑之间。`not in` 为一词法组合，`in` 复用既有保留字。
 * `+` 语义扩展（原数字/string+string 语义不变）：string+标量→自动 `to_string` 拼接；table+table→**值语义新表**（全拷，性能裁决同 p.9.11.6 `with`，大表慎用并文档化）；map+map→合并新表。
-* `**` 幂（右结合，高于 `*`；int 幂走快速幂、f64 走 libc pow）；`//` 整除（int 族截断；f64 走 floor-div）；补 `%%` f64 取余成对；
+* `**` 幂（右结合，高于 `*`；int 幂走快速幂、f64 走 libc pow）；**`\` 整除**（int 族截断；f64 走 floor-div）——**符号已由 `//` 改为 `\`**（2026-09-26 定案）：`//` 在 tie 中**已是行注释**（§16.3 符号表），改注释规则属破坏性改动；`\`（0x5C）在符号表中完全空闲且有 VB 系先例。配套 `\=` 复合赋值。补 `%%` f64 取余成对；
   **溢出裁决（v0.6）**：`**` 与 `*` 一致（i64 回绕），另备 **`**?` checked 变体**（运行期溢出 panic，对齐 p.9.11.9 `+?`/`-?`/`*?` 族）。
   全部 desugar 到既有原语，零新运行期依赖。
 
-*EN: `in`/`not in` membership (string substring / table element / map key); `+` extensions (string+scalar concat, value-semantics table concat, map merge — original semantics unchanged); `**` power (right-assoc above `*`), `//` integer/floor division, paired `%%` f64 modulo. All desugar to existing primitives.*
+*EN: `in`/`not in` membership (string substring / table element / map key); `+` extensions (string+scalar concat, value-semantics table concat, map merge — original semantics unchanged); `**` power (right-assoc above `*`), `\` integer/floor division (symbol changed from `//` because `//` is already the line comment), paired `%%` f64 modulo. All desugar to existing primitives.*
 
 ## 4. 箭头续扩 / Arrow extensions
 
@@ -50,6 +50,8 @@
 * 条件管道：`x -> cond ? f : g`（管道接选择）。
 * 管道声明临时单参函数：`f = t -> expr`（接 p.9.11.17 fn 值；块管道产出的本就是函数值）。
 * 反向解构：`(a, b) <- t`（对称复用 `<-`）。
+
+* 落地实况（2026-09-26）：**块管道已落地**（tiec 1231058）——实现为**内联绑定**而非闭包（实测三重封锁：闭包形参不能省类型 E00484 · 返回类型不能省 E00204 · IIFE 形态不通），故新增 AST 节点 N_BLOCK_PIPE(162) + 语义登记绑定（类型＝数据表达式推断类型）+ IR 开槽（alloca/store/scope_push/scope_pop）。**管道接运算符亦已落地**（tiec 1401cc1）；**进容器/字段读取**（`t -> [i]` / `p -> .field`）已落地（tiec 22b1519）；条件管道已落地（9c8a3a7）。
 
 *EN: piped anonymous blocks `x -> { v -> expr }`; pipe into index/field/destructure `t -> [i]` `p -> .field` `t -> (a,b)`; pipe into primitives/operators `t -> in xs` `t -> + [x]`; conditional pipe; pipe-as-temporary-single-arg-function `f = t -> expr`; reverse destructure `(a,b) <- t`.*
 
@@ -82,7 +84,7 @@
       并发安全来自调度同步点而非锁；
     * unsafe 内捕获白名单放宽（开发者担责），有界守护保留。
 * **安全分层一览与裁决（v0.6 定案）**：
-  * **SAFE（安全区默认可用，编译期保证）**：单箭头统一（纯语法）；基元前置全部；运算符 `in`/`not in`、`+` 扩展（值语义）、`//`、`%%`；
+  * **SAFE（安全区默认可用，编译期保证）**：单箭头统一（纯语法）；基元前置全部；运算符 `in`/`not in`、`+` 扩展（值语义）、`\` 整除、`%%`；
     箭头续扩全套；graph 构造/字面量/组合（不可变值语义）、执行 `x -> g`（任务隔离+有界队列背压+join 屏障+捕获白名单+波界冻结）、
     读操作（`nodes/edges` 读视图、`len`、`g[A]` 读、表语法只读操图）、图论算法全套 + `tprop(g)`（纯函数表变换）、不可变 graph 句柄入表；
   * **UNSAFE（必须 unsafe 上下文）**：`unsafe { var g: graph }` 可变图声明；原地变异运算符全套
@@ -140,7 +142,7 @@ graphs, state machines, networks/supply chains, resource allocation).*
 
 * p.9.13.1 单箭头统一 + `=>` 移除与存量迁移（grep 清零）
 * p.9.13.2 基元前置：机制 + 首批清单 + 遮蔽验证
-* p.9.13.3 运算符批：`in`/`not in`、`+` 扩展、`**`/`//`/`%%`
+* p.9.13.3 运算符批：`in`/`not in`、`+` 扩展、`**`/`\`/`%%`
 * p.9.13.4 箭头续扩批：块管道/进容器·字段·解构/接基元·运算符/条件管道/临时函数/反解构
 * p.9.13.5 并行数据流图：图内核 + 波次 SDF 执行 + 安全护栏 + 探针
 * p.9.13.6 文档/示例/迁移说明（含匹配示例改写）
