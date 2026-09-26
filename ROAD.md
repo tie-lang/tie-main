@@ -195,11 +195,11 @@ development happens on branch p.7.
 > EN: tiu (2026-09-11): independent in-house UI framework — high-performance,
 > cross-platform, NOT depending on trm; usable alone or with trm.
 
-- [ ] p.9.4.1 tiu 运行时底座：窗口/绘制/事件/资源管理（独立于 trm）——**第一闭环已落地 2026-09-14**（tiu 仓 `engine/` `api/`：API M1 对象模型 / M2 IR 编码器（布局冻结+key 派生+增量段）/ M3 Canvas 双模式会话，引擎 E1 IR loader + 软件光栅 rect/纯色/文本位图字形 + gold ≤1/255 + 双模式像素一致；剩余引擎 E2-E7 与 API T4/T5 待续）
+- [ ] p.9.4.1 tiu 运行时底座：窗口/绘制/事件/资源管理（独立于 trm）——**第一闭环已落地 2026-09-14**（tiu 仓 `engine/` `api/`：API M1 对象模型 / M2 IR 编码器（布局冻结+key 派生+增量段）/ M3 Canvas 双模式会话，引擎 E1 IR loader + 软件光栅 rect/纯色/文本位图字形 + gold ≤1/255 + 双模式像素一致；剩余引擎 E2-E7 与 API T4/T5 待续）；**窗口/呈现/事件层已落地 2026-09-26**：tiu 仓新增 `host/`（Win32 平台壳 C 端 + `host/src/win.tie` 绑定 + `host/build.tie` 构建驱动）、`engine/src/present.tie`（帧缓冲 → BGRA 呈现字节），探针 `probe_host`（IR → 光栅 → 真窗口上屏 → 消息泵 → WM_PAINT → 事件队列）与 `probe_app`（控件树 → 布局 → 绘制桥 → API 编码 → 引擎光栅 → 窗口 → 合成指针事件 → 命中 → 控件状态变更 → 重绘）全绿——**端到端可交互闭环成立**。C 壳收编自 ext/gfx/win（p.6.8.9/6.8.10，逐步吸收第一步，收编时逐字节核验）；**根因记录**：tie 无法把函数值作为 extern 形参（实测 E00041），C 回调不可用故 WndProc 必须落 C 端，待编译器支持后转纯 tie
   - 设计文档已落盘（2026-09-12）：`docs/designs/tiu-render-engine.md`（渲染引擎七层）· `docs/designs/tiu-drawing-api.md`（绘制 API 库）· `docs/designs/tiu-event-system.md`（事件轴）；上层 `docs/designs/tiu-ui-widgets.md`（UI 库，p.9.4.2 输入）
   - API 库实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-api-impl.md`（任务分解 + 契约冻结 + 无遗留闭环）
   - 渲染引擎实施计划已落盘（2026-09-12）：`docs/plans/2026-09-12-tiu-render-impl.md`（任务分解 + 契约冻结 + 后端落地顺序 + 无遗留闭环）
-- [x] p.9.4.2 组件树与组合式布局框架——**已落地 2026-09-14**：tiu 仓 `ui/src/` 五模块（tree 骨架 / build 声明式构建与三类复用 / layout 约束式组合布局 / diff 差分桥 / hit 事件轴对接）+ 探针全绿；差分消费 API T2.3 增量段冻结件（子树 key 前缀 + dirty rect）
+- [x] p.9.4.2 组件树与组合式布局框架——**已落地 2026-09-14**：tiu 仓 `ui/src/` 五模块（tree 骨架 / build 声明式构建与三类复用 / layout 约束式组合布局 / diff 差分桥 / hit 事件轴对接）+ 探针全绿；差分消费 API T2.3 增量段冻结件（子树 key 前缀 + dirty rect）；**2026-09-26 补** `ui/src/theme.tie`（主题 token 暗/亮，参数化无全局单例）+ `ui/src/paint_bridge.tie`（绘制桥：UI 树 → API 绘制表，DFS 序）+ tree 层真实文本承载 + `build.open_t`，交互闭环探针 `probe_app` 全绿（点击 → 命中 → 控件状态变更 → 重绘上屏）
 - [x] p.9.4.3 release.md 修订：tieui/trm.ui 关系对齐 tiu 独立定位——**已落地 2026-09-14**：docs/release.md（代号表 §2、§4.4）与 README 组件索引明确 tiu 独立自研定位（不依赖 trm，可与 trm 同用）
 
 **trm-lite 协程（p.9.5）**
