@@ -501,12 +501,41 @@ development happens on branch p.7.
 - [x] p.9.21.9 **片段组装消费（改叶子只重编该模块）**：新增 middle/tieir_asm.tie 装配器（与 write_mod_slice 对偶）——命中模块 .tir 片段 + 新建模块 irgen 产物按 g_extra_tops 展开序装配（菱形导入下模块序 ≠ 函数表序，二级重映射：片段局部 → 全局，值空间按参数前缀+各函数结果段分配，与 D1 重建约定一致）；语义层保持全单元，跳的是命中模块的 irgen。硬门禁：装配路径产物与全量重编译逐字节一致（SHA256）+ 回归 157/8/2 + TIEC_INC=1 打印 MODASM h/n assembled。风险预案：跨片段值引用（跨模块常量折叠）不一致 → 片段头依赖段记被折叠常量来源模块、装配时判脏（允许过度失效，不允许不一致）。**[核心落地 2026-09-24，tiec 2f0ee14：middle/tieir_asm.tie 装配器（片段解析 + g_extra_tops 序驱动重放——值/块/指令 id 与 ops_off/params_off 由创建序自然复现；g_extra_tops = 源码级交错序，片段拼接序不成立，findings §8.4）；kpass_irgen 全命中判跳 irgen+passes，MODASM h/n assembled，装配失败响亮降级全量。llvmgen 置位副作用（sso/wsock/catch_enable）按片段 IR 白名单引用等价恢复；遗留：全局 var 登记族（global_*_reg/call_sym_reg/vtable_reg）未恢复——含顶层 VarDecl 工程的 exe 装配路径待下轮，探针工程（无用户全局 var）全链通过。门禁口径按 findings §8.2/§9 修订：段 2/4/6/7 逐字节一致 + 段 5 大小一致 + dump_text 语义对比 IDENTICAL（池 id 为进程内句柄、irgen 函数粒度交错 intern 序不可从片段恢复、且段 5 内嵌池 id——池段差异不影响任何消费者）；write_mod_slice 段 7 span 实为全 0 冗余（勘误，装配侧跳过）。回归基线 157/8/2 → 158/7/2（良性：FAIL 集合跨 7b7d8886/8292cfa5/f2ef82df 三版完全一致，第 8 项为 exec 竞态偶发项，p.9.3.9 语句序修复 + 移除 sleep 后消除）；不动点 8292cfa5 → f2ef82df。详见 tiec docs/p9216-findings.md §8-§9]**
 
 **[p.9.21.10 落地 2026-09-25，tiec ce0dbc0：D5 根治——serialize 单向游标改每块区间回填归属（driver 全量 .tir 实测 663730/663974 条 own 越界，全量 .tir 的块归属本来就是错的）；write_mod_slice 改按指令 id 序写 + 值域跨度压缩（交错生成 span>count，按 count 压缩使相邻函数片段值域交叠）；装配器单趟重放 + 片段值空间全局基址；asm_f_pty_base 尾哨兵越界修正（2f0e14 潜伏）；modcache_assembly_paths 部分列表修正（缺失返回空表，此前返回部分列表 → 残缺片段集静默装配）。C' 块区间连续断言实验回退（irgen 回填合法，llvmgen 覆盖式归属已正确处理）。**验收：driver 装配 218/218、~20s vs 全量 ~35-40s；装配版编译器跑 regress 157/8/2 与全量完全一致**；不动点 0cf19245 → 825f97fd（盐 v8）。详见 tiec docs/p9216-findings.md §13]** **[收口 2026-09-25，tiec b6416b9：全局 var 登记族恢复 + 护栏摘除——`irgen.asm_reg_globals()` 重放 vtable/顶层 VarDecl/命名空间 const 登记；`asm_side_recover()` 按片段引用恢复惰性登记族（msg/rng/linux_args/tl_loopf 哨兵）与链接判据，未归类引用诚实降级全量；VarDecl 探针（tests/_modcache_probe/gv1..gv4：标量+表全局+命名空间 const）**MODASM 4/4 assembled、stdout 逐字节一致**。装配器修四处缺陷：块操作数域（片段 lid）、按函数分组（块表交错）、值基址口径、显式值映射 asm_vmap。新缺陷 **D5：irgen 交错建块 → 块指令区间互相跨越（driver 实测 22515/74631 块非单调），片段按区间写必重复指令 → write_mod_slice 拒写区间重叠模块（driver 48/217 可写 → 大单元装配不命中，诚实降级），根治立 p.9.21.10（改按指令 id 序写 + 显式块归属）**。盐 v5；不动点 6e836504 → **19f11c25**；回归 157/8/2（第 8 项 extern_s10_ptr 为陈旧缓存假象：需 tie_interp.lib 本机已无，冷键下基线编译器同样 FAIL，冷缓存真基线 157/8）。详见 tiec docs/p9216-findings.md §11]**
+- [x] p.9.21.11 **片段格式 v3 紧凑二进制 + 装配路径性能转正 + 覆盖三缺陷**：**[落地 2026-09-26，tiec 0210995：①片段格式 v3（middle/tieir_fmt_v3.tie 新文件）——u32 小端字段 + UTF-8 字符串（string_builder 逐字节累积，消灭 rd_str O(n²) 拼接与逐字符 SSO）+ 可能负值字段 +1 偏置（哨兵 0x7FFFFFFF → i64 LE 逃逸——实测 op36 extern_call 的 ins_ty 槽带 7.7e12 野值，v2 8B 容得下、u32 装不下）+ 操作数序改 [kind, payload] + 段 7 span 移除（恒全 0 冗余）；写侧任一编码错误响亮中断（首版缺陷：ty 野值越界后 set_err 仍线性推进 → 字节流错位且写入"成功"）。②装配器元数据重放：symtab/export/片段头（pkg/ver/irver/topt/pver/cver/deps）转存重放回 ir_meta，不再拒收非空段。③build_seq 同名记录链表（head/tail FIFO，语义对齐旧线性扫描）+ **extra 段**——irgen 期兜底实例化的泛型展开（instantiate_fn 在 irgen 遍历中追加 clone，装配序快照必然缺名，driver 实测 assert::assert_eq$i64 覆盖失败）按未匹配记录序插到 matched 后、tail 前，与 tig_ast 创建序一致；asm_order_one_fn 移除模板跳过（展开 clone 保留 TYPE_PARAMS 首槽，原逻辑把展开一并跳过）。④**片段键加入单元根 k_g_src**——模块 IR 含上下文相关泛型展开，键不含根会跨上下文污染（实测：regress 测试工程写的 std/string.tie 片段被 driver 装配命中，其 expect_eq 展开引用的 test::expect 在 driver 单元无定义 → opt 报 undefined value）。⑤盐 v8→v9；tieir_test 片段 roundtrip 改走装配路径。**验收：driver 装配 219/219 assembled；装配版编译器 regress 157/8/2 与全量一致；库自检 ×4 / trm 探针 / gv 探针 4/4 stdout 一致；ASMDIAG：parse 4.8s→1.8s、片段字节 73.7MB→30.2MB（2.4×↓）、seq+replay 9.4s→5.2s（kpass_irgen 13.6s→7.2s；转正判据 ≤4s 未达，差额在 replay 侧 664K new_inst + 3M add_operand 调用账，§3 判据未过、诚实记录）**；不动点 825f97fd → d31ddb74 → **4a04bb9a**（盐 v9）。详见 tiec docs/p9216-findings.md §14]**
 - [ ] p.9.21.7 **库资格四项收口（G7）**：①pub API 面清单 ②`<lib>_test.tie` 独立自检 ③独立发行（L3/L4 就绪后）④依赖单向。**[进度 2026-09-23，tiec 20f87d1 + 18c4704 + 700b139 + 9958ead + 666c7fa：interner / columnar / core(dispatch) / types / ast / config / tieir 七库自检全绿（各含 `<lib>_test.tie` + pub 方法全集清单）；lex / ir 沿用既有 golden 自检（lex_test / ir_test），补齐 API 清单；附带修正 `dispatch.at` 与 find 不互逆的契约缺陷]**
   * 自检运行方式：`compiler\tiec.exe compiler\<路径>\<lib>_test.tie -o <tmp>\x.exe && x.exe`（exit 0 = 通过）。
   * 写自检的约定（沿用 ir_test.tie）：`type tie<logic>` + `check(ok, what)` 断言辅助 + 失败 `exit(1)`；**不定义本地常量**（import 内联后与本库顶层常量同作用域，重名即重复定义报错）；前缀调用；断言累积用嵌套 if；**自检只 import 被测库链**——tieir 自检首版 import types.tie 取类型 id，直接造出 tieir→types 越界边（改为字面量 + 注释标注关键字）。
   * 余量：passes / diag / parse / sema / irgen / llvmgen / interp / trm / driver 的自检与清单；其中 parse/sema/interp/driver 属前端求值环（见设计 §I1a），自检需待环收口或按编排入口形态单独设计。
   * 已知遗留（非本轮引入）：`lex_test.tie` 的 16 个 golden 文件 token 总数基线过期（byref_table 期望 139 实际 144 等——测试语料此后增长），待重录基线。
 * 收尾提示词：`docs/p921-ii3-prompt.md`（**当前有效交接**：II3 模块级增量编译三步路径、G9 性能报告与总验收清单、G7 余量库自检、语言小项、铁律与执行顺序；基线 = 不动点 c54f1610，II1/II2 已落地）。`docs/p921-completion-prompt.md` 为上一轮交接（G1-G8/II1/II2 部分，已完成，留档）。
+
+**结构化输出与 tinker——调试信息一等公民（p.9.22）**
+
+> 定位（2026-09-25 定，设计文档 `docs/superpowers/specs/2026-09-25-structured-output-tinker-design.md`）：tiec 补三件——① 结构化输出器 dbgem 家族（`compiler/dbug/`，9 文件）：任意阶段数据（tokens/AST/符号表/诊断）以列式 record 双形态输出（zd=列直写复用 zdw 原语，td=行重建可读投影），字段号百位分区只追加（ast 100-119 / symtab 150-199 / diag 200-219 / tokens 300-309），统一信封 4 字段（schema/stage/单元/字符串池）；② tinker 双向 tink 传输（`compiler/tinker/`，namespace tinker，6 文件）：帧 `[len u32][payload][crc32]` 自实现（零依赖叶，与 std/tink 字节级对齐），发送 stdout 帧流/帧文件（hub 预留）、接收 stdin 帧流（CRC 拒帧 + 信封 kind 分派），tiec 天然成为 tink pipe 全双工节点；③ 产物全量符号表（声明+类型+作用域+xref）：library/class 伴生 `.sym.zd` 默认产出 + `.tir` 段 8（TIEIR v3 + 跳段兼容 + hash 扩展）；xref 侧表 = 零依赖叶 `frontend/xref.tie`（三张 append-only 侧表，sinfer/scollect 一行登记调用点，常开无开关）。架构纪律：p.9.21 全套（0 大文件 0 大函数、主文件持全局+薄壳、`_pN/_qN` 再拆）+ zdw 自包含不 import std。诊断文本从此只是结构化诊断的投影。
+>
+> EN: p.9.22 — structured output & tinker: (1) dbgem family dumps any stage (tokens/
+> AST/symtab/diag) as columnar records in zd (direct write, zdw reuse) and td
+> (row-reconstructed projection), hundred-block field numbering, 4-field envelope;
+> (2) tinker = bidirectional embedded tink transport (frame self-implemented,
+> std/tink-aligned; send stdout/file, receive stdin with CRC rejection + kind
+> dispatch) making tiec a full-duplex tink pipe node; (3) full symbol tables
+> (decls+types+scopes+xref) as companion `.sym.zd` (library/class default) and
+> tieir segment 8 (v3). xref side tables in a zero-dep leaf module, one-line
+> registration call sites, always on. p.9.21 modularization discipline throughout.
+
+- [ ] p.9.22.1 dbgem 骨架①：dbgem_env.tie 信封 + dbgem.tie 分派薄壳 + `--emit <stage>:<fmt>` 解析（探针：--help/参数负例）
+- [ ] p.9.22.2 dbgem 骨架②：dbgem_colzd.tie 列式→zd 写入器（一列一函数）+ dbgem_coltd.tie 行重建文本（探针：td/zd 双形态等价）
+- [ ] p.9.22.3 ast dump：node 池 9 列直拷（字段 100-108）+ 多文件 file_ids + 往返探针
+- [ ] p.9.22.4 diag dump：诊断列式投影（tdiag 码/severity/span/参数段/修正提示，字段 200-208）+ 探针
+- [ ] p.9.22.5 symtab dump①：sstate 全局注册表直拷（字段 150-186）+ td/zd 等价探针
+- [ ] p.9.22.6 symtab dump②：`frontend/xref.tie` 零依赖叶（scope/decl/use 三侧表，字段 188-198）+ sinfer/scollect 一行登记调用点 + 遮蔽/跨 ns 探针
+- [ ] p.9.22.7 产物符号表 A：library/class 伴生 `<out>.sym.zd` 默认产出（`--no-sym` 关闭）+ 消费探针
+- [ ] p.9.22.8 产物符号表 B：tieir 段 8（TIEIR_VERSION 2→3 + 高段跳过 + content_hash 扩展 + roundtrip/v2 读者兼容探针）
+- [ ] p.9.22.9 tinker①：tinker_frame.tie 帧 + CRC32 查表自实现 + 与 std/tink 交叉互验探针
+- [ ] p.9.22.10 tinker②：tinker_env.tie 信封 record + tinker_sink.tie（`--tink` stdout 帧流 / `--tink-file`，人读文本转 stderr）
+- [ ] p.9.22.11 tinker③：tinker_recv.tie（`--tink-in` stdin 帧流 + CRC 拒帧 + kind 分派 + `--tink-save`）+ 收发往返/损坏帧注入探针
+- [ ] p.9.22.12 端到端：`tink pipe "tiec:compile --tink | 消费者"` 全双工节点 + hub 预留接线 + 确定性探针（同输入 dump 字节级一致）
+- [ ] p.9.22.13 文档收口：tiec.md CLI 表 · tieir-format.md §2.1/§7 段 8 修订 · format-api-family 回写 · G7 自检清单（dbgem_test / tinker_test / xref 计入）
 
 ### 关联定稿（修订项）
 
