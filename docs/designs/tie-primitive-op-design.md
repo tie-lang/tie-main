@@ -114,6 +114,10 @@
     * 三态逻辑（Kleene）随图传播，与 tie 既有 trit 类型一致。
 * 落地范围：先最小内核（graph 类型 + 字面量 + 执行 + 波次 SDF + 安全默认），再 unsafe 魔法，最后图论套件 + table/trit 一体。
 
+* **落地实况（2026-09-27）**：**最小内核已落地**（tlib `818f9f3`，`std/dataflow.tie`，350 行，**零编译器改动**）。实现取「图即表」的字面路线——节点用 `fn(i64) -> i64` 值表（下标即 id）、边用三张并行表；实测 tie 的函数值**可入表且可按索引调用**，故承载图无需语言改动。已提供：构造（`node`/`link`/`fork`/`back`/`entry`）· 结构查询（`node_count`/`edge_count`/`succs`/`backs`/`in_degree`）· 执行（`run` 串行 / `run_par` 并行，波次 SDF；`set_limit`/`last_waves` 有界守护与波数观测）· 安全默认（不可变，执行不写图状态）。**并行**由 trm-lite 的 `spawn` + `wg_*` 承载（任务隔离 + join 屏障来自运行时）。
+  * **命名**：用 `dataflow` 而非 `graph`——`std/graph.tie` 已是图论算法库（最短路/最小生成树/最大流/匹配），二者不同物（那是在静态图上算，本模块是可运行的数据流图）。
+  * **未落地（分期待办）**：运算符形态 `{ A } - { B -> ~ A }`（语言档，本模块为其语义后端）· unsafe 原地变异与波界生效 · 多图句柄（当前单图模型）· **join 语义**（设计 §5「所有入边到齐才放行」需先裁决「多值如何合并为单参」，当前按「每边各触发一次」的流处理语义）· 图论套件与 trit 穿透。
+
 *EN: v0.6 — `graph` is a first-class value (construct via literal `{A}-{B}`, execute `x -> g`,
 compose `g1-g2`/`g1->g2`). Execution = wave SDF (entry emits a wave per input; back edge feeds
 next wave; convergence from node condition + input-stream length; runtime boundedness guard
