@@ -1221,9 +1221,10 @@ func main() {
 
 - The call site checks the **argument-count range**: passing too few (< the number of required) or too many (> the total) reports `期望 N 个参数` / `期望 N-M 个参数` (N = number of required parameters, M = total number of parameters).
 
-- **方法参数默认值暂不支持**（报「方法默认值参数留待 M3」），仅普通函数可用。
+- **方法参数默认值与命名实参已支持**（p.9.11.25 落地 2026-09-27）：`obj.method(...)` 转发为
+  `命名空间函数(obj, ...)`，**接收者首参不参与**命名重排与默认值补齐，其余形参规则与普通函数完全一致。
 
-- **Method parameter defaults are not yet supported** (reports「方法默认值参数留待 M3」); only ordinary functions may use them.
+- **Method parameter defaults and named arguments are supported** (landed in p.9.11.25, 2026-09-27): `obj.method(...)` forwards to a `namespace-function(obj, ...)`; the receiver's first parameter does **not** take part in named reordering or default filling, and every other parameter follows exactly the same rules as an ordinary function.
 
 **实现要点**（双路径一致）：
 
@@ -1250,6 +1251,22 @@ func no_file(langs: table, texts: table = []) -> string {
     return msg_t("error.no_file")   // 方案 B：查字典（当前语言 → zh → 键本身）
 }
 ```
+
+### 6.1b 命名实参 × 默认值 · 传递约定 · 捕获面（p.9.11.23/.25/.26/.22，2026-09-27）
+
+* **命名实参可省略有默认值的形参**（含中间的）：`f(x: 1, z: 3)` 合法，`y` 取默认值。
+  默认值参数仍须**连续居尾**（既有不变式）；调用点缺失槽位从声明处默认值表达式补齐。
+* **参数传递约定统一为参数位唯一声明面**：
+  `x: T` 值拷贝（默认）· `ref x: T` 可写借用 · `immut x: T` 只读借用 · `move x: T` 所有权转移。
+  `immut` 与 `ref` 同槽互斥、`move` 与二者互斥、同一修饰重复出现——均为编译诊断。
+  历史拼写 `x: ref table<T>`（`ref` 在类型位）继续支持。
+  `move` 后的调用方变量再使用由 smove 检查报「已移动」（门控 `TIE_MOVE_CHECK`）。
+* **安全区捕获面白名单**：闭包**禁止捕获 `ref` 形参**（捕获 ref 是借用而非副本，闭包逃逸即悬垂引用）；
+  其余（值/immut 形参、局部变量、const）按**值语义快照**捕获。unsafe 区放宽。详见
+  `docs/designs/fn-capture-whitelist.md`。
+* **临时单参函数**：闭包形参类型在**有 fn 类型上下文**时可省略——
+  `var f: fn(i64) -> i64 = func(t) -> i64 { return t + 1 }`；无上下文报诊断（不静默推断）。
+  设计原定的 `f = t -> expr` 形态因与数据流管道语法歧义**不可实现**（理由见上述设计文档 §4）。
 
 ### 6.2 ref 表参数按引用传递（T0.3 已实现）
 
