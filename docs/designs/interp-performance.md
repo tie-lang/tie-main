@@ -124,6 +124,167 @@ risk/benefit unless substring-heavy workloads show up.*
 - 拆箱与 JIT 共用一套统一接口（双形态——解释器槽为拆箱值、JIT 寄存器即原生标量），
   无缝混用（对 p.9.17.4 的冷热切换是前提）。
 
+#### 4.2.1 详细设计增补（2026-09-27 勘察，待审）
+
+*EN: Detailed design addendum for p.9.17.2 (2026-09-27 survey, pending review).*
+
+**状态：待审**。本节为 p.9.17.2 的实施方案（值表示选型 + 分期迁移 + 验收），
+已用探针取得实测依据；**用户审阅确认后才进入实现**。
+
+*EN: Status: pending review. This section is the implementation plan for p.9.17.2
+(value representation choice, staged migration, acceptance), backed by measured
+probes; implementation starts only after the user reviews it.*
+
+**一、实测基线（探针实测，交替多轮取最小）**
+
+| 项 | 实测值 | 来源 |
+| --- | --- | --- |
+| 盒装：`new_int` + `int_val` 一轮 | **621 ns/次** | 探针 50 万次、交替 5 轮取最小 |
+| 拆箱：`Value.Int(i)` + 解构读取一轮 | **332 ns/次** | 同上 |
+| 拆箱相对盒装加速 | **1.87×** | 同上 |
+| enum 传递 vs `i64` 传递（同构循环） | 164.7 ms vs 171.7 ms（2000 万次） | 无可测惩罚 |
+| 解释器每值成本（含 `new_node`） | 每算术运算 +1.3 µs | `p9216-findings.md` §16.1 |
+
+读法：**值模型本身的可优化空间约 1.9×**；解释器整体收益取决于值操作在每条指令中的
+占比，须在实现前后用同一套 micro-benchmark（M2/M20/C_arith/F_call）如实对比记录。
+
+*EN: The value model itself has ~1.9x headroom; the end-to-end gain depends on how
+much of each instruction is value handling, to be measured before/after with the
+same micro-benchmark set.*
+
+**二、值表示选型（三案对比）**
+
+* 案 A **enum 标签联合（采用）**：tie 原生 ADT，LLVM 层为静态结构体
+  `{ i64 tag, i64×K 槽 }`，**零堆分配、零运行时开销**。探针实测：构造 + 解构一轮
+  332 ns（vs 盒装 621 ns）；enum 循环与 `i64` 循环耗时在噪声内相等（传递无惩罚，
+  LLVM 把静态结构体拆解到寄存器）。语言原生 ⇒ 无手工位运算，可读、可调试、可被
+  编译器的优化档位正常优化。
+* 案 B **NaN-boxing（不采用）**：单 `i64` 位编码，传递最省（8 字节）、与 JIT 寄存器
+  最贴合。否决理由：enum 方案实测已无传递惩罚，省下的字节换不来可测收益；而代价是
+  手工位运算 + `f64` NaN 空间处理（NaN 载荷/`-0.0` 语义须逐项论证）+ 调试可读性下降，
+  且 tie 无原生 union/位域，需大量 `bitcast` 手搓——风险与收益不成比例。
+* 案 C **保留盒装 + 减表/池化（不采用）**：爆炸半径最小，但仍是「id + 表寻址」，
+  未触及根因，收益上限远低于案 A。
+
+*EN: Case A (enum tagged union) is adopted — native ADT, zero allocation, measured
+1.87x over boxing and no measurable passing penalty. Case B (NaN-boxing) is
+rejected: the passing saving is not measurable against enum, while hand-rolled bit
+encoding of f64 raises risk for no gain. Case C (keep boxing, trim tables) does not
+address the root cause.*
+
+**三、值表示**
+
+```
+enum Value {
+    Nil                        // 未初始化 / 空
+    Int(i64)
+    Float(f64)                 // 原生 f64 载荷
+    Bool(bool)
+    Trit(i64)
+    Char(i64)
+    Range(i64, i64)
+    Str(i64)                   // 字符串槽 id（复合值，仍盒装）
+    Table(i64)                 // 表节点 id
+    Map(i64)
+    Code(i64)                  // 宏/准引用文本槽 id
+}
+```
+
+* **标量内联、复合值留 id** 是本设计的核心折中：`int/float/bool/trit/char/range`
+  直接内联（消灭每值 7 次 `table_push` 与后续表寻址）；`string/table/map/code` 保持
+  「id 指向既有池」——变长或需 SSO/堆的值无法内联，且 §4.1.1 已裁定维持拷贝语义。
+  由此容器路径几乎不动，爆炸半径被限制在标量侧。
+* 槽数 K = 2（`Range` 两个载荷）⇒ 每个值 24 字节；实测传递无惩罚。
+* `Float` 载荷直接写 `f64`（由编译器处理槽承载与转换），无需手工 `bitcast`。
+* 值的 `==` 比较：enum 比较不支持（语言一期限制），故比较一律经解构后按载荷比较——
+  与现有 `type_of` + 分支的语义一一对应，行为不变。
+
+*EN: Scalars are inlined, composite values keep their slot id — the central
+trade-off. It confines the change to the scalar side while container paths stay as
+they are (copy semantics per §4.1.1). K = 2, so a value is 24 bytes.*
+
+**四、分期迁移（禁止大爆炸式改动）**
+
+* **第一步 · 基建（可独立验收）**：引入 `Value` enum + 装箱/拆箱层；标量走 enum、
+  复合值继续用既有池，**双形态共存**；对外 API（`new_int`/`int_val`/`type_of`…）
+  签名暂不变，内部表示切换。此步不改任何调用点，独立跑门禁。
+* **第二步 · 热路径切换**：`gen_expr`/`exec_stmt`/环境槽/`ivalue` 公共 API 改传
+  `Value`；错误文本仍只在冷分支还原。
+* **第三步 · 清理与内存收口**：标量不再入池后，淘汰仅服务标量的平行表槽位
+  （`v_ivals`/`v_fvals` 的标量用途等），会话内存随之下降；补值池/常量池复用勘察结论。
+
+每步一次提交、独立跑全套门禁；任一步门禁失败即回退该步（不叠加）。
+
+*EN: Three steps (infrastructure with dual-form coexistence / hot-path switch /
+cleanup), each committed and gated on its own; no big-bang rewrite.*
+
+**五、低内存与内存治理（兼任 p.9.18.1）**
+
+* 标量不再入池 ⇒ 池只装复合值，**会话内存只增不减**问题的主要来源（标量）被消除；
+  池增长曲线应与「脚本中复合值数量」而非「求值步数」相关。
+* 值池/常量池复用：小整数是否预置缓存，待勘察真实脚本的整数分布后再定（不预设结论）。
+* 面 A 附加交付（嵌入裁剪形态 + 内存峰值/稳态报告）随 p.9.18.5 一并给出。
+
+**六、与 JIT 的接口统一（衔接 p.9.17.4）**
+
+* 双形态落点：解释器槽持 `Value`（标量内联 + 复合 id），JIT 寄存器持原生标量。
+* 边界转换：JIT 出口把原生标量包成 `Value.Int`/`Value.Float`，入口反向；复合值一律
+  传 id——该边界是冷热路径热切换的前提（§4.2 原文）。
+* 本设计不引入任何 trm 依赖（保持 §4.2 与 trm 字节码路线的边界）。
+
+**七、验收**
+
+* **性能**：micro-benchmark 前/后全套（M2/M20/C_arith/F_call + 每值成本），
+  对照本节的 1.87× 上限如实记录实际达成。
+* **正确性（硬门禁）**：REPL/DAP/脚本行为**逐字节恒等**——别名/段视图语料 +
+  解释器行为套件 + tshell 冒烟，新旧逐字节比对；错误消息文本逐字节不变。
+* **回归**：`regress-s21` 集合与全量日志同基线；三阶自举不动点重录 + 升格。
+* **内存**：峰值/稳态对比报告（面 A 附加交付）。
+
+**八、边界（不做）**
+
+* 不改 tie 语义与诊断文本；不引入 trm 依赖；容器不做 COW/移动语义（§4.1.1 裁定）；
+  不改 REPL/DAP 对外签名。
+
+**九、风险与对策**
+
+* 第二步是结构性改动（值表示切换，`ivalue` API 调用点约三百处）——用第一步的
+  「双形态共存」把它切成可回退的小步；类型系统在编译期兜住大多数漏改（`i64` 与
+  `Value` 不可混用）。
+* 若实现中发现 enum 载荷在真实负载下出现传递惩罚（探针为理想场景），退路是：把
+  `Value` 改为 `{tag, i64 payload}` 的手工编码（案 B 的受限形式），接口层不变。
+
+**十、本次勘察附记（操作台事实，供执行者省时间）**
+
+* `language.md` §3.8 的「当前限制（一期）」段**已过时**：其称 `f32/f64`、`string`、
+  `struct`、`table/map` payload 不支持，而 p.8.1.7 已放开 `f64`/`table`/`map`；
+  本次探针实测 `f64`/`string` payload 构造与解构均正常。该段须随本档勘误
+  （当前白名单仍不含 `struct`/嵌套 `enum`，见 `scollect_port_q1.tie` 的白名单注释）。
+* 探针单元标记：`type tie<logic>` 产出可执行文件，`type tie<class>` 产出静态库
+  （`!<arch>`）——写独立探针须用 `logic`，否则拿到的是库而非可执行文件。
+* `value.tie` 隐式依赖 interner（`text_less` 用 `interner.lookup`）却未自行 import，
+  单独 import 它的探针须同时 import `compiler/lib/interner.tie`。
+
+*EN: Addendum facts: the "phase-one limits" paragraph in language.md §3.8 is stale
+(f64/string payloads work as of p.8.1.7 — verified by probe); `type tie<logic>`
+yields an executable while `tie<class>` yields a static library; `value.tie` needs
+an explicit interner import in standalone probes.*
+
+**探针（可复现，均以 `--no-warn --no-cache` 编译）**：
+
+| 探针 | 用途 | 运行位置 |
+| --- | --- | --- |
+| `_tiec_verify/p917_probe_enumcap.tie` | enum 载荷类型能力（`f64`/`string` 构造与解构） | `_tiec_verify` 下 |
+| `_tiec_verify/p917_probe_i64loop.tie` / `p917_probe_enumloop.tie` | `i64` 与 enum 传递成本对照（2000 万次） | `_tiec_verify` 下 |
+| `tiec/_p917_box.tie` / `tiec/_p917_unbox.tie` | 盒装（`new_int`+`int_val`）与拆箱（enum 构造+解构）核心对照（50 万次） | tiec 工程根下（含 import，须在根内编译） |
+
+计时须**交替多轮取最小**（本轮实测教训：串行单轮对照会给出反向结论，见
+`tiec/docs/p9216-findings.md` §17.5）。
+
+*EN: Probes are listed above with their run location; time them with interleaved
+rounds and take the minimum (single serial passes gave an inverted conclusion —
+see findings §17.5).*
+
 ### 4.3 优化树遍历直驱（p.9.17.3，JIT 冷路径基线）
 
 - `exec_stmt`/`gen_expr` 改为**直分派表**（switch/间接跳转），消除长 if/else 链逐次比较；
