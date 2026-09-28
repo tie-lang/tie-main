@@ -124,16 +124,19 @@ risk/benefit unless substring-heavy workloads show up.*
 - 拆箱与 JIT 共用一套统一接口（双形态——解释器槽为拆箱值、JIT 寄存器即原生标量），
   无缝混用（对 p.9.17.4 的冷热切换是前提）。
 
-#### 4.2.1 详细设计增补（2026-09-27 勘察，待审）
+#### 4.2.1 详细设计增补（2026-09-27 勘察；2026-09-28 已实施——第二步热路径切换落地）
 
-*EN: Detailed design addendum for p.9.17.2 (2026-09-27 survey, pending review).*
+*EN: Detailed design addendum for p.9.17.2 (2026-09-27 survey; implemented 2026-09-28).*
 
-**状态：待审**。本节为 p.9.17.2 的实施方案（值表示选型 + 分期迁移 + 验收），
-已用探针取得实测依据；**用户审阅确认后才进入实现**。
+**状态：已实施（第二步）**。本节为 p.9.17.2 的实施方案（值表示选型 + 分期迁移 + 验收），
+经用户审阅确认后进入实现；第二步（call_builtin 分派链 + interp 全树 Value 化）已于
+2026-09-28 落地（tiec 788f2df，门禁与性能分账见 tiec docs/p9216-findings.md §19），
+第三步收口（value.tie 退役删除、标量池槽位清理、内存收口）待做。
 
-*EN: Status: pending review. This section is the implementation plan for p.9.17.2
-(value representation choice, staged migration, acceptance), backed by measured
-probes; implementation starts only after the user reviews it.*
+*EN: Status: implemented (step 2). This section is the implementation plan for p.9.17.2;
+step 2 (call_builtin dispatch + full interp-tree Value switch) landed 2026-09-28
+(tiec 788f2df; gates and perf ledger in tiec docs/p9216-findings.md §19). Step 3
+(value.tie removal, scalar-pool slot cleanup, memory accounting) remains.*
 
 **一、实测基线（探针实测，交替多轮取最小）**
 
