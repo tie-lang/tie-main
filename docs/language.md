@@ -2336,7 +2336,8 @@ EN: The symbol table lists every operator and punctuation with its name/use and 
 > Known limitation: the compiler currently has no automatic in-place-append optimization (under the non-reference-counted {ptr,len} model, rewriting may break aliased buffers; a 300× speed-up was once implemented but reverted because bootstrapping was unstable — see the docs/ performance notes); SB remains the only recommended path.
 
 | `/*` `*/`                   | 块注释       | 跨行注释                                             |
-| `"..."`                     | 字符串字面量    | 支持转义 `\n` `\t` `\\` `\"` `\'` `\0`               |
+| `"..."`                     | 字符串字面量    | 支持转义 `\n` `\t` `\\` `\"` `\'` `\0`；花括号一律字面（JSON/模板/正则照原样写） |
+| `h"..."`                    | 插值字符串    | 花括号内表达式求值后拼入：`h"共 {n} 项"`；字面花括号写 `{{`/`}}`；多行 `h"""..."""`；h 与 r 不组合 |
 | `'...'`                     | 字符字面量     | 单字符                                              |
 | 数字字面量                       | 整数/浮点     | `42`（i64）、`3.14`（f64）、支持指数 `1.5e-3`              |
 | `?`                         | 错误解包     | `var v = expr ?`（Result/Option 解包，**仅返回 Result/Option 的函数内**，§11） |
