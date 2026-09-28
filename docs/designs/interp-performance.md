@@ -382,3 +382,101 @@ see findings §17.5).*
 
 *本设计为解释器性能优化的权威执行依据（tie-main 侧），配套 tiec 编译器后端 JIT 衔接与
 运行期字符串原语；随 p.9.17 解释器性能档执行。*
+### 4.3 分级 JIT（p.9.17.4）——设计增补（2026-09-28 勘察，待审）
+
+*EN: Design addendum for p.9.17.4 tiered JIT (2026-09-28 survey, pending review).*
+
+**状态：待审**。本节为 p.9.17.4 的实施方案（管线选型 + 分期 + 验收），
+基于 2026-09-28 勘察事实；**用户审阅确认后才进入实现**。
+
+*EN: Status: pending review. Implementation plan for p.9.17.4 (pipeline choice,
+staging, acceptance), backed by the 2026-09-28 survey; implementation starts
+only after user review.*
+
+#### 4.3.1 勘察事实（全部已落地件，本轮实测盘点）
+
+| 既有件 | 位置 | 对 JIT 的意义 |
+| --- | --- | --- |
+| `--shared` → DLL 编译 + `pub` 导出面 + C LoadLibrary 冒烟 | M5（dev33 批次12，`tests/m5_dynlib/` + `regress-m5-dynlib.tsh.tie`） | **编译侧管线现成**：单/多函数 → DLL → 导出符号，全链已有回归 |
+| `load_library / get_proc / dyn_call(±_p) / cstr_to_string` 动态加载原语 | 编译端 `builtin_expr_seg1.tie`（p.6.6.20 std/sqlite 桥） | **加载侧原语现成**（但仅在编译端名单，interp 侧缺） |
+| interp 内建 `tokenize / deparse`（AST↔token 流↔源码，往返恒等保证） | interp seg2（M4 过程宏） | 会话内**函数 AST → 源码**的通道现成 |
+| interp 内建 `exec_code / file_write`（bootstrap-fp 先例：会话内调 tiec 自举） | interp seg2/seg3 | 会话内**调 tiec 子进程编译**通道现成 |
+| 编译缓存（p.9.15）/ AST 生命周期（p.9.16） | 已落地 | JIT 缓存挂钩点 |
+| Value 拆箱 + 调用路径 nid 化（p.9.17.2/3） | 已落地 | 冷热边界的符号表示（nid 即符号）就绪 |
+
+*EN: All pipeline pieces already exist: M5 --shared DLL export, compiler-side
+dynamic-load primitives, interp-side deparse/exec_code, p.9.15/16 cache and AST
+lifecycle, and the nid-based call path. The gap is the interpreter-side
+load/dyn-call builtins and the glue.*
+
+#### 4.3.2 管线选型：复用 tiec 子进程管线（案 J1，采用）
+
+* **案 J1（采用）——函数级 DLL**：interp 会话内函数 AST → `deparse` 源码 →
+  装配临时 unit（`type tie<logic>` + `pub fn` 导出面）→ `exec_code` 调
+  `tiec --shared` 编译 DLL → interp 侧 `load_library/get_proc` 挂接 →
+  `dyn_call` 边界调用。**全部构件现成**，增量 = interp 侧 4 个加载内建 +
+  粘合层。冷启动 = 子进程编译（百 ms 级，被冷热阈值摊销）；热路径 = 原生速度。
+* **案 J2（否决）——进程内 LLVM JIT（MCJIT/ORC）**：tiec 当前以子进程方式
+  使用 LLVM（opt/clang），自身未链 LLVM 库；进程内 JIT 需要重做构建链
+  （LLVM 静态库链接、C API 绑定 tie 化），爆炸半径与本档目标不成比例。
+* **案 J3（否决）——自研字节码/机器码发射**：与 trm 路线 B（p.7.3）职责
+  重叠，且放弃 llvmgen 已验证的代码生成质量。
+
+*EN: Case J1 (adopted): per-function DLL via the existing tiec subprocess
+pipeline (deparse -> temp unit -> tiec --shared -> interp-side load/dyn-call).
+Case J2 (in-process LLVM) rejected: tiec does not link LLVM as a library.
+Case J3 (hand-rolled codegen) rejected: overlaps trm route B.*
+
+#### 4.3.3 Value 边界（对齐 §六）
+
+* **第一版标量子集**：JIT 函数签名限 `i64` 参数/返回（`dyn_call` 的
+  5×i64 实参上限之内）；调用边界由 interp 包装：`Value.Int` ↔ 原生 i64，
+  复合值（Str/Tbl/Map/Code）不跨边界（第一版拒绝并回退解释器执行）。
+* 字符串跨边界留待勘察（tie 字符串 {ptr,len} + 尾 NUL 与 C ABI 兼容，
+  但 DLL 侧 tie 运行时与宿主 interp 会话的堆所有权/分配器一致性未勘察——
+  列入第二步前置勘察，不预设结论）。
+
+*EN: Phase 1 is the scalar subset (i64 args/return within dyn_call's 5-arg
+limit); composite values fall back to the interpreter. String crossing is
+deferred pending an ownership/allocator survey.*
+
+#### 4.3.4 分期（每步一次提交、独立门禁；任一步失败即回退）
+
+* **第一步 · interp 动态加载内建**：把 `load_library/get_proc/dyn_call/
+  cstr_to_string` 四件从编译端移植进 interp `call_builtin` seg（Value 化
+  签名 + 名单 + env 桥语义对齐）；门禁 = 既有全套 + 用 std/sqlite 同款
+  C DLL（自编 fixture）冒烟。**独立可验收，无 JIT 依赖。**
+* **第二步 · 单函数 JIT 管线打通**：deparse → 临时 unit → `tiec --shared`
+  → load → `dyn_call` 调用 → 结果与解释器逐字节一致（确定性硬门禁）；
+  覆盖：纯算术函数 / 多参数 / 递归调用解释器侧函数（JIT 函数体调用的
+  未 JIT 函数仍走 interp——通过导出回调或仅支持叶子函数，勘察后定）。
+* **第三步 · 冷热阈值 + 缓存**：调用计数超阈值（可配置，默认 1000）触发
+  JIT；DLL 产物进 p.9.15 缓存（键 = 函数 AST 归档哈希 + 编译器版本——
+  缓存键不含编译器版本的教训见 §19.6）；AST 释放（p.9.16）时 DLL 卸载。
+* **第四步 · 验收**：JIT/interp 逐字节恒等套件 + 性能报告（JIT 热路径 vs
+  interp vs AOT 全 AOT 三档）+ 回归不劣化。
+
+#### 4.3.5 风险与对策
+
+* **deparse 语义保真**：tokenize(deparse(x))==tokenize(x) 已保证，但重解析
+  需过语义检查（可见性/类型标注）——临时 unit 以 `pub` 全导出 + 原始类型
+  标注反生成；第二步以「JIT 版与 interp 版对同一输入输出逐字节一致」兜底。
+* **未 JIT 依赖的调用**：JIT 函数体内调用其他解释器函数 → 第一版仅支持
+  叶子函数（不调用户函数）；跨边界回调（DLL → interp）列为第三步勘察项
+  （dyn_call 反向：interp 注册回调指针）。
+* **子进程编译抖动**：exec_code 依赖 tiec 可执行文件定位（TIEC 路径约定）
+  与隧道无关；编译失败 → 回退解释器执行 + 计数清零（退避），不报错。
+* **--shared 边界违例**：M5 已拒表/struct 参数——JIT 函数签名静态检查
+  沿用同一规则（第二版起在 deparse 装配时前置校验）。
+
+#### 4.3.6 验收（对齐 §七）
+
+* 确定性硬门禁：JIT/interp 逐字节恒等（同输入、含错误路径文本）。
+* 性能：JIT 热路径 vs interp vs AOT 三档对比报告（micro-benchmark
+  M2/M20/C_arith/F_call 同款函数）。
+* 回归：regress-s21 集合与全量日志同基线；三阶自举不动点重录 + 升格；
+  fp 产物含 JIT 关闭态（默认关，`--jit` 显式开——训练/长跑场景开启）。
+
+*EN: Hard gate is byte-identical JIT/interp results; perf report across
+JIT/interp/AOT; regressions at baseline; JIT off by default, enabled via
+--jit.*
