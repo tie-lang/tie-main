@@ -185,6 +185,18 @@ record 初始化（启动工作线程前按字段序 store，常量折叠进 ini
 >
 > EN: Tier p.9 — the rest: libraries, toolchain, UI, ecosystem, platforms. All within 2026.2.
 
+**p.9 执行总序（2026-09-28 重排）**
+
+> 规范对账显示：语言本体第 1–13 章约 68% 已实现，第 14 章 UI/图语法仅 9%，第 17 章 zd v3 族尚未形成；同时存在全局 const 位运算静默错值、actor 字段初值丢弃、asm! 占位符触发编译器段错误三项高危缺陷。后续不按“先做看起来大的组件”推进，统一按依赖与失效风险排序：
+>
+> 1. **规范与安全底座**：先修静默错值、编译器崩溃、字符串/记号语义冲突；每项必须通过三阶自举、回归和针对性负例。
+> 2. **语言缺口**：再补 `~`、`..=`、`%%=`、`is`、块/条件管道、类型判定、默认值 const 白名单、`reentrant`、async 返回值等；解析通过不算完成，必须贯通语义、AOT、解释器和工具链。
+> 3. **模块与工具链**：随后完成警告诊断收束、缓存/并行、AST 生命周期、LSP 与结构化输出；工具链功能不得先于语言契约冻结。
+> 4. **生态协议**：再补第 17 章的 zd v3 footer/列式编码/schema/标准类型/图容器，以及 tink 编排器；先保持 v2 读写兼容，再扩展 v3。
+> 5. **UI、平台与应用**：最后推进 tiu 完整规范覆盖、macOS/WASM/GPU、tdb/DHT/嵌入式脚本和游戏/科学计算组件。
+>
+> EN: The reordered execution order is: (1) spec and safety foundations, (2) language gaps, (3) modules and toolchain, (4) ecosystem protocols, and (5) UI, platforms, and applications. Every implementation item requires bootstrap, regression, and focused negative/positive gates before it is marked complete.
+
 **命名迁移（p.9.0，最先做）**
 
 > 尽早（趁组件未发行改名零成本）+ 彻底（不留旧名兼容期）。依据 tie-naming-convention.md v0.2。
@@ -368,6 +380,41 @@ record 初始化（启动工作线程前按字段序 store，常量折叠进 ini
 - [~] p.9.11.34 **短闭包 `it`**（与 p.9.11.22 同批）——**部分落地 2026-09-27**：tiec `fab3633`（**临时单参函数**）。闭包形参类型在**有 fn 类型上下文**时可省略：`var f: fn(i64) -> i64 = func(t) -> i64 { return t + 1 }`（类型取自 `FnType` children[1+i]）；无上下文报诊断、不静默推断。机制为单一期望槽 `pexpr.g_expect_fn_ty`，仅在 fn 标注的 var 初始化表达式解析期间置值（保存-设置-恢复，作用域隔离；既有代码形参全标注故行为不变）。**设计原形态 `t -> expr` 已实现**（2026-09-27，tiec `2cec664`）——**先前「不可实现」的判断是错的**（歧义确实存在，但**不在要求函数值的位置**，而那些位置可判定）：**声明位** `var f: fn(A) -> R = t -> expr` 在解析期消歧（标注已在手，直接用标注里的类型构造完整闭包节点）；**赋值位** `f = t -> expr` 在语义期消歧（目标类型此时才知），为此新增两项**通用能力**：`sstate.new_node_sem`（语义期**新建**节点——此前只能就地改写，2 子节点箭头变 4 子节点闭包必须能新建）与 `N_SEM_TYPE`/`S_N_SEM_TYPE`（**语义期类型引用**节点，`val` 即类型 id——语义期只有 id，复杂类型无法逆向构造为 AST 节点）。其余位置**管道语义不变**（回归探针守 `v = v -> g`）。未支持：`var f: fn(A) -> R`（无初始化）+ 单独赋值——属解析层对未初始化有标注变量的限制，安全放开需配套「读未初始化」检查（现无），故保持现状。**余项**：实参位上下文（`apply(func(t) -> …, 5)`）的类型推定需把期望类型传过 `infer_expr` 边界；`it` 隐式单参语法与 p.9.11.28 单表达式隐式返回的咬合同样随后。
   原条目：**短闭包 `it`**——依据 round3 设计 §1：闭包体未声明 `it` 绑定为唯一隐式参数（类型由上下文 fn 类型推定，无上下文报诊断），与 p.9.11.28 单表达式隐式返回咬合 `arr.map({ it * 2 })`；尾随闭包升级（无参 void → 可带参可返回）同批定；多参 fn 上下文不支持
 - [ ] p.9.1.4 **unsafe 安全封装库**——依据 round3 设计 §7（用户指令：高频 unsafe 安全写法进标准库）：①CStr/FFI 所有权桥（`c_str` 注册 defer 收尾自动 free / `from_c_str` 拷入并释放源，NUL/非 UTF-8 可捕获负例）②slice 安全视图函数族（`view`/`view_len`/`view_get` 越界可捕获/`view_sub`/`view_copy_into`，纯 tie 收拢 slice_of 散装帮手）；alloc(n) 暂不立 Buffer（动态表连续缓冲代偿，随 bytes 库观察）；atomic/volatile/asm/unsafe goto 明确不封装（专家向，封装模糊危险边界）；验收：封装库单测（含负例）+ FFI 实战回放 + 安全路径免 unsafe 上下文验证
+
+**p.9.0-S 规范一致性与高危缺陷收口（先于所有新语言功能）**
+
+> 2026-09-28 规范审计基线：`tiec/docs/2026-09-27-language-spec-implementation-audit.md`（第 1–16 章）与 `_spec_audit/ch17.md`（第 17 章）。本档只登记已实测确认的缺陷/冲突；规范示例错误另列为文档修订，不把示例失败冒充实现缺失。
+
+- [x] p.9.0-S.1 全局 const 位运算/移位折叠——**已落地 2026-09-28，tiec 706968a**：`const` 中 `& | ^ << >>` 不再因 consteval 缺分支而静默变 0；移位越界不折叠；高危错值复现由全 0 修为 16/4/2/3/4。
+- [x] p.9.0-S.2 actor 字段显式初值——**已落地 2026-09-28，tiec 706968a**：字段初值节点进入 actor 状态表，启动 record 按声明序 store；非字面量初值拒绝；`var n: i64 = 5` 经 `run C()` 读回 5。
+- [x] p.9.0-S.3 asm! 模板占位符安全——**已落地 2026-09-28，tiec 706968a**：普通模板 `{N}` 不再进入字符串插值，raw 模板 `r"..."` 正确剥前缀；原 exit 139 段错误复现改为成功编译。
+- [ ] p.9.0-S.4 窄化转换与边界检查——变量到窄整数禁止静默截断；数组/表越界与除零行为对齐 §8.5，默认策略、显式 `--check-bounds` 和诊断契约统一。
+- [ ] p.9.0-S.5 规范冲突收口——整除负数（`c`/`%%`）、闭区间 `..=`、可空链范围、闭包表捕获值/引用语义、`c` 解引用记号等逐项裁决；每项先更新设计，再实现或修订规范，禁止两边并存。
+
+**p.9.0-L 语言缺口优先队列（安全底座之后）**
+
+- [ ] p.9.0-L.1 `is` 类型判定 + `as_*` 族统一——补词法/语义/AOT/解释器与动态类型正例负例。
+- [ ] p.9.0-L.2 块管道/条件管道/箭头解构收口——沿用已落地块管道基础，补 AOT 与解释器一致性、内建目标规则和解构语法。
+- [ ] p.9.0-L.3 默认值 const 白名单——const 引用、常量算术/比较/拼接、const fn、struct 字段默认值共用 evaluator；排除运行期表达式。
+- [ ] p.9.0-L.4 `reentrant`、async 结果回传、actor 字段初值扩展——先完成并发状态与 future 语义，再接任务图。
+- [ ] p.9.0-L.5 精确十进制/大整数/编译期值参数——先完成 `big` 唯一内核与值参数 IR，再接 `dec` 慢径和科学计算库。
+- [ ] p.9.0-L.6 宏 `quote`/声明式形态统一——以实现已用反引号 `$` 为基线，修订或兼容规范 §12.1–§12.6 的冲突写法。
+
+**p.9.0-E 生态协议补全（语言与模块契约稳定后）**
+
+> 第 17 章审计统计：已实现 35 / 部分实现 7 / 未实现 14 / 非规范条目 1。v2 zd 与基础 tink 帧已存在；v3 footer、列式编码族、schema 演进、timestamp/decimal/uuid、图容器和 `tink pipe` 编排器仍未形成。
+
+- [ ] p.9.0-E.1 zd v3 索引 footer 与段表——`ZD3FT`、u64 大端偏移/长度、CRC32、段类型 0–6；v3 读 v2，v2 读者按未知段跳过。
+- [ ] p.9.0-E.2 zd v3 列式编码族——plain/RLE/delta/字典列头声明，解码值域与 plain 恒等。
+- [ ] p.9.0-E.3 zd v3 schema/标准类型——schema_id=tsha1f、字段 active/deprecated/removed 生命周期、timestamp/decimal/uuid ext 1/2/3，先解决现有 ext 标记冲突。
+- [ ] p.9.0-E.4 zd v3 图容器——段类型 4 与 ext 0x47，节点/边约束、空图、自环/多重边、列式大图承载。
+- [ ] p.9.0-E.5 tink 编排器——`tink pipe` 主形态、hub/库式互联扩展、段级错误定位；底层长度+zd+CRC 帧已有，禁止重复造帧核心。
+
+**p.9.0-U/UI 与平台（生态底座之后）**
+
+- [ ] p.9.0-U.1 UI/图语法规范覆盖——`type tie<ui>` 不再短路，补 `view`、元素块属性/绑定/事件、图语法、`@layer/@scope/@theme`。
+- [ ] p.9.0-U.2 macOS/WASM/GPU/X11/SkParagraph——先完成 WASM 后端契约，再做 macOS 与 GPU/X11 图形后端。
+- [ ] p.9.0-U.3 tdb/DHT/嵌入式脚本/Playground——依赖 zd v3 与 tink 编排器，完成后再推进 tge/t3d/tsci/tstat/tsim 等应用域。
 - [ ] p.9.11.35 **安全 unsafe 重分类**——依据 `docs/designs/safe-unsafe-reclassification.md`（用户指令：安全的 unsafe 踢出 unsafe；判定准则 = 不可能引发 UB）：`atomic<T>` 全家、`slice<T>` 下标/len/slice_of（边界防护转正）、`ptr<T>` 声明/比较/传参、`#[repr(C)]` 声明 → 安全；`*p` 解引/指针算术、`alloc(n)`、`addr_of`、`extern` 调用、volatile/asm/unsafe goto 维持 unsafe（同一类型两访问面两门禁，Rust 安全切片 vs 裸指针同构）；凭据门禁面正交不动；落地时同步修订 language.md §14/§16 标注；验收：正负例门禁探针 + 越界 panic 行为逐字节一致（纯门禁移动零运行期变化）+ 自举不动点 + 回归不劣化
 - [ ] p.9.11.36 **unsafe 凭据双锁**——依据 `docs/designs/unsafe-credential-lock.md`（用户指令：凭证系统推广到全体 unsafe，最后一道安全锁）：unsafe = 门禁上下文 + 域凭据双锁缺一不可；五域定稿 `mem`（解引/算术/alloc/addr_of）·`ext`（extern 全链）·`share`（§7.1.1 A 组）·`trm`（C 组）·`raw`（新增：asm!/MMIO/unsafe goto 裸机器面）；持证三形态（函数级 `#[unsafe.<域>]` 隐式持证 / 块级 `unsafe use`·`unsafe.with` / 文件级 `type tie<logic> + unsafe[域]`）；guard<cap> move-only 拷贝即诊断、挂空凭据告警；产出 unsafe-audit 清单入 Keel 指纹树（p.7.1.5 审计链）；破坏性变更无兼容期（对齐 p.9.0 纪律），自举链 unsafe 位同批迁移作完备性实证；验收：五域正负例 × 三持证形态矩阵探针 + 审计清单逐行对账 + 自举零裸 unsafe + 回归不劣化
 - [ ] p.9.1.5 **rdu 扩充**（嵌入式基础层第二批）——依据 `docs/designs/rdu-expansion-design.md`（用户指令：扩充 rdu + 定位定稿「默认仅 rdu 即够，不学 std/ext/sys」）：无栈纪律 v1.1（调用方预分配缓冲可传参）+ v1.2（零堆型原语精确化：volatile/atomic 准入）；批一 `rdu/encode`（hex/base64 无查表/varint LEB128）+ `rdu/control`（PID 抗饱和 + EMA + lerp/map/constrain，f64 与 Q16.16 双变体）+ `rdu/fixmath`（fixed_sqrt Newton + CORDIC 无查表 sin/cos/atan2）；批二 `rdu/hash`（xxHash32/64 增量 + Adler-32 + sum8/xor/LRC）+ `rdu/bitfield`（位段 pack/unpack/sget/sset）+ `rdu/reg`（volatile 寄存器安全面，模块内持 raw 凭据对外免 unsafe，芯片映射归厂商包）+ `rdu/time`（tick 换算/回绕安全 uptime）；批三 `rdu/vec3`/`rdu/quat`（struct 值语义 IMU 姿态）+ `rdu/ring`（RingState + 调用方 backing）；批四候选 `rdu/sha256`（OTA 固件校验）；**自足清单九能力域 = rdu 完成定义**（数值/校验/编码/控制/姿态/缓冲/寄存器/时间/位段），清单外（GUI/网络栈/RTOS）明示不在默认面；加密仍走 std/ext、动态容器仍调用方自持；验收：RFC/官方 KAT + CORDIC 角度扫描误差门 + PID 阶跃探针 + freestanding 链接验证 + 纪律 grep 门（v1.2 后含 volatile 白名单）
