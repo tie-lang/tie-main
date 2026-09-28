@@ -442,10 +442,14 @@ deferred pending an ownership/allocator survey.*
 
 #### 4.3.4 分期（每步一次提交、独立门禁；任一步失败即回退）
 
-* **第一步 · interp 动态加载内建**：把 `load_library/get_proc/dyn_call/
-  cstr_to_string` 四件从编译端移植进 interp `call_builtin` seg（Value 化
-  签名 + 名单 + env 桥语义对齐）；门禁 = 既有全套 + 用 std/sqlite 同款
-  C DLL（自编 fixture）冒烟。**独立可验收，无 JIT 依赖。**
+* **第一步 · interp 动态加载内建 —— 已落地 2026-09-28，tiec c2cb9e4**：
+  `load_library/get_proc/dyn_call/dyn_call_p/cstr_to_string` 五件（含
+  dyn_call_p，比原计划多一件）移植进 interp `call_builtin` seg2（Value 化
+  签名 + 名单二分表同步）；关键勘察 = 语言内置原语对 AOT 编译的 interp.tie
+  自身可用（seg case 直调原语，零桥接零宿主改动）。冒烟 5 项全绿
+  （kernel32/Sleep/失败 0 契约双向/dyn_call GetTickCount 真实间接调用）；
+  门禁 fp **59a2c504** 三哈希一致（tiec.exe 已升格）、regress 158/8/2、
+  11 套件 9+2。详见 tiec docs/p9216-findings.md §22。
 * **第二步 · 单函数 JIT 管线打通**：deparse → 临时 unit → `tiec --shared`
   → load → `dyn_call` 调用 → 结果与解释器逐字节一致（确定性硬门禁）；
   覆盖：纯算术函数 / 多参数 / 递归调用解释器侧函数（JIT 函数体调用的
