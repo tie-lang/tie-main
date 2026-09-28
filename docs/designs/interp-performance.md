@@ -209,12 +209,18 @@ they are (copy semantics per §4.1.1). K = 2, so a value is 24 bytes.*
   复合值继续用既有池，**双形态共存**；对外 API（`new_int`/`int_val`/`type_of`…）
   签名暂不变，内部表示切换。此步不改任何调用点，独立跑门禁。
 
-  > **执行状态（2026-09-27）——受阻于编译器缺陷，未完成**：`vval.tie`（690 行，
+  > **执行状态（2026-09-27）——阻塞已解除，基建门禁通过**：`vval.tie`（690 行，
   > enum 值模型 + 复合值槽）已写好并可单独编译为库，`table<Value>` 存取经探针
-  > 验证可用；但**enum case 载荷绑定在被导入的文件里一律失效**
-  > （`error[E00488] 未声明的变量 'x'`），而本步的载体正是一个被导入的库。
-  > 缺陷已最小复现并完成排除清单，见 `tiec/docs/p9216-findings.md` §18.2。
-  > WIP 归档在仓外 `_tiec_verify/p917_wip/`（`vval.tie.wip` + parity 探针）。
+  > 验证可用；曾**受阻于「enum case 载荷绑定在被导入的文件里一律失效」**
+  > （`error[E00488]`），根因为 import AST 合并时 `append_ast_mem` /
+  > `sstate.append_ast` 把 N_CASE_BIND 的裸名池 id 子节点当节点 id `+base`
+  > 平移（详见 `tiec/docs/p9216-findings.md` §18.2）。**已修复**（tiec
+  > `b567548`，不动点 `2fc7e125` → `6d7664af` 升格；回归 158/8/2 FAIL 集合
+  > 同基线；`tests/interp` 11 套件逐字节一致）：`vval.tie` 作为被导入库编译
+  > 通过，parity 门禁 **PARITY OK（74 用例逐字节一致）**。第一步「基建 +
+  > 双形态共存」的验收标准（本设计 §验收）已满足；下一步为第二步热路径切换。
+  > 探针修正版归档 `_tiec_verify/p917_wip/p917_parity_fixed.tie`
+  > （跨模块全局按裸名访问，见 findings §18.4）。
   > 同期修掉一个**前置**编译器缺陷（`table<Enum>/table<Struct>` 元素赋值发射非法
   > `add`，tiec 4be6977）：不修它连 `table<Value>` 的元素写都编译不过。
 
