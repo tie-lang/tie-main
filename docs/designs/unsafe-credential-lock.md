@@ -179,3 +179,81 @@ function boundaries (closure bodies reset the lock scope, preventing a spawned
 closure from racing). Two de-locking sources (compile-time exclusivity proof and
 explicit credential) share one decision point, are printed separately under
 `--esc-audit`, and 22 invariants are asserted by `_tiec_verify/esc_safety.sh`.*
+
+## 7. 凭据 move-only 落地记录（r.1.6.7，2026-10-01）
+
+*EN: 7. Credential Move-Only Landing Record*
+
+**规范依据**：§11.6 早已写明「凭据是一类特殊的值：它可以转移，但不能复制——因此
+同一时刻只有一处持有它，不存在权限被悄悄扩散的情形」。本轮把这个约束从规范文字
+变成编译器强制。
+
+**实现前的真实缺口**：移动语义检查（`frontend/smove.tie`）对每个移动位置只做
+「标记 moved」而**不检查是否已 moved**。于是 `var g2 = g; var g3 = g` 编译通过
+—— 同一份凭据出现两个持有者，正是规范要杜绝的「权限被悄悄扩散」。缺口**不限于
+凭据**：堆类型（string/table/map）同样受影响（同一份所有权两个持有者 = 二次释放
+/ 别名写），只是从未被开关打开过。
+
+**修法（三处）**：
+
+1. `guard<cap>` 纳入移动跟踪 —— `smove.is_owned` 增加凭据分支；含凭据字段的聚合
+   经字段递归自然获得 move-only 性质（这正是它应有的语义）。
+2. **移动动作收敛为唯一入口 `move_var(nid, node)`** —— 先查已 moved 再标记。
+   此前 6 个移动位置（var 声明 / 赋值 / 实参 / return / 字段赋值 / 下标赋值）各自
+   内联「只标记」，收敛后两处漏洞一起修好，且不再依赖调用顺序。
+3. 报错标号**复用既有 E00372**（诊断目录的前缀规则按「消息以该键开头」命中，
+   加后缀不影响标号，故标号稳定、无需重排全库码号）；凭据追加一句例外说明——
+   通用建议「需要复制请用 clone」对凭据不成立。
+
+**两层门控（关键设计）**：移动检查此前由 `TIE_MOVE_CHECK` 整体控制、默认**关闭**
+（注释写明「std/compiler 全量迁移完成后默认开启」）。本轮把门控下沉到 `smove`
+内部，分成两层：
+
+| 层 | 对象 | 开关 | 理由 |
+| --- | --- | --- | --- |
+| 凭据 | `guard<cap>`（含凭据的聚合） | **始终检查** | 规范硬约束；既有代码**零违规**（tiec 自举可通过），可立即强制、无迁移成本 |
+| 堆类型 | string / table / map / 含堆聚合 | `TIE_MOVE_CHECK` | 全库尚有约 85 处「按值传参后又复用实参」的写法待迁移 |
+
+这一层划分让凭据约束**不必等待**堆类型迁移就能生效——正是「先让代码满足新规则，
+再启用强制」的零停机范式。
+
+**过程中发现并修掉的两个既有缺陷**：
+
+- **全局变量被当作移动源**：`is_move_src` 只看类型/初值，判不出「被多处方共享」。
+  `g_role` 这类全局首次使用即被标记 moved，后续每次读取都报「已移动」——审计最初
+  的 118 条报告绝大多数是此类误报。修法是加独立全局闸 `is_global_var`（全局符号
+  表判据），并把 `param_is_move` 的「无条件移交」分支也纳入同一豁免。**这与
+  `esc_cand` 缺全局闸导致「全局表被误判为独占」是同一个坑**——判据若只看「类型 /
+  初值新鲜度」，就区分不出共享这件事。修正后误报 118 → 85。
+- **诊断渲染的全角冒号 off-by-3**：`diagcode.tail_of` 里 `dg_slice(msg, p + 1, ...)`
+  跳全角冒号只跳了 1 字节，而 `：` 是 3 字节（EF BC 9A）——切片落在字符中间，
+  丢掉首字节、留下非法残片，**渲染出的错误消息后半段乱码**。此前未暴露是因为既有
+  消息极少含全角冒号。修为 `p + 3`。
+
+**审计工具**：新增 `TIE_MOVE_AUDIT=1`（与 `--esc-audit` 同一定位）——移动违规
+**只报告不中止**，逐条打印 `MVVIOL <行>:<列> <函数> '<变量>'`，用于评估迁移面。
+实测 tiec 自身（import 全链）剩余 **85 处 / 13 个函数**，集中在
+`driver::parse_args`(32)、`driver::pkg_dep_pairs`(13)、`driver::dep_manifest_ok`(12)、
+`interp::fmt_err`(8) 等——构成堆类型迁移的待办清单。
+
+**遗留问题（须单独处理）**：诊断目录 `diagcode_cat.gen.tie` 与源码**不同步**——
+现有目录 648 条 exact，用 `scripts/gen-diagcodes.tie` 重建得 568 条。重建会**全量
+重排**标号（按字节序连续分配），波及 `tie-diag` 等外部引用与文档。故本轮**不重建**，
+新增诊断一律走前缀命中以保持标号稳定。
+
+**验证**：三阶不动点 `d0161de8cef442ee8eb80ab8ecbffa51454e7b653ffc5d4b9b9b7021f4c81173`
+并升格；正例 `tests/language/cred_move_probe.tie`（三条合法转移路径：局部转移 /
+跨函数 move out / 转移后消费）输出 `cred-move PASS (transfer 7 chain 9)`；负例
+`cred_dup_move_neg.tie` 被拒并报告 E00372。
+
+*EN: Credentials are now move-only in the compiler, matching §11.6. Three
+changes: guard<Cap> joins the move-tracking predicate; every move site funnels
+through a single `move_var` entry that checks before marking (previously each of
+six sites only marked, so a repeated transfer silently produced two holders);
+and the diagnostic reuses the stable E00372 code via prefix matching. Gating is
+two-layered — credentials are always checked (existing code is violation-free),
+heap types stay behind `TIE_MOVE_CHECK` (85 migration sites remain, audited via
+the new `TIE_MOVE_AUDIT=1`). Two pre-existing defects were found and fixed on
+the way: globals were wrongly treated as move sources (118 → 85 false reports),
+and `tail_of` skipped only 1 byte of the 3-byte full-width colon, corrupting
+UTF-8 in rendered messages.*
