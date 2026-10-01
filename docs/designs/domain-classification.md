@@ -225,6 +225,10 @@ but without a domain label).*
 
 *EN: 7. Not Yet Implemented*
 
+0. **迁移影响面**：见 `domain-matching-impact.md`——实测需迁移的调用点只分布在
+   **5 个文件**（tlib/std 四个 + tiec 自身一个），且全部整文件同域，**可用文件级授权
+   以「改 5 行」覆盖**。推进分三步：补前置（不破坏）→ 迁移 5 文件（靠自编译验证完备）
+   → 打开强制（此时已无新失败）。
 1. **域匹配判定**（§4 规则）——本归类是其前置，现已具备；
 2. ~~六项新增门禁~~ **已完成**（2026-10-01）：`cstr_to_string` → mem；
    `cb_ptr` / `load_library` / `get_proc` / `dyn_call` / `dyn_call_p` → ext；
