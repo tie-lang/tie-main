@@ -17,10 +17,10 @@
 
 *EN: 1. Relation to Current State*
 
-- §7 凭据门禁已覆盖并发越界逃生（三域 mem/ext/share + trm：`#[unsafe.*]` 声明属性 +
+- §7 凭据门禁已覆盖并发越界逃生（域 mem/ext/share：`#[unsafe.*]` 声明属性 +
   `unsafe.get` / `unsafe use g { }` / `unsafe.with` 持证 + 委派/对象绑定/层级回收/审计）；
   §14 其余 unsafe（ptr/alloc/extern/asm/volatile/goto）只有上下文锁、无凭据锁；
-- EN: §7 credential gates already cover the concurrency escape hatches (three domains mem/ext/share + trm: `#[unsafe.*]` declaration attributes + `unsafe.get` / `unsafe use g { }` / `unsafe.with` holding + delegation/object binding/hierarchical reclamation/audit); the rest of §14 unsafe (ptr/alloc/extern/asm/volatile/goto) has only the context lock, no credential lock;
+- EN: §7 credential gates already cover the concurrency escape hatches (domains mem/ext/share: `#[unsafe.*]` declaration attributes + `unsafe.get` / `unsafe use g { }` / `unsafe.with` holding + delegation/object binding/hierarchical reclamation/audit); the rest of §14 unsafe (ptr/alloc/extern/asm/volatile/goto) has only the context lock, no credential lock;
 
 - 本设计 = 把 §7 机制**推广为全体 unsafe 的统一模型**，并将原四期「guard<mem>/<ext>
   全凭据面」计划提前落地为 unsafe 的最后一道锁；
@@ -30,21 +30,24 @@
   Keel 注册表/审计器（p.7.1.5）、`unsafe use`/`unsafe.with` 语法已定稿（§7.1）。
 - EN: all infrastructure exists: credentials are move-only values (`guard<cap>`, §16), the audit chain is the Keel registry/auditor (p.7.1.5), and the `unsafe use`/`unsafe.with` syntax is finalized (§7.1).
 
-## 2. 域映射（六域：mem / ext / share / trm / raw / lock）
+## 2. 域映射（五域：mem / ext / share / raw / lock）
 
-*EN: 2. Domain Mapping (Six Domains: mem / ext / share / trm / raw / lock)*
+*EN: 2. Domain Mapping (Five Domains: mem / ext / share / raw / lock)*
 
 | 域 | 凭据 | 覆盖构造 | 危害面 |
 | --- | --- | --- | --- |
 | `mem` | `guard<mem>` | `*p` 解引 / 指针算术 / `alloc(n)` / `addr_of` | 悬垂 / 越界 / 未初始化 |
 | `ext` | `guard<ext>` | `extern fn` 调用（含 C 互操作全链） | 外部效应不可静态验证 |
 | `share` | `guard<share>` | 跨 actor 共享内存（§7.1.1 A 组） | 数据竞争 |
-| `trm` | `guard<trm>` | `#[unsafe.trm]` 运行时接入（§7.1.3 C 组） | 执行模型越界 |
 | `raw` | `guard<raw>` | `asm!` / volatile_load/store（MMIO）/ `unsafe goto #x` | 裸机器面：任意寄存器内存 / 设备内存 / 裸跳转 |
 | `lock` | `guard<lock>` | **表访问去锁**（`t[i]` 读/写、`table_push`、`for` 遍历绕过运行时表锁） | 数据竞争（绕过并发保护） |
 
-*EN: six domains — mem (dangling/OOB/uninitialized), ext (external effects), share (cross-actor sharing, races), trm (execution-model escape), raw (bare machine: asm / MMIO / raw jumps), lock (bypassing the runtime table lock, races).*
+*EN: five domains — mem (dangling/OOB/uninitialized), ext (external code the language cannot check), share (cross-stream sharing, races), raw (bare machine: asm / MMIO / raw jumps), lock (bypassing the runtime table lock, races).*
 
+- **每个构造属于哪个域，逐条归类见 `domain-classification.md`（2026-10-01 定案）**——
+  本文只定义域与持证形态，「哪处门禁归哪个域」是那份文档的职责，也是「域匹配」的前置。
+- `trm` 域**已删除**（2026-10-01）：它在实现里没有任何门禁承载，且 trm 引擎已废弃；
+  保留一个永空的域会让审计清单永远有一行无从填充。将来执行流原语需要门禁时作为新域加回。
 - `raw` 为本次新增域：`unsafe goto #x` 降级到 LLVM `br` 即裸跳转，与 asm/MMIO 同属
   「绕过语言执行模型直接操作机器」——归并同一域，域分类学保持完备且不膨胀；
 - EN: `raw` is the one new domain: `unsafe goto #x` lowers to an LLVM `br` — a bare jump, same class as asm/MMIO ("bypass the language's execution model, operate the machine directly") — merged into one domain, keeping the taxonomy complete without bloat;
@@ -100,8 +103,8 @@
 - EN: bare `unsafe { }` stays legal as syntax but downgrades to "door without a key" — the compiler reports「unsafe 需 <域> 凭据」(unsafe requires a <domain> credential) with a hint for both holding forms; the diagnostics double as the migration guide;
 
 - concurrency-model §7 与 trm-final-design §1.2 的 7 类能力清单在落地时按五域映射
-  修订（share/trm 语义不变，mem/ext 从计划转正，raw 并入）。
-- EN: concurrency-model §7 and the trm-final-design §1.2 seven-capability catalog get revised to the five-domain mapping at landing (share/trm semantics unchanged; mem/ext move from plan to reality; raw merged in).
+  修订（share 语义不变，mem/ext 从计划转正，raw 并入，trm 删除）。
+- EN: concurrency-model §7 and the trm-final-design §1.2 seven-capability catalog get revised to the five-domain mapping at landing (share semantics unchanged; mem/ext move from plan to reality; raw merged in; trm removed).
 
 ## 5. 验收
 
