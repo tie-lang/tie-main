@@ -229,13 +229,35 @@ but without a domain label).*
    **5 个文件**（tlib/std 四个 + tiec 自身一个），且全部整文件同域，**可用文件级授权
    以「改 5 行」覆盖**。推进分三步：补前置（不破坏）→ 迁移 5 文件（靠自编译验证完备）
    → 打开强制（此时已无新失败）。
-1. **域匹配判定**（§4 规则）——本归类是其前置，现已具备；
-2. ~~六项新增门禁~~ **已完成**（2026-10-01）：`cstr_to_string` → mem；
-   `cb_ptr` / `load_library` / `get_proc` / `dyn_call` / `dyn_call_p` → ext；
-3. ~~`trm` 移除的连带清理~~ **已完成**：规范 §11.6 表行、凭据设计文档的域表、
-   以及 `#[unsafe.*]` 属性白名单（改为 mem/ext/share/raw/lock 五域，不再接受
-   `#[unsafe.trm]`）；
-4. **端口提升的域标签**——门禁已在（`scheck_q3.tie`），但未走内置清单，需在
-   实现域匹配时一并接线。
+1. ~~域匹配判定~~ **已落地（2026-10-01）**——实现形态：
+   * 状态：`sstate.g_held_caps`（当前作用域持有的域位集）与 `g_unsafe_depth` 并列，
+     二者共同构成 §4 的双锁；
+   * 查表：`types.builtin_domain(内建名)` 返回其所属域（与本文件 §2 承载表逐项对应，
+     单一事实源）；返回 0 = 不受门禁；
+   * 持证来源（四种形态齐备）：文件级 `type tie<角色, unsafe:域名>`、
+     函数级 `#[unsafe.域名]`、块级 `unsafe with(域名) { }` 与 `unsafe use g`
+     （g: guard<域>）；
+   * 诊断分两级：锁一未过 → 「必须在 unsafe 块或函数中」；锁二未过 →
+     「需要 &lt;域&gt; 域凭据（当前作用域持：…）」并列出三种持证写法；
+   * 凭据**不跨函数继承**（闭包体独立清零，与 lock 的去锁作用域同规则）；
+     **不随 import 扩散**（逐模块按各自文件头授权，且父模块授权不继承给子模块）。
+   * port 提升的域标签已接线（§6 待办项关闭）。
+   验证：不动点 `a329e94660b86a45`；s21 PASS=192 / FAIL=10（FAIL 与旧基线逐字一致）；
+   正例 `tests/language/domain_match_probe.tie`（五域 × 四形态），
+   负例 `domain_match_{nocred,wrongdom,closure}_neg.tie`。
+   * **迁移面**：11 个文件（tlib/std 4 + tlib/ext 5 + tlib/sys 1 + tiec 自身 1），
+     全部文件级授权，各一行文件头——见 `domain-matching-impact.md`（含初版
+     统计遗漏的更正）。
+2. **归类本身的维护**：`types.builtin_domain` 与本文件 §2 承载表需同步修改
+   （前者是实现侧查表、后者是设计侧表述）；新增受门禁内建时两处都要动。
+3. ~~六项新增门禁~~ **已完成**（2026-10-01）：`cstr_to_string` → mem；
+   `cb_ptr` / `load_library` / `get_proc` / `dyn_call` / `dyn_call_p` → ext。
+4. ~~`trm` 移除的连带清理~~ **已完成**：规范 §11.6 表行、凭据设计文档的域表、
+   `#[unsafe.*]` 属性白名单（mem/ext/share/raw/lock 五域）、
+   以及**角色修饰参数白名单**（`is_valid_mod_param`，同样不再接受 `unsafe:trm`）。
+5. ~~端口提升的域标签~~ **已完成**：`scheck_q3.tie` 的 port 提升门禁已加 mem 域判定
+   （它不走内建清单，故单独接线）。
 
-*EN: domain matching; the three new gates; the trm cleanup.*
+*EN: domain matching is implemented; the six gates, the trm cleanup and the port
+promotion label have all landed. Remaining: keep `types.builtin_domain` in sync with
+the carrier table in section 2 whenever a gated builtin is added.*

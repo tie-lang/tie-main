@@ -29,19 +29,35 @@
 *EN: A naive grep merges callers with implementers; only callers need migrating. On
 tiec the naive count is 45, mostly implementers.*
 
+## 1b. 数据修正（2026-10-01 实施时发现）
+
+**本文档初版的迁移面统计有误，此处更正**：初版报「5 个文件」，是因为扫描时只覆盖了
+`tlib/std`，**漏了 `tlib/ext` 与 `tlib/sys`**。实施时按「整仓扫」重测，真实迁移面是
+**11 个文件**（下表已更新）。漏项性质与 §1 的陷阱同源——**扫描范围本身选窄了**，
+而当时并未察觉。
+
+教训：报「有 N 处」之前先问「我的扫描范围是否覆盖了全部可能位置」。目录级遗漏比
+grep 模式遗漏更隐蔽，因为它不会产出任何可疑输出（少扫的目录静默贡献 0）。
+
+*EN: the first version of this document undercounted because the scan covered only
+tlib/std. tlib/ext and tlib/sys were missed entirely - 11 files, not 5. A directory
+left out of a scan contributes a silent zero, which is why it is easy to miss.*
+
 ## 2. 实测数据
 
 *EN: 2. Measurements*
 
 ### 2.1 真实的迁移面
 
-| 位置 | 处数 | 文件 | 域构成 |
-| --- | --- | --- | --- |
-| **tlib/std**（std 库源头 `F:/Projects/tlib/std`） | **39 行 / 48 次调用** | **4**（`sqlite` `process` `rng_adv` `csprng`） | ext + mem（约各半） |
-| **tiec 自身** | **1 文件** | **1**（`interp/call_builtin_seg2.tie`） | ext（`load_library`/`get_proc`/`dyn_call`/`dyn_call_p`）+ mem（`cstr_to_string`）；已迁移 5 处 |
-| tdb | **0** | 0 | — |
-| tshell | **0** | 0 | — |
-| **合计** | — | **5 个文件** | — |
+| 位置 | 处数 | 文件 | 域构成 | 状态 |
+| --- | --- | --- | --- | --- |
+| **tlib/std** | 39 行 / 48 次 | **4**（`sqlite` `process` `rng_adv` `csprng`） | ext + mem | 已迁移 |
+| **tlib/ext**（初版漏扫） | — | **5**（`ecdsa` `gfx/event` `gfx/gfx` `gfx/port` `gfx/window`） | 全 mem | 已迁移 |
+| **tlib/sys**（初版漏扫） | — | **1**（`win32`） | mem | 已迁移 |
+| **tiec 自身** | 5 处 | **1**（`interp/call_builtin_seg2.tie`） | ext + mem | 已迁移 |
+| tdb | **0** | 0 | — | — |
+| tshell | **0** | 0 | — | — |
+| **合计** | — | **11 个文件** | — | **全部已迁移** |
 
 *EN: 39 lines / 48 calls across 4 files in tlib/std, plus one file inside tiec; tdb
 and tshell are clean. Five files in total.*
@@ -141,12 +157,32 @@ promotion is gated but unlabelled.*
 `process.tie` 需留意：它同时含 `alloc`（mem）与指针写入（mem）——**同域**，故文件级
 同样适用。`rng_adv` / `csprng` 只有 `memcpy`（mem）——同样整文件同域。
 
-⇒ **四个 std 文件与 tiec 的一个文件，全部可用文件级授权覆盖**。成本 5 行。
+⇒ **11 个文件全部整文件同域，全部用文件级授权覆盖**。成本 = 11 行文件头。
 
-*EN: all five files are single-domain, so file-level authorization covers every one
-of them — five lines.*
+*EN: all eleven files are single-domain, so file-level authorization covers every
+one of them — eleven header lines.*
 
-## 6. 建议的推进方式（三步，每步可独立验证）
+## 6. 实际推进过程（2026-10-01 实施完毕）
+
+三步全部完成，实际路径与初版建议一致，但**实施中发现了三个初版未预见的问题**：
+
+1. **前置补齐**（声明性、不拦人）——落地时发现两处设计-实现缺口：
+   * 文件级授权**只服务 lock 域**：`role_has_lock` 是 lock 专用，其余域名在属性解析时
+     被丢弃 ⇒ 推广为**域位集**（`s_file_caps` / `s_fn_caps`）；
+   * **import 模块拿不到自己的授权，且会继承主模块的**（越权）：import 解析期间
+     `s_file_caps` 仍是主文件的值。修法是按**文件基址**（`g_file_base`）逐模块切换，
+     并把 parser 侧的登记改为「记局部 id → 装载后按基址提交」（parser 的节点 id 是
+     模块内局部的，直接登记会错位）。
+2. **迁移 11 个文件**——全部文件级授权，改文件头一行。
+3. **打开强制**——门禁从「仅判 unsafe 上下文」改为「锁一 + 锁二」，并按
+   `types.builtin_domain` 查表定位每个内建所属域。port 提升（不走内建清单）
+   也补了域标签。
+
+**验证**：三阶不动点 `a329e94660b86a45`（域匹配开启后自举链自我一致）；
+s21 回归 PASS=192 / FAIL=10，与**旧编译器基线**（188/10）的 FAIL 集合逐字一致，
+PASS 增量 4 = 域匹配正例 1 + 负例 3。
+
+## 6b. 初版建议的三步（保留原文，供对照）
 
 *EN: 6. Suggested Path — Three Independently Verifiable Steps*
 
