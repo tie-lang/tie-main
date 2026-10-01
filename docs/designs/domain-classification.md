@@ -52,7 +52,7 @@ matter how low-level they look; and a domain with no carrier should not exist.*
 | 域 | 危害面（UB 类别） | 承载 |
 | --- | --- | --- |
 | `mem` | 悬垂 / 越界 / 未初始化 | `deref` `deref_write`（须有效指针）· `alloc` `free`（未初始化/未重复释放）· `memcpy` `memset`（长度不越界）、`cstr_to_string`、port 提升（借用） |
-| `ext` | 外部效应不能静态验证 | `extern fn` 调用、`cb_ptr`、`load_library` |
+| `ext` | 外部效应不能静态验证 | `extern fn` 调用、`cb_ptr`、`load_library`、`get_proc`、`dyn_call`、`dyn_call_p` |
 | `share` | 数据竞争（跨执行流共享可变数据） | **暂无**（见 §3.2） |
 | `raw` | 绕过编译器对代码的假设 | `volatile_load` `volatile_store`、`asm!`、`unsafe goto #x` |
 | `lock` | 绕过并发保护 | **不是原语而是作用域**：持 `guard<lock>` 时容器访问走免锁入口（见 §3.3） |
@@ -61,9 +61,10 @@ matter how low-level they look; and a domain with no carrier should not exist.*
 effects), share (data race via cross-execution-stream sharing), raw (bypassing the
 compiler's assumptions), lock (bypassing concurrency protection).*
 
-当前 `mem` 域的门禁承载收敛为 **6 项**（`deref` `deref_write` `alloc` `free`
-`memcpy` `memset`），全部带明确的安全前提；域内其余条目（`cstr_to_string`、
-port 提升）为**待补门禁**，见 §6。
+两个域的门禁承载已全部落地（2026-10-01）：`mem` 为 `deref` `deref_write` `alloc`
+`free` `memcpy` `memset` `cstr_to_string`，`ext` 为 `extern fn` 调用 `cb_ptr`
+`load_library` `get_proc` `dyn_call` `dyn_call_p`。域内尚余一项待补：port 提升
+（已门禁但**域标签未接**，见 §6）。
 
 ### 逐项判断记录（有争议的都在这里）
 
@@ -181,11 +182,17 @@ construct belongs to; a mismatch diagnoses.*
 （有类型、有边界检查、失败语义明确）。既然语言已经替使用者封装好了，再要求凭据等于
 否定封装的价值。
 
-`ext` 的剩余承载限定为**编译器无法验证的三类**：
+`ext` 的承载限定为**编译器无法验证的三类**：
 
 - `extern fn` 调用：用户自己声明的 C 符号，签名与行为无从核对；
 - `cb_ptr`：把 tie 函数交给 C，控制流离开语言管辖；
-- `load_library`：动态装载任意代码。
+- **动态链接全链**：`load_library`（装载任意库）→ `get_proc`（取符号地址）→
+  `dyn_call` / `dyn_call_p`（按地址调用）。其中 `dyn_call` 是这一族里最直接的
+  危险面——它按整数地址调用任意函数，签名与返回值都由书写者断言。
+
+> 归类补记：首次归类时这一族只列出了 `cb_ptr` 与 `load_library`，**漏了
+> `get_proc` / `dyn_call` / `dyn_call_p`**——是逐个门禁点核对时（解释器的内置分派
+> 里同时出现这五项）才发现的。教训：归类要**按机制成组**找，别按印象点名字。
 
 *EN: The early wording said ext covers syscalls; measurement shows the opposite —
 the whole syscall family is on the safe path, and that is correct and stays. The spec
@@ -197,26 +204,34 @@ calls, cb_ptr, and load_library.*
 
 *EN: 6. Classification Gaps and Their Disposition*
 
-| 构造 | 现状 | 处置 |
+| 构造 | 处置 | 状态 |
 | --- | --- | --- |
-| `cstr_to_string` | 接受 C 指针并沿它走到 NUL——本质是解引用，**当前未门禁** | 归 `mem`，**需新增门禁** |
-| port 提升（struct → port） | 已门禁但域未标 | 归 `mem` |
-| `cb_ptr` | 未门禁 | 归 `ext`，**需新增门禁** |
-| `load_library` | 未门禁 | 归 `ext`，**需新增门禁** |
+| `cstr_to_string` | 归 `mem`，新增门禁 | **已落地**（2026-10-01） |
+| `cb_ptr` | 归 `ext`，新增门禁 | **已落地** |
+| `load_library` | 归 `ext`，新增门禁 | **已落地** |
+| `get_proc` / `dyn_call` / `dyn_call_p` | 归 `ext`（归类时补入），新增门禁 | **已落地** |
+| port 提升（struct → port） | 归 `mem`；门禁已在，**域标签未接** | 待办 |
 
-*EN: cstr_to_string walks a C pointer and is currently ungated (mem, gate needed);
-port promotion is gated but unlabelled (mem); cb_ptr and load_library are ungated
-(ext, gates needed).*
+本轮新增的六项门禁全部落在同一个内置清单（`sinfer_ret_q2.tie`），且编译器自身的
+调用点已同批迁移——**用新编译器编译自身通过**，即迁移完备（对齐
+`unsafe-credential-lock.md` §4 的验收口径）。
+
+*EN: the six gates landed in one builtin list, and the compiler's own call sites
+were migrated in the same batch - compiling the compiler with the new compiler
+passes, which is the migration-completeness check. Only port promotion remains (gated
+but without a domain label).*
 
 ## 7. 待实现
 
 *EN: 7. Not Yet Implemented*
 
 1. **域匹配判定**（§4 规则）——本归类是其前置，现已具备；
-2. **三处新增门禁**（§6）——`cstr_to_string` → mem；`cb_ptr` / `load_library` → ext；
-3. ~~`trm` 移除的连带清理~~ **已完成**：规范 §11.6 表行与凭据设计文档的域表均已更新
-   （属性白名单里的 `trm` 字符串仍待清，见下）；
-4. **属性白名单清理**——`pstmt_top_p1.tie` 的 `#[unsafe.*]` 白名单仍含 `trm`，
-   应与其他域一起按本归类收敛（保留 mem/ext/share/raw/lock）。
+2. ~~六项新增门禁~~ **已完成**（2026-10-01）：`cstr_to_string` → mem；
+   `cb_ptr` / `load_library` / `get_proc` / `dyn_call` / `dyn_call_p` → ext；
+3. ~~`trm` 移除的连带清理~~ **已完成**：规范 §11.6 表行、凭据设计文档的域表、
+   以及 `#[unsafe.*]` 属性白名单（改为 mem/ext/share/raw/lock 五域，不再接受
+   `#[unsafe.trm]`）；
+4. **端口提升的域标签**——门禁已在（`scheck_q3.tie`），但未走内置清单，需在
+   实现域匹配时一并接线。
 
 *EN: domain matching; the three new gates; the trm cleanup.*
