@@ -257,3 +257,55 @@ the new `TIE_MOVE_AUDIT=1`). Two pre-existing defects were found and fixed on
 the way: globals were wrongly treated as move sources (118 → 85 false reports),
 and `tail_of` skipped only 1 byte of the 3-byte full-width colon, corrupting
 UTF-8 in rendered messages.*
+
+## 8. 凭据挂空告警落地记录（W00030，2026-10-02）
+
+*EN: 8. Idle-Credential Warning Landing Record*
+
+**依据**：本文档 §3「凭据规则」——「作用域内未使用对应域构造的凭据 → 编译告警
+（凭据挂空）」。§11 审计的最后一项未实现由此关闭。
+
+**判据**：`该作用域新持的域位集 − 该作用域实际用到的域位集`。非空即逐域报 W00030。
+
+| 域 | 「用到」如何判定 |
+| --- | --- |
+| `mem` / `ext` / `raw` | 双锁通过时置位（`g_used_caps`）——承载清单 `types.builtin_domain` 是单一事实源；port 提升（mem）单独挂一个点 |
+| `lock` | 子树扫描：下标读/写、表增删、`for` 遍历（lock 的承载是运算符而非门禁清单项） |
+| `share` | **跳过**：该域在实现里暂无承载，任何作用域都不可能「用到」它，报挂空只会是噪声 |
+
+**粒度分两级（关键设计）**：
+
+* **函数级**只判**函数属性位**（`#[unsafe.域]`）。文件级授权是规范明文认可的**粗粒度**
+  授权（「适用范围是整块代码都属同一域的场合」），逐函数比对会退化成「授权文件里每个
+  不碰该域的函数都告警」——实测 tlib 12 个模块 68 条全属此类，故逐函数判定必须排除。
+* **文件级**按**文件**粒度判，且**只判主输入文件**。库文件的文件级授权服务于它自身的
+  实现，「引用方有没有用到该域」不是它的判据；把库算进来会对着 `std/process.tie` 这类
+  「声明 `unsafe:mem`、但本次编译只用到其中非 mem 函数」的模块报挂空（tiec 自举实测
+  2 条全属此类）。直接编译库文件时它自己就是主输入文件，照常受判。
+
+**作用域配对**：`g_used_caps` 与 `g_held_caps` **成对进出**每一个持证作用域；函数是
+全新的凭据作用域（凭据不跨函数继承），进入时清零。缺配对会跨作用域累积——前一处用过
+的域会掩盖本处的挂空。
+
+**零成本**：整个判定由警告 pass 开关门控，默认（只报错）零额外开销。
+
+**踩坑**：警告目录的查表是「核心消息（ASCII 段归一化为 `%` 后）**精确匹配**」——
+文件级措辞与块级不同就必须**单独登记一条 core**，否则告警发出去了却渲染不出来
+（静默降级成 W00000 兜底）。
+
+**验证**：三阶不动点 `b8bf636153416122c2dadc447133395eebe5b18567d5e58c456e7a36819167b9`；
+探针 `tests/language/cred_idle_probe.tie`（块级 `with(mem)`/`with(lock)`/`unsafe use g`
++ 函数级 `#[unsafe.ext]`，4 条挂空命中、同形态正例全静默）与
+`tests/language/cred_idle_file_probe.tie`（文件级，1 条 @1:1）；tiec 自举与 tlib 全量
+（177 文件）**零误报**；s21 回归 PASS=197 FAIL=10（FAIL 集合与基线逐字一致，PASS 增量
+来自本特性新增探针）。
+
+*EN: The idle-credential warning (W00030) closes the last unimplemented item of
+the §11 audit. The predicate is "domains newly held by this scope minus domains
+actually used in it". Usage is recorded where the double-lock check passes
+(carrier list is the single source of truth) plus a sub-tree scan for the lock
+domain; share is skipped because it has no carrier yet. Granularity is
+two-levelled: per-function checking only looks at function attributes, since
+file-level authorization is explicitly coarse-grained by the spec (checked
+per-file, and only for the main input file). Zero cost unless the warning pass
+is enabled.*
