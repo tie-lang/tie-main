@@ -23,17 +23,60 @@
 | 捕获后外层变量是否仍可用 | **可用**（`m` 改成 105 正常） | 捕获**不移交**外层绑定 |
 | 闭包内写捕获的**标量** | 不回写外层 | 只读（无共享可变状态） |
 | 捕获表（堆类型） | 可捕获 | 表可捕获 |
-| 闭包内改捕获表的**内容**（`table_push`） | 外层 `len` **不变** | **表也是按值捕获**（无别名） |
+| 闭包内改捕获表的**内容**（`table_push`） | 外层 `len` **变化**（实测 inner=3 outer=3） | **表按引用捕获**（共享同一份底层数据，见规范 §5.10） |
 | 捕获 `const` | 可捕获 | const 可捕获 |
 | **捕获 `ref` 形参** | **闭包内写会回写到调用方** | **借用例外**（见 §3——这是唯一非值语义） |
 
-关键结论：**除 `ref` 形参外，捕获一律是值语义**（快照/副本），故不存在"共享可变状态"这一类经典闭包缺陷。
+关键结论：**捕获分两类** —— 标量、结构与枚举按**值**捕获（创建时刻的快照）；**表与映射按引用捕获**（闭包与外围共享同一份底层数据，任一方修改另一方可见）。引用捕获是"共享可变状态"进入程序的**唯一通道**，因此它也是并发安全规则的落点（规范 §10.5；第 11 章 `share` 域）。`ref` 形参是另一类例外：它按借用捕获，故在安全区被禁止（见 §3）。
 
-> EN: Apart from `ref` parameters, capture is uniformly by value, so there is
-> no shared-mutable-state class of closure bug. `ref` parameters are the one
-> borrow exception.
+> EN: Capture splits in two. Scalars, structs and enums are captured **by value**
+> (a snapshot at creation time); **tables and maps are captured by reference** -
+> the closure and its surroundings share one underlying buffer, so either side
+> sees the other's writes. Reference capture is the only route by which shared
+> mutable state enters a program, which is why the concurrency rules land here
+> (spec 10.5; the `share` domain in chapter 11). `ref` parameters are the other
+> exception: captured by borrow, hence rejected in safe code (see 3).
+
+> **更正** / Correction (2026-10-02): 本表原记「表也是按值捕获（无别名）」**与实现不符**
+> —— 2026-09-27 那次实测（外层 `len` 不变）未能复现；在现役自举 tiec 上重测为
+> **外层 `len` 变化**（`var t=[1,2]`，闭包内 `table_push(t,99)` ⇒ `inner=3 outer=3`），
+> 即共享句柄。规范正文 §5.10 / §10.5 自始写的就是「按引用捕获」，本档为对齐规范而更正。
 
 ---
+
+### 1.1 捕获引用的生存期 / Lifetime of captured references
+
+捕获一个引用类型，等价于**把该引用交给闭包保管**：闭包存续期间该引用必须有效。这条要求
+由引用计数承担，且必须同时满足三个性质。
+
+| 性质 | 要求 | 实现方式 |
+|---|---|---|
+| **性能强** | 捕获是 **O(1)** 的——只搬句柄，**绝不复制容器内容** | 捕获点只写 8 字节句柄（+ 一次引用计数递增） |
+| **内存低** | 闭包不再被引用时，其捕获的引用必须**归还**，不得积压 | 闭包值消亡点（作用域结束、变量被覆盖）发出释放 |
+| **内存安全** | 闭包存续期间捕获的引用**始终有效**；不得悬垂、不得重复释放 | 引用计数保证：捕获 **retain**、消亡 **release**，两侧配对 |
+
+**为什么必须"捕获时 retain"**：容器在本作用域结束时会被释放。闭包可能逃逸出定义它的函数
+（`func make() -> fn() -> i64 { var t = [...]; return func() -> i64 { return len(t) } }`），
+此时若不在捕获点 +1，外层函数退出即释放 `t`，闭包持有悬垂句柄，调用即崩溃。
+这与「`return <表>` 需 retain」是同一条规则，两个外传口（返回值、闭包捕获）对称处理。
+
+**为什么必须"消亡时 release"**：只 retain 不 release 会让引用计数永不归零、容器永不回收。
+**释放点必须在闭包值消亡处，而不是创建处**——env 的布局（捕获了哪些引用）只有创建闭包的
+函数知道，而关掉闭包的是持有它的作用域。因此释放动作必须能**在不知道布局的地方发起**，
+这要求 env 自带足以完成释放的信息（析构入口或引用计数），见 §6。
+
+*EN: Capturing a reference means handing it to the closure to keep; a refcount
+holds it. Three properties must hold together: capture is O(1) and never copies
+the container (strong performance); the reference is returned when the closure
+value dies (low memory); and it stays valid for the closure's whole life, with
+no dangling or double release (memory safety). The retain must happen at the
+capture site because the container is released at the defining scope's exit
+while the closure may escape that function - the same rule as returning a
+table. The release must happen where the closure value dies, not where it was
+created: only the creating function knows the env layout, yet the scope holding
+the closure is what ends. So the release must be initiable without knowing the
+layout, which requires the env to carry enough information to complete it (a
+destructor entry or a refcount); see 6.*
 
 ## 2. 捕获面白名单 / Capture-surface whitelist
 
@@ -112,13 +155,52 @@ var f: fn(i64) -> i64 = func(t) -> i64 { return t + 1 }
 
 ## 5. 仍待定 / Still open
 
-* **可变捕获标注**：本档冻结的语义是「捕获一律值语义」，故**当前不存在可变捕获**——没有可标注之物。若将来引入"共享可变捕获"（多闭包共享一份可变状态），需先定标注语法与线程安全规则；在此之前不引入标注，以免为不存在的能力增加语法面。
+* **可变捕获标注**：捕获引用类型**即**共享可变状态（见 §1.1），故"可变捕获"本身已经存在，只是**不需要标注**——它由类型（表/映射 vs 标量）直接决定，不依赖位置或修饰符；给一条本可由类型推出的规则再添语法，只会增加书写面而无新信息。仍待定的是**跨执行流**那一步：把携带容器的闭包交给别的执行流时，规范要求「并发写入由书写者负责排除」（§10.5），而编译期能否把这条责任变成**显式门禁**（`share` 域凭据）尚待定案——它涉及「消息传递原语是否要持证」的分类学取舍，见 `domain-classification.md` §3.2。
 * **与事件循环线程的交互**：tiu 侧的控件动作参数位（`tiu-ui-widgets.md` §15.4/§15.6）等待本档。本档已给出可用结论：**值语义捕获 + 值形参**在跨线程时天然安全（无共享可变状态）。`ref` 形参不可入动作参数位（本档 §3 已使其编译期不可捕获）；若 tiu 确需跨线程共享状态，走既有 `trm-lite` 的信道 / actor 通道，不经闭包捕获。
 * **`immut` 形参捕获**：本档随 unsafe 一并放宽（未单列规则）。只读借用的外部可观察风险低于可写借用（无回写），但其跨线程可观察性仍取决于被借用对象的线程安全——细则随 tiu 定。
 
 ---
 
-## 6. 验收 / Acceptance
+## 6. 落地状态与缺口 / Landing status and gaps
+
+**已落地**（2026-10-02）：
+
+* 捕获引用类型时发出 **retain** —— 满足 §1.1 的"内存安全"一半（不悬垂）。此前缺失，
+  表现为捕获表的闭包被调用即段错误（实测退出码 139）。
+* **env 尺寸按真实布局计算**（`agg_ty_size`）—— 修复聚合字段（struct/tuple/数组）捕获时的
+  堆越界写（此前按"每字段 8 字节"分配，而字段访问按聚合布局，二者不自洽）。
+
+**未落地（已知缺口）**：**捕获引用的释放** —— §1.1 的"内存低"目前**不满足**。
+
+* 实测：循环 20 万次创建「捕获 200 元素表的闭包」并丢弃 ⇒ 进程峰值 **326.6MB**
+  （预测泄漏量 320MB，吻合）⇒ 每次迭代的 env 与其中捕获的表**都未回收**。
+* 根因是**信息不对称**：env 的布局（捕获了哪些引用、各在哪个字段）**只有创建闭包的函数
+  知道**，而闭包值消亡在**持有它的作用域**里；后者拿到的 fn 值只是 `{env, entry}`，
+  无从知道如何释放 env 内的引用。
+* 因此释放必须由 env **自带**完成信息。候选落地方案（择一，待定）：
+  * **env 首字段放析构入口**：env = `{ drop, cap0, ... }`，`drop(env)` 释放各捕获引用并
+    free(env)；持有方在闭包值消亡点调用。**风险**：闭包值可被复制（赋值/传参/存容器），
+    两个持有方各调一次 drop ⇒ 重复释放。故需配合"仅在**不逃逸**的局部闭包值上发射 drop"
+    的保守判定（逃逸者不释放，残余泄漏但安全）。
+  * **env 引用计数**：env = `{ rc, cap0, ... }`，复制点 retain、消亡点 release。
+    能覆盖逃逸闭包，但需在**全部复制点**插桩，漏一处即错。
+* 未落地前，§1.1 的"内存低"应视为**待实现的要求**，而非既有保证。
+
+*EN: Landed: retain on reference capture (the "no dangling" half of memory safety;
+its absence previously made closures capturing a table crash on call), and
+env sizing by real aggregate layout (fixing an out-of-bounds store for aggregate
+captures). Not landed: releasing captured references - the "low memory" property
+does not hold yet. Measured: 200k iterations capturing a 200-element table peak
+at 326.6 MB, matching the predicted 320 MB of leaked tables, so neither the env
+nor the captured tables are reclaimed. The root cause is an information
+asymmetry: only the creating function knows the env layout, yet the closure dies
+in the holding scope, which sees just {env, entry}. Release therefore has to be
+initiable from the env itself. Two candidate designs are listed above (a drop
+entry as env's first field, guarded by a conservative non-escaping test; or a
+refcount on env with instrumentation at every copy site). Until one lands, "low
+memory" in 1.1 is a requirement to implement, not an existing guarantee.*
+
+## 7. 验收 / Acceptance
 
 * 捕获语义七项实测（§1 表）——已由 `g56_capture` 探针覆盖；
 * 白名单负例：安全区捕获 `ref` 形参被拒；unafe 内同一代码通过；`immut` 与普通捕获不受影响——已覆盖；
