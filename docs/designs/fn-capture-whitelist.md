@@ -181,43 +181,37 @@ var f: fn(i64) -> i64 = func(t) -> i64 { return t + 1 }
   * 实测：循环 20 万次创建「捕获 200 元素表的闭包字面量」⇒ 峰值从 **326.6MB 降至 8.2MB**；
     探针 `tiec/tests/language/closure_env_release.tie`。
 
-**未落地（已知缺口）**：**「跨函数返回的闭包」的释放**。
+**已落地（2026-10-02 下半场，方案 (b)）**：**「跨函数返回的闭包」的释放**。
 
-* 形态：`var f = mk()`，其中 `mk() -> fn() -> i64` 内部创建并返回闭包（工厂模式）。
-  编译器在赋值点**不知道**该闭包是哪个字面量 ⇒ 不知道调用哪个 `drop_<id>`。
-* 实测：该形态循环 20 万次 ⇒ 峰值仍 **299.6MB**（残余泄漏）。
-* 这正是 **env 首字段（析构入口）的用武之地**：释放点无需知道布局，读 `env[0]` 间接调用
-  即可。待补的是**读路径的 null 守卫**（`env` 可能为 null，即无捕获闭包），候选做法：
-  （a）生成一个全局辅助函数 `tie_clo_drop_if(env)`（内部 `if (env) ((void(*)(void*))env[0])(env);`），
-  释放点无条件调用它——但需解决多编译单元静态链接时的符号唯一性；
-  （b）约定所有闭包的 env 恒非 null（无捕获时指向一个静态 env，其析构入口为 no-op），
-  释放点即可零守卫直接读 `env[0]`——代价是无捕获闭包不再以 null 表示 env，
-  需核查依赖该约定的既有路径。
-* 根因是**信息不对称**：env 的布局（捕获了哪些引用、各在哪个字段）**只有创建闭包的函数
-  知道**，而闭包值消亡在**持有它的作用域**里；后者拿到的 fn 值只是 `{env, entry}`，
-  无从知道如何释放 env 内的引用。
-* 因此释放必须由 env **自带**完成信息。候选落地方案（择一，待定）：
-  * **env 首字段放析构入口**：env = `{ drop, cap0, ... }`，`drop(env)` 释放各捕获引用并
-    free(env)；持有方在闭包值消亡点调用。**风险**：闭包值可被复制（赋值/传参/存容器），
-    两个持有方各调一次 drop ⇒ 重复释放。故需配合"仅在**不逃逸**的局部闭包值上发射 drop"
-    的保守判定（逃逸者不释放，残余泄漏但安全）。
-  * **env 引用计数**：env = `{ rc, cap0, ... }`，复制点 retain、消亡点 release。
-    能覆盖逃逸闭包，但需在**全部复制点**插桩，漏一处即错。
-* 未落地前，§1.1 的"内存低"应视为**待实现的要求**，而非既有保证。
+* 形态：`var f = mk()`——闭包由函数返回，赋值点上编译器**不知道**是哪个闭包字面量，
+  故无法按名字调用其析构（方案 (a) 止步于此，实测峰值 291.3MB）。
+* 关键：**释放点从 env 首字段读析构入口**，不再需要知道 drop 名 ⇒ 工厂形态被统一覆盖。
+* 配套：**无捕获闭包不再用 `env = null`**，改为指向一个**每函数一份的静态槽**，
+  其析构入口是 no-op 且**永不 free**（槽是静态的）⇒ env 恒有效，释放点**无需判空**
+  （省 ptrtoint+icmp+br）。回边释放的「首次进入」零值也随之 select 成该静态 env。
+* 登记面放宽为「**任何 fn 类型初值**」（不再限闭包字面量）；逃逸者仍由 esc 分析排除
+  （含 `var g = f` 的复制——裸变量读会 kill 源）。
+* 实测：工厂形态峰值 **291.3MB → 8.2MB**；字面量形态保持 **8.5MB**。
+  探针 `tiec/tests/language/closure_env_release_factory.tie`（含无捕获闭包混用，
+  验证静态 env 不被误 free）。
 
-*EN: Landed: retain on reference capture (the "no dangling" half of memory safety;
-its absence previously made closures capturing a table crash on call), and
-env sizing by real aggregate layout (fixing an out-of-bounds store for aggregate
-captures). Not landed: releasing captured references - the "low memory" property
-does not hold yet. Measured: 200k iterations capturing a 200-element table peak
-at 326.6 MB, matching the predicted 320 MB of leaked tables, so neither the env
-nor the captured tables are reclaimed. The root cause is an information
-asymmetry: only the creating function knows the env layout, yet the closure dies
-in the holding scope, which sees just {env, entry}. Release therefore has to be
-initiable from the env itself. Two candidate designs are listed above (a drop
-entry as env's first field, guarded by a conservative non-escaping test; or a
-refcount on env with instrumentation at every copy site). Until one lands, "low
-memory" in 1.1 is a requirement to implement, not an existing guarantee.*
+**§1.1 三性质至此全部满足**：捕获 O(1) 且不复制容器（性能强）· 闭包值消亡时归还捕获引用
+（内存低，两种形态均达标）· 存续期内始终有效、不悬垂不重释（内存安全）。
+
+**仍未覆盖**：闭包**逃逸**到容器/实参时（esc 判为逃逸）**不释放**——残余泄漏，
+但绝不会产生悬垂引用（方向恒偏保守）。这是设计取舍：要覆盖逃逸需引入引用计数或更精细的
+逃逸分析，见「两个候选设计」的 B 案。
+
+*EN: Landed (design B): releasing closures returned from a function. The release
+site reads the destructor entry from the env's first field, so it does not need
+to know which closure it holds - which is exactly what the factory shape
+`var f = mk()` requires. Supporting it: a capture-free closure now points at a
+per-function static slot whose destructor is a no-op and is never freed, so env
+is never null and the release path needs no null check. Registration widened to
+any fn-typed initialiser; escape is still excluded by the esc analysis. Measured:
+factory 291.3 MB to 8.2 MB, literal stays at 8.5 MB. All three properties in 1.1
+now hold. Still not covered: a closure that escapes (into a container or as an
+argument) is not released - residual leak, never a dangling reference.*
 
 ## 7. 验收 / Acceptance
 
