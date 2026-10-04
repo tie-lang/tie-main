@@ -131,6 +131,18 @@
   原被归为「安全加固」，实际是**两个标准库文件的可用性前置**：
   `dataflow.tie` 头无 `unsafe:share` 且门禁只认函数级 ⇒ 整库不可编译；`big.tie` 同类。
   ⇒ 提到 `p.9.13.5` 之前，且优先于 §1 其余各项。
+* `[~]` **表默认值语义（`shared` / `deep` / COW）**——按「不用 unsafe 即无心智压力」原则裁决
+  ⇒ 默认**值语义**（COW 支撑）+ **`shared`** 显式共享（不回退到 unsafe 的高性能路径）
+  + **`deep`** 显式深拷贝。方案见 `docs/designs/table-value-semantics.md`。
+  * `[x]` **阶段 1 · `shared` 关键字**（r.1.6.12，tiec `f2778eb` / tlib `60bca02`）：
+    token 117、关键字 70→71、bit5、`shared × deep` 互斥（E00905）；
+    tlib tls 两处同名标识符改名（`shared` 不能再作标识符）。
+  * `[ ]` **阶段 2 · 修复 rc 不变量**——聚合值拷贝逐字段 retain（+ 析构侧 release 成对）。
+    ⚠ **必须与阶段 3 同批**：单独落地会把「静默改形状」换成「运行时中止」，**比现状更差**。
+  * `[ ]` **阶段 3 · 接入 COW**——写路径走 `tbl_cow`；越界写随之变为「分离后扩容」，
+    rc 分流门禁**可删除**；`deep` 改走 COW（免无条件克隆）；`shared` 跳过 COW 生效。
+  * `[ ]` **阶段 4 · 迁移 ≈480 处**（tiec 104 / tlib 374 / tiu 73）：逐个判定「本意共享 ⇒ 标 `shared`」。
+    ★ 需**过渡开关**避免自举死锁。
 * `[!]` **`p.8.1.8` 的 struct payload 是 `p.8.1.5` / `p.8.2.1` 的解锁钥匙**
   `p.8.1.5`（可空链）与 `p.8.2.1` 需要 `Option<Struct>`，而 `Option<Struct>` 构造不出来是因为
   enum payload 白名单不放 struct；`p.8.1.8` 又要等 `p.8.1.5`。**循环依赖，唯一出路是先放 struct payload。**
@@ -371,6 +383,8 @@
 * `docs/designs/concurrency-model.md`（**修正**：现状表「actor 未实现」已证伪）
 * `docs/designs/fn-capture-whitelist.md` §1（**更新**：写明表默认共享句柄；补 `deep` 值语义形参说明）
 * `docs/designs/domain-classification.md` §3.2（**更正**：`spawn` 是共享可变数据的入口）
+* `docs/designs/table-value-semantics.md`（**新增**：表默认值语义的分阶段实施方案；
+  落地后须回改 ROAD `p.9.11.22` / `fn-capture-whitelist.md` §1 / ch13 §13.1 三处的表捕获表述）
 * `CONTRIBUTING.md`（**待评估**：§0 的档位-发布错位是否需要在此写明——
   现行文字仍说「每出一个新的预发布版递增」，与实际不符）
 
