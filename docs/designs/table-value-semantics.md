@@ -55,6 +55,29 @@
 
 ### 阶段 2 — 修复 rc 不变量（**最难，也最关键**）
 
+**精确点位（2026-10-04 侦察，提交 `f2778eb` 时点）**
+
+| 类别 | 位置 | 现状 | 要做 |
+| --- | --- | --- | --- |
+| 判据 | `irgen_stmt_gen_p1.tie:179` | `types.is_table(iv4)` —— **只看一层** | 换 `type_has_table_field(ty)` **递归**判据 |
+| 聚合拷贝 | `irgen_agg_p3.tie` 的 struct 拷贝 / `tig_struct_construct` | 只发整聚合 load+store，**无逐字段 retain** | 拷贝后按字段 GEP + retain |
+| 聚合构造 | 同上 | 同 | ⚠ 同一条「瞬态值免 retain」规则必须沿用（见下） |
+| 析构 | `irgen_stmt_p1.tie:257` `tig_tbl_exit_release` | 只 load/release `g_tblcand_allocas`（**表/map 直接局部**） | 增并行的「聚合候选」表（槽 + 类型），出口按字段 GEP + release |
+| 循环回边 | `irgen_stmt_p1.tie:276` `tig_loopvar_release` | 同 | 同上（否则循环内聚合的字段不释放） |
+| 容器元素 | `irgen_agg_p3.tie:511`（**已修重复**，见提交 `b4acf9d`） | 别名元素 retain 一次 | 递归：元素若为聚合，其表字段亦需 retain |
+
+**必须沿用的既有规则（漏了就会泄漏）**：`s_tags[init] != 7 && != 12`
+—— **调用（tag 7）与表字面量（tag 12）是瞬态值**，所有权直接转移给目标槽，**不 retain**。
+聚合路径同理：`var s = S(table_new_i64())` 构造出的表是瞬态的，**不能 retain**
+（否则出口 release 只 -1，净剩 1 ⇒ 泄漏）。判据要区分「拷贝既有别名」与「构造新鲜值」。
+
+**已完成的先决清理**：
+* `b4acf9d` 去掉 `rp_decl` 里**逐字重复两遍**的 retain 块（`57d09a6` 搬运函数据致）
+  ⇒ 行池别名元素 rc 多计 1、永不释放。修复后内存峰值 8.8 → 8.6 MB。
+* 待清：`irgen_p2.tie:665` 注释「deep 按 rc>1 才克隆」**过时**（实际无条件克隆），
+  与 `irgen_str_p2.tie:76` 的说明互斥 —— 统一措辞。
+
+
 让「聚合值拷贝」逐字段 retain/release，使 `rc == 别名数` 成立。
 
 **要做**：
