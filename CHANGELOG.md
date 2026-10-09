@@ -45,6 +45,31 @@
   inits; consteval `%%=`; any-rebind boxing fix; `..=` verified. Fixed point `f34c90e4`;
   regression 249/10 (all 10 FAILs pre-existing via stash comparison); downstream green.
 
+## [fix] actor 并发双缺口修复：消息 ABI 的 ptr 表示返回 + 消费者出站同步 RPC 自死锁；reentrant 端到端破环首次全绿（2026-10-09）
+
+* **string/table 经消息 ABI 回传**（§1.1）：dispatch 命中块对 ptr 表示返回
+  （string/table/map/port）ptrtoint 打包进 result@96（i64 槽），调用方
+  （同步 RPC 与 `await`）inttoptr 还原（`actor_ret_via_ptr` 单源）——曾直接
+  `ret ptr` 于 i64 函数；actor 表/映射字段缺省改发真实空表（镜像 struct 路径，
+  曾用空串常量指针冒充表句柄 ⇒ table_push 段错误）。async 返回限制随之放宽
+  到 ptr 表示类型。
+* **消费者出站同步 RPC 挂死**（§1.1）：根因 = `yield_wait` 谓词 `pend>0` 把
+  **调用者自己的任务**计入（pop 不减、task_done 才减）⇒ 任务内等待自死锁
+  （main 上下文自身不入计数故侥幸正确）。`tig_actor_wait`/`tig_actor_wait_reent`
+  退让改用 `tl_sync$sleep(1)`（无锁，与 sync_enter/reserve 同款）。
+* **顺带**：嵌套排空的空队判定分支反演（true→proc）⇒ 空队处理垃圾槽 +
+  有消息不消费——IR 审读 + 全局事件日志定位。**验收**：不动点 `dc583eb4`；
+  回归 **252/10**（FAIL 名单与既有基线逐字一致）；reentrant 端到端破环探针
+  `marks=123` 首次全绿（`reent_e2e_probe`）；消费者出站 RPC `marks=5`（曾 rc=124）；
+  string/table 消息 ABI 探针（`actor_str_probe`）；下游 tiu/tdb 全绿。
+  ⚠ 内置 `yield()` 从任务内调用仍会踩 yield_wait 自锁（无任务身份可判）——文档化限制。
+  EN: fixed both actor concurrency gaps: ptr-repr message results (string/table/
+  map/port) via dispatch ptrtoint + caller inttoptr, real empty tables for
+  actor table fields; consumer outbound sync-RPC self-deadlock (yield_wait
+  counting the caller's own task) replaced with lock-free 1ms sleeps; step
+  empty-queue branch inversion found and fixed. Fixed point `dc583eb4`;
+  regression 252/10; reentrant end-to-end cycle-break probe green (`marks=123`).
+
 ## Shipyard-2026.2-preview.2（2026-09-13）
 
 > **2026.2 预发布 2 = 语言层全量 + 生态/工具链前半**：语言两轮 40 项（p.8 第一轮 19 项 +

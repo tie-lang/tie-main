@@ -157,19 +157,33 @@
     ★ 正向用例与负向同等重要：修法不能只是「别再输出它」。  
     ⇒ **交付纪律可放宽**：三处「`.ll` 逐字节等价」验收**不再需要固定缓存状态**（仍建议统一 `--no-cache` 以求快）。  
     ★ `p.9.15.1`（缓存键未含编译器版本）**已一并解决**（tiec `aaa7387`，见下）。
-- `[!]` **actor 的 string 字段 / string 返回值 —— 既有缺口（2026-10-09 实锤，未修）**  
-  actor 字段类型为 `string`（无论有无初值）⇒ LLVM `ret ptr %N`（函数结果类型 i64）  
-  编译失败；actor 消息方法返回 `string` 同病（消息 ABI 的 result@96 是单 i64 槽，  
-  handler 返回表示未接通）。**新旧编译器同样失败** ⇒ 非本轮回归；p.9.11 的  
-  async 返回值因此先只放行 i64/u64。**最小复现**：`actor A { var s: string }` +  
-  `run A()`。**真正修法** = 消息结果区按类型化字节缓冲扩展（对齐参数区的 64 字节  
-  类型化打包），或 string 走堆句柄约定。
-- `[!]` **actor 消费者任务内出站同步 RPC 挂死 —— 既有缺口（2026-10-09 实锤，未修）**  
-  actor 方法体内 `run B()` + `b.f()`（同步 RPC）⇒ 程序挂死（rc=124，新旧编译器  
-  同样）。症状指向消费线程阻塞于 `tig_actor_wait`（yield_wait/pool_idle_wait 在  
-  任务切片内不自洽）或 S-pool 调度语义。**它挡住了 `reentrant`（规范 §10.7）的  
-  端到端破环验证**——reentrant 的嵌套排空分支已生成（IR 已核），待此缺口修复后  
-  补运行期探针。**最小复现**：`actor A { pub async func s() { var b = run B(); b.f() } }`。
+- `[x]` **actor 的 string 字段 / string 返回值 —— 已修（2026-10-09 晚，本轮）**  
+  **两个独立根因**：① dispatch（`fn(ptr,i64)->i64`）命中块对 handler 结果直接  
+  `ret hret`——string 方法 handler 按语义类型返回 ptr ⇒ `ret ptr` 类型错；  
+  ② actor 表/映射字段**缺省**时 `tig_default_val` 返回空字符串常量指针冒充表句柄  
+  ⇒ `table_push` 打在只读串上段错误（struct 构造路径早有 `s21_table_new_ty` 正解，  
+  actor 记录路径没跟上）。**修法**：ptr 表示返回（string/table/map/port）在  
+  dispatch 侧 ptrtoint 打包进 result@96（i64 槽）、调用方（同步 RPC 与 `await`）  
+  inttoptr 还原（`actor_ret_via_ptr` 单源）；actor 字段缺省镜像 struct 路径发  
+  真实空表。**验收**：string 字段（无初值/带初值）+ string 同步 RPC + table 字段  
+  与 table 返回探针全绿（`actor_str_probe`）；async 返回限制随之放宽到 ptr 表示  
+  类型（`await` 取 string/table 结果可用）。
+- `[x]` **actor 消费者任务内出站同步 RPC 挂死 —— 已修（2026-10-09 晚，本轮）**  
+  **根因 = `yield_wait` 的 pend 自计**：`g_pend_s` 在 spawn 时 +1、`task_done` 才 -1  
+  （pop 不减）⇒ **运行中的任务恒计入 pend**；`while g_pend_s > 0` 从任务内调用时  
+  谓词永真（自己等自己）= 自死锁。main 上下文自身不入计数故侥幸正确——这正是  
+  「main 发 RPC 正常、消费者发 RPC 必挂」的判别式。**修法**：`tig_actor_wait` /  
+  `tig_actor_wait_reent` 的退让改用 `tl_sync$sleep(1)`（无锁 OS 睡眠，与相邻  
+  `tig_mq_sync_enter`/`tig_mq_reserve` 同款约定），main / 池 worker 两上下文均安全。  
+  **验收**：消费者出站 RPC 探针 `marks=5`（曾 rc=124）；**reentrant（§10.7）端到端  
+  破环探针 `marks=123` 首次全绿**——reentrant 方法阻塞于对外同步 RPC 期间，嵌套  
+  排空真实消费了本 actor 队列中的异步消息（`reent_e2e_probe`）。  
+  ⚠ 修复过程顺带实锤**step 分支反演**：嵌套排空的空队判定 `icmp eq h,p` 的  
+  true/false 目标曾写反 ⇒ 空队处理垃圾槽（字段被踩成指针值）、有消息反而不消费  
+  ——IR 审读 + 全局事件日志（`ev=S1;[B-run]S2;Qrun;G;`）定位。  
+  ⚠ 遗留注意：内置 `yield()` 从任务内调用仍会踩 `yield_wait` 的同一自锁  
+  （语义期无任务身份可判），文档化限制；S-pool P=2 下 A→B→A 破环已够用，  
+  更深嵌套依赖池扩容。
 - `[x]` **分支表达式混宽数值臂 —— 已修（2026-10-09，tiec `f993abb`）**  
   **最小复现**：`var x = if c { 1 } else { 2i32 }`（三目 `c ? 1 : 2i32`、switch 表达式同病）⇒  
   语义层**放行**（「同为 int / 同为 float 即兼容」）但**类型取首臂、phi 无转换** ⇒ LLVM 直接报  
@@ -231,11 +245,12 @@
   关键字 120 + val bit6 + 解析期「仅 actor 方法」拒绝 + `ac_mreent` 登记 + 消费者  
   嵌套排空（`actor_task_step`/`actor_task_nested`：reentrant 方法的同步 RPC 等待期  
   在同线程排空本 actor 队列的**异步**消息——不碰单飞、不写 done@104 单槽）；  
-  ⚠ 端到端破环探针被**既有缺口**挡住：消费者任务内出站同步 RPC 挂死  
-  （新旧 exe 同样 rc=124，非本轮回归），单列待修。⑨ **`await` + async 返回值**  
+  ✅ 端到端破环探针同日稍后随 §1.1 两缺口修复全绿（`marks=123`，见 §1.1）。  
+  ⑨ **`await` + async 返回值**  
   （规范 §10.6）：关键字 121 + `future<T>` 凭据类型（15<<40 段，i64 句柄表示；  
   同一 actor 至多一个未 await 凭据 = mq_sync 门闩语义）+ async 非 void 方法放宽  
-  （仅 i64/u64 返回——result@96 单 i64 槽，其余类型的消息结果表示待接通）+  
+  （i64/u64——result@96 单 i64 槽；ptr 表示类型 string/table/map/port 随同日  
+  §1.1 消息 ABI 修复一并放行）+  
   `await` 前缀（U_AWAIT，错误与结果同路径）；3 项探针全过。  
   **附带修复**：any 变量重绑定的装箱缺口（`v = "text"` 曾 LLVM 类型错——规范 §2.10  
   示例被挡；新旧 exe 对拍实锤为既有缺陷）。**验收**：三阶自举不动点 `f34c90e4`；  
