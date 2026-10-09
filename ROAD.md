@@ -99,25 +99,25 @@
 - `[x]` **`std/dataflow.tie` 整库无法编译 —— 已修（2026-10-07，tiec `96f9c34` + tlib）**  
   **根因不是机制缺失，而是一个规范从未落实的机制**：文件级声明**缺「上下文」那一半**。  
   逐变体实测（结论与规范 §11.6 逐字吻合）：
-  | 变体                         | 结果                     |
-  | -------------------------- | ---------------------- |
-  | 只加 `unsafe:share`（给凭据）     | E00903 —— 有凭据、**缺上下文** |
-  | 只加 `unsafe`（开上下文）          | E00904 —— 有上下文、**缺凭据** |
-  | **`unsafe, unsafe:share`** | 编译成功                   |
-  ★ **双锁设计是自洽的**；缺的是：import 路径**从未为「上下文」做过与 caps 同样的  
-  按模块处理**（2026-10-01 只修了 caps 那一半，注释里写着「主文件声明 `unsafe:mem`  
-  时被导入模块白拿」——同一 bug 的另一半一直留着）。两个方向的偏差同时存在：  
-  ① **模块自己的裸 `unsafe` 被忽略** ⇒ 库无法自证（安全调用方被 E00903 拦）；  
-  ② **主文件的 `unsafe` 上下文扩散给 import 的模块** ⇒ 违反 §11.6「被引入的模块也不  
-  继承引入方的授权」；且 driver 原先**全局**抬升 `g_unsafe_depth`，而语义检查在主文件  
-  解析**之后**统一走 ⇒ 全局量届时已不代表「函数所属模块」。  
-  ⇒ 修法：把「是否声明裸 `unsafe`」与域凭据**完全对称化** —— 按模块扫描  
-  （`scan_file_unsafe`）、按模块保存/恢复（import 处）、**落到每个函数**  
-  （`cap_apply_file`）、检查时按函数抬升（`check_fn`）；driver 的全局抬升删除。  
-  ★ **调用方签名不受影响**（`sig_unsafe` 未动）⇒ 库可自证而**调用方保持安全**。  
-  ★ 回归补 2 条（`tests/_unsafe_probe/`：模块自证 / 父授权不继承）；全树**25 个**  
-  声明裸 `unsafe` 的文件改前改后结果逐一相同。
-- `[!]` **`E00590`：`std/big.tie` 无法编译 —— 但那条检查是「护栏」而非 bug（2026-10-07 重要修正）**  
+  | 变体                                                         | 结果                     |
+  | ---------------------------------------------------------- | ---------------------- |
+  | 只加 `unsafe:share`（给凭据）                                     | E00903 —— 有凭据、**缺上下文** |
+  | 只加 `unsafe`（开上下文）                                          | E00904 —— 有上下文、**缺凭据** |
+  | **`unsafe, unsafe:share`**                                 | 编译成功                   |
+  | ★ **双锁设计是自洽的**；缺的是：import 路径\*\*从未为「上下文」做过与 caps 同样的       |                        |
+  | 按模块处理\*\*（2026-10-01 只修了 caps 那一半，注释里写着「主文件声明 `unsafe:mem` |                        |
+  | 时被导入模块白拿」——同一 bug 的另一半一直留着）。两个方向的偏差同时存在：                   |                        |
+  | ① **模块自己的裸 `unsafe` 被忽略** ⇒ 库无法自证（安全调用方被 E00903 拦）；        |                        |
+  | ② **主文件的 `unsafe` 上下文扩散给 import 的模块** ⇒ 违反 §11.6「被引入的模块也不  |                        |
+  | 继承引入方的授权」；且 driver 原先**全局**抬升 `g_unsafe_depth`，而语义检查在主文件   |                        |
+  | 解析**之后**统一走 ⇒ 全局量届时已不代表「函数所属模块」。                           |                        |
+  | ⇒ 修法：把「是否声明裸 `unsafe`」与域凭据**完全对称化** —— 按模块扫描               |                        |
+  | （`scan_file_unsafe`）、按模块保存/恢复（import 处）、**落到每个函数**         |                        |
+  | （`cap_apply_file`）、检查时按函数抬升（`check_fn`）；driver 的全局抬升删除。    |                        |
+  | ★ **调用方签名不受影响**（`sig_unsafe` 未动）⇒ 库可自证而**调用方保持安全**。        |                        |
+  | ★ 回归补 2 条（`tests/_unsafe_probe/`：模块自证 / 父授权不继承）；全树**25 个** |                        |
+  | 声明裸 `unsafe` 的文件改前改后结果逐一相同。                                |                        |
+- `[x]` **`E00590`：`std/big.tie` 无法编译 —— 但那条检查是「护栏」而非 bug（2026-10-07 重要修正）**  
   最小复现（6 行，已确认）：
   ```
   struct P { var x: i64 = 0 }
@@ -157,6 +157,19 @@
     ★ 正向用例与负向同等重要：修法不能只是「别再输出它」。  
     ⇒ **交付纪律可放宽**：三处「`.ll` 逐字节等价」验收**不再需要固定缓存状态**（仍建议统一 `--no-cache` 以求快）。  
     ★ `p.9.15.1`（缓存键未含编译器版本）**已一并解决**（tiec `aaa7387`，见下）。
+- `[!]` **actor 的 string 字段 / string 返回值 —— 既有缺口（2026-10-09 实锤，未修）**  
+  actor 字段类型为 `string`（无论有无初值）⇒ LLVM `ret ptr %N`（函数结果类型 i64）  
+  编译失败；actor 消息方法返回 `string` 同病（消息 ABI 的 result@96 是单 i64 槽，  
+  handler 返回表示未接通）。**新旧编译器同样失败** ⇒ 非本轮回归；p.9.11 的  
+  async 返回值因此先只放行 i64/u64。**最小复现**：`actor A { var s: string }` +  
+  `run A()`。**真正修法** = 消息结果区按类型化字节缓冲扩展（对齐参数区的 64 字节  
+  类型化打包），或 string 走堆句柄约定。
+- `[!]` **actor 消费者任务内出站同步 RPC 挂死 —— 既有缺口（2026-10-09 实锤，未修）**  
+  actor 方法体内 `run B()` + `b.f()`（同步 RPC）⇒ 程序挂死（rc=124，新旧编译器  
+  同样）。症状指向消费线程阻塞于 `tig_actor_wait`（yield_wait/pool_idle_wait 在  
+  任务切片内不自洽）或 S-pool 调度语义。**它挡住了 `reentrant`（规范 §10.7）的  
+  端到端破环验证**——reentrant 的嵌套排空分支已生成（IR 已核），待此缺口修复后  
+  补运行期探针。**最小复现**：`actor A { pub async func s() { var b = run B(); b.f() } }`。
 - `[x]` **分支表达式混宽数值臂 —— 已修（2026-10-09，tiec `f993abb`）**  
   **最小复现**：`var x = if c { 1 } else { 2i32 }`（三目 `c ? 1 : 2i32`、switch 表达式同病）⇒  
   语义层**放行**（「同为 int / 同为 float 即兼容」）但**类型取首臂、phi 无转换** ⇒ LLVM 直接报  
@@ -191,14 +204,46 @@
 > EN: Slot p.9 is the slot currently in progress. Its 9.0–9.11 shipped with preview.2 but the  
 > slot is not closed. The items below stay in their original numbers.
 
+
 ### 2.1 编译器与语言
 
-- `[ ]` p.9.11 剩余语法糖：`..=` 已回滚后重进待确认 · `%%=` · `is` 类型判定 ·  
-  块/条件管道收尾 · 默认值 const 白名单 · `reentrant` · async 返回值
-  - ⚠ **`reentrant` / `await` 连关键字都不在表内**（`deep` 已随 r.1.6.11 入表，  
-    关键字 69 → **70** 项）⇒ 先做语言契约，非实现问题。
-  - `[!]` `p.9.11.1` **示例写法三处皆错**（`when` / `=>` / 缺逗号）⇒ 订正为 `switch x { 1 -> "a", _ -> "b" }`。
-  - `[ ]` 短闭包**卡在实参位无类型上下文** ⇒ **须先拍板新语法**。
+- `[x]` **p.9.11 剩余语法糖 —— 已收口（2026-10-09，九个子项全部落地或裁定）**  
+  ① **`..=` 闭区间**：716c961 重进后全链已通（for-in/switch 模式/interp/宏反解析），  
+  8 项探针（`range_inc_probe`）确认销项。② **`%%=`**：dd30515 已实现；本轮补  
+  consteval 复合赋值缺 op26（const fn 体内 `x %%= b` 曾静默取零——新旧 exe 对拍实锤），  
+  探针 `const_floormod_probe`。③ **p.9.11.1 示例三错**：`when`/`=>`/缺逗号已按  
+  `switch x { 1 -> "a", _ -> "b" }` 订正（旧 ROAD 归档 + round2 设计稿两处，tie-main `f7ba36b`）。  
+  ④ **`is` 类型判定**（规范 §3.16）：全链落地——关键字 119、`N_IS=207`、优先级链  
+  （in 与比较之间）、左操作数须 `any`（E00907）、rhs 类型节点语义期解析 id 登记给 irgen、  
+  AOT 读 any 装箱 tag 与期望 tag 比较（单源 = `stype.any_expected_tag`，与 tig_box_any  
+  逐条对齐）、interp 复用 `value_matches_ty`；13 项探针 + 3 负例。⑤ **块/条件管道收尾**  
+  （p.9.0-L.2）：interp 补 N_BLOCK_PIPE 分支（此前仅 AOT 有 ⇒ 两引擎不一致）、  
+  interp 补 `表+表` 拼接（对齐 AOT 的 lang::tbl_cat 改写）、10 项探针锁定全形态  
+  （块管道/条件管道/接运算符/读取式/解构/反解构）；「裸内建目标规则」按 D2 裁决  
+  收口：`s -> trim`/`21 -> double` 直通（数据作实参），非一等内置 `-> len` 报 E00488。  
+  ⑥ **默认值 const 白名单**（p.9.0-L.3）：命名参数默认值与 actor 字段初值从「仅字面量」  
+  放宽到 const 白名单（const 引用/常量算术/比较/拼接/三目，结构性判据  
+  `is_const_default_expr` 单源，不依赖前端求值 ⇒ 无收集序问题）；**struct 字段默认值  
+  保持逐构造运行期语义**（tiu DrawList 的 `table_new_*()` 90 处存量依赖，与参数默认值  
+  是两种语义，已裁定分工）。⑦ **短闭包实参位**（用户裁决：按上下文消歧）：形参类型  
+  是 fn ⇒ 语义期展开为闭包（`try_lambda_arg`，用户函数/函数值/命名空间三路实参环），  
+  非 fn 形参保持管道语义与诊断一字不变；7 项探针。⑧ **`reentrant`**（规范 §10.7）：  
+  关键字 120 + val bit6 + 解析期「仅 actor 方法」拒绝 + `ac_mreent` 登记 + 消费者  
+  嵌套排空（`actor_task_step`/`actor_task_nested`：reentrant 方法的同步 RPC 等待期  
+  在同线程排空本 actor 队列的**异步**消息——不碰单飞、不写 done@104 单槽）；  
+  ⚠ 端到端破环探针被**既有缺口**挡住：消费者任务内出站同步 RPC 挂死  
+  （新旧 exe 同样 rc=124，非本轮回归），单列待修。⑨ **`await` + async 返回值**  
+  （规范 §10.6）：关键字 121 + `future<T>` 凭据类型（15<<40 段，i64 句柄表示；  
+  同一 actor 至多一个未 await 凭据 = mq_sync 门闩语义）+ async 非 void 方法放宽  
+  （仅 i64/u64 返回——result@96 单 i64 槽，其余类型的消息结果表示待接通）+  
+  `await` 前缀（U_AWAIT，错误与结果同路径）；3 项探针全过。  
+  **附带修复**：any 变量重绑定的装箱缺口（`v = "text"` 曾 LLVM 类型错——规范 §2.10  
+  示例被挡；新旧 exe 对拍实锤为既有缺陷）。**验收**：三阶自举不动点 `f34c90e4`；  
+  回归 **249/10/SKIP2**（10 项 FAIL 经 stash 重建改动前编译器对拍 = 全部既有/环境项，  
+  +18 全部来自新增探针）；下游 tiu probe_e1/view/layout/tree/diff 与 tdb zd_v3 全绿。  
+  **规范同步**（tie-spec）：§1.6 关键字表补 `deep shared is reentrant await`、  
+  §16.10 运算符速览补 `v is T` / `await f`、§16.13 对照表补两行；PDF 重建自检 OK  
+  （顺带修 make.tsh.tie 的残留 REDACTED 路径 → 相对路径）。
 - `[x]` **if 表达式 —— 已落地（2026-10-09，tiec `cb7627f`；规范 tie-spec `19b3cf8`）**  
   条件取值可直接作表达式：`var x = if cond { a } else { b }`——else 必有（表达式须在  
   任何情形下都有值）· else if 链右递归 · 可作实参/返回值/嵌套 · 条件严格 bool。  
@@ -282,28 +327,28 @@
     `--keep-ir`/`--emit-ir` 不变 · 输出目录**零 `.ll` 残留** · TEMP **零残留** · 回归 228/12 不变。  
     ⚠ 与 §1.1 的「`.ll` 不可复现」同根（**该条已解决**）⇒ 并行确定性可以开谈了。  
     其余（强哈希 / 淘汰治理 / worker 池 / 超级并行 / 并行验收）**未开工**。
-- `[x]` **p.9.16 内存工程 —— 已交付（2026-10-08）**：tiec 前端 `release_ast()` + tsp 的 lazy / 去冗余 / LRU 常驻。
-  落点：`tlib/std/intern.tie` 新增 `intern.reset()`；`compiler/frontend/semantic_q1.tie` **抽出**
-  `reset_sem_state()`（原先 `check_impl`/`check_ast` **各写一份 277 行、逐字节相同**）并叠出
-  `release_ast()`；tsp 侧每条消息末**一处**调释放（`TSP_LAZY` 默认开）、删掉 server 重复的
-  符号索引（`g_sym_*`/`rebuild_syms`/`find_sig`/`split_semi`，hover 改走 analyze 的 `g_i*` 唯一真相）、
-  新增 LRU 常驻治理（`TSP_MAX_OPEN_DOCS`/`TSP_MEM_BUDGET`/`TSP_EVICT_TEXT`，回收粒度可配）与
-  didChange 防抖（`TSP_DEBOUNCE_MS`）。
-  ★★ **验收实测抓到的真根因（已修）**：表赋值插桩的判据含 `tgt_global <= 0`（「全局永驻不 release」）
-  —— 该推理只对一半：全局在**函数退出**时不能释放，但**被覆盖时**旧值确实被丢弃 ⇒ 每次
-  「全局表重赋值」泄漏整张旧表。隔离实测（30 万次、每次 1000 元素新表）：**峰值 2.43 GB**，
-  而同形局部目标仅 **9.1 MB**。这正是 LSP 随编辑线性增长的根因，也正是 `release_ast()`
-  靠「重绑全局」**收不回内存**的原因（重绑本身即泄漏动作）。修后该探针峰值 **9.08 MB**。
-  验收：不动点 `n2==n3`；回归 **231 PASS / 10 FAIL / 2 SKIP**（FAIL 集合与改动前逐行相同，
-  231 含本轮新增的 `tests/language/global_table_rebind.tie`）；tiu/tdb/trm-lite 消费方探针产物
-  逐字节相同；LSP 稳态工作集 **346 MB → 150 MB（−57%）**（10 文档 × 20 次真变更）。
-  旋钮全部**实测生效**（`lsp_knobs.py` RESULT ALL PASS）；`lsp_smoke{1,2,3,5,6}` PASS，
-  smoke4/7 的失败已用 HEAD 源码基线二进制复现 ⇒ **既有失败**。
-  ⚠ 剩余：**字符串无生命周期管理**（重绑全局 `string` 亦泄漏，实测 300k 次 ≈ 43 MB）⇒ 修 A 后
-  仍有 ~4.5 MB/次分析的线性增长；给字符串加生命周期是运行时/ABI 级改动，**单列后续项**。
-  ⚠ 附带修复：frontend 有 7 个纯文本工具（`has_prefix`/`slice`/`trim`/…）**裸名依赖** `driver/util.tie`，
-  driver 构建可见、只编译 frontend 树（LSP）时全缺 ⇒ **LSP 根本编不出来**；已迁入
-  `compiler/frontend/textutil.tie`（frontend 自此自足，符合 p.9.21.1 依赖方向契约）。
+- `[x]` **p.9.16 内存工程 —— 已交付（2026-10-08）**：tiec 前端 `release_ast()` + tsp 的 lazy / 去冗余 / LRU 常驻。    
+  落点：`tlib/std/intern.tie` 新增 `intern.reset()`；`compiler/frontend/semantic_q1.tie` **抽出**    
+  `reset_sem_state()`（原先 `check_impl`/`check_ast` **各写一份 277 行、逐字节相同**）并叠出    
+  `release_ast()`；tsp 侧每条消息末**一处**调释放（`TSP_LAZY` 默认开）、删掉 server 重复的    
+  符号索引（`g_sym_*`/`rebuild_syms`/`find_sig`/`split_semi`，hover 改走 analyze 的 `g_i*` 唯一真相）、    
+  新增 LRU 常驻治理（`TSP_MAX_OPEN_DOCS`/`TSP_MEM_BUDGET`/`TSP_EVICT_TEXT`，回收粒度可配）与    
+  didChange 防抖（`TSP_DEBOUNCE_MS`）。    
+  ★★ **验收实测抓到的真根因（已修）**：表赋值插桩的判据含 `tgt_global <= 0`（「全局永驻不 release」）    
+  —— 该推理只对一半：全局在**函数退出**时不能释放，但**被覆盖时**旧值确实被丢弃 ⇒ 每次    
+  「全局表重赋值」泄漏整张旧表。隔离实测（30 万次、每次 1000 元素新表）：**峰值 2.43 GB**，    
+  而同形局部目标仅 **9.1 MB**。这正是 LSP 随编辑线性增长的根因，也正是 `release_ast()`    
+  靠「重绑全局」**收不回内存**的原因（重绑本身即泄漏动作）。修后该探针峰值 **9.08 MB**。    
+  验收：不动点 `n2==n3`；回归 **231 PASS / 10 FAIL / 2 SKIP**（FAIL 集合与改动前逐行相同，    
+  231 含本轮新增的 `tests/language/global_table_rebind.tie`）；tiu/tdb/trm-lite 消费方探针产物    
+  逐字节相同；LSP 稳态工作集 **346 MB → 150 MB（−57%）**（10 文档 × 20 次真变更）。    
+  旋钮全部**实测生效**（`lsp_knobs.py` RESULT ALL PASS）；`lsp_smoke{1,2,3,5,6}` PASS，    
+  smoke4/7 的失败已用 HEAD 源码基线二进制复现 ⇒ **既有失败**。    
+  ⚠ 剩余：**字符串无生命周期管理**（重绑全局 `string` 亦泄漏，实测 300k 次 ≈ 43 MB）⇒ 修 A 后    
+  仍有 ~4.5 MB/次分析的线性增长；给字符串加生命周期是运行时/ABI 级改动，**单列后续项**。    
+  ⚠ 附带修复：frontend 有 7 个纯文本工具（`has_prefix`/`slice`/`trim`/…）**裸名依赖** `driver/util.tie`，    
+  driver 构建可见、只编译 frontend 树（LSP）时全缺 ⇒ **LSP 根本编不出来**；已迁入    
+  `compiler/frontend/textutil.tie`（frontend 自此自足，符合 p.9.21.1 依赖方向契约）。    
   实录：`tiec/docs/p916-memory-findings.md`。
 - `[~]` `p.9.17.3` 直驱——**前半落地**（变量环境 interned id 化 + `call_fn` 全 nid 化）。
 - `[ ]` p.9.17.4 分级 JIT · p.9.17.5 验收。
@@ -316,7 +361,6 @@
 - `[~]` 中端 pass **卡在「需先有 IR 表达」**（依赖 §1.1 的可复现性口径先定）。
 - `[ ]` **p.9.22 结构化输出与 tinker 全节未动**——symtab dump · 产物符号表 ·  
   tinker 收发三件 · `tink pipe` 端到端 · 文档收口。**本档单模块最大的未开工面。**
-
 
 ### 2.2 标准库
 
@@ -417,8 +461,10 @@
   `irgen_rt_p2.tie:189-196` 有实现，四种字段初值实测**真落盘**；  
   但官方验收探针 `s10_8.tie` **只声明字段从不读取**，验收是空的。  
   ⇒ 且全类型验收被 §1.2 的「actor 非 i64 返回值」挡住。
-- `[ ]` `p.8.3.2` async 结果回传——`await` 连关键字都不在表内，  
-  但 **fire-and-forget 半边已通**（原 `[ ]` 低估）。
+- `[~]` `p.8.3.2` async 结果回传——**前半落地（2026-10-09，见 §2.1 p.9.11⑨）**：  
+  `await` 关键字 + `future<T>` 凭据 + async 非 void（i64/u64）调用即凭据、  
+  await 取值全链通。**余下**：非 i64 槽类型的消息结果表示（string/聚合——  
+  handler `ret ptr` 既有缺口）、任务图（`graph()`）。
 
 ### 3.3 p.9 档已出台的部分 → `Shipyard-2026.2-preview.2`
 

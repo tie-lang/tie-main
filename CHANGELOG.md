@@ -20,6 +20,31 @@
 > 5. Major-version archive: on stable release, copy this file to `<version>.CHANGELOG` at the repo root, then start a fresh one.
 > 6. **Dual-track numbering p.x.x.x (P) / r.x.x.x (R)**: p = preview (P, new features), r = stable (R, optimization/stability only), major version omitted (preview\.5 → p.5); first part = release slot, second part = development module (formerly "milestone"), third part = sub-item; plan only the first two parts per release, the third auto-increments. The stable and preview are **dual-track** (two independent tracks): both share the x.y.z format but **number independently and neither continues the other** (the stable is built on its preview but does not reuse its sub-item numbers). Grouping/numbering uses **only p.x.y.z and r.x.y.z** — no "stage-X" grouping labels. Letter-digit tags (H1/M1/P1) are forbidden. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [feat] p.9.11 剩余语法糖收口：`is` 类型判定 / `await` + async 返回值 / `reentrant` / 短闭包实参位 / 管道与 const 白名单收尾（2026-10-09）
+
+* **`is` 类型判定（规范 §3.16）**：`v is T` 全链（关键字 119 / N_IS=207 / 优先级 in 与
+  比较之间 / 左操作数须 `any` / AOT 读 any 装箱 tag（单源 `stype.any_expected_tag`）/
+  interp 复用 value_matches_ty）。**`await` + async 返回值（规范 §10.6）**：`future<T>`
+  凭据类型（15<<40 段，i64 句柄表示）+ async 非 void（i64/u64）调用即凭据 + `await`
+  取值（错误与结果同路径）。**`reentrant`（规范 §10.7）**：actor 方法重入修饰——
+  阻塞于对外同步 RPC 期间同线程嵌套排空本 actor 异步消息（actor_task_step/nested）。
+* **短闭包实参位**（按上下文消歧）：形参类型 fn ⇒ 语义期展开为闭包（三路实参环），
+  非 fn 形参管道语义不变。**管道收尾（p.9.0-L.2）**：interp 补块管道与 `表+表` 拼接
+  （两引擎一致）。**const 白名单（p.9.0-L.3）**：参数默认值/actor 字段初值从仅字面量
+  放宽到 const 引用与常量算术（结构性判据单源）；consteval 补 `%%=`。
+* **附带修复**：any 变量重绑定装箱缺口（§2.10 示例被挡）；`..=` 销项确认（8 项探针）；
+  p.9.11.1 示例三错订正。**验收**：不动点 `f34c90e4`；回归 249/10（10 FAIL 经
+  stash 对照 = 全部既有）；tiu/tdb 下游探针全绿。**新增 9 个回归探针 + 12 个语言正负例**。
+  ⚠ 既有缺口实锤入 ROAD §1.1：actor string 字段/返回、消费者出站同步 RPC 挂死
+  （挡住 reentrant 端到端破环验证）。
+  EN: p.9.11 remaining sugar closed: `is` type test (spec 3.16) full stack; `await` +
+  async returns via `future<T>` credential (i64 handle, mq_sync latch discipline);
+  `reentrant` actor modifier with same-thread nested drain of async messages;
+  short-closure argument position via context disambiguation; pipe interp parity
+  (N_BLOCK_PIPE + table concat); const whitelist for parameter defaults & actor field
+  inits; consteval `%%=`; any-rebind boxing fix; `..=` verified. Fixed point `f34c90e4`;
+  regression 249/10 (all 10 FAILs pre-existing via stash comparison); downstream green.
+
 ## Shipyard-2026.2-preview.2（2026-09-13）
 
 > **2026.2 预发布 2 = 语言层全量 + 生态/工具链前半**：语言两轮 40 项（p.8 第一轮 19 项 +
