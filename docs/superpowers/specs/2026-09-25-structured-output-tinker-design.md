@@ -121,7 +121,14 @@ compiler/tinker/
   tinker_test.tie   自检：收发往返 + 与 std/tink 互验 + 损坏帧注入
 ```
 
-**帧协议**：`[len u32 BE][payload][crc u32 BE]`（v1 CRC32-IEEE 先行；tsha1f v2 强校验为后续小任务）。帧载荷 = **tink 信封 record**：
+**帧协议**：`[len u32 BE][payload][crc u32 BE]`（v1 CRC32-IEEE 先行；tsha1f v2 强校验为后续小任务）。
+> ⚠ 现状注（2026-10-10 实现时校核）：v2 帧**已先行落地**于 `std/tink_v2.tie`（namespace
+> tink2；magic "tk" + flags + 扩展头，完整性 = **tsha2 族**——tsha1 已随 tsha2 波次退役；
+> 见 `2026-09-05-tink-v2-design.md`）。tinker 实现取 v1 帧（本设计「v1 先行」），且经
+> 探针实测：**tink2 读侧 v1 兼容路径可完整读 tinker 发出的全部帧**（CRC 校验 + 载荷字节
+> 一致）。将 tinker 切到 v2 发送/解析为后续小任务。
+
+帧载荷 = **tink 信封 record**：
 
 | 字段 | 内容 |
 | --- | --- |
@@ -235,7 +242,8 @@ ROAD 编号 p.9.22.1-13（2026.2）；每个小任务带探针，绿了才进下
 ## 11. 非目标（YAGNI，本阶段不做）
 
 * hub 网络 IPC 实装（形态 B 只预留信封/路由字段）；
-* tink v2 帧（tsha1f 强校验）——v1 CRC32 先行，v2 后置小任务；
+* tink v2 帧（`std/tink_v2.tie`/tink2，tsha2 完整性）——v1 CRC32 先行可读；
+  v2 发送/解析为后续小任务（v2 读侧已实测兼容读 tinker 的 v1 帧）；
 * compile-request 服务模式（tiec 作为常驻编译服务收请求）；
 * 增量 dump / dump 流式分块（大 AST 体积优化列式已覆盖首层，zstd 声明位留给 zd v2）；
 * LSP/tiedap/tshell 的消费端接线（结构化输出是他们前置，接线各归其档）。
@@ -256,4 +264,4 @@ ROAD 编号 p.9.22.1-13（2026.2）；每个小任务带探针，绿了才进下
 * **伴生符号表**：写入点 = 前端出口（library/class 且未 `--no-sym` 时）——缓存命中（front 仍跑）也产出；失败路径不写。
 * **tinker**：帧/CRC 与 std/tink 逐字节一致（探针双向互验）；CRC32 查表自实现；`--tink` 模式人读文本经 `driver.txt`（dbg_txt）单一出口改走 stderr（编译路径 println 全量收敛）；diag 帧 name = 渲染文本（收侧直出 stderr）、payload = 结构化 diag 记录，且成功但有警告时同样发出（摘要 + 记录）；回执（hello-ack）与无落盘透传帧同发送阶段帧共用 **FIFO 出站缓冲**（回执先于产物帧写出）；落盘名白名单清洗（[A-Za-z0-9._-]，≤128，拒首点/分隔符——帧来自不受信来源，绝不写出 --tink-save 目录）。
 * **验收证据（2026-10-10）**：三阶不动点 `167f60b9…`（n2==n3）升格；回归 252/10/2（FAIL 集合与改动前逐行一致——10 项全为既有）；`--emit` 六通道落盘 + 确定性（两次编译 md5 全同）+ td 经 `--compress-data` 解析回；use→decl 解析修复（物理段模型前 16/149 → 后 **149/149**，小样例）；`.sym.zd` 与 `--no-sym`；`.tir` 段 8 读回（dump 摘要报「语义符号表 51 列/1185 行」）；tinker 自往返/管道（产物字节一致）/损坏帧拒帧（rc=1）/std↔tinker 交叉互验（std 解 tinker 帧 + std 重编码 tinker 解，载荷逐字节一致）；tink 全路径（hello→hello-ack 回执 FIFO、未知 kind 跳过、失败/解析错误/警告三类 diag 帧带结构化载荷）；zd↔td 双形态逐列逐行机械比对（四阶段全一致）；shared/缓存命中的伴生 .sym.zd 均产出。
-* **未做（原非目标 + 新增后续项）**：hub 网络 IPC（形态 B 预留）、tink v2 帧（tsha1f 强校验）、compile-request 服务、LSP/tiedap/tshell 消费端接线；td 行投影增强；回归夹具化（探针当前仓外运行，按仓库卫生纪律不入库）。
+* **未做（原非目标 + 新增后续项）**：hub 网络 IPC（形态 B 预留）、tink v2 帧发送/解析（tink2/tsha2 完整性；v1 帧已可被 v2 读侧兼容读，实测通过）、compile-request 服务、LSP/tiedap/tshell 消费端接线；td 行投影增强；回归夹具化（探针当前仓外运行，按仓库卫生纪律不入库）。
