@@ -42,8 +42,11 @@
 * 发布/运行时的标准形态；v2 规范已定稿（10 字节头 + 字段协议）
 
 ### 1.4 专项格式 / Specialist Formats（载体，基于 td/zd）
-* **tieir**：编译器 IR（模块头/类型表/符号表/列式 IR 体/导出表）
+* **tieir**：编译器 IR（模块头/类型表/符号表/列式 IR 体/导出表/**段 8 语义符号表（v3）**）
 * **tink 帧协议**：跨进程/网络（长度前缀 + CRC + tsha1f 强校验）
+  —— **tinker（tiec 内嵌，2026-10-10 落地）**：帧 = len(u32 BE)+payload+crc(u32 BE)，
+  与 `std/tink` 逐字节一致（探针双向互验）；tiec 阶段记录（dbgem td/zd）经信封
+  （kind/stage/name/payload）双向收发 —— tiec 即标准 tink pipe 节点（`--tink`/`--tink-in`）。
 * **组件资产**：各组件 zd 资产（tanim 三件套 / tphy 材质表 / tge 场景 · prefab …）
 * **tedit 模组协议**：编辑器模组间（zd 序列化，同进程协议隔离）
 * **tink ABI**：组件互联（模块.函数 字节进 → 字节出，zd 帧）

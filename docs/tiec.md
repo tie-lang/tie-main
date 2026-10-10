@@ -165,6 +165,8 @@ tiec <input.tie> [-o <out>] [-O0|-O1|-O2|-O3] [--target <三元组>]
                  [--emit-ir] [--keep-ir] [--prep-only] [--config <f>]
                  [--profile <p>] [--backend <b>] [--shared]
                  [--tieir-out <f>] [--dump-irt <f>] [--lsp] [--help]
+                 [--emit <阶段>:<格式>]... [--emit-only] [--no-sym]
+                 [--tink] [--tink-in] [--tink-file <f>] [--tink-in-file <f>] [--tink-save <dir>]
 tiec --compress-data <in.data.tie> [-o <out.zd>]     # td → zd 压缩数据子命令
 ```
 
@@ -187,6 +189,13 @@ tiec --compress-data <in.data.tie> [-o <out.zd>]     # td → zd 压缩数据子
 | `--tieir-out <f>` | 编译后序列化 tieir 分发单元（S3.2；`.tieir` 二进制） |
 | `--dump-irt <f>` | 只读 `.tieir` 并输出可读摘要（S3.2；不编译） |
 | `--lsp` | 语言服务器模式（stdio） |
+| `--emit <阶段>:<格式>` | 结构化输出（p.9.22）：阶段 `tokens`/`ast`/`symtab`/`diag`，格式 `td`（可读表字面量）/`zd`（二进制列式）；可重复；落 `<输入>.<阶段>.<格式>`；与编译并存 |
+| `--emit-only` | 只做 `--emit` 落盘，不继续编译（前端跑完即停） |
+| `--no-sym` | 关闭 library/class 产物默认伴生的 `<产物>.sym.zd` 符号表 |
+| `--tink` | stdout 变 tink 帧流（人读文本改走 stderr；tiec 即 tink pipe 节点） |
+| `--tink-in` | stdin 收帧流（CRC 校验；拒帧报错退出非 0）；`--tink-in-file <f>` 读帧文件 |
+| `--tink-file <f>` | 帧流写文件（离线回放与在线管道同一格式） |
+| `--tink-save <dir>` | 收到的 stage/artifact 载荷落盘目录（名称白名单清洗） |
 | `--compress-data` | td → zd 压缩数据子命令（读取 `type tie<data>` 文件：裸表或可选表名，无 `var`） |
 | `--help` / `-h` | 显示帮助 |
 
@@ -256,6 +265,24 @@ tiec hello.tie --keep-ir        # 编译并保留中间 IR
 tiec hello.tie --prep-only      # 只打印角色识别结果
 tiec --help                     # 帮助
 ```
+
+### 4.1 结构化输出与 tinker（p.9.22）
+*EN: 4.1 Structured output & tinker (p.9.22)*
+
+tiec 的阶段数据（tokens/AST/符号表/诊断）可作**列式记录**落盘，并可用 tink 帧协议收发——调试信息成为一等公民（设计稿：`docs/superpowers/specs/2026-09-25-structured-output-tinker-design.md`）。
+
+```bash
+tiec app.tie --emit ast:zd --emit symtab:td         # 与编译并存：app.tie.ast.zd / app.tie.symtab.td
+tiec app.tie --emit diag:zd --emit-only             # 只 dump 不编译（失败诊断也落盘）
+tiec app.tie --tink --emit ast:zd -o app.exe > f.bin  # stdout 变帧流（人读文本走 stderr）
+tiec x.tie --tink-in-file f.bin --tink-save out/     # 收帧：CRC 校验 + kind 分派（拒帧退出非 0）
+tie_a --tink | tie_b --tink-in --tink-save out/      # 管道节点（全双工：--tink --tink-in 双开）
+```
+
+* **记录模型**：统一信封（1 schema · 2 stage · 3 unit · 4 字符串池全量 · 5 文件表）+ 阶段列段（ast 100-109 · symtab 120-198 · diag 200-210 · tokens 300-303；字段号只追加）。`zd` = 二进制列式（zd 编码原语复用）；`td` = 同数据的可读表字面量（tie:data 合法，可被 `--compress-data` 解析回）。输出确定性：同输入字节级一致。
+* **全量符号表**：sstate 全局注册表直拷 + xref 侧表（作用域 188-189 / 声明 190-196 / 引用 197-198，use→decl 可解析）。采集由 driver 单点开启——`--emit symtab*` / `.sym.zd` / `--tieir-out` / trm 目标时开启，普通编译零开销（登记点首行短路）。
+* **产物符号表**：library/class 产物默认伴生 `<产物>.sym.zd`（`--no-sym` 关闭）；tieir 分发单元（`.tir`）尾部携带**段 8 语义符号表**（格式版本 v3；读侧对未知段按「段号+段长」整体跳过；v2 文件仍可读）。
+* **tinker**：帧 = `[len u32 BE][payload][crc u32 BE]`（CRC32-IEEE 查表自实现，与 `std/tink` 逐字节一致——探针双向互验：tinker 编码 std 解 / std 编码 tinker 解）；帧载荷 = 信封记录（kind 1 hello/2 hello-ack/3 stage/4 artifact/5 diag）。拒帧（CRC/长度/信封非法）报错退出非 0，不静默传递损坏数据；落盘名白名单清洗（只落在 `--tink-save` 目录内）。
 
 ## 5. 运行时依赖
 *EN: 5. Runtime dependencies*

@@ -417,8 +417,18 @@
 
 - `[~]` 中端 pass **卡在「需先有 IR 表达」**（依赖 §1.1 的可复现性口径先定）。
 
-- `[ ]` **p.9.22 结构化输出与 tinker 全节未动**——symtab dump · 产物符号表 ·  
-  tinker 收发三件 · `tink pipe` 端到端 · 文档收口。**本档单模块最大的未开工面。**
+- `[x]` **p.9.22 结构化输出与 tinker（2026-10-10 全量落地）**——13 子任务全绿：
+  dbgem 骨架（列登记 + zd/td 双形态）· ast/diag/symtab dump · `frontend/xref.tie`
+  全量交叉引用（作用域/声明/引用；采集门默认关、driver 单点开）· 产物伴生
+  `<产物>.sym.zd`（`--no-sym` 关）· tieir **段 8 语义符号表（格式 v3，读侧跳未知段、
+  兼容 v2）** · tinker 帧/信封/收发三件（CRC32 查表自实现，与 std/tink 逐字节互验；
+  `--tink` stdout 帧流 + 人读文本走 stderr；`--tink-in(-file)` 拒帧退出非 0；`--tink-save`
+  白名单清洗）· `tink pipe` 端到端（产物字节一致）· 文档收口（tiec.md §4.1 + 设计稿 §12）。
+  验收：不动点 `167f60b9…`（n2==n3）升格；回归 **252/10/2**（FAIL 集合与改动前逐行一致，
+  全为既有）；`--emit` 确定性（两次 md5 全同）+ td 可被 `--compress-data` 解析回；
+  自编译 42.5s，xref 开启 +~1%，默认零开销。
+  ⚠ 后续（非目标/新增项）：hub 网络 IPC · tink v2 帧 · 消费端接线（LSP/tiedap/tshell）·
+  td 行投影增强 · 回归夹具化。
 
 ### 2.2 标准库
 
