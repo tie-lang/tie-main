@@ -282,7 +282,7 @@ tie_a --tink | tie_b --tink-in --tink-save out/      # 管道节点（全双工�
 * **记录模型**：统一信封（1 schema · 2 stage · 3 unit · 4 字符串池全量 · 5 文件表）+ 阶段列段（ast 100-109 · symtab 120-198 · diag 200-210 · tokens 300-303；字段号只追加）。`zd` = 二进制列式（zd 编码原语复用）；`td` = 同数据的可读表字面量（tie:data 合法，可被 `--compress-data` 解析回）。输出确定性：同输入字节级一致。
 * **全量符号表**：sstate 全局注册表直拷 + xref 侧表（作用域 188-189 / 声明 190-196 / 引用 197-198，use→decl 可解析）。采集由 driver 单点开启——`--emit symtab*` / `.sym.zd` / `--tieir-out` / trm 目标时开启，普通编译零开销（登记点首行短路）。
 * **产物符号表**：library/class 产物默认伴生 `<产物>.sym.zd`（`--no-sym` 关闭）；tieir 分发单元（`.tir`）尾部携带**段 8 语义符号表**（格式版本 v3；读侧对未知段按「段号+段长」整体跳过；v2 文件仍可读）。
-* **tinker**：帧 = `[len u32 BE][payload][crc u32 BE]`（CRC32-IEEE 查表自实现，与 `std/tink` 逐字节一致——探针双向互验：tinker 编码 std 解 / std 编码 tinker 解）；帧载荷 = 信封记录（kind 1 hello/2 hello-ack/3 stage/4 artifact/5 diag）。拒帧（CRC/长度/信封非法）报错退出非 0，不静默传递损坏数据；落盘名白名单清洗（只落在 `--tink-save` 目录内）。
+* **tinker**：帧 = **tink v3 线格式**（16B 定长头 `[magic 0x74 0x6B][ver=3][type=0x04][flags u16][stream_id u32][seq u32][len u16]` + 载荷 + CRC32C 4B 尾；大载荷 >65531B 自动分片（OFFSET 位 + 4B BE 偏移、末片 FIN），接收侧透明重组——与 `std/tink_v3` 逐字节一致，交叉对拍：tinker 编码 tlib 解 / tlib 编码 tinker 解；v3 为断代升级，旧 v1 帧拒收）；帧载荷 = 信封记录（kind 1 hello/2 hello-ack/3 stage/4 artifact/5 diag）。拒帧（CRC/长度/信封非法）报错退出非 0，不静默传递损坏数据；落盘名白名单清洗（只落在 `--tink-save` 目录内）。
 
 ## 5. 运行时依赖
 *EN: 5. Runtime dependencies*
